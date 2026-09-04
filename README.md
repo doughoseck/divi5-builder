@@ -1,4 +1,4 @@
-# divi5-builder
+# divi5-builder Claude skill
 
 Build and edit **Divi 5** WordPress pages programmatically, over the WordPress
 REST API — from a compact JSON spec, using **native Divi modules** so pages stay
