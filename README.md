@@ -69,7 +69,7 @@ pass = xxxx xxxx xxxx xxxx xxxx xxxx
 
 See `.web-creds.example.txt`. **Never commit this file** — it's in `.gitignore`.
 `wp.js` reads it at runtime, builds the Basic-auth header in memory, and never
-prints the password.
+prints the password. No password ever reaches the Claude prompt!
 
 ## The mu-plugin (one-time per site)
 
