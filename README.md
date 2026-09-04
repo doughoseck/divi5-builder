@@ -48,7 +48,7 @@ git clone https://github.com/doughoseck/divi5-builder ~/.claude/skills/divi5-bui
 Claude Code will discover it automatically. Or use the scripts directly:
 ```bash
 node scripts/wp.js <site> whoami
-node scripts/divi.js compile spec.json --out content.html
+node scripts/divi.js compile examples/spec.json --out content.html
 ```
 
 ## Credentials
@@ -87,7 +87,7 @@ node scripts/wp.js mysite divi-check      # verdict:"divi5"  → right engine
 node scripts/wp.js mysite check-plugin    # pluginActive:true → mu-plugin OK
 node scripts/wp.js mysite global-colors   # discover gcid global-colour ids
 
-node scripts/divi.js compile spec.json --out content.html
+node scripts/divi.js compile examples/spec.json --out content.html
 node scripts/wp.js mysite create-page --title "New page" --content-file content.html --status draft
 node scripts/wp.js mysite set-builder <id>     # flip into "Divi mode"
 node scripts/wp.js mysite rendered <id>        # verify it renders as native Divi
