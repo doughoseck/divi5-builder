@@ -10,7 +10,7 @@ the two scripts (`scripts/wp.js`, `scripts/divi.js`) are plain Node and work
 standalone in any pipeline.
 
 Other than the skill, it requires an MU plugin installed on your site and a "web-creds"
-file that you populate on your own machine with login info/password. And you site
+file that you populate on your own machine with login info/password. And your site
 must use Divi 5 [will not work with Divi 4 sites].
 
 > ⚠️ **Independent, community project — not affiliated with, endorsed by, or
