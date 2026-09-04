@@ -1,0 +1,62 @@
+<!--
+  Self-hosted video popup — reusable WPCode snippet (divi5-builder skill).
+
+  WHAT IT DOES: a full-screen lightbox that plays a self-hosted .mp4 and
+  AUTOPLAYS (with sound) when opened — because play() is called from the user's
+  click (a user gesture), which browsers allow. Works where YouTube-only popup
+  plugins can't. One snippet handles every video on the site.
+
+  INSTALL (WPCode):
+    1. WPCode → Add Snippet → Add Your Custom Code → "HTML Snippet".
+    2. Paste EVERYTHING below this comment.
+    3. Insert Method: Auto Insert · Location: "Site Wide Footer"
+       (or use Smart/Conditional Logic to limit to the pages that need it).
+    4. Save + Activate.
+
+  TRIGGER IT FROM ANY BUTTON/LINK:
+    Give the element a custom attribute  data-tsm-video="https://…/clip.mp4"
+    (optional  data-tsm-poster="https://…/thumb.jpg" ). Clicking it opens + plays.
+    - Divi 5 button: Advanced ▸ Attributes ▸ add  data-tsm-video = <mp4 url>
+      (and set the button Link to # — the script calls preventDefault()).
+    You can also call it directly:  window.tsmvpOpen('https://…/clip.mp4')
+-->
+<style>
+.tsmvp-modal{position:fixed;inset:0;background:rgba(8,32,20,.9);display:none;align-items:center;justify-content:center;z-index:2147483000;padding:22px}
+.tsmvp-modal.tsmvp-open{display:flex}
+.tsmvp-box{position:relative;width:min(1000px,100%)}
+.tsmvp-box video{width:100%;height:auto;border-radius:14px;box-shadow:0 24px 70px rgba(0,0,0,.55);display:block;background:#000}
+.tsmvp-close{position:absolute;top:-46px;right:-2px;width:40px;height:40px;border:0;border-radius:50%;background:rgba(255,255,255,.16);color:#fff;font-size:26px;line-height:1;cursor:pointer}
+.tsmvp-close:hover{background:rgba(255,255,255,.3)}
+@media(max-width:600px){.tsmvp-close{top:-42px}}
+</style>
+<div class="tsmvp-modal" id="tsmvpModal" role="dialog" aria-modal="true" aria-label="Video">
+  <div class="tsmvp-box">
+    <button type="button" class="tsmvp-close" id="tsmvpClose" aria-label="Close video">&times;</button>
+    <video id="tsmvpVideo" controls playsinline preload="none"></video>
+  </div>
+</div>
+<script>
+(function(){
+  var m=document.getElementById('tsmvpModal'),v=document.getElementById('tsmvpVideo'),c=document.getElementById('tsmvpClose');
+  if(!m||m.dataset.tsmvpInit)return; m.dataset.tsmvpInit='1';
+  try{document.body.appendChild(m);}catch(e){}           // overlay above everything
+  function open(url,poster){
+    if(!url)return;
+    v.pause(); v.innerHTML='';                            // reset any previous clip
+    var s=document.createElement('source'); s.src=url; s.type='video/mp4'; v.appendChild(s);
+    if(poster){v.setAttribute('poster',poster);} else {v.removeAttribute('poster');}
+    v.load();
+    m.classList.add('tsmvp-open'); document.body.style.overflow='hidden';
+    try{ v.currentTime=0; var p=v.play(); if(p&&p.catch)p.catch(function(){}); }catch(e){}  // AUTOPLAY on click
+  }
+  function close(){ m.classList.remove('tsmvp-open'); document.body.style.overflow=''; try{v.pause();}catch(e){} }
+  document.addEventListener('click',function(e){
+    var t=e.target.closest('[data-tsm-video]');
+    if(t){ e.preventDefault(); open(t.getAttribute('data-tsm-video'), t.getAttribute('data-tsm-poster')); }
+  });
+  if(c)c.addEventListener('click',close);
+  m.addEventListener('click',function(e){ if(e.target===m)close(); });          // click backdrop = close
+  document.addEventListener('keydown',function(e){ if(e.key==='Escape'&&m.classList.contains('tsmvp-open'))close(); });
+  window.tsmvpOpen=open; window.tsmvpClose=close;        // also callable directly
+})();
+</script>

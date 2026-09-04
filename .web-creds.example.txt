@@ -1,0 +1,14 @@
+# divi5-builder credentials — COPY to ~/.web-creds.txt (or set WEB_CREDS_PATH).
+# NEVER commit the real file. `pass` is a WordPress Application Password
+# (Users -> Profile -> Application Passwords), NOT your login password.
+# One [section] per site; the section name is the <site> arg you pass to the scripts.
+
+[mysite]
+url  = https://example.com
+user = your-admin-username
+pass = xxxx xxxx xxxx xxxx xxxx xxxx
+
+[clientsite]
+url  = https://another-site.example
+user = admin-username
+pass = yyyy yyyy yyyy yyyy yyyy yyyy

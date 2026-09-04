@@ -1,0 +1,23 @@
+# NEVER commit credentials
+.web-creds.txt
+.web-creds*.txt
+*.web-creds*
+!.web-creds.example.txt
+
+# Local page snapshots / dumps (may contain private site content)
+snapshots/
+*.raw.html
+*.rendered.html
+
+# Node / OS / editor
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Scratch / working files
+scratch/
+tmp/
+*.tmp
