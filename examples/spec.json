@@ -1,0 +1,96 @@
+{
+  "builderVersion": "5.9.0",
+  "sections": [
+    {
+      "background": { "color": "gcid-primary-color" },
+      "padding": { "top": "90px", "bottom": "90px" },
+      "rows": [
+        {
+          "layout": "1-1",
+          "columns": [
+            {
+              "modules": [
+                { "type": "text", "html": "<p>WELCOME</p>", "size": "13px", "weight": "700", "caps": "uppercase", "ls": "2px", "color": "gcid-secondary-color" },
+                { "type": "heading", "level": "h1", "text": "Build Divi 5 pages from a JSON spec", "family": "Outfit", "size": "46px", "weight": "800", "color": "gcid-heading-color", "textColor": "light" },
+                { "type": "text", "html": "<p>Native, builder-editable modules — no inline CSS. Colours and fonts come from your site's global variables, so one edit re-themes everything.</p>", "size": "18px", "textColor": "light" },
+                { "type": "button", "text": "Get started", "url": "#", "bg": "gcid-secondary-color", "color": "gcid-heading-color", "radius": "10px", "padding": { "top": "14px", "bottom": "14px", "left": "26px", "right": "26px" } }
+              ]
+            },
+            {
+              "modules": [
+                { "type": "image", "src": "https://placehold.co/900x680/png", "alt": "Product screenshot", "frame": { "radius": "14px", "shadow": true } }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "background": { "color": "#ffffff" },
+      "padding": { "top": "70px", "bottom": "70px" },
+      "rows": [
+        {
+          "layout": "1",
+          "columns": [
+            {
+              "modules": [
+                { "type": "heading", "level": "h2", "align": "center", "text": "Everything is a native module", "family": "Outfit", "size": "34px", "weight": "800", "color": "gcid-heading-color" },
+                { "type": "text", "align": "center", "html": "<p>Sections, rows, columns and 26+ module types — all editable in the Divi Visual Builder.</p>", "color": "gcid-body-color" }
+              ]
+            }
+          ]
+        },
+        {
+          "grid": { "cols": { "desktop": 3, "tablet": 2, "phone": 1 } },
+          "columns": [
+            {
+              "background": "#ffffff", "padding": "24px", "radius": "14px",
+              "border": { "width": "1px", "color": "#e6e6e6" },
+              "hover": { "borderColor": "gcid-secondary-color", "shadow": { "blur": "18px" } },
+              "rowGap": "8px",
+              "modules": [
+                { "type": "blurb", "title": "No inline CSS", "text": "Styling lives in module settings, so pages stay themeable.", "icon": { "unicode": "&#xf00c;", "type": "fa" }, "titleLevel": "h4" }
+              ]
+            },
+            {
+              "background": "#ffffff", "padding": "24px", "radius": "14px",
+              "border": { "width": "1px", "color": "#e6e6e6" },
+              "hover": { "borderColor": "gcid-secondary-color", "shadow": { "blur": "18px" } },
+              "rowGap": "8px",
+              "modules": [
+                { "type": "blurb", "title": "Global variables", "text": "Colours and fonts reference your site's globals by name.", "icon": { "unicode": "&#xf0d0;", "type": "fa" }, "titleLevel": "h4" }
+              ]
+            },
+            {
+              "background": "#ffffff", "padding": "24px", "radius": "14px",
+              "border": { "width": "1px", "color": "#e6e6e6" },
+              "hover": { "borderColor": "gcid-secondary-color", "shadow": { "blur": "18px" } },
+              "rowGap": "8px",
+              "modules": [
+                { "type": "blurb", "title": "CSS Grid + flex", "text": "Fractional flex for content rows, CSS Grid for card grids.", "icon": { "unicode": "&#xf009;", "type": "fa" }, "titleLevel": "h4" }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "background": { "color": "gcid-secondary-color" },
+      "padding": { "top": "70px", "bottom": "70px" },
+      "rows": [
+        {
+          "layout": "1",
+          "columns": [
+            {
+              "modules": [
+                { "type": "heading", "level": "h2", "align": "center", "text": "Ready to build?", "family": "Outfit", "size": "32px", "weight": "800", "color": "gcid-heading-color" },
+                { "type": "text", "align": "center", "html": "<p>Compile this spec, POST it, and flip the page into Divi mode.</p>", "color": "gcid-heading-color" },
+                { "type": "button", "text": "Read the docs", "url": "#", "align": "center", "bg": "gcid-heading-color", "color": "gcid-secondary-color", "radius": "10px", "padding": { "top": "14px", "bottom": "14px", "left": "28px", "right": "28px" } }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
