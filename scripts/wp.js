@@ -20,6 +20,9 @@
  *   node wp.js <site> set-homepage <id>            # show_on_front=page, page_on_front=id
  *   node wp.js <site> reset-homefront              # show_on_front=posts (undo)
  *   node wp.js <site> upload-media <filepath> [--alt "..."]
+ *   node wp.js <site> list-categories              # id, post count, name, slug
+ *   node wp.js <site> set-post-categories <id> --names "Setup,How it works"
+ *                                                  # resolves names to ids, creating any that are missing
  *
  * Output is compact JSON or plain lines on stdout; errors to stderr, exit 1.
  */
@@ -272,6 +275,31 @@ function flags(argv) {
       const p = await jreq('POST', `${api}/posts/${id}`, c, payload);
       const warn = p.status === 'future' ? ' (STILL SCHEDULED — use --now to publish immediately)' : '';
       console.log(JSON.stringify({ ok: true, id: p.id, status: p.status + warn, slug: p.slug, link: p.link, date: p.date }));
+      break;
+    }
+    // ---- Categories -------------------------------------------------------
+    // WordPress files every uncategorised post under "Uncategorized", which
+    // then renders as a real, indexable archive listing your best content under
+    // a meaningless label. set-post-categories resolves names to ids and
+    // CREATES any that do not exist, so one call does the whole job.
+    case 'list-categories': {
+      const arr = await jreq('GET', `${api}/categories?per_page=100&_fields=id,name,slug,count`, c);
+      for (const t of arr) console.log(`#${t.id}\t${t.count} posts\t${t.name}\t(${t.slug})`);
+      break;
+    }
+    case 'set-post-categories': {
+      const id = f._[0]; if (!id) die('set-post-categories needs <id> --names "A,B"');
+      const names = String(f.names || '').split(',').map(s => s.trim()).filter(Boolean);
+      if (!names.length) die('set-post-categories needs --names "A,B"');
+      const existing = await jreq('GET', `${api}/categories?per_page=100&_fields=id,name`, c);
+      const ids = [];
+      for (const n of names) {
+        let hit = existing.find(t => t.name.toLowerCase() === n.toLowerCase());
+        if (!hit) { hit = await jreq('POST', `${api}/categories`, c, { name: n }); existing.push(hit); }
+        ids.push(hit.id);
+      }
+      const p = await jreq('POST', `${api}/posts/${id}`, c, { categories: ids });
+      console.log(JSON.stringify({ ok: true, id: p.id, categories: p.categories, names }));
       break;
     }
     case 'create-page': {
