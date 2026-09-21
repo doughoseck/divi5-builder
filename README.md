@@ -83,6 +83,18 @@ auto-activate. It does **not** modify Divi.
 
 Confirm it's active: `node scripts/wp.js <site> check-plugin` → `pluginActive:true`.
 
+### Theme Builder headers, footers and body layouts (plugin 1.5+)
+
+Core REST does not expose Divi's Theme Builder post types, so from 1.5 the plugin adds
+routes to **list** every template and layout, **read** a layout's raw content, **write**
+one back, and **restore** the previous version (`wp.js tb-list | tb-get | tb-set |
+tb-restore`). A header or footer is on every page, so the write route is deliberately
+fussy: it needs `edit_theme_options` + `unfiltered_html`, the md5 of the content you
+last read (an edit made in the Visual Builder meanwhile is never overwritten), balanced
+blocks, and it reads the save back and reverts automatically if the block tree changed.
+`node scripts/wp.js <site> plugin-version` tells you what a site is running; upgrading
+is re-uploading the file.
+
 ## Quickstart
 
 ```bash
@@ -116,8 +128,9 @@ above) are very welcome.
 ## Security
 
 - Never commit `~/.web-creds.txt` or any Application Password.
-- The mu-plugin only exposes existing Divi meta keys, gated by WordPress
-  capabilities — review it before installing.
+- The mu-plugin exposes existing Divi meta keys, the global colour palette and (1.5+)
+  Theme Builder layout read/write, each gated by the WordPress capability Divi itself
+  requires for that thing — review it before installing.
 - Prefer **draft-first**; treat publish / live-page edits / homepage changes as
   visible actions.
 

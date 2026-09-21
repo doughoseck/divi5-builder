@@ -18,8 +18,11 @@ Everything below was extracted from real, working pages on a live Divi 5 site
 ```
 
 Rules learned from live pages:
-- A Divi 5 page **must start with** `<!-- wp:divi/placeholder -->` (self-closing,
-  no attrs, no closing tag). Without it the builder can misbehave.
+- A Divi 5 page is **wrapped in** `<!-- wp:divi/placeholder -->` … `<!-- /wp:divi/placeholder -->`
+  (no attrs). The closer sits directly after the last block, no newline before it. Measured
+  2026-09-21: 9 of 9 stored items on Divi 5.9 and 38 of 38 on 5.13 end that way. An earlier
+  version of this file said "no closing tag"; that was wrong. It went unnoticed because a save
+  adds the missing closer for you (see "What a save does to your content" below).
 - Nesting is **section › row › column › module**. Modules never sit directly in a
   section or row.
 - **Every** block (except `placeholder`) carries `"builderVersion":"5.9.0"` (or
@@ -29,19 +32,56 @@ Rules learned from live pages:
 
 ### Comment-safe JSON escaping (critical)
 
-The attrs JSON lives inside an HTML comment, so `<`, `>`, `&` (and `'`) must be
+The attrs JSON lives inside an HTML comment, so `<`, `>`, `&` and `--` must be
 hex-escaped or they break block parsing (`-->` could appear, tags could close
-the comment). WordPress's `serialize_block` uses `wp_json_encode` with
-`JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_APOS|JSON_HEX_QUOT`. Replicate at minimum:
+the comment).
+
+### What a save does to your content (measured, not read from source)
+
+Saving a page or layout on a Divi 5 site **re-serialises every block**. Sent one form,
+the site stores another. Measured 2026-09-21 by writing a probe page and reading it
+back, identical on Divi 5.9 and 5.13, through core REST and through `wp_update_post`:
+
+| You send | Site stores |
+|---|---|
+| `\"` inside a string | `\u0022` |
+| `\\` | `\u005c` |
+| `--` | `\u002d\u002d` (so `---` becomes `\u002d\u002d-`) |
+| `<` `>` `&` raw or as `\u003c` `\u003e` `\u0026` | `\u003c` `\u003e` `\u0026` |
+| `\u0027` | `'` (apostrophes are stored RAW) |
+| non-ASCII (`—`, `é`, `火`) | unchanged, raw UTF-8 |
+| wrapper left unclosed | closer appended directly after the last block |
+
+Which code does this (WordPress core or Divi) has not been established. It does not
+matter for correctness: both forms parse to the same block tree and render the same.
+It matters for two things:
+
+1. **Hashes and byte comparisons.** Content not already in stored form changes on
+   save, so `md5(sent) != md5(stored)`. `scripts/divi.js` emits stored form, so what
+   it compiles is stored byte for byte. `node scripts/roundtrip-test.js <site> <draft_id>`
+   proves that on a given site; run it once on any Divi version it has not seen.
+2. **Hand-built content** (patching a `tb-get` file, a `raw` module): serialise attrs the
+   same way, in this order, or the backslash pass eats the quote pass:
 
 ```
 JSON.stringify(attrs)
-  .replace(/</g,'\\u003c').replace(/>/g,'\\u003e')
-  .replace(/&/g,'\\u0026').replace(/'/g,'\\u0027')
+  .replace(/\\\\/g,'\u0000BS\u0000').replace(/\\"/g,'\\u0022').replace(/\u0000BS\u0000/g,'\\u005c')
+  .replace(/</g,'\\u003c').replace(/>/g,'\\u003e').replace(/&/g,'\\u0026').replace(/--/g,'\\u002d\\u002d')
 ```
 
-`scripts/divi.js` does this for you. Structural `"` stays as `"`; string-internal
-`"` may be `\"` (valid JSON, parses fine) — Divi's own output uses `"`, both work.
+### Free-form CSS on a module
+
+Key: `css.desktop.value.freeForm` (a sibling of `mainElement`), verified from a builder save.
+- The keyword `selector` IS substituted, per module, with that module's own class
+  (e.g. `.et_pb_menu_1.et_pb_menu`). Write `selector .et-menu > li { … }`.
+- The text is emitted **verbatim**. There is no validation: an unclosed brace or a stray
+  character corrupts the NEXT rule in the page's stylesheet, which may belong to another module.
+- It lands in Divi's static CSS file, so a change shows only after that cache is cleared.
+  `tb-set` clears it. Whether a page write through core REST clears it is NOT verified.
+- First view after a cache clear serves the CSS inline, later views as a `.min.css` file. One
+  case was seen (one site, 2026-09) where a button was styled wrongly on the inline view and
+  correctly on the file view; cause not established. Judge styling on the second load, and
+  say so if the first load differs.
 
 ## Responsive + styling convention
 
@@ -166,7 +206,7 @@ the column's height, instead of an image module.
 <!-- /wp:divi/text -->
 <!-- /wp:divi/column -->
 <!-- /wp:divi/row -->
-<!-- /wp:divi/section -->
+<!-- /wp:divi/section --><!-- /wp:divi/placeholder -->
 ```
 
 `scripts/divi.js compile <spec.json>` generates all of this from a compact spec —

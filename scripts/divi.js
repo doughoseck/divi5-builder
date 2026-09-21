@@ -61,12 +61,20 @@ const fs = require('fs');
 
 let BV = '5.9.0'; // overwritten from spec.builderVersion
 
-// ---- comment-safe JSON (mirror WP serialize_block escaping) ----
+// ---- comment-safe JSON, in the site's STORED form ----
+// A save re-serialises every block: \" -> \u0022, \\ -> \u005c, -- -> \u002d\u002d, < > & -> \u003c \u003e \u0026,
+// apostrophes and non-ASCII left raw. Emitting that form means what we send is byte-for-byte what gets stored
+// (measured 2026-09-21 on Divi 5.9 and 5.13; the Theme Builder write guard depends on it). Order matters:
+// backslash pairs are parked first so the quote pass cannot split them.
 function attrJSON(obj) {
   return JSON.stringify(obj)
+    .replace(/\\\\/g, '\u0000BS\u0000')
+    .replace(/\\"/g, '\\u0022')
+    .replace(/\u0000BS\u0000/g, '\\u005c')
     .replace(/</g, '\\u003c').replace(/>/g, '\\u003e')
-    .replace(/&/g, '\\u0026').replace(/'/g, '\\u0027');
+    .replace(/&/g, '\\u0026').replace(/--/g, '\\u002d\\u002d');
 }
+const PLACEHOLDER_CLOSE = '<!-- /wp:divi/placeholder -->';
 function open(name, attrs) { return `<!-- wp:${name}${attrs ? ' ' + attrJSON(attrs) : ''} -->`; }
 function close(name) { return `<!-- /wp:${name} -->`; }
 function selfClose(name, attrs) { return `<!-- wp:${name}${attrs ? ' ' + attrJSON(attrs) : ''} /-->`; }
@@ -227,7 +235,7 @@ function mButton(m) {
   if (m.hidden) Object.assign(dec, hiddenDecoration());
   if (Object.keys(dec).length) module.decoration = dec;
   const bdec = {};
-  const fv = fontValue({ color: m.color, size: m.size, weight: m.weight || '700', family: m.family });
+  const fv = fontValue({ color: m.color, size: m.size, weight: m.weight || '700', family: m.family, caps: m.caps });
   if (Object.keys(fv).length) bdec.font = { font: { desktop: { value: fv } } };
   const bg = colorVal(m.bg); if (bg) bdec.background = { desktop: { value: { color: bg } } };
   if (m.radius) bdec.border = { desktop: { value: { radius: { topLeft: m.radius, topRight: m.radius, bottomLeft: m.radius, bottomRight: m.radius, sync: 'on' } } } };
@@ -721,9 +729,10 @@ function buildSection(sec) {
 
 function compile(spec) {
   BV = spec.builderVersion || BV;
-  const lines = ['<!-- wp:divi/placeholder -->']; // matches live-site serialization exactly
+  const lines = ['<!-- wp:divi/placeholder -->'];
   for (const sec of (spec.sections || [])) lines.push(...buildSection(sec));
-  return lines.join('\n');
+  // Stored pages close the wrapper directly after the last block, no newline (9 of 9 on 5.9, 38 of 38 on 5.13).
+  return lines.join('\n') + PLACEHOLDER_CLOSE;
 }
 
 // Compile a popup canvas: a full-screen, hidden-by-default overlay section whose
@@ -755,8 +764,8 @@ function compilePopupCanvas(popup) {
   const colAttrs = { builderVersion: BV, module: { decoration: { sizing: { desktop: { value: { flexType: '24_24' } } } } } };
   const lines = ['<!-- wp:divi/placeholder -->', open('divi/section', sectionAttrs), open('divi/row', rowAttrs), open('divi/column', colAttrs)];
   for (const m of (popup.modules || [])) lines.push(...buildModule(m));
-  lines.push(close('divi/column'), close('divi/row'), close('divi/section'), '<!-- /wp:divi/placeholder -->');
-  return lines.join('\n');
+  lines.push(close('divi/column'), close('divi/row'), close('divi/section'));
+  return lines.join('\n') + PLACEHOLDER_CLOSE;
 }
 
 // ---- CLI ----
