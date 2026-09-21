@@ -24,3 +24,8 @@ tmp/
 
 # Module catalogue: generated locally from YOUR copy of Divi (GPL-derived), never committed
 catalog/
+
+# Hook profiler output: holds a secret key, generated per use, never committed
+d5b-profiler.php
+d5b-profiler.key
+*.key

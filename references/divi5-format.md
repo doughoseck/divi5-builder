@@ -52,6 +52,10 @@ back, identical on Divi 5.9 and 5.13, through core REST and through `wp_update_p
 | non-ASCII (`—`, `é`, `火`) | unchanged, raw UTF-8 |
 | wrapper left unclosed | closer appended directly after the last block |
 
+A save also **prunes empty objects**: `"module":{"advanced":{},"decoration":{…}}` is stored without `"advanced":{}`
+(measured 2026-09-21). That changes the block tree, so the Theme Builder write guard refuses it as `roundtrip_failed`.
+When you delete the last key of an object while patching attrs, delete the object too.
+
 Which code does this (WordPress core or Divi) has not been established. It does not
 matter for correctness: both forms parse to the same block tree and render the same.
 It matters for two things:
@@ -68,6 +72,48 @@ JSON.stringify(attrs)
   .replace(/\\\\/g,'\u0000BS\u0000').replace(/\\"/g,'\\u0022').replace(/\u0000BS\u0000/g,'\\u005c')
   .replace(/</g,'\\u003c').replace(/>/g,'\\u003e').replace(/&/g,'\\u0026').replace(/--/g,'\\u002d\\u002d')
 ```
+
+### Flex layout gotchas (measured on a header rebuild, Divi 5.13)
+
+- Flex applies when a column has `module.decoration.sizing.<bp>.value.flexType` AND its `layout.display` is not `block`
+  (`FrontEnd/Assets/DetectFeature.php`). Migrated Divi 4 rows and columns carry `layout.display: "block"`: remove it, or the
+  `flexType` is ignored. Fractions are strings such as `24_24`, `12_24`, `1_5`, `2_5`, `3_5`.
+- A flex column has a default gap of about 30px between its modules. Set `layout.desktop.value.columnGap: "0px"` (or
+  `rowGap`) when modules must touch.
+- A menu module inside a flex ROW shrinks to fit and its list wraps. Give it `selector { flex: 0 0 auto; }` and
+  `selector .et-menu { flex-wrap: nowrap; }`.
+- Inside a flex COLUMN a menu or social-follow module shrinks to its content and sits at the start. Set
+  `module.decoration.sizing.desktop.value.width: "100%"`; the menu's inner wrappers (`.et_pb_menu_inner_container`,
+  `.et_pb_menu__wrap`, `.et-menu-nav`) are shrink-to-fit flex boxes too and need `width: 100%`.
+- A code module holding only a `<script>` still occupies a flex slot, gap included. Put it first in the column.
+- To measure a `position: fixed` element from script, do not test `offsetParent` (always null for fixed). Use
+  `getClientRects().length`.
+
+### Small things that cost hours (each measured on a Divi 4 → 5 port, Divi 5.13)
+
+- **A section disabled on every breakpoint is NOT OUTPUT at all**, unless it is an interaction target. To keep a hidden-until-opened
+  section in the page without interactions, leave `disabledOn` off and hide it with its own free-form CSS:
+  `selector:not(.open) { display: none; }` plus `.et-fb selector:not(.open) { display: flex; }` so it stays editable in the builder.
+- **`divi/image` with no `module.advanced.align` renders CENTRED.** Divi 4 treated "unset" as left, so migrated logos move. Set
+  `module.advanced.align.desktop.value` to `left` | `center` | `right` explicitly.
+- **Custom HTML attributes on a module** live in a list, one object each:
+  `module.decoration.attributes.desktop.value.attributes[] = { "id": "<uuid>", "name": "data-x", "value": "y", "adminLabel": "…" }`
+  (optional `"targetElement": "image"` to put it on the inner element). CSS ids are stored the same way (`"name": "id"`).
+  `module.advanced.htmlAttributes.desktop.value = { "id": "", "class": "my-class" }` carries the CSS class.
+- **Display condition "custom field"** (`module.decoration.conditions.desktop.value[] = { id, conditionName: "customField",
+  conditionSettings: { displayRule, selectedFieldName: "manualCustomFieldName", customFieldName, selectedFieldValue:
+  "manualCustomFieldValue", customFieldValue, adminLabel, enableCondition: "on" }, operator: "OR" }`): EVERY rule, including
+  `hasNoValue`, answers "hide" when the post has no such meta at all (`Conditions.php`, `_process_custom_field_condition`). So "show
+  the default when the field is empty" cannot be a condition. Pattern that works: render the OPTIONAL module with `isAnyValue`, and
+  hide the default beside it with CSS on the parent: `selector:has(.optional) .default { display: none; }`.
+- **ACF image field as an image source:** `image.innerContent.desktop.value.src` =
+  `$variable({"type":"content","value":{"name":"custom_meta_<field_name>","settings":{"before":"","after":"","enable_html":"off"}}})$`.
+  Divi resolves the field to a URL whatever its return format (ID, array, URL). It reads the post being VIEWED, also from a Theme
+  Builder header. ACF values are writable over REST (`{"acf":{"<field>":<id>}}`) only if the field GROUP has "Show in REST API" on
+  and its location rule matches that post type; otherwise the post's `acf` comes back as `[]`.
+- **Before trusting a visual effect to the builder, find what makes it visible on the live site.** A logo that "fades in on scroll"
+  was a child-theme rule (`.home #logo{opacity:0}` / `.showLogo{opacity:1}`) driven by a script in a code module, not Divi's scroll
+  effect. When comparing two layouts, diff the code modules' contents too.
 
 ### Free-form CSS on a module
 
