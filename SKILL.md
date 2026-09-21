@@ -354,6 +354,65 @@ The compiler emits these module `type`s (all verified from live builds; keys in
 run `node scripts/wp.js <site> dump-blocks <id>` to read its exact keys, then add a
 builder — 2-minute loop. Don't guess; dump.
 
+## Theme Builder: headers, footers, body layouts (mu-plugin >= 1.5)
+
+Core REST does not expose Divi's Theme Builder post types (`et_template`,
+`et_header_layout`, `et_body_layout`, `et_footer_layout`), so these commands go
+through the mu-plugin. Check it first: `node scripts/wp.js <site> plugin-version`
+must report 1.5.0 or later, otherwise the user re-uploads
+`assets/divi5-builder-rest.php`.
+
+| Command | Does |
+|---|---|
+| `tb-list` | Every template and layout: which layouts each template uses, its display conditions, and each layout's FORMAT (`divi5`, `divi4`, `divi5+legacy-shortcodes`, `empty`). `--json` for the full dump. |
+| `tb-get <id> --out <file>` | Saves the layout's raw, unrendered content and prints its `hash`. |
+| `tb-set <id> --content-file <f> --expect-hash <hash>` | Overwrites the layout. `--dry-run` runs every check without writing. `--mark-divi5` also sets the Divi 5 builder flags. |
+| `tb-restore <id>` | Swaps the layout back to what the last `tb-set` replaced. Undoable by running it again. |
+
+**A header or footer is on every page of the site. Treat `tb-set` as a live,
+site-wide publish and get a nod from the user first, every time.** The route is
+deliberately fussy, and these refusals are working as intended, not bugs to route
+around:
+
+- `stale` (409): the layout changed since your `tb-get`, usually because the user
+  edited it in the Visual Builder. Read it again and redo the change on top of
+  theirs. Never fetch a fresh hash just to force your old content through.
+- `unbalanced_blocks`: the opening and closing block comments do not pair up. The
+  usual cause is a missing `<!-- /wp:divi/placeholder -->` at the very end (every
+  stored page has one; `divi.js` before 2026-09-21 left it off), then a cut-off
+  file. It is a count, not a parse: it does not prove the content is otherwise bad.
+- `not_divi` / `empty_content`: the file holds no Divi blocks or shortcodes, or nothing.
+  Almost always the wrong file.
+- `needs_unfiltered_html`: this WordPress user cannot save block JSON intact
+  (non-super-admin on multisite). Needs a different user, not a workaround.
+- `roundtrip_failed`: what got stored does not MEAN what you sent (different blocks,
+  order, nesting, attributes or text), and the plugin already put the old content back.
+  From 1.5.1 a save that only re-serialises (`\"` to `"` and so on, see "What a
+  save does to your content" in the format reference) is accepted and reported as
+  `reserialised_on_save: true`; plugin 1.5.0 rejected those too. `new_hash` is the hash
+  of what is STORED, so use it, not the md5 of your file, as the next `--expect-hash`.
+
+**Tests that keep the compiler and the guard honest** (run after touching either):
+- `node scripts/roundtrip-test.js <site> <throwaway_draft_id>`: compiles a spec full of
+  quotes, backslashes, dashes, tags and non-ASCII, writes it, and fails unless the site
+  stores it byte for byte. Passed on Divi 5.9 and 5.13. Run once on any newer Divi.
+- `php scripts/tree-guard-test.php <wp-includes dir> <sent.html> <stored.html>`: runs the
+  plugin's own comparison code locally. The pair must match and eight kinds of deliberate
+  damage must each be caught.
+
+Always finish by loading a front-end page that uses the layout and checking it
+rendered (`rendered <page_id>`, or the browser). Layout content is the same block
+markup as a page, so `divi.js` output and `dump-blocks`-style reading both apply.
+
+Scope: editing EXISTING layouts only. Creating templates, or changing which pages a
+template applies to, means writing `et_template` meta and the master
+`et_theme_builder` post's template list. That is not implemented.
+
+Why the plugin calls `wp_slash()` before saving, in case you ever touch that code:
+WordPress unslashes post content and post meta on save, and Divi 5 block JSON is
+full of `<` style escapes. Tested on 26 real pages: every one is corrupted by
+an unslashed write, none by a slashed one.
+
 ## Reference
 
 `references/divi5-format.md` — the Divi 5 block serialization format, exact

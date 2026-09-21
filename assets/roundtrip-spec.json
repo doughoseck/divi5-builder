@@ -1,0 +1,15 @@
+{
+  "builderVersion": "5.9.0",
+  "sections": [
+    { "rows": [ { "layout": "1-1", "columns": [
+      { "modules": [
+        { "type": "heading", "text": "Round trip \"quoted\" & <angled> -- it's fine", "level": "h2" },
+        { "type": "text", "html": "<p>Q \"quote\" back\\slash double\\\\slash \\\"both\\\" &amp; entity & bare 'apos' -- two --- three ---- four — é ü 火 <a href=\"https://example.com/?a=1&b=2\">link</a></p>" }
+      ] },
+      { "modules": [
+        { "type": "button", "text": "Caps \"test\"", "url": "https://example.com/?x=1&y=2", "caps": "uppercase" },
+        { "type": "code", "html": "<style>.x > .y:before { content: \"\\f082\"; } /* -- */</style>" }
+      ] }
+    ] } ] }
+  ]
+}

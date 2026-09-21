@@ -23,6 +23,13 @@
  *   node wp.js <site> list-categories              # id, post count, name, slug
  *   node wp.js <site> set-post-categories <id> --names "Setup,How it works"
  *                                                  # resolves names to ids, creating any that are missing
+ *   --- Theme Builder (needs divi5-builder-rest.php >= 1.5; see SKILL.md) ---
+ *   node wp.js <site> plugin-version               # which mu-plugin version is installed
+ *   node wp.js <site> tb-list [--json]             # templates + layouts, each layout's format and hash
+ *   node wp.js <site> tb-get <id> [--out F]        # raw layout content + the hash tb-set needs
+ *   node wp.js <site> tb-set <id> --content-file F --expect-hash H [--dry-run] [--mark-divi5]
+ *                                                  # SITE-WIDE write; refuses if the layout changed since tb-get
+ *   node wp.js <site> tb-restore <id>              # put back what the last tb-set replaced
  *
  * Output is compact JSON or plain lines on stdout; errors to stderr, exit 1.
  */
@@ -371,14 +378,21 @@ function flags(argv) {
         _et_pb_use_builder: on ? 'on' : 'off',
         _et_pb_page_layout: f.layout || 'et_no_sidebar',
         _et_pb_side_nav: f.sidenav || 'off',
-        _et_builder_version: f.version || 'VB|Divi|5.9.0',
         _et_pb_built_for_post_type: 'page',
       };
+      // _et_pb_use_divi_5 is what every builder-saved Divi 5 page carries, and the only marker found on
+      // all of them, so set it rather than rely on something else setting it later.
+      if (on) meta._et_pb_use_divi_5 = 'on';
+      // The builder never rewrites the version stamp (migrated pages keep 'VB|Divi|4.27.4' after a Divi 5
+      // save), so leave an existing stamp alone and only fill an empty one.
+      const before = (await jreq('GET', `${api}/pages/${id}?context=edit&_fields=meta`, c)).meta || {};
+      if (f.version || !before._et_builder_version) meta._et_builder_version = f.version || 'VB|Divi|5.9.0';
       const p = await jreq('POST', `${api}/pages/${id}`, c, { meta });
       const got = p.meta || {};
-      const ok = got._et_pb_use_builder === (on ? 'on' : 'off');
+      const ok = got._et_pb_use_builder === (on ? 'on' : 'off') && (!on || got._et_pb_use_divi_5 === 'on');
       console.log(JSON.stringify({ ok, id: p.id, wrote: meta, readback: {
-        _et_pb_use_builder: got._et_pb_use_builder, _et_pb_page_layout: got._et_pb_page_layout } }));
+        _et_pb_use_builder: got._et_pb_use_builder, _et_pb_use_divi_5: got._et_pb_use_divi_5,
+        _et_pb_page_layout: got._et_pb_page_layout, _et_builder_version: got._et_builder_version } }));
       if (!ok) die('meta did NOT stick — is the divi5-builder-rest.php mu-plugin installed? (see assets/)');
       break;
     }
@@ -420,6 +434,59 @@ function flags(argv) {
       const scan = f.scan ? `&scan=${encodeURIComponent(f.scan)}` : '';
       const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/postinfo?id=${id}${scan}`, c);
       console.log(JSON.stringify(r, null, 2));
+      break;
+    }
+    // ---- Theme Builder (requires divi5-builder-rest.php >= 1.5) ----------------
+    case 'plugin-version': {
+      const r = await request('GET', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/version`, { Authorization: authHeader(c) });
+      if (r.status === 404) { console.log(JSON.stringify({ version: '<1.5', note: 'no /version route: re-upload assets/divi5-builder-rest.php' })); break; }
+      console.log(r.body.toString('utf8'));
+      break;
+    }
+    case 'tb-list': {
+      // Every template + layout: format (divi5/divi4), bytes, hash, and which layouts each template uses.
+      const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/tb-list`, c);
+      if (f.json) { console.log(JSON.stringify(r, null, 1)); break; }
+      const one = (m, k) => (m[k] && m[k][0]) || '-';
+      const used = {};
+      console.log(`Theme Builder posts: ${r.count}`);
+      console.log('\nTEMPLATES  id | status | title | enabled | default | header/body/footer | use_on');
+      for (const t of r.items.filter((x) => x.type === 'et_template')) {
+        const h = one(t.meta, '_et_header_layout_id'), b = one(t.meta, '_et_body_layout_id'), ft = one(t.meta, '_et_footer_layout_id');
+        for (const id of [h, b, ft]) if (+id) (used[id] = used[id] || []).push(t.id);
+        console.log(`  ${t.id} | ${t.status} | ${t.title} | ${one(t.meta, '_et_enabled')} | ${one(t.meta, '_et_default')} | ${h}/${b}/${ft} | ${(t.meta._et_use_on || []).join(' + ') || '-'}`);
+      }
+      console.log('\nLAYOUTS  id | type | status | FORMAT | bytes | use_divi_5 | used by templates | hash');
+      for (const l of r.items.filter((x) => /_layout$/.test(x.type))) {
+        console.log(`  ${l.id} | ${l.type.replace(/^et_|_layout$/g, '')} | ${l.status} | ${l.format} | ${l.bytes} | ${one(l.meta, '_et_pb_use_divi_5')} | ${(used[l.id] || []).join(',') || 'NONE'} | ${l.hash}`);
+      }
+      break;
+    }
+    case 'tb-get': {
+      // Raw, unrendered content of one layout. --out <file> saves it; always prints the hash tb-set needs.
+      const id = f._[0]; if (!id) die('tb-get needs <id>');
+      const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/tb-layout?id=${id}`, c);
+      const { content, ...head } = r;
+      if (f.out) { fs.writeFileSync(f.out, content, 'utf8'); head.saved_to = f.out; }
+      console.log(JSON.stringify(head, null, 1));
+      if (!f.out && !f.quiet) console.log(content);
+      break;
+    }
+    case 'tb-set': {
+      // Overwrite a header/body/footer layout. SITE-WIDE EFFECT. Needs the hash from a tb-get you just did.
+      const id = f._[0];
+      if (!id || !f['content-file'] || !f['expect-hash']) die('usage: tb-set <id> --content-file <f> --expect-hash <hash from tb-get> [--mark-divi5] [--dry-run]');
+      const content = fs.readFileSync(f['content-file'], 'utf8');
+      const r = await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/tb-layout`, c,
+        { id: Number(id), content, expect_hash: String(f['expect-hash']), mark_divi5: !!f['mark-divi5'], dry_run: !!f['dry-run'] });
+      console.log(JSON.stringify(r, null, 1));
+      break;
+    }
+    case 'tb-restore': {
+      // Put back the content that the last tb-set replaced (the swap is itself undoable).
+      const id = f._[0]; if (!id) die('tb-restore needs <id>');
+      const r = await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/tb-layout-restore`, c, { id: Number(id) });
+      console.log(JSON.stringify(r, null, 1));
       break;
     }
     case 'dump-blocks': {

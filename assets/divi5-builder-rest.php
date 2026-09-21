@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Divi 5 Builder — REST meta bridge
- * Description: Registers Divi's builder/layout post-meta for the WordPress REST API so a page built via REST (e.g. by the divi5-builder skill) can be flipped into "Divi mode" without opening the Visual Builder. v1.2 makes link-canvas attach an et_pb_canvas popup to a page via the real Divi meta (_divi_canvas_parent_post_id + _divi_off_canvas_data), so REST-created Divi 5 popups render. v1.3 adds read/write of Divi's GLOBAL COLOUR palette, which lives in a wp_option rather than in page content and could not be created over REST at all before — so a site can now be themed before its first page is built. Writes are gated by the normal edit-post capability (manage_options for the palette), so only authenticated editors/admins (incl. Application Passwords) can use them.
- * Version: 1.4.0
+ * Description: Registers Divi's builder/layout post-meta for the WordPress REST API so a page built via REST (e.g. by the divi5-builder skill) can be flipped into "Divi mode" without opening the Visual Builder. v1.2 makes link-canvas attach an et_pb_canvas popup to a page via the real Divi meta (_divi_canvas_parent_post_id + _divi_off_canvas_data), so REST-created Divi 5 popups render. v1.3 adds read/write of Divi's GLOBAL COLOUR palette, which lives in a wp_option rather than in page content and could not be created over REST at all before — so a site can now be themed before its first page is built. v1.5 adds Theme Builder access: list every template and layout, read a header/body/footer layout's raw content, and write one back (hash-checked against concurrent edits, previous content kept for restore), because core REST does not expose those post types. Writes are gated by the normal edit-post capability (manage_options for the palette), so only authenticated editors/admins (incl. Application Passwords) can use them.
+ * Version: 1.5.1
  * Author: divi5-builder skill
  *
  * INSTALL (pick one):
@@ -23,6 +23,7 @@
  */
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
+if ( ! defined( 'D5B_REST_VERSION' ) ) { define( 'D5B_REST_VERSION', '1.5.1' ); }
 
 add_action( 'init', function () {
 	$auth = function ( $allowed, $meta_key, $post_id ) {
@@ -93,6 +94,235 @@ add_action( 'rest_api_init', function () {
 				$out['options'] = $rows;
 			}
 			return $out;
+		},
+	) );
+
+	// GET /divi5-builder/v1/version  → lets the skill check which routes exist.
+	register_rest_route( 'divi5-builder/v1', '/version', array(
+		'methods'             => 'GET',
+		'permission_callback' => function () { return current_user_can( 'edit_posts' ); },
+		'callback'            => function () { return array( 'version' => D5B_REST_VERSION ); },
+	) );
+
+	/*
+	 * ---- Theme Builder layouts (v1.5) ----------------------------------------
+	 * Divi's Theme Builder post types are not exposed by core REST, so headers,
+	 * footers and body layouts could be neither inspected nor edited remotely.
+	 * A header/footer is SITE-WIDE, so the write route is deliberately fussy:
+	 *   - layout types only (pages/posts already have core REST);
+	 *   - caller must send the md5 of the content it last read (expect_hash), so
+	 *     an edit made in the Visual Builder in the meantime is never overwritten;
+	 *   - block comments must balance, and the content must look like Divi;
+	 *   - the previous content is kept in _d5b_prev_content for tb-layout-restore;
+	 *   - the write is read back and auto-reverted if it did not round-trip.
+	 * All four routes need edit_theme_options (what Divi's own Theme Builder needs).
+	 */
+	$tb_layout_types = array( 'et_header_layout', 'et_body_layout', 'et_footer_layout' );
+	$tb_all_types    = array_merge( $tb_layout_types, array( 'et_template', 'et_theme_builder' ) );
+	$tb_perm         = function () { return current_user_can( 'edit_theme_options' ); };
+
+	$tb_format = function ( $content ) {
+		if ( '' === trim( (string) $content ) ) { return 'empty'; }
+		$d5 = false !== strpos( $content, '<!-- wp:divi/' );
+		$d4 = false !== strpos( $content, '[et_pb_' );
+		if ( $d5 && $d4 ) { return 'divi5+legacy-shortcodes'; }
+		if ( $d5 ) { return 'divi5'; }
+		if ( $d4 ) { return 'divi4'; }
+		return 'other';
+	};
+
+	// Content reduced to what it MEANS: block names, decoded attributes, nesting, and the text between blocks
+	// with whitespace runs removed. Two contents with equal trees render the same.
+	$tb_tree = function ( $content ) {
+		$walk = function ( $blocks ) use ( &$walk ) {
+			$out = array();
+			foreach ( $blocks as $b ) {
+				$html = preg_replace( '/\s+/', '', (string) $b['innerHTML'] );
+				if ( null === $b['blockName'] && '' === $html ) { continue; }
+				$out[] = array( $b['blockName'], $b['attrs'], $html, $walk( $b['innerBlocks'] ) );
+			}
+			return $out;
+		};
+		return serialize( $walk( parse_blocks( (string) $content ) ) );
+	};
+
+	// Shared low-level writer. Returns array on success, WP_Error on failure.
+	$tb_write = function ( $id, $content ) use ( &$tb_tree ) {
+		$p   = get_post( $id );
+		$old = (string) $p->post_content;
+		// update_post_meta() and wp_update_post() both UNSLASH their input. Divi 5
+		// block JSON is full of < style escapes, so unslashed writes corrupt it.
+		update_post_meta( $id, '_d5b_prev_content', wp_slash( $old ) );
+		update_post_meta( $id, '_d5b_prev_saved_at', gmdate( 'c' ) );
+		$r = wp_update_post( wp_slash( array( 'ID' => $id, 'post_content' => $content ) ), true );
+		if ( is_wp_error( $r ) ) { return $r; }
+		clean_post_cache( $id );
+		$back = (string) get_post( $id )->post_content;
+		// A save re-serialises every block (\" -> ", \\ -> \, -- -> --, wrapper closer
+		// appended), so different bytes are not by themselves damage. What must survive is the block tree:
+		// same blocks, same order, same nesting, same decoded attributes, same text between them.
+		$rewritten = md5( $back ) !== md5( $content );
+		if ( $rewritten && $tb_tree( $back ) !== $tb_tree( $content ) ) {
+			wp_update_post( wp_slash( array( 'ID' => $id, 'post_content' => $old ) ), true );
+			clean_post_cache( $id );
+			return new WP_Error( 'roundtrip_failed', 'content did not survive the save unchanged; previous content was put back', array(
+				'status' => 500, 'sent_bytes' => strlen( $content ), 'stored_bytes' => strlen( $back ) ) );
+		}
+		$cleared = false;
+		if ( class_exists( 'ET_Core_PageResource' ) && method_exists( 'ET_Core_PageResource', 'remove_static_resources' ) ) {
+			ET_Core_PageResource::remove_static_resources( 'all', 'all' );
+			$cleared = true;
+		}
+		// new_hash is the hash of what is STORED: that is what the next expect_hash has to match.
+		return array( 'ok' => true, 'id' => $id, 'old_hash' => md5( $old ), 'new_hash' => md5( $back ),
+			'old_bytes' => strlen( $old ), 'new_bytes' => strlen( $back ), 'sent_bytes' => strlen( $content ),
+			'reserialised_on_save' => $rewritten, 'static_css_cache_cleared' => $cleared );
+	};
+
+	// GET /divi5-builder/v1/tb-list  → every template + layout, with format and links. No content.
+	register_rest_route( 'divi5-builder/v1', '/tb-list', array(
+		'methods'             => 'GET',
+		'permission_callback' => $tb_perm,
+		'callback'            => function () use ( $tb_all_types, $tb_format ) {
+			$posts = get_posts( array(
+				'post_type'        => $tb_all_types,
+				'post_status'      => array( 'publish', 'draft', 'private', 'pending', 'future' ),
+				'numberposts'      => -1,
+				'orderby'          => 'ID',
+				'order'            => 'ASC',
+				'suppress_filters' => true,
+			) );
+			$out = array();
+			foreach ( $posts as $p ) {
+				$meta = array();
+				foreach ( get_post_meta( $p->ID ) as $k => $vals ) {
+					if ( 0 !== strpos( $k, '_et_' ) && 0 !== strpos( $k, '_d5b_' ) ) { continue; }
+					$meta[ $k ] = array_map( function ( $v ) {
+						return strlen( (string) $v ) > 300 ? '[' . strlen( (string) $v ) . ' bytes]' : $v;
+					}, $vals );
+				}
+				$out[] = array(
+					'id'       => $p->ID,
+					'type'     => $p->post_type,
+					'status'   => $p->post_status,
+					'title'    => $p->post_title,
+					'modified' => $p->post_modified_gmt,
+					'format'   => $tb_format( $p->post_content ),
+					'bytes'    => strlen( $p->post_content ),
+					'hash'     => md5( $p->post_content ),
+					'meta'     => $meta,
+				);
+			}
+			return array( 'count' => count( $out ), 'items' => $out );
+		},
+	) );
+
+	// GET /divi5-builder/v1/tb-layout?id=123  → raw, UNRENDERED post_content of one layout.
+	register_rest_route( 'divi5-builder/v1', '/tb-layout', array(
+		'methods'             => 'GET',
+		'permission_callback' => $tb_perm,
+		'callback'            => function ( $req ) use ( $tb_all_types, $tb_format ) {
+			$id = (int) $req->get_param( 'id' );
+			$p  = get_post( $id );
+			if ( ! $p || ! in_array( $p->post_type, $tb_all_types, true ) ) {
+				return new WP_Error( 'not_a_tb_post', 'id is not a Theme Builder template or layout', array( 'status' => 404 ) );
+			}
+			return array(
+				'id'              => $id,
+				'type'            => $p->post_type,
+				'status'          => $p->post_status,
+				'title'           => $p->post_title,
+				'modified'        => $p->post_modified_gmt,
+				'format'          => $tb_format( $p->post_content ),
+				'bytes'           => strlen( $p->post_content ),
+				'hash'            => md5( $p->post_content ),
+				'has_backup'      => metadata_exists( 'post', $id, '_d5b_prev_content' ),
+				'backup_saved_at' => get_post_meta( $id, '_d5b_prev_saved_at', true ),
+				'content'         => $p->post_content,
+			);
+		},
+	) );
+
+	// POST /divi5-builder/v1/tb-layout { id, content, expect_hash, mark_divi5?, dry_run? }
+	register_rest_route( 'divi5-builder/v1', '/tb-layout', array(
+		'methods'             => 'POST',
+		'permission_callback' => $tb_perm,
+		'callback'            => function ( $req ) use ( $tb_layout_types, $tb_format, $tb_write ) {
+			$id      = (int) $req->get_param( 'id' );
+			$content = $req->get_param( 'content' );
+			$expect  = (string) $req->get_param( 'expect_hash' );
+			$p       = get_post( $id );
+			if ( ! $p || ! in_array( $p->post_type, $tb_layout_types, true ) ) {
+				return new WP_Error( 'not_a_layout', 'id is not a header, body or footer layout', array( 'status' => 404 ) );
+			}
+			if ( ! current_user_can( 'edit_post', $id ) ) {
+				return new WP_Error( 'forbidden', 'cannot edit this layout', array( 'status' => 403 ) );
+			}
+			// Without unfiltered_html, WordPress runs kses over post_content and mangles block JSON.
+			if ( ! current_user_can( 'unfiltered_html' ) ) {
+				return new WP_Error( 'needs_unfiltered_html', 'this user lacks unfiltered_html; WordPress would sanitise and corrupt the layout', array( 'status' => 403 ) );
+			}
+			if ( ! is_string( $content ) || '' === trim( $content ) ) {
+				return new WP_Error( 'empty_content', 'refusing to write empty content to a site-wide layout', array( 'status' => 400 ) );
+			}
+			if ( '' === $expect ) {
+				return new WP_Error( 'expect_hash_required', 'send expect_hash = the hash returned by GET tb-layout', array( 'status' => 400 ) );
+			}
+			$current = md5( (string) $p->post_content );
+			if ( ! hash_equals( $current, $expect ) ) {
+				return new WP_Error( 'stale', 'layout changed since it was read (edited in the Visual Builder?). Read it again.', array(
+					'status' => 409, 'current_hash' => $current, 'modified' => $p->post_modified_gmt ) );
+			}
+			$fmt = $tb_format( $content );
+			if ( 'other' === $fmt ) {
+				return new WP_Error( 'not_divi', 'content has neither Divi 5 blocks nor Divi shortcodes', array( 'status' => 400 ) );
+			}
+			$open  = preg_match_all( '/<!--\s+wp:/', $content );
+			$self  = preg_match_all( '/<!--\s+wp:(?:(?!-->).)*?\/-->/s', $content );
+			$close = preg_match_all( '/<!--\s+\/wp:/', $content );
+			if ( ( $open - $self ) !== $close ) {
+				return new WP_Error( 'unbalanced_blocks', 'block comments do not balance', array(
+					'status' => 400, 'openers' => $open, 'self_closing' => $self, 'closers' => $close ) );
+			}
+			if ( $req->get_param( 'dry_run' ) ) {
+				return array( 'ok' => true, 'dry_run' => true, 'id' => $id, 'would_write_bytes' => strlen( $content ), 'format' => $fmt, 'current_hash' => $current );
+			}
+			$r = $tb_write( $id, $content );
+			if ( is_wp_error( $r ) ) { return $r; }
+			if ( $req->get_param( 'mark_divi5' ) ) {
+				update_post_meta( $id, '_et_pb_use_builder', 'on' );
+				update_post_meta( $id, '_et_pb_use_divi_5', 'on' );
+				$r['marked_divi5'] = true;
+			}
+			$r['format'] = $fmt;
+			return $r;
+		},
+	) );
+
+	// POST /divi5-builder/v1/tb-layout-restore { id }  → swap content with the kept backup (itself undoable).
+	register_rest_route( 'divi5-builder/v1', '/tb-layout-restore', array(
+		'methods'             => 'POST',
+		'permission_callback' => $tb_perm,
+		'callback'            => function ( $req ) use ( $tb_layout_types, $tb_write ) {
+			$id = (int) $req->get_param( 'id' );
+			$p  = get_post( $id );
+			if ( ! $p || ! in_array( $p->post_type, $tb_layout_types, true ) ) {
+				return new WP_Error( 'not_a_layout', 'id is not a header, body or footer layout', array( 'status' => 404 ) );
+			}
+			if ( ! current_user_can( 'edit_post', $id ) || ! current_user_can( 'unfiltered_html' ) ) {
+				return new WP_Error( 'forbidden', 'cannot edit this layout', array( 'status' => 403 ) );
+			}
+			if ( ! metadata_exists( 'post', $id, '_d5b_prev_content' ) ) {
+				return new WP_Error( 'no_backup', 'no previous content stored for this layout', array( 'status' => 404 ) );
+			}
+			$prev = (string) get_post_meta( $id, '_d5b_prev_content', true );
+			if ( '' === trim( $prev ) ) {
+				return new WP_Error( 'empty_backup', 'stored backup is empty; refusing to restore it', array( 'status' => 409 ) );
+			}
+			$r = $tb_write( $id, $prev );
+			if ( is_wp_error( $r ) ) { return $r; }
+			$r['restored'] = true;
+			return $r;
 		},
 	) );
 
