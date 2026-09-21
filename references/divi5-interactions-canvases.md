@@ -3,6 +3,27 @@
 Read from the Divi 5.13.1 source and proven on a live 5.13 site (2026-09-21). Where something was only read and not
 run, it says so. Source paths are relative to the Divi theme folder.
 
+## Measure before you build popups with interactions
+
+On one converted Divi 4 site (Divi 5.13.1, 172 blocks per page) every page took **14 to 17 s** as soon as ANY interaction existed
+anywhere in the page, header or footer, and 5 to 6 s without. Measured cause: Divi's own front-end block parser
+(`ET\Builder\FrontEnd\BlockParser\BlockParser`) cost about 10 ms PER BLOCK there (1.7 s for one parse of page + header + footer;
+WordPress core's parser did the same bytes in 2 ms; an attribute-free copy was just as slow; no plugin was attached to the parser
+hooks; the server's CPU was normal), and with interactions present `DynamicAssets::pre_initial_setup` and
+`FrontEnd::enqueue_global_numeric_and_fonts_vars` each re-parse the whole content three times through
+`OffCanvasHooks::extract_interaction_target_ids_from_content()`. A second site (Divi 5.9, other host) showed no such cost, so this is
+NOT universal: **measure it.**
+
+1. Time a page 3 times (use the 3rd) before adding the first interaction, and again after. `scripts/hook-profiler.js` names the slow
+   callbacks if it jumps.
+2. If it jumps, do not use interactions on that site. The fallback keeps everything else native:
+   - the popup is a normal Divi section (in the page, or in the Theme Builder header for a site-wide one), NOT `disabledOn`;
+   - hidden by its own free-form CSS: `selector:not(.open) { display: none; }` and `.et-fb selector:not(.open) { display: flex; }`;
+   - triggers and the section carry a custom attribute (`data-menu="open"` / `data-menu="popup"`, see the format reference);
+   - a code module INSIDE the popup holds the few lines that toggle `.open` on click, close on Escape, on the overlay and on the X,
+     and ignore links whose href is `#` (sub-menu parents). The script lives with the markup it drives.
+   - give the close icon a `zIndex`: a full-width first menu link otherwise covers it and the click goes to that link.
+
 ## Interactions
 
 An interaction is "when THIS happens to the trigger element, do THAT to the target element". Both ends are plain

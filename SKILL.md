@@ -267,6 +267,26 @@ id is the layout's id), and it only reaches the front end when something in the 
 being rendered targets an element inside it. A canvas on a header is on every page
 that header serves: get a nod before writing to it.
 
+## Speed check before you rely on interactions (and the profiler)
+
+Interactions are the native way, but on one converted Divi 4 site ANY interaction took every page from ~5s to 14-17s,
+because of a per-block cost in Divi 5.13's own front-end block parser (details and the measurements:
+`references/divi5-interactions-canvases.md`). Another site showed nothing of the kind. So: time a page (3 loads, use the
+3rd) before the first interaction and again after. If it jumps, build popups and toggles on that site as native hidden
+sections driven by a few lines of script in a code module inside them (pattern in the same reference), not with interactions.
+
+When a Divi/WordPress page is slow and you do not know why, do not theorise, measure:
+```bash
+node scripts/hook-profiler.js gen <dir>            # writes d5b-profiler.php + a random key
+php  scripts/hook-profiler-test.php <dir>          # 9 local checks, no WordPress needed
+# the USER uploads d5b-profiler.php to wp-content/mu-plugins/ (you cannot), then:
+node scripts/hook-profiler.js run <page-url> --key-file <dir>/d5b-profiler.key
+```
+It is read-only, does nothing without the key, and reports the slowest hook callbacks, who is attached to Divi's per-block
+parser hooks, raw CPU benchmarks, and WordPress core's parser versus the site's `parse_blocks()` on the page's real content.
+Have the user DELETE the file afterwards. Query Monitor first is a good split: if its "Database Queries" total is small and
+"HTTP API Calls" is none, the time is PHP, and this profiler is the next step.
+
 ## Visibility toggles (monthly/annual pricing, "show more", etc.)
 
 Do these **natively with Interactions**, never with hand-rolled JS. Pattern (from

@@ -140,6 +140,27 @@ any module can be a trigger on 5.13), and how presets and design variables are s
 referenced (`references/divi5-presets-variables.md`, plus a read-only
 `wp.js <site> design-system` that lists the presets, variables and colours a site has).
 
+## When a Divi page is slow: measure, don't guess
+
+`scripts/hook-profiler.js` generates a small, temporary, **key-gated, read-only** mu-plugin that times every callback on the
+hooks a front-end request goes through and prints the slowest as one HTML comment. It also compares WordPress core's block
+parser with the parser the site actually runs, on the page's real content, and runs raw CPU benchmarks so you can tell a slow
+server from slow code.
+
+```bash
+node scripts/hook-profiler.js gen ./prof           # d5b-profiler.php + a random key (both git-ignored)
+php  scripts/hook-profiler-test.php ./prof         # 9 local checks, no WordPress needed
+# upload d5b-profiler.php to wp-content/mu-plugins/, then:
+node scripts/hook-profiler.js run https://example.com/some-page/ --key-file ./prof/d5b-profiler.key
+# delete the file from the site when you are done
+```
+
+Why it exists: on one converted Divi 4 site, any Divi **interaction** took pages from ~5 s to 14–17 s. Three plausible theories
+(a slow query, run-time content migrations, OPcache) were each wrong; the profiler found it in a few runs — a per-block cost in
+the theme's own front-end block parser, multiplied by the extra passes interactions trigger. Another site showed no such cost,
+so the advice in `references/divi5-interactions-canvases.md` is simply: time a page before and after your first interaction,
+and there is a native-section + tiny-script fallback if it jumps.
+
 ## Extending it to new modules
 
 The reliable loop (no guessing):
