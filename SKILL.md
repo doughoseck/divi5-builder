@@ -242,12 +242,12 @@ A Divi 5 popup is a separate **Canvas** (an `et_pb_canvas` post) triggered by an
    `position:fixed`, `100vh`, `zIndex 9999999`, overlay bg, `interactionTarget`
    = targetId, and click-overlay-to-close.
 2. **Create the canvas post:** `node scripts/wp.js <site> create-canvas --title "..." --content-file popup.html`
-3. **Add a trigger** on the page: a module with `"popup":"<targetId>"`. **It must be
-   a `button`** — `divi/text` modules carry the interaction attrs but Divi does
-   **not** render interactions on them; only buttons (and similar) emit the
-   `data-interaction-trigger` the front-end JS binds to. To style the button to
-   look like something else, target `a[data-interaction-trigger="t<targetId>"]` in
-   a `code`-module `<style>` (a stable selector — no custom-class needed).
+3. **Add a trigger** on the page: a `button` with `"popup":"<targetId>"`, or ANY module
+   with `"interactions":[{"trigger":"click","effect":"toggleVisibility","target":"<targetId>"}]`.
+   On Divi 5.13 every module renders as a trigger (proven live with a `divi/text`;
+   the trigger attribute comes from the generic module wrapper). On Divi 5.9 only
+   buttons did, so on an older site use a button or test first. Full list of the 8
+   triggers and 14 effects: `references/divi5-interactions-canvases.md`.
 4. **Link the canvas to the page** (essential — without it Divi won't append the
    canvas): `node scripts/wp.js <site> link-canvas <canvas_id> <page_id>`. This
    writes the meta the builder uses (`_divi_canvas_parent_post_id` on the canvas +
@@ -259,6 +259,13 @@ A Divi 5 popup is a separate **Canvas** (an `et_pb_canvas` post) triggered by an
 The link is by meta, not post_parent. One popup per page via `link-canvas` as
 written (single `_divi_off_canvas_data` pointer). Full serialization in
 `references/divi5-format.md`.
+
+Working on a canvas afterwards: `wp.js list-canvases`, `get-canvas <id> [--raw | --out f]`,
+`update-canvas <id> --content-file f`. A canvas can belong to a Theme Builder header,
+footer or body layout exactly as it belongs to a page (same two meta keys, the parent
+id is the layout's id), and it only reaches the front end when something in the layout
+being rendered targets an element inside it. A canvas on a header is on every page
+that header serves: get a nod before writing to it.
 
 ## Visibility toggles (monthly/annual pricing, "show more", etc.)
 
@@ -273,8 +280,9 @@ the two controls themselves), so one click flips the whole group. The real CTA
 buttons are separate (one per state, with the matching link, e.g.
 `?cycle=monthly` vs `?cycle=annual`) and toggle too. `module.decoration`
 carries `interactionTarget`, `interactionTrigger`, and `interactions.desktop.value.
-interactions[]`; see `references/divi5-format.md` for the exact shape. (Only
-buttons/interactive modules render triggers — a `divi/text` won't.)
+interactions[]`; see `references/divi5-interactions-canvases.md` for the exact shape,
+every trigger and effect, and how canvases reach the front end. (On Divi 5.13 any
+module can be the trigger; on 5.9 only buttons rendered one.)
 
 **Compiler support (use these props — no hand-wiring):**
 - Any module: `"toggleId":"<id>"` makes it a toggle **target**; `"hidden":true`
@@ -353,6 +361,66 @@ The compiler emits these module `type`s (all verified from live builds; keys in
 **Adding any other module:** build it once in the VB on a scratch page,
 run `node scripts/wp.js <site> dump-blocks <id>` to read its exact keys, then add a
 builder — 2-minute loop. Don't guess; dump.
+
+## Every Divi module: the catalogue (`scripts/catalog.js`)
+
+The compiler has hand-written builders for the common modules. For everything else
+(all 115 modules in Divi 5.13.1, WooCommerce ones included) there is a catalogue
+GENERATED FROM THE USER'S OWN COPY OF DIVI: the `module.json` definitions the Visual
+Builder itself is built from, plus each module's default attributes and Divi's
+Divi 4 → 5 attribute map.
+
+```bash
+node scripts/catalog.js build "<path to unzipped Divi theme folder>"   # once per Divi version
+node scripts/catalog.js list [filter]        # every module, its kind, its children / parents
+node scripts/catalog.js show <module>        # elements, fields, allowed option values, defaults
+node scripts/catalog.js find <text>          # which modules have a field or option like this
+node scripts/catalog.js lint <content.html>  # check block markup BEFORE writing it to a site
+```
+
+- **No catalogue yet?** Ask the user to download Divi from their Elegant Themes account
+  and unzip it anywhere; point `build` at the folder holding `style.css`. The catalogue
+  is derived from Divi (GPL), so it is generated locally and git-ignored, never shipped.
+- **Workflow for a module the compiler lacks:** `show <module>` → write it as a `raw`
+  module (`{"type":"raw","block":"divi/xxx","attrs":{…},"inner":"<child blocks>"}`) →
+  `lint` → write to a draft → look at it. `show` tells you whether it is a container
+  and which child block it takes.
+- **`lint` errors are hard facts:** unknown module, unknown element, a value that is not
+  one of a field's options, a child module outside its parent, a foreign module inside a
+  parent/child container, invalid JSON, unbalanced blocks. It raised ZERO false errors
+  on 3,333 builder-written blocks across two sites (`--strict` adds soft hints).
+- **What it cannot tell you:** the VALUE SHAPE of the shared groups (font, spacing,
+  background, border, sizing, position…). Those are the same on every module and are in
+  `references/divi5-format.md`; when unsure, dump a builder-made example.
+- **It knows less than Divi accepts.** `module.json` does not declare everything (e.g.
+  `divi/video` has a real `thumbnail` element it never lists). The catalogue also learns
+  elements from Divi's conversion map; anything still unknown to it may yet be valid, so
+  an "unknown element" on a block the BUILDER wrote is a catalogue gap, not a page bug.
+- `node scripts/catalog-test.js` plants seven kinds of mistake and fails unless each is
+  caught and the clean original passes. Run it after touching `catalog.js`.
+
+## Presets and design variables (read `references/divi5-presets-variables.md`)
+
+Styling rule 2 says type and colour come from globals. This is how to find and use them:
+
+- **See what the site has:** `node scripts/wp.js <site> design-system` (mu-plugin >= 1.6,
+  read-only): every module preset, option group preset, variable and global colour, with
+  ids. Divi itself offers no way to read these over REST.
+- **Use a module preset:** `"modulePreset":["<id>"]` on the block. Omit it (or
+  `["default"]`) to get the site's default preset for that module. Never copy a preset's
+  attrs onto the block "to be safe": block attrs override every preset.
+- **Use an option group preset:** `"groupPreset":{"<slot>":{"presetId":["<id>"],"groupName":"divi/font"}}`.
+  The slot is either an attribute path (`button`, `title.decoration.font`) or a composite
+  id (`designTitleText`); both occur in builder-saved content. `groupName` must be the
+  preset's own. `catalog.js show <module>` lists the module's elements to pick from.
+- **A preset id that does not exist fails SILENTLY** (no error, no styling). Always take
+  ids from `design-system`, never from another site or from memory.
+- **Variables** are `$variable({"type":"…","value":{"name":"gcid-…|gvid-…","settings":{}}})$`.
+  Colours take `settings` `hue`, `saturation`, `lightness`, `opacity`. Five colours and two
+  fonts always exist (`gcid-primary-color` … `--et_global_body_font`).
+- **Do not create or edit presets and variables from outside the builder.** Divi's save
+  routes replace the WHOLE store and want a cookie nonce. If a build needs a new preset or
+  variable, ask the user to make it in the builder, then read its id.
 
 ## Theme Builder: headers, footers, body layouts (mu-plugin >= 1.5)
 

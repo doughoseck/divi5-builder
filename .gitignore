@@ -21,3 +21,6 @@ Thumbs.db
 scratch/
 tmp/
 *.tmp
+
+# Module catalogue: generated locally from YOUR copy of Divi (GPL-derived), never committed
+catalog/

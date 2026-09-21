@@ -23,6 +23,12 @@
  *   node wp.js <site> list-categories              # id, post count, name, slug
  *   node wp.js <site> set-post-categories <id> --names "Setup,How it works"
  *                                                  # resolves names to ids, creating any that are missing
+ *   --- Canvases (popups, off-canvas menus; see references/divi5-interactions-canvases.md) ---
+ *   node wp.js <site> list-canvases                # id | status | modified | title
+ *   node wp.js <site> get-canvas <id> [--raw | --out F]
+ *   node wp.js <site> create-canvas --title T --content-file F
+ *   node wp.js <site> update-canvas <id> --content-file F [--title T]
+ *   node wp.js <site> link-canvas <canvas_id> <parent_id>   # parent = page, or a Theme Builder layout
  *   --- Theme Builder (needs divi5-builder-rest.php >= 1.5; see SKILL.md) ---
  *   node wp.js <site> plugin-version               # which mu-plugin version is installed
  *   node wp.js <site> tb-list [--json]             # templates + layouts, each layout's format and hash
@@ -411,6 +417,50 @@ function flags(argv) {
       const content = f['content-file'] ? fs.readFileSync(f['content-file'], 'utf8') : (f.content || '');
       const cv = await jreq('POST', `${api}/et_pb_canvas`, c, { title: f.title, content, status: f.status || 'publish' });
       console.log(JSON.stringify({ ok: true, id: cv.id, status: cv.status }));
+      break;
+    }
+    case 'design-system': {
+      // READ-ONLY (mu-plugin >= 1.6): every preset and variable on the site, so a page can reference them.
+      // --json = raw; --full also returns each preset's attrs.
+      const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system${f.full ? '?full=1' : ''}`, c);
+      if (f.json || f.full) { console.log(JSON.stringify(r, null, 2)); break; }
+      const P = r.presets || { module: [], group: [] };
+      console.log(`MODULE PRESETS (${P.module.length})  id | default? | module | name   -> use as "modulePreset":["<id>"]`);
+      for (const p of P.module) console.log(`  ${p.id} | ${p.isDefault ? 'DEFAULT' : '-'} | ${p.for} | ${p.name}`);
+      console.log(`\nOPTION GROUP PRESETS (${P.group.length})  id | default? | groupName | name   -> use in "groupPreset":{"<slot>":{"presetId":["<id>"],"groupName":"<groupName>"}}`);
+      for (const p of P.group) console.log(`  ${p.id} | ${p.isDefault ? 'DEFAULT' : '-'} | ${p.for} | ${p.name}`);
+      const V = r.variables || {}; const kinds = Object.keys(V);
+      console.log(`\nVARIABLES (${kinds.map(k => k + ':' + Object.keys(V[k] || {}).length).join(', ') || 'none'})`);
+      for (const k of kinds) for (const [id, v] of Object.entries(V[k] || {})) console.log(`  ${id} | ${k} | ${v.label || ''} | ${typeof v.value === 'string' ? v.value.slice(0, 60) : JSON.stringify(v.value).slice(0, 60)}`);
+      const C = r.colors || {}; console.log(`\nGLOBAL COLOURS (${Object.keys(C).length})`);
+      for (const [id, v] of Object.entries(C)) console.log(`  ${id} | ${v.label || ''} | ${v.color || ''} | ${v.status || ''}`);
+      break;
+    }
+    case 'list-canvases': {
+      const list = await jreq('GET', `${api}/et_pb_canvas?context=edit&per_page=100&status=any&_fields=id,title,status,modified`, c);
+      for (const k of list) console.log(`${k.id} | ${k.status} | ${k.modified} | ${(k.title && (k.title.raw || k.title.rendered)) || ''}`);
+      break;
+    }
+    case 'get-canvas': {
+      // Raw, unrendered canvas content (--raw prints it; --out <file> saves it). Without either: a summary.
+      const id = f._[0]; if (!id) die('get-canvas needs <id>');
+      const k = await jreq('GET', `${api}/et_pb_canvas/${id}?context=edit&_fields=id,title,status,modified,content.raw`, c);
+      const raw = (k.content && k.content.raw) || '';
+      if (f.out) { fs.writeFileSync(f.out, raw, 'utf8'); console.log(JSON.stringify({ ok: true, id: k.id, saved: f.out, chars: raw.length })); }
+      else if (f.raw) console.log(raw);
+      else console.log(JSON.stringify({ id: k.id, title: k.title && k.title.raw, status: k.status, modified: k.modified, contentLength: raw.length }, null, 2));
+      break;
+    }
+    case 'update-canvas': {
+      // Overwrite an existing canvas's content. A canvas is only output where something targets it,
+      // but once targeted from a header it is site-wide: get a nod first.
+      const id = f._[0]; if (!id) die('update-canvas needs <id>');
+      if (!f['content-file']) die('update-canvas needs --content-file');
+      const content = fs.readFileSync(f['content-file'], 'utf8');
+      const body = { content }; if (f.title) body.title = f.title;
+      const k = await jreq('POST', `${api}/et_pb_canvas/${id}?context=edit&_fields=id,status,content.raw`, c, body);
+      const stored = (k.content && k.content.raw) || '';
+      console.log(JSON.stringify({ ok: true, id: k.id, status: k.status, sentChars: content.length, storedChars: stored.length, storedAsSent: stored === content }));
       break;
     }
     case 'link-canvas': {

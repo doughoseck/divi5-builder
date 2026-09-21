@@ -113,6 +113,33 @@ Read `SKILL.md` for the full workflow, the (non-negotiable) styling rules, modul
 inventory, popups/interactions, and data-driven Loop Builder support. The exact
 serialization is documented in `references/`.
 
+## Every Divi module: the catalogue
+
+The compiler has hand-written builders for the common modules. For all the rest there is
+a **catalogue generated from your own copy of Divi**: the `module.json` definitions the
+Visual Builder itself is built from (115 modules in Divi 5.13, WooCommerce included).
+
+```bash
+node scripts/catalog.js build "/path/to/unzipped/Divi"   # once per Divi version
+node scripts/catalog.js list                # every module, its children / parents
+node scripts/catalog.js show accordion      # elements, fields, allowed option values, defaults
+node scripts/catalog.js find "overlay"      # which modules have a field like this
+node scripts/catalog.js lint content.html   # check block markup BEFORE writing it to a site
+```
+
+The lint catches unknown modules and elements, values that are not one of a field's
+options, child modules outside their parent, invalid JSON and unbalanced blocks. It was
+tuned until it raised no false errors on 3,333 builder-written blocks from two real sites.
+
+The catalogue is derived from Divi, which is GPL, so **it is not shipped here**: you
+generate it from the copy your Elegant Themes licence gives you, and `catalog/` is
+git-ignored. Divi itself is never redistributed by this project.
+
+Also new: every interaction trigger and effect (`references/divi5-interactions-canvases.md`,
+any module can be a trigger on 5.13), and how presets and design variables are stored and
+referenced (`references/divi5-presets-variables.md`, plus a read-only
+`wp.js <site> design-system` that lists the presets, variables and colours a site has).
+
 ## Extending it to new modules
 
 The reliable loop (no guessing):
@@ -122,7 +149,7 @@ The reliable loop (no guessing):
    attribute JSON.
 3. Add a small builder in `divi.js` from what you see.
 
-Divi has 70+ modules; this covers the common ones. PRs adding more (via the loop
+Divi has 115 modules; the compiler covers the common ones and the catalogue describes the rest. PRs adding more (via the loop
 above) are very welcome.
 
 ## Security

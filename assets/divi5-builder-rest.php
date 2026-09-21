@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Divi 5 Builder — REST meta bridge
  * Description: Registers Divi's builder/layout post-meta for the WordPress REST API so a page built via REST (e.g. by the divi5-builder skill) can be flipped into "Divi mode" without opening the Visual Builder. v1.2 makes link-canvas attach an et_pb_canvas popup to a page via the real Divi meta (_divi_canvas_parent_post_id + _divi_off_canvas_data), so REST-created Divi 5 popups render. v1.3 adds read/write of Divi's GLOBAL COLOUR palette, which lives in a wp_option rather than in page content and could not be created over REST at all before — so a site can now be themed before its first page is built. v1.5 adds Theme Builder access: list every template and layout, read a header/body/footer layout's raw content, and write one back (hash-checked against concurrent edits, previous content kept for restore), because core REST does not expose those post types. Writes are gated by the normal edit-post capability (manage_options for the palette), so only authenticated editors/admins (incl. Application Passwords) can use them.
- * Version: 1.5.1
+ * Version: 1.6.0
  * Author: divi5-builder skill
  *
  * INSTALL (pick one):
@@ -23,7 +23,7 @@
  */
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
-if ( ! defined( 'D5B_REST_VERSION' ) ) { define( 'D5B_REST_VERSION', '1.5.1' ); }
+if ( ! defined( 'D5B_REST_VERSION' ) ) { define( 'D5B_REST_VERSION', '1.6.0' ); }
 
 add_action( 'init', function () {
 	$auth = function ( $allowed, $meta_key, $post_id ) {
@@ -456,6 +456,53 @@ add_action( 'rest_api_init', function () {
 				$out[ $opt ] = ( null === $val ) ? null : $val;
 			}
 			return array( 'ok' => true, 'options' => $out );
+		},
+	) );
+
+	// GET /divi5-builder/v1/design-system[?full=1]   (v1.6, READ-ONLY)
+	// Divi has no GET route for presets or variables (its own routes are POST-only and want a cookie nonce), so a
+	// page built over REST could not discover which presets and variables exist to reference. This lists them.
+	// Default: one line per preset (id, name, which module or option group, whether it is the default) and every
+	// variable. ?full=1 also returns each preset's attrs. Nothing is written: Divi's own save routes REPLACE the
+	// whole store, which is not something to do blind from outside the builder.
+	register_rest_route( 'divi5-builder/v1', '/design-system', array(
+		'methods'             => 'GET',
+		'permission_callback' => $palette_perm,
+		'callback'            => function ( $req ) {
+			$full    = (bool) $req->get_param( 'full' );
+			$presets = get_option( 'et_divi_builder_global_presets_d5', array() );
+			if ( is_string( $presets ) ) { $presets = maybe_unserialize( $presets ); }
+			$out = array( 'module' => array(), 'group' => array() );
+			foreach ( array( 'module', 'group' ) as $kind ) {
+				foreach ( (array) ( $presets[ $kind ] ?? array() ) as $owner => $set ) {
+					$default = (string) ( $set['default'] ?? '' );
+					foreach ( (array) ( $set['items'] ?? array() ) as $pid => $item ) {
+						$row = array(
+							'id'        => (string) $pid,
+							'name'      => (string) ( $item['name'] ?? '' ),
+							'for'       => (string) $owner,
+							'isDefault' => ( (string) $pid === $default ),
+							'version'   => (string) ( $item['version'] ?? '' ),
+						);
+						if ( 'group' === $kind ) { $row['groupId'] = (string) ( $item['groupId'] ?? '' ); }
+						if ( $full ) { foreach ( array( 'attrs', 'renderAttrs', 'styleAttrs' ) as $k ) { if ( isset( $item[ $k ] ) ) { $row[ $k ] = $item[ $k ]; } } }
+						$out[ $kind ][] = $row;
+					}
+				}
+			}
+			$et_divi = get_option( 'et_divi', array() );
+			$colors  = is_array( $et_divi ) ? ( $et_divi['et_global_data']['global_colors'] ?? null ) : null;
+			return array(
+				'ok'        => true,
+				'presets'   => $out,
+				'variables' => get_option( 'et_divi_global_variables', null ),
+				'colors'    => $colors,
+				'sources'   => array(
+					'presets'   => 'option et_divi_builder_global_presets_d5',
+					'variables' => 'option et_divi_global_variables',
+					'colors'    => 'option et_divi > et_global_data > global_colors',
+				),
+			);
 		},
 	) );
 
