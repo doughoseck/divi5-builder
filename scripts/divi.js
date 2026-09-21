@@ -143,8 +143,40 @@ function popupInteractionDecoration(targetId) {
 
 // Hidden-by-default (Visibility off on all breakpoints) — the "state B" of a toggle.
 function hiddenDecoration() { return { disabledOn: { desktop: { value: 'on' }, tablet: { value: 'on' }, phone: { value: 'on' } } }; }
+// ---- Interactions: the full set, read from Divi 5.13.1's own lists (field-library + InteractionsScriptData.php) ----
+const IX_TRIGGERS = ['click', 'mouseEnter', 'mouseExit', 'viewportEnter', 'viewportExit', 'load', 'breakpointEnter', 'breakpointExit'];
+const IX_EFFECTS = ['toggleVisibility', 'addVisibility', 'removeVisibility', 'togglePreset', 'addPreset', 'removePreset',
+  'toggleAttribute', 'addAttribute', 'removeAttribute', 'toggleCookie', 'addCookie', 'removeCookie', 'scrollToElement', 'mirrorMouseMovement'];
+const IX_MOVES = ['translate', 'scale', 'opacity', 'tilt', 'rotate'];
+// Any module may carry:  "interactions":[{ "trigger":"click", "effect":"toggleVisibility", "target":"<toggleId>" , ...}]
+//   target          the toggleId / interactionTarget of the element that receives the effect (may be in ANOTHER canvas:
+//                   that is what makes Divi append a popup canvas to the page). "targets":[...] repeats the effect.
+//   attributeName/attributeValue   for *Attribute effects (e.g. name "class", value "is-stuck")
+//   cookieName/cookieValue         for *Cookie effects          presetId, replaceExistingPreset   for *Preset effects
+//   breakpoint                     for breakpointEnter/Exit ("desktop" | "tablet" | "phone" ...)
+//   timeDelay ("300ms"), sensitivity (0-100) + mouseMovementType for mirrorMouseMovement
+// "triggerId" names the trigger (letters and digits only); one is derived from the content when omitted.
+function interactionsDecoration(m) {
+  const list = [];
+  for (const ix of m.interactions) {
+    if (!IX_TRIGGERS.includes(ix.trigger || 'click')) throw new Error(`interaction trigger "${ix.trigger}" is not one of: ${IX_TRIGGERS.join(', ')}`);
+    if (!IX_EFFECTS.includes(ix.effect)) throw new Error(`interaction effect "${ix.effect}" is not one of: ${IX_EFFECTS.join(', ')}`);
+    if (ix.mouseMovementType && !IX_MOVES.includes(ix.mouseMovementType)) throw new Error(`mouseMovementType "${ix.mouseMovementType}" is not one of: ${IX_MOVES.join(', ')}`);
+    const targets = ix.targets || (ix.target ? [ix.target] : []); if (!targets.length) throw new Error(`interaction "${ix.effect}" needs a target (the toggleId of the element it acts on)`);
+    for (const t of targets) list.push(Object.assign({}, ix, { target: t }));
+  }
+  let h = 0; for (const ch of JSON.stringify(m.interactions)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const trig = m.triggerId || ('ix' + h.toString(36)); if (!/^[a-zA-Z0-9]+$/.test(trig)) throw new Error(`triggerId "${trig}" may only hold letters and digits (Divi reads it back with that pattern)`);
+  return { interactionTrigger: trig, interactions: { desktop: { value: { interactions: list.map((ix, k) => ({
+    id: trig + 'i' + k, enableInteraction: 'on', trigger: ix.trigger || 'click', effect: ix.effect,
+    target: { targetClass: 'et-interaction-target-' + ix.target, label: ix.label || 'Target', moduleId: '', targetType: 'module' },
+    attributeName: ix.attributeName || '', attributeValue: ix.attributeValue || '', cookieName: ix.cookieName || '', cookieValue: ix.cookieValue || '',
+    presetId: ix.presetId || '', replaceExistingPreset: !!ix.replaceExistingPreset, timeDelay: ix.timeDelay || '0ms',
+    sensitivity: ix.sensitivity == null ? 50 : ix.sensitivity, mouseMovementType: ix.mouseMovementType || 'translate',
+    breakpointName: ix.breakpoint || '', triggerClass: 'et-interaction-trigger-' + trig })) } } } };
+}
 // Generic click-interaction: one trigger, one effect, one or more targets.
-// effect: "toggleVisibility" | "scrollToElement" | "togglePreset" | "showElement" | "hideElement" …
+// effect: any of IX_EFFECTS above ("toggleVisibility", "addVisibility" = show, "removeVisibility" = hide, "scrollToElement" …)
 function effectInteraction(triggerId, effect, targetIds, extra) {
   const ids = Array.isArray(targetIds) ? targetIds : [targetIds];
   return {
@@ -181,9 +213,10 @@ function loopValue(loop) {
 //   toggleId → interactionTarget (makes it a toggle TARGET, class et-interaction-target-<id>)
 //   hidden   → disabledOn all breakpoints (starts hidden)
 function applyCommon(m, module) {
-  if (!m.toggleId && !m.hidden) return module;
+  if (!m.toggleId && !m.hidden && !m.interactions) return module;
   module = module || {};
   module.decoration = module.decoration || {};
+  if (m.interactions) Object.assign(module.decoration, interactionsDecoration(m));
   if (m.toggleId) module.decoration.interactionTarget = m.toggleId;
   if (m.hidden) Object.assign(module.decoration, hiddenDecoration());
   return module;
@@ -227,6 +260,7 @@ function mButton(m) {
   const module = { advanced: { alignment: { desktop: { value: m.align || 'left' } } } };
   const dec = {};
   if (m.padding) dec.spacing = { desktop: { value: { padding: Object.assign({ syncVertical: 'on', syncHorizontal: 'on' }, m.padding) } } };
+  if (m.interactions) Object.assign(dec, interactionsDecoration(m));
   if (m.popup) Object.assign(dec, popupInteractionDecoration(m.popup));
   if (m.toggles) Object.assign(dec, togglesDecoration(m.trigger || ('tg' + m.toggles[0]), m.toggles));
   if (m.scrollTo) Object.assign(dec, effectInteraction('s' + m.scrollTo, 'scrollToElement', m.scrollTo));
