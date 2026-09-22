@@ -2,10 +2,9 @@
 /*
  * wp.js — minimal WordPress REST client for the divi5-builder skill.
  *
- * Reads credentials from ~/.web-creds.txt (override with WEB_CREDS_PATH) at
- * runtime and builds a Basic-auth header IN MEMORY. The Application Password is
- * NEVER printed, echoed, logged, or placed in argv/output. Read -> use -> discard.
- * See .web-creds.example.txt for the file format.
+ * Reads credentials from `~/.web-creds.txt` at runtime and builds a
+ * Basic-auth header IN MEMORY. The Application Password is NEVER printed,
+ * echoed, logged, or placed in argv/output. Read -> use -> discard.
  *
  * Usage:
  *   node wp.js <site> whoami
@@ -36,17 +35,19 @@
  *   node wp.js <site> tb-set <id> --content-file F --expect-hash H [--dry-run] [--mark-divi5]
  *                                                  # SITE-WIDE write; refuses if the layout changed since tb-get
  *   node wp.js <site> tb-restore <id>              # put back what the last tb-set replaced
+ *   --- Site-wide Custom CSS (needs divi5-builder-rest.php >= 1.7) ---
+ *   node wp.js <site> css-get [--raw]              # Divi Theme Options -> Custom CSS, as JSON or raw text
+ *   node wp.js <site> css-set --file style.css [--append]
+ *                                                  # replaces by default; --append adds to what's there
  *
  * Output is compact JSON or plain lines on stdout; errors to stderr, exit 1.
  */
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const https = require('https');
 const { URL } = require('url');
 
-// Credentials file: set WEB_CREDS_PATH, else ~/.web-creds.txt. Never commit it.
-const CREDS_PATH = process.env.WEB_CREDS_PATH || path.join(os.homedir(), '.web-creds.txt');
+const CREDS_PATH = process.env.WEB_CREDS_PATH || '`~/.web-creds.txt`';
 
 function parseCreds(site) {
   let txt;
@@ -241,6 +242,24 @@ function flags(argv) {
       if (f.option) body.option = f.option;
       if (f.replace) body.replace = 1;
       const r = await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/global-colors`, c, body);
+      console.log(JSON.stringify(r, null, 2));
+      break;
+    }
+    case 'css-get': {
+      // Divi's Theme Options -> Custom CSS field. Requires divi5-builder-rest.php >= 1.7.
+      const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/custom-css`, c);
+      console.log(f.raw ? r.css : JSON.stringify(r, null, 2));
+      break;
+    }
+    case 'css-set': {
+      // usage: css-set --file style.css [--append]
+      // Replaces the site's Custom CSS by default; --append adds to whatever
+      // is already there (blank-line separated) instead of overwriting it.
+      if (!f.file) die('css-set needs --file <path to .css>');
+      const css = fs.readFileSync(f.file, 'utf8');
+      const body = { css };
+      if (f.append) body.mode = 'append';
+      const r = await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/custom-css`, c, body);
       console.log(JSON.stringify(r, null, 2));
       break;
     }

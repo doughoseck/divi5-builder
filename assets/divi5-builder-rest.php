@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Divi 5 Builder — REST meta bridge
- * Description: Registers Divi's builder/layout post-meta for the WordPress REST API so a page built via REST (e.g. by the divi5-builder skill) can be flipped into "Divi mode" without opening the Visual Builder. v1.2 makes link-canvas attach an et_pb_canvas popup to a page via the real Divi meta (_divi_canvas_parent_post_id + _divi_off_canvas_data), so REST-created Divi 5 popups render. v1.3 adds read/write of Divi's GLOBAL COLOUR palette, which lives in a wp_option rather than in page content and could not be created over REST at all before — so a site can now be themed before its first page is built. v1.5 adds Theme Builder access: list every template and layout, read a header/body/footer layout's raw content, and write one back (hash-checked against concurrent edits, previous content kept for restore), because core REST does not expose those post types. Writes are gated by the normal edit-post capability (manage_options for the palette), so only authenticated editors/admins (incl. Application Passwords) can use them.
- * Version: 1.6.0
+ * Description: Registers Divi's builder/layout post-meta for the WordPress REST API so a page built via REST (e.g. by the divi5-builder skill) can be flipped into "Divi mode" without opening the Visual Builder. v1.2 makes link-canvas attach an et_pb_canvas popup to a page via the real Divi meta (_divi_canvas_parent_post_id + _divi_off_canvas_data), so REST-created Divi 5 popups render. v1.3 adds read/write of Divi's GLOBAL COLOUR palette, which lives in a wp_option rather than in page content and could not be created over REST at all before — so a site can now be themed before its first page is built. v1.5 adds Theme Builder access: list every template and layout, read a header/body/footer layout's raw content, and write one back (hash-checked against concurrent edits, previous content kept for restore), because core REST does not expose those post types. v1.7 adds read/write of the site-wide Custom CSS field (Divi's Theme Options ▸ General ▸ Custom CSS) — this isn't a Divi option at all, it's WordPress core's own Additional CSS system (a `custom_css` post per active theme), and both Divi's own save route and the Theme Options screen reject Application Password auth the same way Theme Builder does, so it was previously only editable from a live wp-admin session. Writes are gated by the normal edit-post capability (manage_options for the palette, edit_theme_options for Custom CSS), so only authenticated editors/admins (incl. Application Passwords) can use them.
+ * Version: 1.7.0
  * Author: divi5-builder skill
  *
  * INSTALL (pick one):
@@ -23,7 +23,7 @@
  */
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
-if ( ! defined( 'D5B_REST_VERSION' ) ) { define( 'D5B_REST_VERSION', '1.6.0' ); }
+if ( ! defined( 'D5B_REST_VERSION' ) ) { define( 'D5B_REST_VERSION', '1.7.0' ); }
 
 add_action( 'init', function () {
 	$auth = function ( $allowed, $meta_key, $post_id ) {
@@ -379,9 +379,9 @@ add_action( 'rest_api_init', function () {
 	// option-writing route behind an application password would be a far
 	// larger key than this job needs.
 	// ---------------------------------------------------------------------
-	// et_global_colors is Divi 4's palette and is IGNORED by Divi 5 — verified on
-	// a live Divi 5.9 site, where a section bound to gcid-primary-color rendered
-	// Divi's factory #2ea3f2 while that option said a custom hex. Divi 5's
+	// et_global_colors is Divi 4's palette and is IGNORED by Divi 5 — proven on
+	// orderprint.app 2026-08-11, where a section bound to gcid-primary-color
+	// rendered Divi's factory #2ea3f2 while that option said #2B5C7A. Divi 5's
 	// real store is et_divi_global_variables. Both are listed so a site on
 	// either generation can be themed, and so the difference stays visible.
 	$palette_options = array( 'et_global_colors', 'divi_global_colors', 'et_divi_global_variables' );
@@ -545,5 +545,71 @@ add_action( 'rest_api_init', function () {
 
 			return array( 'ok' => true, 'option' => $opt, 'written' => array_keys( $clean ), 'total' => count( $final ) );
 		},
+	) );
+
+	// ---------------------------------------------------------------------
+	// Site-wide Custom CSS (v1.7)
+	//
+	// Divi's Theme Options ▸ General ▸ Custom CSS field is not a Divi option
+	// at all. Since WP 4.7, Divi redirects it straight into WordPress CORE's
+	// own Additional CSS system: a `custom_css` post per active theme, read
+	// via wp_get_custom_css() and written via wp_update_custom_css_post().
+	// (Confirmed against the Divi 5 source: epanel/core_functions.php reads
+	// and writes through those two functions whenever they exist, falling
+	// back to the legacy et_divi option array only on pre-4.7 WordPress.)
+	//
+	// Divi 5's own new theme-options REST route (/divi/v1/outside-vb/...)
+	// doesn't even cover this field — custom_css isn't in its allowlist —
+	// and would reject Application Password auth anyway, same invalid_nonce
+	// gate as Theme Builder. These two routes close the gap with the same
+	// core WP functions the Customizer itself uses, so front-end output
+	// (WordPress core's own wp_head hook) picks up the change immediately —
+	// no cache to clear, unlike Divi's own builder-CSS static file cache.
+	//
+	// Deliberately its own dedicated route, not folded into the generic
+	// /option endpoint above: Custom CSS isn't a flat option value to
+	// overwrite wholesale, it's a single string read and written through
+	// core's own accessor functions, not get_option()/update_option().
+	// ---------------------------------------------------------------------
+	$css_perm = function () { return current_user_can( 'edit_theme_options' ); };
+
+	// GET /divi5-builder/v1/custom-css              → { css }
+	// POST /divi5-builder/v1/custom-css { css, mode?: "replace"|"append" }
+	// append adds to whatever's already there (blank-line separated) instead
+	// of overwriting it — the safer default for a shared site-wide field is
+	// still "replace" (matches how the Customizer field itself behaves), but
+	// append is there for adding one more rule without needing to fetch,
+	// concatenate and resend the whole sheet by hand every time.
+	register_rest_route( 'divi5-builder/v1', '/custom-css', array(
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => $css_perm,
+			'callback'            => function () {
+				if ( ! function_exists( 'wp_get_custom_css' ) ) {
+					return new WP_Error( 'unsupported', 'this WordPress version has no Additional CSS support (needs 4.7+)', array( 'status' => 501 ) );
+				}
+				return array( 'ok' => true, 'css' => wp_get_custom_css( get_stylesheet() ) );
+			},
+		),
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => $css_perm,
+			'callback'            => function ( $req ) {
+				if ( ! function_exists( 'wp_update_custom_css_post' ) ) {
+					return new WP_Error( 'unsupported', 'this WordPress version has no Additional CSS support (needs 4.7+)', array( 'status' => 501 ) );
+				}
+				$css = $req->get_param( 'css' );
+				if ( ! is_string( $css ) || '' === trim( $css ) ) {
+					return new WP_Error( 'no_css', 'css (non-empty string) is required', array( 'status' => 400 ) );
+				}
+				$previous = wp_get_custom_css( get_stylesheet() );
+				$final    = ( 'append' === $req->get_param( 'mode' ) && '' !== trim( (string) $previous ) )
+					? rtrim( (string) $previous ) . "\n\n" . $css
+					: $css;
+				$result = wp_update_custom_css_post( $final );
+				if ( is_wp_error( $result ) ) { return $result; }
+				return array( 'ok' => true, 'previous_css' => $previous, 'css' => wp_get_custom_css( get_stylesheet() ) );
+			},
+		),
 	) );
 } );
