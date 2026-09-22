@@ -5,12 +5,12 @@ description: >
   native Divi 5 modules so pages stay editable in the Divi visual builder, with
   a custom-HTML "code" module fallback. Use whenever the user wants to create,
   build, edit, redesign, or lay out a page/section/hero/pricing/landing page on a
-  Divi 5 WordPress site, set a page as the
+  Divi WordPress site (a live Divi 5 site, Resto, or others), set a page as the
   homepage, insert sections/rows/columns/modules, upload images to the media
   library, or "build a page from this design brief". Handles credentials from
   the shared .web-creds.txt securely. Trigger even if the user just says "add a
   section to the site", "update the homepage", or names a site + a page change.
-argument-hint: "[site] [what to build] (e.g. mysite 'a pricing section')"
+argument-hint: "[site] [what to build] (e.g. taekwondo 'a pricing section')"
 allowed-tools: Bash, Read, Write, Edit
 ---
 
@@ -83,10 +83,10 @@ renders broken, or is in the wrong format entirely.
    (`wp:divi/*`); **Divi 4 uses `[et_pb_*]` shortcodes — a totally incompatible
    format**, so building on a Divi 4 site produces garbage. Check with
    `node scripts/wp.js <site> divi-check` → must report `verdict:"divi5"`. If it
-   says `divi4`, STOP — the site must be upgraded to Divi 5 first (Divi 4 stores
-   pages as `[et_pb_*]` shortcodes, which this skill cannot produce).
+   says `divi4`, STOP — the site needs upgrading to Divi 5 first. (e.g. Resto's
+   multisite is still Divi 4 as of 2026-07 — not buildable yet.)
 
-1. **Access details in `~/.web-creds.txt` (or `$WEB_CREDS_PATH`)** — a `[site]` section with
+1. **Access details in `~/.web-creds.txt`** — a `[site]` section with
    `url`/`user`/`pass` (a WordPress **Application Password**). No creds → no API
    access at all. `node scripts/wp.js <site> whoami` must return 200 + your name.
 
@@ -102,21 +102,21 @@ renders broken, or is in the wrong format entirely.
 
 ## Credentials — handle exactly like this
 
-Site credentials live in `~/.web-creds.txt` (override with `$WEB_CREDS_PATH`; INI: `[site]` sections
+Site credentials live in `~/.web-creds.txt` (INI: `[site]` sections
 with `url`/`user`/`pass`; `pass` is a WordPress **Application Password**).
 
 - **Never** print, echo, log, or hardcode the password — not in chat, not in a
   script, not in a tool argument, not in output. `scripts/wp.js` reads the file
   at runtime, builds the auth header in memory, and only ever prints results.
   Always go through it; never read the raw pass yourself into the transcript.
-- Site name is the section header (e.g. `mysite`, `clientsite`). Confirm which
-  site if ambiguous.
+- Site name is the section header (`taekwondo`, `resto`, `anothersite`). Confirm
+  which site if ambiguous.
 
 ## Workflow
 
 1. **Identify the site and intent.** Which `[site]`? New page, or edit an
-   existing one? Get the design brief (or a site-specific design skill/brief for
-   colours, fonts, voice).
+   existing one? Get the design brief (or a site design skill like
+   `sa-taekwondo-design` / `resto-design-skill` for colours, fonts, voice).
 
 2. **Check BOTH prerequisites + detect the site's format (do this first):**
    ```bash
@@ -319,7 +319,7 @@ module can be the trigger; on 5.9 only buttons rendered one.)
   "modules":[btnMonthly, btnAnnual]}]}`. Give the control-buttons column `rowGap:"0px"`
   too. (A column has one rowGap for all children, so isolate the zero-gap pair.)
 
-A 9-tier pricing toggle can be generated this way: each card has
+The 9-tier pricing toggle on was generated this way: each card has
 monthly/annual price `text` + a nested `rowGap:0` row holding monthly/annual CTA
 `button`s (annual ones `hidden`), each with a unique `toggleId`; two control
 buttons carry `toggles` = all 38 ids.
@@ -364,8 +364,8 @@ The compiler emits these module `type`s (all verified from live builds; keys in
   pass `button1:{text:'',url:''}` — emptying is what the builder itself does.
   ⚠ `builder-version` reads the FIRST EXISTING BLOCK's stamp, not the installed
   Divi, so it goes stale after an upgrade. Both detailed in the format reference.
-- **Third-party:** `filtergrid` (Divi Plugins `dp-dfg/filtergrid` — requires that
-  commercial plugin installed). Query-driven CPT grid with built-in content/video
+- **Third-party:** `filtergrid` (Divi Plugins `dp-dfg/filtergrid` — needs their plugin;
+  the author has the lifetime license). Query-driven CPT grid with built-in content/video
   popups + skins; verified props + a raw `settings:{}` passthrough for any option.
 
 **Data-driven (Loop Builder + dynamic content):**
@@ -378,7 +378,7 @@ The compiler emits these module `type`s (all verified from live builds; keys in
 - Common pattern: a `group-carousel` whose `group` has a `loop` + `dc()`-bound modules
   (looped CPT cards), or a grid column with `loop`.
 
-**Adding any other module:** build it once in the VB on a scratch page,
+**Adding any other module:** build it once in the VB on the scratch page,
 run `node scripts/wp.js <site> dump-blocks <id>` to read its exact keys, then add a
 builder — 2-minute loop. Don't guess; dump.
 
@@ -501,12 +501,41 @@ WordPress unslashes post content and post meta on save, and Divi 5 block JSON is
 full of `<` style escapes. Tested on 26 real pages: every one is corrupted by
 an unslashed write, none by a slashed one.
 
+## Site-wide Custom CSS (mu-plugin >= 1.7)
+
+Divi's Theme Options ▸ General ▸ Custom CSS field looks like a Divi setting but
+isn't one — since WP 4.7 Divi redirects it straight into **WordPress core's own
+Additional CSS system** (a `custom_css` post per active theme). Divi's own save
+route for it rejects Application Password auth the same way Theme Builder does
+(`invalid_nonce`, needs a live wp-admin session), and Divi 5's newer theme-options
+REST route doesn't cover this field at all — checked its allowlist, `custom_css`
+isn't in it. So until mu-plugin 1.7 this field was only editable by hand in
+wp-admin.
+
+```bash
+node scripts/wp.js <site> css-get                    # { css: "..." }
+node scripts/wp.js <site> css-get --raw               # just the CSS text, for piping
+node scripts/wp.js <site> css-set --file style.css     # REPLACES the site's Custom CSS
+node scripts/wp.js <site> css-set --file style.css --append   # adds to what's there
+```
+
+Use this for styling something a page-level `code` module can't reach — a
+plugin's own rendered markup (a Gravity Forms field, a WooCommerce widget) that
+isn't part of any Divi page content, or any CSS the user wants living in the same
+place they'd normally paste it by hand. It takes effect immediately (this is
+WordPress core's own `wp_head` output, not Divi's builder-CSS static file cache —
+no cache to clear here, unlike a page/Theme-Builder write).
+
+**Scope it.** Custom CSS is global — write selectors scoped to the specific
+element/form/page you're styling (an id like `#gform_wrapper_9`), not bare tag
+selectors that would leak onto the rest of the site.
+
 ## Reference
 
 `references/divi5-format.md` — the Divi 5 block serialization format, exact
 per-module content keys, escaping rules, column-structure presets, and a minimal
 valid page. Read it if you need to hand-write a `raw` module or debug rendering.
-It was reverse-engineered from real Divi 5 pages and verified by a live
+It was reverse-engineered from real a live Divi 5 site pages and verified by a live
 round-trip (build draft → confirm native render → delete), so trust it over
 general web docs.
 
