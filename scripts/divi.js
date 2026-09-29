@@ -45,6 +45,10 @@
  *   {"type":"code","html":"<div>…custom HTML/CSS…</div>"}   // fallback — keep rare
  *   {"type":"raw","block":"divi/xxx","attrs":{...},"inner":"..."}          // escape hatch
  *
+ * PRESETS (the recommended way to style): any section, row, column or module may carry
+ *   "modulePreset":"<id>"  or  ["<default preset id>","<id>"]  (ids from `wp.js <site> design-system`).
+ * A module on a preset carries content and placement only. See SKILL.md, "Design system first".
+ *
  * VISIBILITY TOGGLES (native, no JS): any module may carry "toggleId":"<id>"
  * (becomes a toggle target) and "hidden":true (starts hidden). A button may carry
  * "toggles":["idA",…] (+ "trigger":"<id>") to flip every listed target on click.
@@ -78,6 +82,23 @@ const PLACEHOLDER_CLOSE = '<!-- /wp:divi/placeholder -->';
 function open(name, attrs) { return `<!-- wp:${name}${attrs ? ' ' + attrJSON(attrs) : ''} -->`; }
 function close(name) { return `<!-- /wp:${name} -->`; }
 function selfClose(name, attrs) { return `<!-- wp:${name}${attrs ? ' ' + attrJSON(attrs) : ''} /-->`; }
+
+// DESIGN SYSTEM FIRST: any section, row, column or module may carry
+//   "modulePreset": "<id>"  or  ["<default preset id>", "<id>"]   (a stack: later ids win)
+// The ids come from `wp.js <site> design-system`. A module on a preset should carry content and placement only:
+// a design setting given next to a preset overrides it, and a setting from the same option group as one of the
+// preset's breaks both (see references/divi5-globalize-site.md, rule 3).
+function withPreset(spec, lines) {
+  if (!spec || spec.modulePreset === undefined || spec.modulePreset === null) return lines;
+  const ids = [].concat(spec.modulePreset).map(String).filter((x) => x !== '');
+  if (!ids.length) return lines;
+  for (const id of ids) if (!/^[A-Za-z0-9_-]+$/.test(id)) throw new Error(`modulePreset: "${id}" is not a preset id (take ids from wp.js <site> design-system)`);
+  const m = /^<!-- wp:([a-z0-9-]+\/[a-z0-9-]+)(?: (\{[\s\S]*\}))? (\/)?-->$/.exec(lines[0] || '');
+  if (!m) throw new Error('modulePreset: cannot find the opening block of ' + (spec.type || 'this element'));
+  const attrs = m[2] ? JSON.parse(m[2]) : {};
+  attrs.modulePreset = ids;
+  return [`<!-- wp:${m[1]} ${attrJSON(attrs)} ${m[3] ? '/' : ''}-->`].concat(lines.slice(1));
+}
 
 // color -> either literal or global $variable()$ token
 function colorToken(spec) {
@@ -568,7 +589,8 @@ function mFilterGrid(m) {
   return [open('dp-dfg/filtergrid', attrs), close('dp-dfg/filtergrid')];
 }
 
-function buildModule(m) {
+function buildModule(m) { return withPreset(m, buildModuleBare(m)); }
+function buildModuleBare(m) {
   switch (m.type) {
     case 'heading': return mHeading(m);
     case 'text': return mText(m);
@@ -667,7 +689,7 @@ function buildColumn(col, sizing) {
   const lines = [open('divi/column', attrs)];
   for (const m of (col.modules || [])) lines.push(...buildModule(m));
   lines.push(close('divi/column'));
-  return lines;
+  return withPreset(col, lines);
 }
 
 // CSS Grid row. row.grid = { cols:{desktop,tablet,phone}, widths?:"equal",
@@ -693,7 +715,7 @@ function buildGridRow(row) {
 // row: { layout:"1-1", columns:[...], mode?:"fractional"(default)|"flexwrap",
 //        wrap?:["tablet","phone"], grid?:{...} }
 function buildRow(row) {
-  if (row.grid) return buildGridRow(row);
+  if (row.grid) return withPreset(row, buildGridRow(row));
   const key = row.layout || '1';
   const n = LAYOUT[key] || 1;
   const module = { advanced: { flexColumnStructure: { desktop: { value: 'equal-columns_' + n } } } };
@@ -725,7 +747,7 @@ function buildRow(row) {
   const lines = [open('divi/row', { module, builderVersion: BV })];
   for (const col of (row.columns || [])) lines.push(...buildColumn(col, sizing));
   lines.push(close('divi/row'));
-  return lines;
+  return withPreset(row, lines);
 }
 
 function buildSection(sec) {
@@ -758,7 +780,7 @@ function buildSection(sec) {
   const lines = [open('divi/section', attrs)];
   for (const row of (sec.rows || [])) lines.push(...buildRow(row));
   lines.push(close('divi/section'));
-  return lines;
+  return withPreset(sec, lines);
 }
 
 function compile(spec) {
