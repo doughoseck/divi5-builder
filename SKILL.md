@@ -509,9 +509,9 @@ Styling rule 2 says type and colour come from globals. This is how to find and u
   Same name or label updates, so a script can run twice. `node scripts/ds-live-test.js <site> all`
   proves colours, variables, presets and restore on a site and leaves its stores exactly as
   they were: run it once per new site (staging, nobody editing). Option group presets
-  (`"kind":"group"`): the record matches a builder-made one, but none has been written to a site
-  and rendered yet, so try one module and look at it first. A group preset holds its own group's
-  settings only; the plugin leaves out the rest and reports it. On a site with
+  (`"kind":"group"`) are proven for one group (Border on a Text module, against a builder-made
+  one). For another group, try one module and look at it first. A group preset holds its own
+  group's settings only; the plugin leaves out the rest and reports it. On a site with
   mu-plugin < 1.8, ask the user to make the preset in the builder and read its id.
 
 ## Globalising an existing site (read `references/divi5-globalize-site.md`)

@@ -150,9 +150,9 @@ text-align, max-width/width and display.
 - A Theme Builder header or footer write is a site-wide publish. `tb-set` needs the hash from `tb-get`.
 - Creating 20 presets in a row pushes the first backup out of a newest-10 list: the plugin (>= 1.8.1) also keeps the
   store as it was before the first write of each day.
-- Option group presets: the record the plugin builds was compared with a builder-made one (identical), but no group
-  preset has been written to a site and rendered on a module yet. Do that on one module, and look at it, before
-  using them widely.
+- Option group presets are proven for ONE group (Border, on a Text module): written by the plugin, rendered, and
+  compared with a builder-made one. For any other group, and for composite group ids (`designTitleText`), try one
+  module and look at it before using them widely.
 
 ## What is usually left over
 

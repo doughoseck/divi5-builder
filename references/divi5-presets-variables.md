@@ -628,10 +628,11 @@ puts each store back exactly as it was: `node scripts/ds-live-test.js <site> all
 |---|---|
 | Module presets: create, update, split, content kept out | live, and compared with a preset made by hand in the builder: identical |
 | Global colours: create, update, refusal, same fields as builder-made colours | live |
-| Design variables: create, update, two types, text kept character for character | live (write and read-back), and compared with a variable made in the builder. The comparison found one missing field, `variableType`, and timestamps in site time instead of UTC: both fixed in 1.8.2 |
+| Design variables: create, update, two types, text kept character for character | live (write and read-back), and compared with a variable made in the builder. The comparison found one missing field, `variableType`, and timestamps in site time instead of UTC: both fixed in 1.8.2, and 1.8.2 then produced the builder's fields in the builder's order |
 | Restore, for all three stores, including undoing a restore | live, end state compared with the start state |
 | Option group presets: the record | live dry run, compared with one made in the builder from the same module: every field, `attrs`, `styleAttrs` and `renderAttrs` identical |
-| Option group presets: written to a site and rendered on a module | NOT done |
+| Option group presets: written to a site and rendered on a module | live (1.8.2): a Border preset written by the plugin, on a text module in a draft page, next to the same module on the builder-made preset. Both render the same 20px border; the builder-made preset's extra settings (padding, max-width) are NOT applied |
+| Option group presets with a composite group id (`designTitleText`), and groups other than Border | NOT done |
 | `ds-selftest` | covers module presets AND option group presets since 1.8.2 |
 
 **A builder-made variable** (5.13): `{ id, label, value, order (a string), status, lastUpdated (UTC, ms), variableType }`,
