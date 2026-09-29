@@ -5,12 +5,12 @@ description: >
   native Divi 5 modules so pages stay editable in the Divi visual builder, with
   a custom-HTML "code" module fallback. Use whenever the user wants to create,
   build, edit, redesign, or lay out a page/section/hero/pricing/landing page on a
-  Divi WordPress site (a live Divi 5 site, Resto, or others), set a page as the
+  Divi WordPress site (any site running Divi 5), set a page as the
   homepage, insert sections/rows/columns/modules, upload images to the media
   library, or "build a page from this design brief". Handles credentials from
   the shared .web-creds.txt securely. Trigger even if the user just says "add a
   section to the site", "update the homepage", or names a site + a page change.
-argument-hint: "[site] [what to build] (e.g. taekwondo 'a pricing section')"
+argument-hint: "[site] [what to build] (e.g. mysite 'a pricing section')"
 allowed-tools: Bash, Read, Write, Edit
 ---
 
@@ -137,8 +137,7 @@ renders broken, or is in the wrong format entirely.
    (`wp:divi/*`); **Divi 4 uses `[et_pb_*]` shortcodes — a totally incompatible
    format**, so building on a Divi 4 site produces garbage. Check with
    `node scripts/wp.js <site> divi-check` → must report `verdict:"divi5"`. If it
-   says `divi4`, STOP — the site needs upgrading to Divi 5 first. (e.g. Resto's
-   multisite is still Divi 4 as of 2026-07 — not buildable yet.)
+   says `divi4`, STOP — the site needs upgrading to Divi 5 first.
 
 1. **Access details in `~/.web-creds.txt`** — a `[site]` section with
    `url`/`user`/`pass` (a WordPress **Application Password**). No creds → no API
@@ -163,14 +162,14 @@ with `url`/`user`/`pass`; `pass` is a WordPress **Application Password**).
   script, not in a tool argument, not in output. `scripts/wp.js` reads the file
   at runtime, builds the auth header in memory, and only ever prints results.
   Always go through it; never read the raw pass yourself into the transcript.
-- Site name is the section header (`taekwondo`, `resto`, `anothersite`). Confirm
+- Site name is the section header (`mysite`, `staging`, `anothersite`). Confirm
   which site if ambiguous.
 
 ## Workflow
 
 1. **Identify the site and intent.** Which `[site]`? New page, or edit an
-   existing one? Get the design brief (or a site design skill like
-   `sa-taekwondo-design` / `resto-design-skill` for colours, fonts, voice).
+   existing one? Get the design brief (or the site's own design skill, if there
+   is one, for colours, fonts and voice).
 
 2. **Check BOTH prerequisites + detect the site's format (do this first):**
    ```bash
@@ -376,7 +375,7 @@ module can be the trigger; on 5.9 only buttons rendered one.)
   "modules":[btnMonthly, btnAnnual]}]}`. Give the control-buttons column `rowGap:"0px"`
   too. (A column has one rowGap for all children, so isolate the zero-gap pair.)
 
-The 9-tier pricing toggle on was generated this way: each card has
+A 9-tier pricing toggle was generated this way: each card has
 monthly/annual price `text` + a nested `rowGap:0` row holding monthly/annual CTA
 `button`s (annual ones `hidden`), each with a unique `toggleId`; two control
 buttons carry `toggles` = all 38 ids.
@@ -630,7 +629,7 @@ selectors that would leak onto the rest of the site.
 `references/divi5-format.md` — the Divi 5 block serialization format, exact
 per-module content keys, escaping rules, column-structure presets, and a minimal
 valid page. Read it if you need to hand-write a `raw` module or debug rendering.
-It was reverse-engineered from real a live Divi 5 site pages and verified by a live
+It was reverse-engineered from the pages of a live Divi 5 site and verified by a live
 round-trip (build draft → confirm native render → delete), so trust it over
 general web docs.
 
