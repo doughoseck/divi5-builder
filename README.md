@@ -225,6 +225,18 @@ The reliable loop (no guessing):
 Divi has 115 modules; the compiler covers the common ones and the catalogue describes the rest. PRs adding more (via the loop
 above) are very welcome.
 
+## Tests
+
+None of these needs a site, except the last one.
+
+```bash
+node scripts/catalog-test.js          # the module catalogue and its lint
+node scripts/preset-spec-test.js      # modulePreset in a page spec
+node scripts/compile-test.js          # link, swiper-posts, buildModule()
+php  scripts/ds-write-test.php "<path to a Divi 5 theme folder>"   # the mu-plugin's design-system writes
+node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts every store back
+```
+
 ## Security
 
 - Never commit `~/.web-creds.txt` or any Application Password.

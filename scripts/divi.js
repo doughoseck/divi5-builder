@@ -43,6 +43,8 @@
  *   {"type":"video","src":"https://x.mp4","frame":{"radius":"14px","shadow":true}}
  *   {"type":"icon","unicode":"&#x51;","iconType":"divi","absolute":true}   // e.g. popup close
  *   {"type":"code","html":"<div>…custom HTML/CSS…</div>"}   // fallback — keep rare
+ *   {"type":"link","text":"Tickets","url":"https://x","icon":"&#xf054;","border":{"bottom":{"width":"1px","color":"gcid-…","style":"solid"}}}   // the WHOLE module is one <a>
+ *   {"type":"swiper-posts","postType":"post","count":6,"slidesPerView":{"desktop":3,"tablet":2,"phone":1}}   // needs the Divi Plugins Swiper add-on
  *   {"type":"raw","block":"divi/xxx","attrs":{...},"inner":"..."}          // escape hatch
  *
  * PRESETS (the recommended way to style): any section, row, column or module may carry
@@ -299,6 +301,45 @@ function mButton(m) {
   if (m.newTab) inner.linkTarget = 'on';
   const attrs = { module, button: { innerContent: { desktop: { value: inner } }, decoration: bdec }, builderVersion: BV };
   return [open('divi/button', attrs), close('divi/button')];
+}
+// Link: the WHOLE module renders as a real <a href>, unlike icon-list-item (which has
+// module.advanced.link declared but its render_callback never wraps in an anchor — verified
+// against IconListItemModule.php, 5.13). Use this, not icon-list, for a list of items that
+// must each be independently clickable (a "body menu" rebuilt from a nav menu, etc).
+// icon accepts a unicode string ("&#xf054;") or {unicode,type,weight} — type defaults to "fa"
+// (Divi's own bundled FontAwesome webfont; confirmed via IconLibrary/IconFont/Utils.php that
+// type:"fa" -> font-family "FontAwesome", and full_icons_list.json carries chevron-right etc).
+// `border` is Divi's raw border.styles shape, e.g. {bottom:{width:'1px',color:'#fff',style:'solid'}},
+// passed straight through so a caller can put a divider on just one side, or top+bottom on item 1.
+function mLink(m) {
+  const module = {};
+  const dec = {};
+  if (m.padding) dec.spacing = { desktop: { value: { padding: Object.assign({ syncVertical: 'on', syncHorizontal: 'on' }, m.padding) } } };
+  if (m.border) dec.border = { desktop: { value: { styles: m.border } } };
+  if (m.gap) dec.layout = { desktop: { value: { columnGap: m.gap, rowGap: m.gap } } };
+  if (m.width) dec.sizing = { desktop: { value: { width: m.width } } };
+  if (m.interactions) Object.assign(dec, interactionsDecoration(m));
+  if (m.toggleId) dec.interactionTarget = m.toggleId;
+  if (m.hidden) Object.assign(dec, hiddenDecoration());
+  if (Object.keys(dec).length) module.decoration = dec;
+  const cdec = {};
+  const fv = fontValue(m);
+  if (Object.keys(fv).length) cdec.font = { font: { desktop: { value: fv } } };
+  const inner = { text: m.text || '', linkUrl: m.url || '#' };
+  if (m.newTab) inner.linkTarget = 'on';
+  const attrs = { content: { innerContent: { desktop: { value: inner } } }, builderVersion: BV };
+  if (Object.keys(cdec).length) attrs.content.decoration = cdec;
+  if (m.icon) {
+    const icon = typeof m.icon === 'string' ? { unicode: m.icon } : m.icon;
+    const iattrs = { innerContent: { desktop: { value: { unicode: icon.unicode || '&#xf00c;', type: icon.type || 'fa', weight: icon.weight || '900', target: 'off' } } } };
+    const iadv = {};
+    if (m.iconColor) iadv.color = { desktop: { value: colorVal(m.iconColor) } };
+    if (m.iconSize) iadv.size = { desktop: { value: m.iconSize } };
+    if (Object.keys(iadv).length) iattrs.advanced = iadv;
+    attrs.icon = iattrs;
+  }
+  if (Object.keys(module).length) attrs.module = module;
+  return [open('divi/link', attrs), close('divi/link')];
 }
 function mVideo(m) {
   const attrs = { video: { innerContent: { desktop: { value: { src: m.src || '' } } } }, builderVersion: BV };
@@ -589,12 +630,52 @@ function mFilterGrid(m) {
   return [open('dp-dfg/filtergrid', attrs), close('dp-dfg/filtergrid')];
 }
 
+// Divi Plugins "Swiper" addon (block prefix dp-dss, title "Swiper Post Slider" in the
+// builder). Loops ANY post type (custom_query/current_post_type/multiple_cpt) into a
+// Swiper carousel — verified against the site's own /wp/v2/block-types schema (dp-dss
+// isn't in the bundled Divi zip, so it can't come from catalog.js; read its attrs from a
+// live site with the plugin active: GET /wp-json/wp/v2/block-types/dp-dss/posts-slider).
+// Same flat innerContent.desktop.value shape as FilterGrid, PLUS a few fields (slidesPerView,
+// spaceBetween) that ship with real per-breakpoint defaults (3/2/1) — pass an object
+// {desktop,tablet,phone} for those when you need every breakpoint pinned to the same value,
+// not just desktop (leaving tablet/phone untouched keeps THEIR OWN defaults, not your override).
+function mSwiperPostsSlider(m) {
+  const resp = (v) => (v == null ? undefined : (typeof v === 'object' && !Array.isArray(v)
+    ? { desktop: { value: String(v.desktop) }, ...(v.tablet != null && { tablet: { value: String(v.tablet) } }), ...(v.phone != null && { phone: { value: String(v.phone) } }) }
+    : { desktop: { value: String(v) } }));
+  const map = {
+    current_post_type: m.currentPostType, multiple_cpt: m.postType, post_number: m.count != null ? String(m.count) : undefined,
+    order: m.order, orderby: m.orderBy, include_categories: m.categories,
+    showImage: m.showImage, showTitle: m.showTitle, titleLink: m.titleLink,
+    show_author: m.showAuthor, show_date: m.showDate, show_terms: m.showTerms, show_post_meta: m.showPostMeta,
+    showContent: m.showContent, truncate_content: m.truncateContent != null ? String(m.truncateContent) : undefined,
+    imageClickAction: m.imageClickAction, thumbnailSize: m.thumbnailSize,
+    figureRatio: m.figureRatio, ratioWidth: m.ratioWidth, ratioHeight: m.ratioHeight, objectFit: m.objectFit,
+    direction: m.direction, mode: m.mode, showNavigation: m.showNavigation, pagination: m.pagination,
+    autoplay: m.autoplay, delay: m.delay != null ? String(m.delay) : undefined, pauseOnMouseEnter: m.pauseOnMouseEnter,
+    arrowColor: m.arrowColor, arrowBGColor: m.arrowBGColor, arrowSize: m.arrowSize, arrowPlacement: m.arrowPlacement,
+    bulletsColor: m.bulletsColor, bulletsAColor: m.bulletsAColor, bulletsSize: m.bulletsSize,
+  };
+  Object.assign(map, m.settings || {}); // raw passthrough for any other option
+  const attrs = { builderVersion: BV };
+  for (const [k, v] of Object.entries(map)) { if (v == null || v === '') continue; attrs[k] = { innerContent: resp(v) }; }
+  for (const [k, v] of Object.entries({ slidesPerView: m.slidesPerView, spaceBetween: m.spaceBetween })) {
+    if (v == null) continue; attrs[k] = { innerContent: resp(v) };
+  }
+  // title/content are real named elements (per the block's own schema) styled the normal
+  // Divi way, not flat innerContent -- same shape as any other module's text decoration.
+  if (m.titleFont) { const fv = fontValue(m.titleFont); if (Object.keys(fv).length) attrs.title = { decoration: { font: { font: { desktop: { value: fv } } } } }; }
+  if (m.htmlClass) attrs.module = { advanced: { htmlAttributes: { desktop: { value: { class: m.htmlClass } } } } };
+  return [open('dp-dss/posts-slider', attrs), close('dp-dss/posts-slider')];
+}
+
 function buildModule(m) { return withPreset(m, buildModuleBare(m)); }
 function buildModuleBare(m) {
   switch (m.type) {
     case 'heading': return mHeading(m);
     case 'text': return mText(m);
     case 'button': return mButton(m);
+    case 'link': return mLink(m);
     case 'image': return mImage(m);
     case 'blurb': return mBlurb(m);
     case 'iconlist': return mIconList(m);
@@ -623,6 +704,7 @@ function buildModuleBare(m) {
     case 'group': return mGroup(m);
     case 'group-carousel': return mGroupCarousel(m);
     case 'filtergrid': return mFilterGrid(m);
+    case 'swiper-posts': return mSwiperPostsSlider(m);
     case 'row': return buildRow(m); // nested row inside a column (e.g. a rowGap:0 button group)
     case 'raw': return mRaw(m);
     default: throw new Error(`unknown module type: ${m.type}`);
@@ -834,4 +916,8 @@ if (require.main === module) {
   else { process.stderr.write('usage: node divi.js compile|compile-canvas <spec.json> [--out F]\n'); process.exit(1); }
 }
 
-module.exports = { compile, compilePopupCanvas, dc };
+// buildModule: compile ONE module spec (see buildModule's switch for `type`s) to its block-markup
+// lines, for splicing into an existing page's content — e.g. replacing a single stale block
+// (a leftover shortcode) without regenerating the section/row/column around it and losing
+// responsive values a spec can't express (buildSection only takes one padding, not per-breakpoint).
+module.exports = { compile, compilePopupCanvas, dc, buildModule };

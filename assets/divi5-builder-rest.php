@@ -380,7 +380,7 @@ add_action( 'rest_api_init', function () {
 	// larger key than this job needs.
 	// ---------------------------------------------------------------------
 	// et_global_colors is Divi 4's palette and is IGNORED by Divi 5 — proven on
-	// orderprint.app 2026-08-11, where a section bound to gcid-primary-color
+	// one site, 2026-08-11, where a section bound to gcid-primary-color
 	// rendered Divi's factory #2ea3f2 while that option said #2B5C7A. Divi 5's
 	// real store is et_divi_global_variables. Both are listed so a site on
 	// either generation can be themed, and so the difference stays visible.

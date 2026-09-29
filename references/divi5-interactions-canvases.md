@@ -153,3 +153,88 @@ target id does not match an `interactionTarget` inside the canvas.
 5. Check the front end: the page HTML must now contain `et-interaction-target-<id>`.
 
 A canvas attached to a header is output on every page that header serves. Treat writing to it as a site-wide change.
+
+## Loop Builder on an accordion (proven 2026-09-25, Divi 5.13.1, a converted site)
+
+One `divi/accordion` holding ONE `divi/accordion-item` whose `module.advanced.loop` is enabled repeats the item per
+queried post (each rendered item gets `data-loop-item` / `data-loop-source="<loopId>"`). Bind the title to
+`loop_post_title`. **There is no post-content dynamic-content option** (only excerpt, which strips HTML): put the
+body in a custom field (ACF WYSIWYG) and bind `loop_post_meta_key_manual_custom_field` with
+`select_loop_meta_key:"loop_post_meta_key_<metakey>"` and **`enable_html:"on"`** (default `off` escapes the HTML).
+Taxonomy filter shape: `includePostWithSpecificTerms:[{categoryId:"<taxonomy>",categoryName:"…",selectedOptions:[{value:"<termId>",label:"…"}]}]`.
+`postPerPage` defaults to 10; a CPT without `page-attributes` never stores `menu_order`, so order by `date`.
+Interaction triggers: a `divi/column` works as a click trigger (bubbled clicks from its children fire it). A trigger
+with two effects (`toggleVisibility` A + `removeVisibility` B) works. If a click seems dead, watch the target with a
+MutationObserver: a legacy jQuery `slideToggle` bound to an old class on the same element makes it open-then-close.
+Bulk post saves over REST clear Divi's static-CSS cache on every save and can leave a page's dynamic CSS file 404'd:
+finish the import, then do a no-op `css-set` and load the page once.
+**Animating a reveal:** `toggleVisibility` shows the target instantly (no slide), but right after showing it Divi runs
+`et_animate_element` on the target's own **Animation** setting (`module.decoration.animation.desktop.value =
+{style:"slide",direction:"top",intensity:{slide:"2"},duration:"500ms",delay:"0ms",speedCurve:"ease-in-out",repeat:"once",startingOpacity:"0%"}`),
+so set that on the hidden section for a slide/fade-in. Hiding stays instant. Accordion styling notes: the toggle icon
+cannot be switched off, make it invisible with `closedToggleIcon` colour `rgba(0,0,0,0)` + `useSize:"on",size:"1px"`;
+Divi already puts a 10px gap between items, so item margin 0; the title `lineHeight` attr is overridden by Divi's own
+toggle CSS (stays 1.4em).
+**Accordion all-closed by default (Divi 5.13 still forces item 0 open, no setting):** put a static, empty
+`divi/accordion-item` FIRST with `css.desktop.value.mainElement = "display:none !important;"`, then the real (or looped)
+items. Server marks the dummy `et_pb_toggle_open et_pb_toggle_empty`, every real item renders `et_pb_toggle_close`.
+**Custom toggle icon:** the module's Custom CSS `freeForm` works on pages: `selector .et_pb_toggle_title:before
+{ content:"" !important; display:inline-block !important; position:static !important; width/height; background:url(..)
+center/contain no-repeat !important; font-size:0 !important }` and `selector .et_pb_toggle_open .et_pb_toggle_title:before
+{ transform:rotate(180deg) !important }`. **Accordion Border setting styles every ITEM**, not the list: use a 1px
+`divi/divider` (line color/weight under `divider.advanced.line.desktop.value`) above the module for a single rule line.
+Module width/centring: `module.decoration.sizing.desktop.value = {maxWidth:"850px", alignment:"center"}` renders
+`max-width` + `margin-left/right:auto` (proven on accordion and divider). Zeroing a module's default border needs
+`styles.all.width:"0px"` alongside the one side you want (`styles.bottom`), or Divi's default 1px top border stays.
+Divi 5 gives `.et_pb_toggle_title` a 50px left padding for its icon; with a custom `:before` icon zero it in the same
+freeForm CSS (`selector .et_pb_toggle_title { padding-left:0 !important }`), it is not exposed as a module setting.
+
+## Flip cards without a plugin (replacing Supreme `[dsm_flipbox]`), verified on a converted site, 2026-09-28, 5.13.1
+Divi 5 has no flip module. Recipe: in the tile column put the photo (`divi/image`, forceFullwidth), an optional
+absolute overlay (`divi/divider` line off, sizing 100%/100%, background rgba), then TWO sibling `divi/group`s with CSS
+classes (`decoration.attributes.desktop.value.attributes = [{id, name:"class", value:"flip-face flip-front"}]`) holding
+the front modules (heading + text) and the back modules (image + heading). The column's Custom CSS does the flip:
+`selector { perspective:1000px }`, `selector .flip-face { position:absolute; top:50%; left:50%; width:100%;
+transform:translate(-50%,-50%); backface-visibility:hidden; transition:transform .6s ease-in-out }`,
+`selector .flip-back { transform:translate(-50%,-50%) rotateY(180deg) }`, `selector:hover .flip-front { transform:
+translate(-50%,-50%) rotateY(-180deg) }`, `selector:hover .flip-back { transform:translate(-50%,-50%) rotateY(0) }`.
+Axis per Supreme's `flipbox_effect`: left/right = rotateY (sign flips), up/down = rotateX; the plugin default is
+"right". Groups inside a column render fine and Divi emits the column's `selector` CSS once per column. Column
+`position:relative` + `overflow:hidden` keeps the faces inside the tile. Verify transforms with transitions disabled
+(`*{transition:none!important}`) when the browser pane is not painting, or the computed transform reads as identity.
+The same column doubles as an interaction trigger (click -> toggleVisibility on a hidden section) with no conflict;
+add `cursor:pointer` in the column CSS because a trigger column gets no `et_clickable` class.
+
+**Reveal groups: one open at a time.** A trigger's `interactions.desktop.value.interactions[]` takes several entries
+that all fire on the same click, so give each tile `toggleVisibility` on its own section plus `removeVisibility` on
+every other section of the group (ids `<trigger>i0`, `i1`, ...). Verified 5.13.1 (a page with six reveal tiles):
+click 1 -> 2 -> 6 leaves only the last section open; removeVisibility on an already-hidden target is a no-op. Without
+this, users end up with several sections stacked open, which the old jQuery reveal scripts never allowed.
+
+**"Scrolled" header state without JS (a converted site, 2026-09-28, 5.13.1).** Divi's sticky styles refuse position
+absolute/fixed (`StickyUtils` incompatible_positions), and a fixed header must stay fixed to overlay the hero. Native
+alternative: a zero-net-height sentinel section first in the header layout (`sizing.height:"50px"`, margin-bottom
+`-50px`, transparent, Custom CSS `selector { pointer-events:none }`) carrying `interactionTrigger` with
+`viewportExit -> addAttribute` (`attributeName:"data-scrolled"`, `attributeValue:"1"`) and `viewportEnter ->
+removeAttribute` on each fixed section (`interactionTarget`). The scrolled look is the section's own Custom CSS:
+`selector[data-scrolled] { ... !important }` plus `transition` on the rest state. Effect names for attributes are
+`addAttribute` / `removeAttribute` / `toggleAttribute`; the value is a space-separated token list on that attribute.
+`viewportExit` fires when the element is fully out (IntersectionObserver default threshold). VERIFYING: IO callbacks
+never fire in the desktop app's browser pane, and Chrome does not deliver them in a hidden/background tab -- so test
+the EFFECT + CSS half without the observer: `window.et_execute_interaction_effect(interaction, targetEl, 'add'|'remove')`
+with an entry from `window.diviElementInteractionsData` (disable transitions first), and leave the observer half to
+the user's eyes. Header sections: Divi emits `.et-l--header > .et_builder_inner_content .et_pb_section.<order>
+{ background-color: transparent !important }` (0,4,0), so a scrolled-state background needs a stronger,
+placement-independent selector such as `body selector.et_pb_section.et_pb_section--fixed[data-scrolled]` (0,4,1);
+padding/width/logo rules have no such competitor. Fixed header sections also need an explicit `zIndex` (e.g. 100):
+Divi's frontend can move them to `<body>`, where with z-index auto the page hero paints over them.
+
+**Scroll to the revealed section: native effect `scrollToElement`** (frontend `script-library-interactions.js`:
+`target.scrollIntoView({behavior:"smooth", block:"start", inline:"nearest"})`, same attr shape as the visibility
+effects, target = the section's `interactionTarget` class). Put it AFTER `toggleVisibility` in the trigger's list;
+the show sets `display:block !important` inline synchronously, so the target has a position when the scroll runs.
+The effect list per trigger is therefore: toggle own, remove others, scrollToElement own. A fixed header did NOT
+need a `scroll-margin-top` on the target in practice (one site, 169px fixed header: the site owner tested the
+offset and had it removed), so do not add one unprompted; offer it only if the landing looks wrong. Verify with an
+instant `scrollIntoView` in a non-painting browser pane: smooth scrolling never progresses there (not even
+`window.scrollTo({behavior:"smooth"})`), so scrollY staying at 0 proves nothing.

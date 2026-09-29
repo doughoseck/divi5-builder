@@ -155,3 +155,57 @@ custom-content, thumbnail-size pages).
 Note: the author rates the **hand-built native pricing** (columns + text + buttons + our
 monthly/annual toggle) as nicer than `divi/pricing-tables` — keep the custom one as
 the recommended pricing approach; `divi/pricing-table` is the quick/native option.
+
+## Divi Plugins Dynamic Gallery (third-party, Divi 5 native block `dp-ddg/dynamic-gallery`, plugin 2.0.4, verified 2026-09-28)
+
+Masonry/grid image gallery with Magnific lightbox; a commercial add-on from diviplugins.com. Every setting is
+`<key>.innerContent.desktop.value` (tablet/phone beside desktop where responsive). Verified props:
+`galleryIds` (comma-separated attachment ids; `orderby:"post__in"` keeps that order), `itemsLayout` `"masonry"|"grid"`,
+`columns` per breakpoint (strings), `gap` per breakpoint (px number as string), `imageSize` (`"large"` etc.),
+`showPagination`/`imagesPerPage`, `showTitle`/`showCaption`/`showDescription`, **`showOverlay` must be `"on"` for any
+click action — the `.dp-ddg-overlay` div is the click target**, `overlayAction` `"lightbox"|"gallery"|"url"|"link"|"none"`
+(`gallery` = lightbox with prev/next + counter), `overlayColor`, `showOverlayIcon`, `lightboxData`/`overlayData` = array of
+`"title"|"caption"|"description"` (use `["caption"]` to show nothing when captions are empty; `[]` falls back to title).
+`catalog.js lint` warns "not a Divi block, not checked" — expected. Filters (`showFilters`, taxonomy) and dynamic sources
+(ACF gallery field, product gallery) exist but are unverified.
+
+## Loop Builder findings, a converted site, 2026-09-28 (all verified on a throwaway page, Divi 5.13.1)
+- A background image bound to `loop_post_featured_image` (or `post_featured_image`) on a looped column renders NOTHING
+  (no CSS, no inline style). Per-post images must be a `divi/image` module with `src` = `dc('loop_post_featured_image',
+  {thumbnail_size:'full'})`. Crop it with the module's Custom CSS (`selector img { height:520px; object-fit:cover }`).
+- `post_link_url` inside a loop resolves to the current PAGE. The per-post URL for a button/link is
+  `dc('loop_post_link', {text:'permalink'})` (returns the bare permalink; `text:'custom'` also returned the URL).
+  Never place it alone in a paragraph: WordPress auto-embeds a bare post URL into a blockquote/iframe.
+- `divi/group` renders fine inside a column (catalogue only lists it under group-carousel) and takes position
+  absolute + gradient + flex: the natural "text over image" overlay container in a loop.
+- Native loop pagination EXISTS in 5.13 (earlier note here said otherwise -- wrong): the "Pagination" module
+  `divi/post-nav` with `module.advanced.targetLoop.desktop.value` = the loop's `loopId` (e.g. `"loop-news"`).
+  Server (`PostNavigationModule::get_loop_pagination`) emits `.nav-previous`/`.nav-next` links to `?<loopId>=N`,
+  omitting Newer on page 1 and Older on the last page; with WP-PageNavi active it renders numbered links instead.
+  Labels: `links.advanced.prevText/nextText`; link styling under `links.decoration.{font,background,spacing,border}`
+  (selector = the `<a>`). `catalog.js lint` reports the targetLoop value as "not an option" because the VB fills
+  that select from the loops on the page -- the one lint error to ignore. The module ships
+  `script-library-pagination.js`, which scrolls to the loop after a page change.
+- `buildModule({type:'image'})` returns TWO lines (opener + closer); patch `image[0]` accordingly.
+- Loop + CSS grid = repeating editorial layouts (verified on a news archive, 5.13.1): the looped columns render as
+  DIRECT siblings inside `.et_pb_row`, so row Custom CSS `selector > .et_pb_column:nth-child(5n+1) { grid-column:
+  span 2; grid-row: span 2 }` etc. gives "first post full width, then staggered halves" that repeats per page. Use
+  `span`, never fixed grid lines (items with a definite column are placed BEFORE auto items and break DOM order).
+  Native row grid keys (StyleLibrary/Declarations/Layout/Layout.php): `layout.desktop.value = {display:"grid",
+  gridColumnCount:"2", gridColumnWidths:"equal", gridAutoFlow:"row", rowGap, columnGap}` -> `grid-template-columns:
+  repeat(var(--column-count), minmax(0,1fr))`. `gridTemplateColumns` is NOT a row key (ignored -> default 3 cols).
+  Give rows `grid-auto-rows: minmax(<min>, auto)` and keep the text overlay in normal flow (flex column,
+  justify-content flex-end, image module absolute behind it) so long titles grow the cell instead of clipping.
+  A per-card hover overlay = looped column Custom CSS `selector::after` (absolute inset 0, z-index 0, opacity 0)
+  + `selector:hover::after { opacity:1 }`; keep the text group `position:relative; z-index:1`. Divi emits the
+  rules once per loop clone (`.et_pb_column_0`, `_1`, ...), so `selector` is safe inside a loop.
+- Button padding override needs a 5-class selector: Divi's global `.et_button_no_icon.et_button_icon_visible
+  .et_button_left .et_pb_button { padding: .3em 1em !important }` is 4 classes + !important, so
+  `selector.et_pb_button` (2) and even `.et_pb_button_module_wrapper selector.et_pb_button` (3) lose. Use
+  `.et_pb_section .et_pb_button_module_wrapper selector.et_pb_button.et_pb_module { padding: ... !important }`.
+- Text module `lineHeight` in the heading font attrs is ignored on the front end (also seen on accordion titles);
+  set it with Custom CSS `selector h2 { line-height: 38px !important }`.
+- MEASURING GOTCHA: a browser-pane tab that is not painting (screenshots time out) freezes CSS transitions, so
+  getComputedStyle on a transitioned property (Divi buttons have `transition: all .2s`) returns the START value
+  forever, even for inline `style="...!important"`. Inject `*{transition:none!important}` before measuring, or
+  measure a property that does not transition, or let the user's browser be the instrument.

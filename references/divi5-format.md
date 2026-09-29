@@ -93,7 +93,15 @@ JSON.stringify(attrs)
 
 - **A section disabled on every breakpoint is NOT OUTPUT at all**, unless it is an interaction target. To keep a hidden-until-opened
   section in the page without interactions, leave `disabledOn` off and hide it with its own free-form CSS:
-  `selector:not(.open) { display: none; }` plus `.et-fb selector:not(.open) { display: flex; }` so it stays editable in the builder.
+  `selector:not(.open) { display: none; }`. An earlier version of this file also added `.et-fb selector:not(.open) { display: flex; }`
+  on the theory that the Visual Builder needs it forced visible to stay editable — **that theory was wrong, drop the `.et-fb` line.**
+  A header-embedded popup built this way appeared ALWAYS VISIBLE and blocking the whole canvas while editing any page that header
+  serves (the reference site, 2026-09) — looked exactly like a CSS/content bug, and removing the `.et-fb` rule was harmless but did NOT fix
+  it. The real cause: Divi Visual Builder's own **Workspace Settings (gear icon) → "Show Theme Builder Layouts"** toggle, ON by
+  default, which renders a page's Theme-Builder header/footer (and anything conditionally shown inside them) into the live canvas
+  while editing an ordinary page. It's a personal per-editor UI preference, not page content — turning it off removes the overlay.
+  Check this FIRST before chasing a "Theme-Builder content is blocking the canvas" complaint as a CSS bug. (Divi's builder can
+  already select and edit a CSS-hidden module via the Layers panel, so forcing it visible was likely never necessary anyway.)
 - **`divi/image` with no `module.advanced.align` renders CENTRED.** Divi 4 treated "unset" as left, so migrated logos move. Set
   `module.advanced.align.desktop.value` to `left` | `center` | `right` explicitly.
 - **Custom HTML attributes on a module** live in a list, one object each:
@@ -114,6 +122,29 @@ JSON.stringify(attrs)
 - **Before trusting a visual effect to the builder, find what makes it visible on the live site.** A logo that "fades in on scroll"
   was a child-theme rule (`.home #logo{opacity:0}` / `.showLogo{opacity:1}`) driven by a script in a code module, not Divi's scroll
   effect. When comparing two layouts, diff the code modules' contents too.
+- **A module with no background set still emits its own scoped `background-color: transparent !important`** (seen: a Theme Builder
+  header section, Divi 5.13, `.et-l--header > .et_builder_inner_content .et_pb_section.et_pb_section_N_tb_header { background-color:
+  transparent !important; }`). An external class-only rule — a legacy child-theme class an old jQuery scroll handler toggles, or a
+  rule added via `wp.js css-set` (site-wide Custom CSS, mu-plugin 1.7+) — loses to it even with its own `!important`, because
+  Divi's selector chains several classes and CSS breaks an `!important` tie on specificity, not source order. Fix: anchor the
+  override to the element's own CSS id, e.g. `#my-id.my-scroll-class { background: … !important; }` — an id always outranks any
+  number of classes. Seen (the reference site, 2026-09): a header's "darken on scroll" class ported over from live — the jQuery toggle and
+  the transition both worked on dev — but the background stayed transparent until the selector was id-anchored.
+- **Divi's native icon field (`icon.innerContent…type:"fa"`) cannot render a DUOTONE icon.** `type:"fa"` maps to a single
+  font-family (`IconLibrary/IconFont/Utils.php::get_icon_font_family`, default `FontAwesome`) with one glyph via `content` +
+  `color` — there is no second layer/opacity. If the source site's icon is genuinely `<i class="fad fa-…">` (Font Awesome
+  Pro's two-tone style, its own font-family "Font Awesome 5 Duotone"), Divi's icon field will render the SAME unicode as a
+  flat solid icon that looks visibly different up close (no second, lighter layer behind it) even with matching size/color/
+  weight. Fix: skip the icon field and embed the real `<i class="fad fa-…"></i>` literally in a text/link content value
+  instead — it inherits the surrounding text's font-size/color, so no extra styling is needed. Only works if that font is
+  actually enqueued on the page; check the site's own `<head>` for a `fontawesome`/`fad` stylesheet FIRST (a plugin's shortcode-
+  specific assets, e.g. a mega-menu plugin, may only enqueue when its own shortcode renders — removing the shortcode can
+  silently drop the font even though the class still "works" from a caching artifact, and Font Awesome Pro loaded site-wide
+  by a separate plugin is a different, independent thing from a menu plugin's bundled copy).
+- **A ported `<a>`/module with no explicit `line-height` will NOT match a legacy site's row height even at the same font-size
+  and padding.** The old site's link had `line-height:40px` set explicitly (a fixed value, not "normal"); a rebuilt module that
+  only sets `font-size` gets the browser default (~1.2× font-size) and rows come out visibly shorter — measured 47-48px vs the
+  original 61-62px for the same 26px/10px-padding row. Always carry the source's line-height across, not just size/weight/color.
 
 ### Free-form CSS on a module
 
@@ -502,3 +533,10 @@ first (or you double-escape the escapes), and assert the result contains no
 bare `<`, `>` or `"` before writing. Then check the RENDERED page for the text
 you added — a successful `update-page` proves nothing about whether the module
 survived.
+
+## Divi 4 -> 5 migrator pins heading weights (found on a converted site, 2026-09-25)
+
+The migrator writes `content.decoration.headingFont.h1.font.desktop.value.weight:"400"` into text modules that in Divi 4
+simply inherited the Customizer heading weight. Result: a site whose Customizer says "headings bold" renders those
+headings at 400 after migration, while unpinned modules stay bold. Fix by DELETING the pinned weight (the Customizer
+rule then applies), never by pinning 700. Grep for `"h1":{"font":{"desktop":{"value":{"weight":"400"` across pages.
