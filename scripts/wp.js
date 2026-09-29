@@ -2,7 +2,7 @@
 /*
  * wp.js — minimal WordPress REST client for the divi5-builder skill.
  *
- * Reads credentials from `~/.web-creds.txt` at runtime and builds a
+ * Reads credentials from ~/.web-creds.txt (or WEB_CREDS_PATH) at runtime and builds a
  * Basic-auth header IN MEMORY. The Application Password is NEVER printed,
  * echoed, logged, or placed in argv/output. Read -> use -> discard.
  *
@@ -53,10 +53,13 @@
  */
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const https = require('https');
 const { URL } = require('url');
 
-const CREDS_PATH = process.env.WEB_CREDS_PATH || '`~/.web-creds.txt`';
+// Default: .web-creds.txt in the user's home folder. Node does not expand "~", so it is done here
+// (also for a WEB_CREDS_PATH that starts with "~").
+const CREDS_PATH = (process.env.WEB_CREDS_PATH || '~/.web-creds.txt').replace(/^~(?=$|[\\/])/, os.homedir());
 
 function parseCreds(site) {
   let txt;
