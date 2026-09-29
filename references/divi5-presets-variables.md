@@ -621,9 +621,19 @@ What the plugin guarantees
 - After the write the store is read back; a write Divi ignored is an error (variables need the "Variables Manager"
   role permission and `edit_theme_options`).
 
-Proven live: module presets. Proven by local tests only: global colours. NOT compared with a builder-made item:
-design variables and option group presets. Before relying on either on a site, have ONE made by hand in the Visual
-Builder and compare it with a `--dry-run` of the same thing.
+Prove it on each new site with ONE command, which creates test items, checks Divi's own store after every step and
+puts each store back exactly as it was: `node scripts/ds-live-test.js <site> all` (staging, nobody editing).
+
+| What | Proven how |
+|---|---|
+| Module presets: create, update, split, content kept out | live, and compared with a preset made by hand in the builder: identical |
+| Global colours: create, update, refusal, same fields as builder-made colours | live |
+| Design variables: create, update, two types, text kept character for character | live (write and read-back). FORMAT not yet compared with a builder-made variable |
+| Restore, for all three stores, including undoing a restore | live, end state compared with the start state |
+| Option group presets | local tests only. NOT run live, NOT compared with a builder-made one |
+
+Before relying on option group presets on a site, have ONE made by hand in the Visual Builder and compare it with a
+`--dry-run` of the same thing. Same for the format of a variable.
 
 Builder conventions seen (5.13): new preset ids are 10 lowercase letters (`ruqdqmvbkj`); creating the first preset of a
 module type also creates an empty default "<Module> Preset 1"; "new preset from current styles" moves EVERY design

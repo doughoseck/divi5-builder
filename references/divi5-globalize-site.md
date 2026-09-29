@@ -14,7 +14,7 @@ Tools: `scripts/globalize.js` (all steps), `scripts/wp.js ds-*` (design-system w
 
 | Step | What | Command |
 |---|---|---|
-| 0 | Prove the plugin on this site | `wp.js <site> ds-selftest` must say `different: 0` |
+| 0 | Prove the plugin on this site | `wp.js <site> ds-selftest` must say `different: 0`; `ds-live-test.js <site> all` must pass |
 | 1 | Inventory: what is hard-coded, how often | `globalize.js <site> inventory` |
 | 2 | Create the global colours | builder, or `wp.js <site> ds-color-set` |
 | 3 | BEFORE snapshot, then a control diff | `assets/snapshot-instrument.js` |
@@ -131,8 +131,9 @@ text-align, max-width/width and display.
 - A Theme Builder header or footer write is a site-wide publish. `tb-set` needs the hash from `tb-get`.
 - Creating 20 presets in a row pushes the first backup out of a newest-10 list: the plugin (>= 1.8.1) also keeps the
   store as it was before the first write of each day.
-- Design variables and option group presets written by the plugin have NOT been compared with builder-made ones.
-  Have one made by hand and compare it with a `--dry-run` before relying on them.
+- Option group presets written by the plugin have NOT been run live or compared with builder-made ones, and a
+  variable's format has not been compared with a builder-made one. Have one made by hand and compare it with a
+  `--dry-run` before relying on them.
 
 ## What is usually left over
 

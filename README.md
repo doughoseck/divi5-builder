@@ -157,8 +157,15 @@ node scripts/wp.js <site> ds-restore --store presets --index 0
 Add-only (nothing is ever deleted), same name updates, the previous store is kept, and the
 write is read back. A preset's style and markup parts are worked out by Divi's own code;
 `ds-selftest` proves that against the presets already on the site without writing anything.
-Module presets are proven against builder-made ones. Design variables and option group
-presets are not yet: compare a `--dry-run` with one made in the builder first.
+Prove all of it on a new site with one command. It creates test items, checks Divi's own
+store after every step, and puts each store back exactly as it was:
+
+```bash
+node scripts/ds-live-test.js <site> all        # staging, while nobody is editing
+```
+
+Module presets are also proven against one made by hand in the builder. Option group presets
+are not proven yet: compare a `--dry-run` with one made in the builder first.
 
 ## Globalising an existing site
 

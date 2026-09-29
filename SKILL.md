@@ -448,9 +448,10 @@ Styling rule 2 says type and colour come from globals. This is how to find and u
   node scripts/wp.js <site> ds-preset-set --file preset.json [--dry-run] [--summary]
   node scripts/wp.js <site> ds-backups ; node scripts/wp.js <site> ds-restore --store presets --index 0
   ```
-  Same name or label updates, so a script can run twice. Module presets are proven against
-  builder-made ones. Design variables and option group presets are NOT yet: have one made in
-  the builder and compare it with a `--dry-run` before relying on them. On a site with
+  Same name or label updates, so a script can run twice. `node scripts/ds-live-test.js <site> all`
+  proves colours, variables, presets and restore on a site and leaves its stores exactly as
+  they were: run it once per new site (staging, nobody editing). Option group presets are NOT
+  proven yet: have one made in the builder and compare it with a `--dry-run` first. On a site with
   mu-plugin < 1.8, ask the user to make the preset in the builder and read its id.
 
 ## Globalising an existing site (read `references/divi5-globalize-site.md`)
