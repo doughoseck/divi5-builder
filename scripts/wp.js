@@ -474,7 +474,7 @@ function flags(argv) {
       const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/selftest`, c);
       if (f.json) { console.log(JSON.stringify(r, null, 2)); break; }
       console.log(`checked ${r.checked} preset(s), different: ${r.different}`);
-      for (const p of r.presets || []) console.log(`  ${p.match ? 'same ' : 'DIFF '} | ${p.for} | ${p.name} | style ${p.styleAttrs || '-'} | render ${p.renderAttrs || '-'}${p.error ? ' | ' + p.error : ''}`);
+      for (const p of r.presets || []) console.log(`  ${p.match ? 'same ' : 'DIFF '} | ${p.kind || 'module'} | ${p.for} | ${p.name} | style ${p.styleAttrs || '-'} | render ${p.renderAttrs || '-'}${p.error ? ' | ' + p.error : ''}`);
       if (r.different) process.exitCode = 1;
       break;
     }

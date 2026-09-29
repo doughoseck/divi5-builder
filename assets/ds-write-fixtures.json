@@ -216,5 +216,120 @@
    }
   },
   "renderAttrs": {}
+ },
+ {
+  "id": "groupfixture",
+  "name": "Control Border",
+  "kind": "group",
+  "moduleName": "divi/text",
+  "groupName": "divi/border",
+  "groupId": "module.decoration.border",
+  "attrs": {
+   "module": {
+    "decoration": {
+     "border": {
+      "desktop": {
+       "value": {
+        "styles": {
+         "left": {
+          "width": "20px",
+          "color": "$variable({\"type\":\"color\",\"value\":{\"name\":\"gcid-yellow0001\",\"settings\":{}}})$"
+         }
+        }
+       }
+      }
+     },
+     "sizing": {
+      "desktop": {
+       "value": {
+        "maxWidth": "900px",
+        "alignment": "center"
+       }
+      }
+     },
+     "spacing": {
+      "desktop": {
+       "value": {
+        "padding": {
+         "top": "10px",
+         "right": "30px",
+         "bottom": "10px",
+         "left": "30px",
+         "syncVertical": "on",
+         "syncHorizontal": "on"
+        }
+       }
+      }
+     },
+     "layout": {
+      "desktop": {
+       "value": {
+        "display": "block"
+       }
+      }
+     }
+    }
+   }
+  },
+  "styleAttrs": {
+   "module": {
+    "decoration": {
+     "border": {
+      "desktop": {
+       "value": {
+        "styles": {
+         "left": {
+          "width": "20px",
+          "color": "$variable({\"type\":\"color\",\"value\":{\"name\":\"gcid-yellow0001\",\"settings\":{}}})$"
+         }
+        }
+       }
+      }
+     },
+     "sizing": {
+      "desktop": {
+       "value": {
+        "maxWidth": "900px",
+        "alignment": "center"
+       }
+      }
+     },
+     "spacing": {
+      "desktop": {
+       "value": {
+        "padding": {
+         "top": "10px",
+         "right": "30px",
+         "bottom": "10px",
+         "left": "30px",
+         "syncVertical": "on",
+         "syncHorizontal": "on"
+        }
+       }
+      }
+     },
+     "layout": {
+      "desktop": {
+       "value": {
+        "display": "block"
+       }
+      }
+     }
+    }
+   }
+  },
+  "renderAttrs": {
+   "module": {
+    "decoration": {
+     "layout": {
+      "desktop": {
+       "value": {
+        "display": "block"
+       }
+      }
+     }
+    }
+   }
+  }
  }
 ]

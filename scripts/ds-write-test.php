@@ -65,7 +65,7 @@ $canon  = function ( $v ) { return json_encode( d5b_ds_ksort( $v ) ); };
 // =====================================================================================================
 echo "--- PART 1: the split, against presets the Visual Builder really stored (a live site, 2026-09-29) ---\n";
 $real = json_decode( file_get_contents( __DIR__ . '/../assets/ds-write-fixtures.json' ), true );
-$check( 'fixtures loaded', is_array( $real ) && count( $real ) >= 3 );
+$check( 'fixtures loaded, one of them an option group preset made in the builder', is_array( $real ) && count( $real ) >= 4 && 'group' === ( end( $real )['kind'] ?? '' ) );
 foreach ( $real as $p ) {
 	$split = d5b_ds_split( $p['moduleName'], $p['attrs'] );
 	if ( is_wp_error( $split ) ) { $check( $p['name'] . ': split ran', false, $split->get_error_message() ); continue; }
@@ -155,6 +155,23 @@ foreach ( array(
 }
 $check( 'none of the refusals saved anything', $saves === D5B_Fake_Preset::$saves );
 
+echo "--- option group presets ---\n";
+$gfx   = end( $real ); // made by hand in the builder: it holds the WHOLE module's design, not only the border
+$whole = $gfx['attrs'] + array( 'content' => array( 'innerContent' => array( 'desktop' => array( 'value' => '<p>text</p>' ) ) ) );
+$gin   = array( 'kind' => 'group', 'moduleName' => 'divi/text', 'groupName' => $gfx['groupName'], 'groupId' => $gfx['groupId'], 'name' => 'Yellow bar', 'attrs' => $whole );
+$g     = d5b_ds_preset_upsert( $gin, true );
+$check( 'group preset: accepted', ! is_wp_error( $g ) && 'group' === $g['kind'] && $gfx['groupName'] === $g['for'], is_wp_error( $g ) ? $g->get_error_message() : '' );
+$check( 'group preset: holds the settings of its own group', ! is_wp_error( $g ) && $canon( $g['item']['attrs']['module']['decoration']['border'] ) === $canon( $gfx['attrs']['module']['decoration']['border'] ) );
+$check( 'group preset: holds NOTHING from other groups (the builder stores them, Divi never applies them)', ! is_wp_error( $g ) && array( 'border' ) === array_keys( $g['item']['attrs']['module']['decoration'] ) && array( 'module' ) === array_keys( $g['item']['attrs'] ) );
+$check( 'group preset: what was left out is reported', ! is_wp_error( $g ) && count( $g['leftOutOfGroup'] ) >= 3 && false !== strpos( implode( ' ', $g['warnings'] ), 'left out' ) );
+$check( 'group preset: its style part is the group\'s part of the builder\'s', ! is_wp_error( $g ) && $canon( $g['item']['styleAttrs'] ) === $canon( array( 'module' => array( 'decoration' => array( 'border' => $gfx['styleAttrs']['module']['decoration']['border'] ) ) ) ) );
+$check( 'group preset: carries groupName, groupId and the module it was made in', ! is_wp_error( $g ) && $gfx['groupId'] === $g['item']['groupId'] && $gfx['groupName'] === $g['item']['groupName'] && 'divi/text' === $g['item']['moduleName'] && 'group' === $g['item']['type'] );
+$gsave = d5b_ds_preset_upsert( $gin, false );
+$check( 'group preset: stored under its group name, module presets untouched', ! is_wp_error( $gsave ) && isset( D5B_Fake_Preset::$data['group'][ $gfx['groupName'] ]['items'][ $gsave['id'] ] ) && isset( D5B_Fake_Preset::$data['module']['divi/text'] ) );
+$check( 'group preset: attrs with nothing under the group are refused', is_wp_error( d5b_ds_preset_upsert( array( 'groupId' => 'module.decoration.boxShadow' ) + $gin, true ) ) );
+$comp = d5b_ds_preset_upsert( array( 'groupId' => 'designText', 'groupName' => 'divi/font', 'name' => 'Composite' ) + $gin, true );
+$check( 'group preset: a composite group id cannot be filtered, and says so', ! is_wp_error( $comp ) && false !== strpos( implode( ' ', $comp['warnings'] ), 'not a path' ) );
+
 echo "--- colours ---\n";
 et_update_option( 'et_global_data', array( 'global_colors' => array( 'gcid-yellow0001' => array( 'id' => 'gcid-yellow0001', 'label' => 'Yellow', 'color' => '#fec10e', 'status' => 'active', 'order' => '6' ) ) ) );
 $c = d5b_ds_color_upsert( array( 'label' => 'Overlay', 'color' => '#112233' ), false );
@@ -173,6 +190,12 @@ et_update_option( 'global_variables', array( 'numbers' => array( 'gvid-aaa' => a
 $v = d5b_ds_variable_upsert( array( 'type' => 'numbers', 'label' => 'Section pad', 'value' => '50px' ), false );
 $check( 'create variable: existing ones kept, other types too', ! is_wp_error( $v ) && 2 === count( $vars()['numbers'] ) && '20px' === $vars()['numbers']['gvid-aaa']['value'] && isset( $vars()['strings']['gvid-bbb'] ), is_wp_error( $v ) ? $v->get_error_message() : '' );
 $check( 'create variable: id repeated inside the item', ! is_wp_error( $v ) && $vars()['numbers'][ $v['id'] ]['id'] === $v['id'] );
+$vi = is_wp_error( $v ) ? array() : $vars()['numbers'][ $v['id'] ];
+$check( 'create variable: the same fields, in the same order, as one made in the builder', array( 'id', 'label', 'value', 'order', 'status', 'lastUpdated', 'variableType' ) === array_keys( $vi ), implode( ',', array_keys( $vi ) ) );
+$check( 'create variable: variableType is the type, order is a string', 'numbers' === ( $vi['variableType'] ?? '' ) && '2' === ( $vi['order'] ?? null ) );
+$check( 'timestamps are UTC, in the builder\'s form', (bool) preg_match( '/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/', $vi['lastUpdated'] ?? '' ) && abs( strtotime( $vi['lastUpdated'] ) - time() ) < 5, $vi['lastUpdated'] ?? '' );
+$vu = d5b_ds_variable_upsert( array( 'type' => 'numbers', 'label' => 'Gap', 'value' => '22px' ), false );
+$check( 'update of a variable made elsewhere keeps its order and gains variableType', ! is_wp_error( $vu ) && 'gvid-aaa' === $vu['id'] && '1' === (string) $vars()['numbers']['gvid-aaa']['order'] && 'numbers' === $vars()['numbers']['gvid-aaa']['variableType'] && '22px' === $vars()['numbers']['gvid-aaa']['value'] );
 $check( 'an id that belongs to another type is refused', is_wp_error( d5b_ds_variable_upsert( array( 'type' => 'numbers', 'id' => 'gvid-bbb', 'label' => 'Clash', 'value' => '1px' ), false ) ) );
 $check( 'colors is not a variable type (they live in the colour store)', is_wp_error( d5b_ds_variable_upsert( array( 'type' => 'colors', 'label' => 'X', 'value' => '#fff' ), false ) ) );
 D5B_Fake_Data::$refuse_vars = true;
@@ -203,6 +226,24 @@ $GLOBALS['d5b_caps'] = array( 'manage_options' => true, 'edit_theme_options' => 
 $check( 'without edit_theme_options nothing is allowed', false === d5b_ds_can() );
 $GLOBALS['d5b_caps'] = array( 'manage_options' => false, 'edit_theme_options' => true );
 $check( 'without manage_options nothing is allowed', false === d5b_ds_can() );
+
+echo "--- selftest ---\n";
+$GLOBALS['d5b_caps'] = array( 'manage_options' => true, 'edit_theme_options' => true );
+$grp = end( $real ); $txt = $real[0];
+$item = function ( $p, $type ) { return array( 'id' => $p['id'], 'name' => $p['name'], 'type' => $type, 'moduleName' => $p['moduleName'], 'attrs' => $p['attrs'], 'styleAttrs' => $p['styleAttrs'], 'renderAttrs' => $p['renderAttrs'] ); };
+D5B_Fake_Preset::$data = array(
+	'module' => array( 'divi/text' => array( 'default' => $txt['id'], 'items' => array( $txt['id'] => $item( $txt, 'module' ) ) ), 'divi/blurb' => array( 'default' => 'emptydefault', 'items' => array( 'emptydefault' => array( 'id' => 'emptydefault', 'name' => 'Blurb 1', 'type' => 'module', 'moduleName' => 'divi/blurb' ) ) ) ),
+	'group'  => array( $grp['groupName'] => array( 'default' => '', 'items' => array( $grp['id'] => $item( $grp, 'group' ) + array( 'groupName' => $grp['groupName'], 'groupId' => $grp['groupId'] ) ) ) ),
+);
+$st = d5b_ds_selftest();
+$check( 'module preset, option group preset and an empty default: 3 checked, 0 different', ! is_wp_error( $st ) && 3 === $st['checked'] && 0 === $st['different'], json_encode( $st ) );
+$check( 'the group preset is reported as a group preset', ! is_wp_error( $st ) && 1 === count( array_filter( $st['presets'], function ( $r ) { return 'group' === $r['kind']; } ) ) );
+D5B_Fake_Preset::$data['group'][ $grp['groupName'] ]['items'][ $grp['id'] ]['styleAttrs']['module']['decoration']['sizing']['desktop']['value']['maxWidth'] = '901px';
+$st = d5b_ds_selftest();
+$check( 'a group preset whose stored style part is wrong is reported', ! is_wp_error( $st ) && 1 === $st['different'] );
+unset( D5B_Fake_Preset::$data['module']['divi/text']['items'][ $txt['id'] ]['renderAttrs'] );
+$st = d5b_ds_selftest();
+$check( 'a module preset that lost its markup part is reported', ! is_wp_error( $st ) && 2 === $st['different'] );
 
 echo $failed ? "\n$failed FAILED\n" : "\nall passed\n";
 exit( $failed ? 1 : 0 );

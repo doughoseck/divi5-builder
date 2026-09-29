@@ -628,12 +628,21 @@ puts each store back exactly as it was: `node scripts/ds-live-test.js <site> all
 |---|---|
 | Module presets: create, update, split, content kept out | live, and compared with a preset made by hand in the builder: identical |
 | Global colours: create, update, refusal, same fields as builder-made colours | live |
-| Design variables: create, update, two types, text kept character for character | live (write and read-back). FORMAT not yet compared with a builder-made variable |
+| Design variables: create, update, two types, text kept character for character | live (write and read-back), and compared with a variable made in the builder. The comparison found one missing field, `variableType`, and timestamps in site time instead of UTC: both fixed in 1.8.2 |
 | Restore, for all three stores, including undoing a restore | live, end state compared with the start state |
-| Option group presets | local tests only. NOT run live, NOT compared with a builder-made one |
+| Option group presets: the record | live dry run, compared with one made in the builder from the same module: every field, `attrs`, `styleAttrs` and `renderAttrs` identical |
+| Option group presets: written to a site and rendered on a module | NOT done |
+| `ds-selftest` | covers module presets AND option group presets since 1.8.2 |
 
-Before relying on option group presets on a site, have ONE made by hand in the Visual Builder and compare it with a
-`--dry-run` of the same thing. Same for the format of a variable.
+**A builder-made variable** (5.13): `{ id, label, value, order (a string), status, lastUpdated (UTC, ms), variableType }`,
+`variableType` = the type it is stored under (`numbers`, `strings`, ...).
+
+**The builder's option group presets hold too much, and it costs the module its design.** "New preset from current
+styles" on ONE group (Border) stored the WHOLE module's design in the group preset (border, sizing, spacing, layout)
+and emptied the module. Divi applies only the group's own settings from a group preset, so the module kept its border
+and lost its padding, max-width and centring. The plugin therefore keeps only what lies under `groupId` and reports
+the rest as `leftOutOfGroup`. If someone makes a group preset in the builder, check the module afterwards.
+A composite group id (`designTitleText`) is not a path into attrs: there the plugin cannot filter and says so.
 
 Builder conventions seen (5.13): new preset ids are 10 lowercase letters (`abcdefghij`); creating the first preset of a
 module type also creates an empty default "<Module> Preset 1"; "new preset from current styles" moves EVERY design

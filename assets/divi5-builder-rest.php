@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Divi 5 Builder — REST meta bridge
  * Description: Registers Divi's builder/layout post-meta for the WordPress REST API so a page built via REST (e.g. by the divi5-builder skill) can be flipped into "Divi mode" without opening the Visual Builder. v1.2 makes link-canvas attach an et_pb_canvas popup to a page via the real Divi meta (_divi_canvas_parent_post_id + _divi_off_canvas_data), so REST-created Divi 5 popups render. v1.3 adds read/write of Divi's GLOBAL COLOUR palette, which lives in a wp_option rather than in page content and could not be created over REST at all before — so a site can now be themed before its first page is built. v1.5 adds Theme Builder access: list every template and layout, read a header/body/footer layout's raw content, and write one back (hash-checked against concurrent edits, previous content kept for restore), because core REST does not expose those post types. v1.7 adds read/write of the site-wide Custom CSS field (Divi's Theme Options ▸ General ▸ Custom CSS) — this isn't a Divi option at all, it's WordPress core's own Additional CSS system (a `custom_css` post per active theme), and both Divi's own save route and the Theme Options screen reject Application Password auth the same way Theme Builder does, so it was previously only editable from a live wp-admin session. v1.8 adds WRITES to the design system: create or update one global colour, one design variable or one preset at a time, through Divi's own save functions (so Divi's CSS cache is cleared), add-only (nothing is ever deleted), with the previous store kept for restore. Writes are gated by the normal edit-post capability (manage_options for the palette, edit_theme_options for Custom CSS), so only authenticated editors/admins (incl. Application Passwords) can use them.
- * Version: 1.8.1
+ * Version: 1.8.2
  * Author: divi5-builder skill
  *
  * INSTALL (pick one):
@@ -23,7 +23,7 @@
  */
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
-if ( ! defined( 'D5B_REST_VERSION' ) ) { define( 'D5B_REST_VERSION', '1.8.1' ); }
+if ( ! defined( 'D5B_REST_VERSION' ) ) { define( 'D5B_REST_VERSION', '1.8.2' ); }
 
 add_action( 'init', function () {
 	$auth = function ( $allowed, $meta_key, $post_id ) {
@@ -787,6 +787,13 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 		return array( 'ok' => true, 'store' => $store, 'restoredFrom' => $target['time'], 'note' => 'the store as it was a moment ago is now backup 0' );
 	}
 
+	// Now, in UTC, in the form the builder writes: 2026-09-29T11:46:45.168Z. (wp_date() gives the SITE's time, which
+	// labelled with Z was two hours off on a UTC+2 site.)
+	function d5b_ds_now() {
+		$t = microtime( true );
+		return gmdate( 'Y-m-d\TH:i:s', (int) $t ) . '.' . sprintf( '%03d', (int) floor( ( $t - floor( $t ) ) * 1000 ) ) . 'Z';
+	}
+
 	function d5b_ds_new_id( $prefix, $taken, $length = 10 ) {
 		$chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
 		do {
@@ -846,7 +853,7 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 				'label'       => $label,
 				'color'       => $color,
 				'status'      => ( isset( $in['status'] ) && 'inactive' === $in['status'] ) ? 'inactive' : 'active',
-				'lastUpdated' => wp_date( 'Y-m-d\TH:i:s.v\Z' ),
+				'lastUpdated' => d5b_ds_now(),
 			)
 		);
 		$clean = $d::sanitize_global_colors_data( array( $found => $item ) );
@@ -886,10 +893,12 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 		if ( '' === $found ) { $found = '' !== $id ? $id : d5b_ds_new_id( 'gvid-', $taken ); }
 		if ( 'created' === $action && isset( $taken[ $found ] ) ) { return d5b_ds_err( 'id_taken', 'that id belongs to a variable of another type' ); }
 		$old  = isset( $items[ $found ] ) && is_array( $items[ $found ] ) ? $items[ $found ] : array();
+		// Same fields, in the same order, as a variable made in the builder (compared 2026-09-29, Divi 5.13):
+		// id, label, value, order (a string), status, lastUpdated (UTC), variableType.
 		$item = array_merge(
-			array( 'order' => d5b_ds_next_order( $items ) ),
-			$old,
-			array( 'id' => $found, 'label' => $label, 'value' => $value, 'status' => 'active', 'lastUpdated' => wp_date( 'Y-m-d\TH:i:s.v\Z' ) )
+			array( 'id' => $found, 'label' => $label, 'value' => $value, 'order' => (string) d5b_ds_next_order( $items ) ),
+			$old, // a variable that exists keeps its own order and any field this code does not know
+			array( 'id' => $found, 'label' => $label, 'value' => $value, 'status' => 'active', 'lastUpdated' => d5b_ds_now(), 'variableType' => $type )
 		);
 		unset( $item['allowedActions'] );
 		$out = array( 'ok' => true, 'action' => $action, 'id' => $found, 'type' => $type, 'item' => $item, 'dryRun' => (bool) $dry );
@@ -927,6 +936,31 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 			if ( ! preg_match( '/^[A-Za-z0-9.\-]+$/', $group_id ) ) { return d5b_ds_err( 'bad_group', 'a group preset needs groupId, e.g. title.decoration.font' ); }
 		}
 		foreach ( array( 'builderVersion', 'modulePreset', 'groupPreset' ) as $k ) { unset( $attrs[ $k ] ); }
+
+		// An option group preset holds ITS GROUP's settings only. The builder's "new preset from current styles" on a
+		// group stores the whole module's design in the group preset and empties the module, but Divi applies only the
+		// group's own settings from it: the module loses everything else (seen 2026-09-29: a Border preset cost a text
+		// block its padding, max-width and centring). So what lies outside the group is left out here, and reported.
+		$outside      = array();
+		$group_unsure = false;
+		if ( 'group' === $kind ) {
+			$keys = explode( '.', $group_id );
+			$node = $attrs;
+			foreach ( $keys as $k ) { if ( is_array( $node ) && array_key_exists( $k, $node ) ) { $node = $node[ $k ]; } else { $node = null; break; } }
+			if ( count( $keys ) > 1 && is_array( $node ) && $node ) {
+				$only = array();
+				$ref  = &$only;
+				foreach ( $keys as $k ) { $ref[ $k ] = array(); $ref = &$ref[ $k ]; }
+				$ref = $node;
+				unset( $ref );
+				$outside = d5b_ds_paths( d5b_ds_subtract( $attrs, $only ) );
+				$attrs   = $only;
+			} elseif ( count( $keys ) > 1 ) {
+				return d5b_ds_err( 'no_attrs', 'attrs holds nothing under "' . $group_id . '", the group this preset is for' );
+			} else {
+				$group_unsure = true; // a composite group id (e.g. designTitleText) is not a path into attrs
+			}
+		}
 
 		$split = d5b_ds_split( $module, $attrs );
 		if ( is_wp_error( $split ) ) { return $split; }
@@ -991,8 +1025,10 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 		$warnings = array();
 		if ( $instance ) { $warnings[] = 'these belong to one module, not to a design, and every module given this preset would get them: ' . implode( ', ', $instance ); }
 		if ( 'module' === $kind && empty( $item['styleAttrs'] ) ) { $warnings[] = 'this preset has no styleAttrs: Divi gives such a preset no CSS class'; }
+		if ( $outside ) { $warnings[] = count( $outside ) . ' setting(s) outside the group "' . $group_id . '" were left out of this group preset (Divi would not apply them)'; }
+		if ( $group_unsure ) { $warnings[] = '"' . $group_id . '" is not a path into attrs, so nothing could be left out: make sure attrs holds this group\'s settings only'; }
 		$neither = d5b_ds_paths( d5b_ds_subtract( d5b_ds_subtract( $item['attrs'], $item['styleAttrs'] ?? array() ), $item['renderAttrs'] ?? array() ) );
-		$out     = array( 'ok' => true, 'action' => $action, 'id' => $found, 'kind' => $kind, 'for' => $sub, 'item' => $item, 'strippedContent' => $stripped, 'inAttrsOnly' => $neither, 'warnings' => $warnings, 'dryRun' => (bool) $dry );
+		$out     = array( 'ok' => true, 'action' => $action, 'id' => $found, 'kind' => $kind, 'for' => $sub, 'item' => $item, 'strippedContent' => $stripped, 'leftOutOfGroup' => $outside, 'inAttrsOnly' => $neither, 'warnings' => $warnings, 'dryRun' => (bool) $dry );
 		if ( $dry ) { return $out; }
 
 		$items[ $found ]  = $item;
@@ -1020,16 +1056,20 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 		return $out;
 	}
 
-	// Re-split every MODULE preset on the site and compare with what is stored. Writes nothing.
+	// Re-split every preset on the site (module presets and option group presets) and compare with what is stored.
+	// Writes nothing. A group preset is split with the definition of the module it was made in.
 	function d5b_ds_selftest() {
 		$data = d5b_ds_read( 'presets' );
 		if ( is_wp_error( $data ) ) { return $data; }
 		$rows = array();
 		$bad  = 0;
-		foreach ( (array) ( $data['module'] ?? array() ) as $module => $rec ) {
+		foreach ( array( 'module', 'group' ) as $kind ) {
+			foreach ( (array) ( $data[ $kind ] ?? array() ) as $owner => $rec ) {
 			foreach ( (array) ( $rec['items'] ?? array() ) as $pid => $it ) {
-				$row   = array( 'id' => (string) $pid, 'name' => (string) ( $it['name'] ?? '' ), 'for' => (string) $module, 'version' => (string) ( $it['version'] ?? '' ) );
-				$split = d5b_ds_split( (string) $module, (array) ( $it['attrs'] ?? array() ) );
+				$module = 'module' === $kind ? (string) $owner : (string) ( $it['moduleName'] ?? '' );
+				$row    = array( 'id' => (string) $pid, 'name' => (string) ( $it['name'] ?? '' ), 'kind' => $kind, 'for' => (string) $owner, 'version' => (string) ( $it['version'] ?? '' ) );
+				if ( empty( $it['attrs'] ) && empty( $it['styleAttrs'] ) && empty( $it['renderAttrs'] ) ) { $row['styleAttrs'] = 'identical'; $row['renderAttrs'] = 'identical'; $row['match'] = true; $row['note'] = 'empty preset'; $rows[] = $row; continue; }
+				$split = d5b_ds_split( $module, (array) ( $it['attrs'] ?? array() ) );
 				if ( is_wp_error( $split ) ) { $row['match'] = false; $row['error'] = $split->get_error_message(); $bad++; $rows[] = $row; continue; }
 				foreach ( array( 'styleAttrs', 'renderAttrs' ) as $k ) {
 					$stored = d5b_ds_ksort( (array) ( $it[ $k ] ?? array() ) );
@@ -1044,6 +1084,7 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 				$row['match'] = ( 'identical' === $row['styleAttrs'] && 'identical' === $row['renderAttrs'] );
 				if ( ! $row['match'] ) { $bad++; }
 				$rows[] = $row;
+			}
 			}
 		}
 		return array( 'ok' => true, 'checked' => count( $rows ), 'different' => $bad, 'presets' => $rows );

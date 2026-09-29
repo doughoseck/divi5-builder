@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * ds-live-test.js — prove the design-system WRITES on a real site (mu-plugin >= 1.8.1), and leave no trace.
+ * ds-live-test.js — prove the design-system WRITES on a real site (mu-plugin >= 1.8.2), and leave no trace.
  *
  *   node ds-live-test.js <site> colors | variables | presets | all
  *
@@ -51,6 +51,7 @@ const tests = {
     if (!check('create: accepted by Divi (the user needs the "Variables Manager" permission)', c.ok && c.action === 'created' && /^gvid-[a-z0-9]{10}$/.test(c.id || ''), c.__error || JSON.stringify(c).slice(0, 200))) return; writes++;
     let now = ds().variables; const it = ((now || {}).numbers || {})[c.id];
     check('create: the variable is in Divi\'s store', it && it.value === '20px' && it.label === LABEL && it.id === c.id, JSON.stringify(it));
+    check('create: same fields as a variable made in the builder (variableType, order as text, UTC time)', it && it.variableType === 'numbers' && typeof it.order === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(it.lastUpdated || '') && Math.abs(Date.parse(it.lastUpdated) - Date.now()) < 120000, JSON.stringify(it));
     const u = J(['ds-variable-set', '--type', 'numbers', '--label', LABEL, '--value', '24px']); if (u.ok) writes++; now = ds().variables;
     check('same label again updates the same variable', u.ok && u.action === 'updated' && u.id === c.id && now.numbers[c.id].value === '24px', u.__error);
     const s = J(['ds-variable-set', '--type', 'strings', '--label', 'ZZ Test Text (delete me)', '--value', 'Hello & <b>bye</b>']); if (s.ok) writes++; now = ds().variables;
@@ -82,7 +83,7 @@ const tests = {
   },
 };
 const v = J(['plugin-version']); const ver = String(v.version || '0').split('.').map(Number);
-if (v.__error || ver[0] < 1 || (ver[0] === 1 && (ver[1] < 8 || (ver[1] === 8 && (ver[2] || 0) < 1)))) { console.error('STOP: this test needs mu-plugin >= 1.8.1 on the site (found ' + (v.version || 'none') + ')'); process.exit(1); }
+if (v.__error || ver[0] < 1 || (ver[0] === 1 && (ver[1] < 8 || (ver[1] === 8 && (ver[2] || 0) < 2)))) { console.error('STOP: this test needs mu-plugin >= 1.8.2 on the site (found ' + (v.version || 'none') + ')'); process.exit(1); }
 for (const t of what === 'all' ? ['colors', 'variables', 'presets'] : [what]) { console.log('--- ' + t + ' ---'); try { tests[t](); } catch (e) { check(t + ' ran to the end', false, e.message); } }
 console.log(failed ? '\n' + failed + ' FAILED. Check the stores with `wp.js <site> design-system`; `wp.js <site> ds-backups` lists what can be restored.' : '\nall passed, nothing left behind');
 process.exit(failed ? 1 : 0);

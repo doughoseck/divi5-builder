@@ -500,6 +500,7 @@ Styling rule 2 says type and colour come from globals. This is how to find and u
   through Divi's own save functions, add-only, with the previous store kept for restore:
   ```bash
   node scripts/wp.js <site> ds-selftest          # FIRST on every site: must say "different: 0"
+                                                 # (module presets; option group presets too from 1.8.2)
   node scripts/wp.js <site> ds-color-set --label "Brand" --color "#112233" [--dry-run]
   node scripts/wp.js <site> ds-variable-set --type numbers --label "Gap" --value 20px [--dry-run]
   node scripts/wp.js <site> ds-preset-set --file preset.json [--dry-run] [--summary]
@@ -507,8 +508,10 @@ Styling rule 2 says type and colour come from globals. This is how to find and u
   ```
   Same name or label updates, so a script can run twice. `node scripts/ds-live-test.js <site> all`
   proves colours, variables, presets and restore on a site and leaves its stores exactly as
-  they were: run it once per new site (staging, nobody editing). Option group presets are NOT
-  proven yet: have one made in the builder and compare it with a `--dry-run` first. On a site with
+  they were: run it once per new site (staging, nobody editing). Option group presets
+  (`"kind":"group"`): the record matches a builder-made one, but none has been written to a site
+  and rendered yet, so try one module and look at it first. A group preset holds its own group's
+  settings only; the plugin leaves out the rest and reports it. On a site with
   mu-plugin < 1.8, ask the user to make the preset in the builder and read its id.
 
 ## Globalising an existing site (read `references/divi5-globalize-site.md`)

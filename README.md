@@ -164,8 +164,10 @@ store after every step, and puts each store back exactly as it was:
 node scripts/ds-live-test.js <site> all        # staging, while nobody is editing
 ```
 
-Module presets are also proven against one made by hand in the builder. Option group presets
-are not proven yet: compare a `--dry-run` with one made in the builder first.
+Module presets, a design variable and an option group preset were each compared with one made
+by hand in the builder. What is still unproven is listed in the pull request that added this
+and in `references/divi5-presets-variables.md`, section 5: above all, no option group preset
+has been written to a site and rendered on a module yet.
 
 ## Design system first: the recommended way to build
 

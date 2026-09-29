@@ -101,7 +101,11 @@ A preset should hold the LOOK. Placement that differs per module (a button's mar
 5. **A preset is made in a context.** Presets taken from a site converted from Divi 4 come from modules inside
    block-layout columns. Inside a flex column (what Divi 5 and this compiler build by default) a centred block with a
    max-width shrinks to the width of its content. Presets for NEW pages are best made from modules built the new way.
-6. **What the builder does differently.** "New preset from current styles" moves EVERY design setting of that module
+6. **Option group presets made in the builder: check the module afterwards.** "New preset from current styles" on one
+   group (Border) moved the whole module's design into the group preset and emptied the module. Only the border came
+   back from the preset; padding, max-width and centring were gone. `ds-preset-set` with `kind: "group"` keeps the
+   group's own settings only.
+7. **What the builder does differently.** "New preset from current styles" moves EVERY design setting of that module
    into the preset, margins and visibility flags included. Fine for one module, wrong as a shared preset. If a preset
    made that way is slimmed later, the module it was made from has lost those settings: give them back to it.
 
@@ -146,9 +150,9 @@ text-align, max-width/width and display.
 - A Theme Builder header or footer write is a site-wide publish. `tb-set` needs the hash from `tb-get`.
 - Creating 20 presets in a row pushes the first backup out of a newest-10 list: the plugin (>= 1.8.1) also keeps the
   store as it was before the first write of each day.
-- Option group presets written by the plugin have NOT been run live or compared with builder-made ones, and a
-  variable's format has not been compared with a builder-made one. Have one made by hand and compare it with a
-  `--dry-run` before relying on them.
+- Option group presets: the record the plugin builds was compared with a builder-made one (identical), but no group
+  preset has been written to a site and rendered on a module yet. Do that on one module, and look at it, before
+  using them widely.
 
 ## What is usually left over
 
