@@ -155,14 +155,19 @@ const commands = {
   },
   'presets-assign'() {
     const mine = JSON.parse(fs.readFileSync(path.join(DIR, 'presets-ids.json'), 'utf8')); const ds = designSystem(); const defaults = {}; const ps = [];
-    for (const p of ds.presets.module) { if (p.isDefault) { defaults[p.for] = { id: p.id, has: !!(p.attrs && Object.keys(p.attrs).length) }; continue; } if (mine[p.name] && mine[p.name].id === p.id) { const lv = leaves(p.attrs || {}); ps.push({ id: p.id, name: p.name, type: p.for, lv, n: Object.keys(lv).length, groups: new Set(Object.keys(lv).map(groupOf).filter(Boolean)) }); } }
-    const isDef = (x, t) => x === '' || x === 'default' || x === '_initial' || (defaults[t] && defaults[t].id === x); const stack = (t, id) => (defaults[t] && defaults[t].has) ? [defaults[t].id, id] : [id];
+    for (const p of ds.presets.module) { if (p.isDefault) { const dl = leaves(p.attrs || {}); defaults[p.for] = { id: p.id, lv: dl, has: Object.keys(dl).length > 0 }; continue; } if (mine[p.name] && mine[p.name].id === p.id) { const lv = leaves(p.attrs || {}); ps.push({ id: p.id, name: p.name, type: p.for, lv, n: Object.keys(lv).length, groups: new Set(Object.keys(lv).map(groupOf).filter(Boolean)) }); } }
+    const isDef = (x, t) => x === '' || x === 'default' || x === '_initial' || (defaults[t] && defaults[t].id === x);
+    // STACK on the default preset only when the two set DIFFERENT things. When both set the same setting their CSS
+    // rules are equally strong and the LAST one written wins, which depends on the page: a draft preview writes the
+    // Theme Builder header's CSS after the page's, and a black section stacked on a transparent default came out transparent.
+    const clash = p => defaults[p.type] ? Object.keys(p.lv).filter(k => k in defaults[p.type].lv) : [];
+    const stack = p => (defaults[p.type] && defaults[p.type].has && !clash(p).length) ? [defaults[p.type].id, p.id] : [p.id];
     const count = {}; let none = 0, other = 0, split = 0, total = 0;
     apply('presets-assign', raw => { let changed = 0; const out = raw.replace(RE(), (m, type, json, sc) => { if (!ps.some(p => p.type === type)) return m; let a; try { a = JSON.parse(json); } catch (e) { return m; } total++;
       if ([].concat(a.modulePreset || []).some(x => !isDef(x, type))) { other++; return m; } const lv = leaves(a); let best = null, wouldSplit = false;
       for (const p of ps) { if (p.type !== type || !p.n || !Object.keys(p.lv).every(k => k in lv && norm(lv[k]) === norm(p.lv[k]))) continue; if (Object.entries(lv).some(([k, v]) => v !== '' && !(k in p.lv) && !NEVER.test(k) && p.groups.has(groupOf(k)))) { wouldSplit = true; continue; } if (!best || p.n > best.n) best = p; }
-      if (!best) { if (wouldSplit) split++; else none++; return m; } Object.keys(best.lv).forEach(k => del(a, k)); prune(a); a.modulePreset = stack(type, best.id); changed++; count[best.name] = (count[best.name] || 0) + 1; return block(type, a, sc); }); return { out, changed }; },
-      () => 'modules of these types ' + total + ' | no preset fits ' + none + ' | matched but would split a group ' + split + ' | already on a preset ' + other + '\nper preset: ' + Object.entries(count).sort((a, b) => b[1] - a[1]).map(([k, v]) => k + ' ' + v).join(' | ') + '\nstacked on the default preset: ' + (Object.entries(defaults).filter(([, d]) => d.has).map(([k, d]) => k + ' ' + d.id).join(', ') || 'none (no default preset holds settings)'));
+      if (!best) { if (wouldSplit) split++; else none++; return m; } Object.keys(best.lv).forEach(k => del(a, k)); prune(a); a.modulePreset = stack(best); changed++; count[best.name] = (count[best.name] || 0) + 1; return block(type, a, sc); }); return { out, changed }; },
+      () => 'modules of these types ' + total + ' | no preset fits ' + none + ' | matched but would split a group ' + split + ' | already on a preset ' + other + '\nper preset: ' + Object.entries(count).sort((a, b) => b[1] - a[1]).map(([k, v]) => k + ' ' + v).join(' | ') + '\nstacked on their default preset: ' + (ps.filter(p => stack(p).length === 2).map(p => p.name).join(', ') || 'none') + '\nNOT stacked, they set something the default also sets: ' + (ps.filter(p => clash(p).length).map(p => p.name + ' (' + clash(p).map(k => k.replace(/\.desktop\.value/, '')).join(', ') + ')').join('; ') || 'none'));
   },
   restore() {
     const step = flag('step'); if (!step || step === true) { console.error('restore needs --step <colors|presets-assign>'); process.exit(1); } const bdir = path.join(DIR, 'backup', step); if (!fs.existsSync(bdir)) { console.error('no backups for step ' + step + ' in ' + bdir); process.exit(1); } let n = 0, ok = 0;

@@ -7,6 +7,9 @@ Worked out on a 40-page site converted from Divi 4 (1,630 blocks, 618 modules of
 704 colour literals became global colour references, 382 duplicate pins were removed, 22 presets now style 384 modules,
 and a computed-style comparison of 7,285 elements showed zero differences. Every rule below cost a failed attempt.
 
+This is the REPAIR. The way to never need it is to build design system first (SKILL.md, "Design system first"):
+colours and presets before the first page, pages that carry content and placement only.
+
 Tools: `scripts/globalize.js` (all steps), `scripts/wp.js ds-*` (design-system writes, mu-plugin >= 1.8),
 `assets/snapshot-instrument.js` (the verification). Format details: `divi5-presets-variables.md`.
 
@@ -67,9 +70,16 @@ A preset should hold the LOOK. Placement that differs per module (a button's mar
 
 **Rules**
 
-1. **Stack on the default preset.** A module with its own preset no longer gets the type's default. When the default
-   holds settings (heading styles in a Text default, a transparent background in a Section default), assign
-   `"modulePreset":["<default id>","<preset id>"]`. `presets-assign` does this by itself.
+1. **Stack on the default preset, but only when the two set DIFFERENT things.** A module with its own preset no
+   longer gets the type's default. When the default holds settings the preset does not set (uppercase headings in a
+   Text default, next to a preset that only centres them), assign `"modulePreset":["<default id>","<preset id>"]`.
+   - When BOTH set the same setting (a Section default with a transparent background, a preset with a black one), do
+     NOT stack. Their CSS rules are equally strong, so the one written last wins. On a published page the default is
+     written first and the stack looks right. In a DRAFT PREVIEW Divi writes the Theme Builder header's CSS after the
+     page's, the default's rule appears a second time, and the black section was transparent.
+   - `presets-assign` decides this per preset and prints which ones it stacked and which it did not.
+   - A module taken off the stack loses whatever else the default held. Check that list (the script prints it) and
+     put into the preset what the modules still need.
 2. **A module matches when EVERY setting of the preset is in the module with the same value.** It loses exactly those
    settings and keeps the rest. The preset's settings are read from the SITE, not from the local spec, because Divi may
    have removed something on the way in (a divider's "show line" counts as content).
@@ -88,7 +98,10 @@ A preset should hold the LOOK. Placement that differs per module (a button's mar
      as "would SPLIT".
 4. **Content never enters a preset.** The plugin removes every `<element>.innerContent` and `module.meta`. Interactions,
    conditions, links, ids and classes belong to one module: the plugin warns when a preset carries them.
-5. **What the builder does differently.** "New preset from current styles" moves EVERY design setting of that module
+5. **A preset is made in a context.** Presets taken from a site converted from Divi 4 come from modules inside
+   block-layout columns. Inside a flex column (what Divi 5 and this compiler build by default) a centred block with a
+   max-width shrinks to the width of its content. Presets for NEW pages are best made from modules built the new way.
+6. **What the builder does differently.** "New preset from current styles" moves EVERY design setting of that module
    into the preset, margins and visibility flags included. Fine for one module, wrong as a shared preset. If a preset
    made that way is slimmed later, the module it was made from has lost those settings: give them back to it.
 
@@ -118,6 +131,8 @@ text-align, max-width/width and display.
   what the snapshot cannot see.
 - A rule in the theme with `!important` can make a value look wrong that was wrong before too. Read the matched CSS
   rules before blaming the change.
+- The snapshot only sees PUBLISHED pages, and only as a visitor. Build one draft page from the presets and look at
+  its preview as well: that is where the stacking order problem of rule 1 showed, not in 7,285 measured elements.
 
 ## Safety rules for any bulk write
 

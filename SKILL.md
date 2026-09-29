@@ -27,6 +27,60 @@ Default strategy (agreed with the author): **native modules first** — real
 stay fully editable in the visual builder. Fall back to a `divi/code` module only
 for a section whose layout the native set can't express.
 
+And **design system first** (the recommended way to build, see the next section):
+colours and presets exist BEFORE the first page, and a page carries content and
+placement, not design.
+
+## Design system first — the recommended way to build
+
+A site built module by module ends up with the same yellow button styled fifteen
+times. Changing it means fifteen edits, and moving it onto presets afterwards is a
+project of its own (`references/divi5-globalize-site.md` is what that cost). Build
+the other way round:
+
+1. **Look at what the site has:** `node scripts/wp.js <site> design-system`.
+2. **Create what is missing, before any page** (mu-plugin >= 1.8; on a new site run
+   `node scripts/ds-live-test.js <site> all` once first):
+   - one global colour per real colour: `wp.js <site> ds-color-set --label "Brand" --color "#112233"`
+   - one preset per repeating look: each button style, each section style (background
+     + padding), the heading block, the card: `wp.js <site> ds-preset-set --file preset.json`
+   - what EVERY module of a type shares (heading case, body colour) belongs in that
+     type's DEFAULT preset, not in a named one.
+3. **Reference them in the page spec.** Any section, row, column or module takes
+   `"modulePreset":"<id>"`:
+   ```json
+   {"sections":[{"modulePreset":"sectionidaa","rows":[{"columns":[{"modules":[
+     {"type":"text","html":"<h1>Title</h1>","modulePreset":["textdefault","titleidaaa"]},
+     {"type":"button","text":"Book now","url":"https://…","modulePreset":"buttonidaa"}
+   ]}]}]}]}
+   ```
+   A module on a preset carries **content and placement only** (text, url, image,
+   margin, alignment). No colours, no fonts, no padding next to a preset.
+4. **Need a look that no preset has?** Used once: set it on the module, with global
+   colours. Used twice: make a preset. Never copy a preset's values onto a module.
+
+**Rules that are easy to get wrong** (each one was learnt from a failure):
+
+- **One option group, one owner.** Never give a module a setting from a group its
+  preset already fills (`sizing`, `spacing`, `border`, a font group…). Divi writes the
+  module's CSS and the preset's CSS separately, so settings that only work together
+  (max-width + centring) stop working, and a value identical to the preset's is thrown
+  away at render. `layout` and `sizing` count as one group.
+- **Stacking** `["<default id>","<id>"]` keeps what the type's default preset gives
+  (needed as soon as that default holds settings, because a module with its own preset
+  no longer gets the default). It is only safe when the two presets set DIFFERENT
+  things. When both set the same setting, do not stack: the last CSS rule written wins,
+  and that differs between a published page and a draft preview.
+- **A preset id that does not exist fails silently.** Take ids from `design-system`.
+- **A preset is made in a context.** A preset taken from a module inside a block-layout
+  column (every site converted from Divi 4) behaves differently inside a flex column
+  (what this compiler builds): a centred max-width block shrinks to its content. Make
+  presets for new pages from modules built the new way, and look at the result.
+- **Proportion.** A small edit to an existing page uses what the site has. Do not
+  introduce presets for a one-off, and do not restyle a site that was not asked about.
+
+`node scripts/preset-spec-test.js` tests the compiler side of this, no site needed.
+
 ## Styling rules — NON-NEGOTIABLE
 
 These come straight from how the author builds; follow them exactly. The point of Divi is
@@ -132,11 +186,14 @@ with `url`/`user`/`pass`; `pass` is a WordPress **Application Password**).
    `assets/divi5-builder-rest.php`; you can build block content but the page won't
    render as Divi until it's active.
 
-3. **Decide colours the "globals if present, else brief" way.** If a `global-colors`
-   gcid clearly matches a brand role you need (primary/secondary/etc.), reference it
-   in the spec via `{"colorVar":"gcid-..."}` so the page inherits the theme. Otherwise
-   emit literal hex from the brief with `{"color":"#RRGGBB"}`. When unsure of a gcid's
-   actual hue, prefer literal hex — a wrong global is worse than a right literal.
+3. **Set up the design system first** (see "Design system first" above):
+   `node scripts/wp.js <site> design-system` shows the colours and presets the site
+   has. For a new build, create the global colours and the presets the design needs
+   BEFORE writing a page, then reference them. For an edit, use what exists: if a
+   gcid clearly matches the role you need, reference it via `{"colorVar":"gcid-..."}`.
+   Only when the site has no matching global and you may not add one, emit the literal
+   hex from the brief with `{"color":"#RRGGBB"}`. When unsure of a gcid's actual hue,
+   read it from `design-system` — a wrong global is worse than a right literal.
 
 4. **Author a page spec** (compact JSON) rather than raw block markup. The spec
    shape and every module type are documented in the header of `scripts/divi.js`.
@@ -471,7 +528,7 @@ node scripts/globalize.js <site> restore --step presets-assign [--write]
 ```
 
 Three rules carry most of the weight: assign a preset STACKED on the module type's default
-preset when that default holds settings; never SPLIT an option group between a preset and a
+preset when that default holds settings the preset does not set itself; never SPLIT an option group between a preset and a
 module (Divi renders their CSS separately, and duplicates on the module are stripped at
 render); and prove every step with `assets/snapshot-instrument.js` (before, control,
 change, no-op CSS save, warm, diff), because a bulk write that "worked" says nothing about

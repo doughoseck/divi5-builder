@@ -635,16 +635,18 @@ puts each store back exactly as it was: `node scripts/ds-live-test.js <site> all
 Before relying on option group presets on a site, have ONE made by hand in the Visual Builder and compare it with a
 `--dry-run` of the same thing. Same for the format of a variable.
 
-Builder conventions seen (5.13): new preset ids are 10 lowercase letters (`ruqdqmvbkj`); creating the first preset of a
+Builder conventions seen (5.13): new preset ids are 10 lowercase letters (`abcdefghij`); creating the first preset of a
 module type also creates an empty default "<Module> Preset 1"; "new preset from current styles" moves EVERY design
 setting of the module into the preset (margins, alignment, visibility flags too) and leaves the block with content +
 `modulePreset` only.
 
 ### 5.1 Assigning presets to existing modules: the rules that matter (each one cost a failed attempt)
 
-1. **STACK on the default.** A module with its own preset no longer gets the type's default preset. If that default
-   holds settings (a converted site's "Text Preset 1" with heading styles, "Section Preset 1" with a transparent
-   background), assign `"modulePreset":["<default id>","<preset id>"]`. Only the literal strings `default`, `_initial`
+1. **STACK on the default, but only when the two presets set DIFFERENT things.** A module with its own preset no
+   longer gets the type's default preset. If that default holds settings the preset does not set itself (a converted
+   site's "Text Preset 1" with heading styles), assign `"modulePreset":["<default id>","<preset id>"]`. If both set the
+   same setting ("Section Preset 1" with a transparent background, a preset with a black one), assign the preset
+   alone: the two CSS rules are equally strong, the last one written wins, and in a draft preview that is the default's. Only the literal strings `default`, `_initial`
    and `''` are dropped from a stack; a real id is kept and merged first, later ids win
    (`GD/GlobalPreset.php` ~3160-3310). This is the one case where the default's real id belongs in a block (rule 4 in
    section 4 is about using the default ALONE).
@@ -667,7 +669,7 @@ setting of the module into the preset (margins, alignment, visibility flags too)
 5. **A one-time repair step must be a flag, not default behaviour.** On a second run a script cannot tell a module the
    builder changed from one it changed itself.
 
-the reference site result: 22 presets, 384 of 618 modules of those types on a preset, 47 put back because of rule 3, verified by
+Result on the reference site: 22 presets, 385 of 618 modules of those types on a preset, 47 put back because of rule 3, verified by
 a 33-URL computed-style snapshot (7,285 elements, colour, type, borders, padding, margin, alignment, width, display).
 Scripts (scratchpad of the the reference site port, worth generalising into the skill): `build-presets.js`, `create-presets.js`,
 `assign-presets.js`, `revert-split.js`, `warm.js`, `snapshot-instrument.js`.

@@ -167,6 +167,20 @@ node scripts/ds-live-test.js <site> all        # staging, while nobody is editin
 Module presets are also proven against one made by hand in the builder. Option group presets
 are not proven yet: compare a `--dry-run` with one made in the builder first.
 
+## Design system first: the recommended way to build
+
+Colours and presets exist before the first page, and a page carries content and placement, not
+design. Any section, row, column or module in a page spec takes a preset:
+
+```json
+{"type":"button","text":"Book now","url":"https://example.com","modulePreset":"<preset id>"}
+```
+
+Create the presets with `ds-preset-set`, read their ids with `design-system`, reference them in
+the spec. `SKILL.md` has the rules that are easy to get wrong (one option group has one owner,
+when to stack a preset on the default one). `node scripts/preset-spec-test.js` tests the
+compiler side without a site.
+
 ## Globalising an existing site
 
 `scripts/globalize.js` moves a site with hard-coded values onto global colours and presets
