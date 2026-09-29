@@ -140,6 +140,35 @@ any module can be a trigger on 5.13), and how presets and design variables are s
 referenced (`references/divi5-presets-variables.md`, plus a read-only
 `wp.js <site> design-system` that lists the presets, variables and colours a site has).
 
+## Presets, global colours and variables: create them from outside the builder (plugin 1.8+)
+
+Divi's own routes for these need a logged-in browser session and replace the whole store with
+whatever is posted. The mu-plugin calls the same Divi functions from inside WordPress instead,
+one item at a time:
+
+```bash
+node scripts/wp.js <site> ds-selftest          # first, on every site: must say "different: 0"
+node scripts/wp.js <site> ds-color-set --label "Brand" --color "#112233" [--dry-run]
+node scripts/wp.js <site> ds-preset-set --file preset.json [--dry-run]
+node scripts/wp.js <site> ds-backups           # the store as it was before each write
+node scripts/wp.js <site> ds-restore --store presets --index 0
+```
+
+Add-only (nothing is ever deleted), same name updates, the previous store is kept, and the
+write is read back. A preset's style and markup parts are worked out by Divi's own code;
+`ds-selftest` proves that against the presets already on the site without writing anything.
+Module presets are proven against builder-made ones. Design variables and option group
+presets are not yet: compare a `--dry-run` with one made in the builder first.
+
+## Globalising an existing site
+
+`scripts/globalize.js` moves a site with hard-coded values onto global colours and presets
+without changing what a visitor sees: inventory, colour literals to references, preset
+candidates, build, create, assign, restore. Every step is a dry run until `--write`.
+`assets/snapshot-instrument.js` is the proof: a computed-style comparison of every element on
+every page, before and after. The order, the rules and everything that went wrong the first
+time are in `references/divi5-globalize-site.md`.
+
 ## When a Divi page is slow: measure, don't guess
 
 `scripts/hook-profiler.js` generates a small, temporary, **key-gated, read-only** mu-plugin that times every callback on the

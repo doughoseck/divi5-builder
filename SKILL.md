@@ -438,9 +438,43 @@ Styling rule 2 says type and colour come from globals. This is how to find and u
 - **Variables** are `$variable({"type":"…","value":{"name":"gcid-…|gvid-…","settings":{}}})$`.
   Colours take `settings` `hue`, `saturation`, `lightness`, `opacity`. Five colours and two
   fonts always exist (`gcid-primary-color` … `--et_global_body_font`).
-- **Do not create or edit presets and variables from outside the builder.** Divi's save
-  routes replace the WHOLE store and want a cookie nonce. If a build needs a new preset or
-  variable, ask the user to make it in the builder, then read its id.
+- **Creating or changing them (mu-plugin >= 1.8):** Divi's own save routes replace the WHOLE
+  store and want a cookie nonce, so never call those. The plugin writes ONE item per call
+  through Divi's own save functions, add-only, with the previous store kept for restore:
+  ```bash
+  node scripts/wp.js <site> ds-selftest          # FIRST on every site: must say "different: 0"
+  node scripts/wp.js <site> ds-color-set --label "Brand" --color "#112233" [--dry-run]
+  node scripts/wp.js <site> ds-variable-set --type numbers --label "Gap" --value 20px [--dry-run]
+  node scripts/wp.js <site> ds-preset-set --file preset.json [--dry-run] [--summary]
+  node scripts/wp.js <site> ds-backups ; node scripts/wp.js <site> ds-restore --store presets --index 0
+  ```
+  Same name or label updates, so a script can run twice. Module presets are proven against
+  builder-made ones. Design variables and option group presets are NOT yet: have one made in
+  the builder and compare it with a `--dry-run` before relying on them. On a site with
+  mu-plugin < 1.8, ask the user to make the preset in the builder and read its id.
+
+## Globalising an existing site (read `references/divi5-globalize-site.md`)
+
+Moving a site with hard-coded values onto global colours and presets WITHOUT a visible
+change is a process, not a command. The reference has the order, the rules and what went
+wrong the first time. `scripts/globalize.js` runs each step, dry run by default:
+
+```bash
+node scripts/globalize.js <site> inventory                       # what is pinned, how often
+node scripts/globalize.js <site> colors --map map.json [--write] # literals -> global colours
+node scripts/globalize.js <site> signatures                      # preset candidates + examples
+node scripts/globalize.js <site> presets-build --defs defs.json  # specs + which modules fit
+node scripts/globalize.js <site> presets-create [--write]
+node scripts/globalize.js <site> presets-assign [--write]
+node scripts/globalize.js <site> restore --step presets-assign [--write]
+```
+
+Three rules carry most of the weight: assign a preset STACKED on the module type's default
+preset when that default holds settings; never SPLIT an option group between a preset and a
+module (Divi renders their CSS separately, and duplicates on the module are stripped at
+render); and prove every step with `assets/snapshot-instrument.js` (before, control,
+change, no-op CSS save, warm, diff), because a bulk write that "worked" says nothing about
+what a visitor sees.
 
 ## Theme Builder: headers, footers, body layouts (mu-plugin >= 1.5)
 

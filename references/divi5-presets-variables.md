@@ -19,8 +19,7 @@ the checks below were run read-only against two live sites (Divi 5.9 and 5.13) o
 | Front-end class `preset--module--…`, `:root` declarations, `invalid_nonce` on a nonce-less POST | NOT checked |
 
 **Reading what a site has:** `node scripts/wp.js <site> design-system` (mu-plugin >= 1.6, read-only) lists every preset
-with its id, every variable and every global colour. `--full` adds each preset's attrs. There is deliberately NO write
-command: Divi's own save routes replace the whole store (section 4, rule 11).
+with its id, every variable and every global colour. `--full` adds each preset's attrs. Writes need mu-plugin >= 1.8 and go one item at a time: see section 5.
 All paths below are relative to the Divi theme folder. Abbreviations used in citations:
 
 - `B5/` = `includes/builder-5/server/`
@@ -589,3 +588,76 @@ Divi's embedded guidance (quoted `VBJS/ai-agent.js`): "`$variable({...})` is inv
 11. With an Application Password, `POST /wp-json/divi/v1/global-data/global-colors` with an EMPTY body should return error code `invalid_nonce` (not a permission error, and nothing is written because the nonce check runs before the callback). Confirms 1.6.
 12. With an Application Password, `GET /wp-json/divi/v1/settings-data/nonces`: does it return 200 with a `nonces` map? If yes, a follow-up test (a harmless GET such as `/divi/v1/dynamic-content/options?postId=<id>` with the returned `X-ET-Nonce`) shows whether app-password nonces validate. Resolves the biggest open question.
 13. `get_option('et_divi_builder_is_legacy_presets_imported_to_d5')` is `'yes'` on a site whose D4 presets were converted, and `et_divi_builder_global_presets_ng` still holds the D4 originals.
+
+## 5. WRITING the design system from outside the builder (mu-plugin >= 1.8, proven live 2026-09-29)
+
+Divi's REST routes cannot be used with an Application Password (section 1.6), but the mu-plugin runs inside WordPress and
+calls the same functions the builder ends up in: `GlobalPreset::save_data()`, `GlobalData::set_global_colors()`,
+`GlobalData::set_global_variables()`. All three clear Divi's static CSS.
+
+```bash
+node scripts/wp.js <site> ds-selftest                 # FIRST, on every new site. Must say "different: 0"
+node scripts/wp.js <site> ds-color-set --label "Overlay" --color "#112233" [--dry-run]
+node scripts/wp.js <site> ds-variable-set --type numbers --label "Section pad" --value 50px [--dry-run]
+node scripts/wp.js <site> ds-preset-set --file preset.json [--dry-run] [--summary]
+node scripts/wp.js <site> ds-backups                   # newest 10 per store + the first of each day (>= 1.8.1)
+node scripts/wp.js <site> ds-restore --store presets --index 0
+```
+
+`preset.json` = `{ "moduleName": "divi/button", "name": "Button Yellow", "attrs": { ...a module's design attrs, shaped as in a block... } }`
+Optional: `id`, `kind: "group"` + `groupName` + `groupId`, `priority`, `setDefault`.
+Local test of the plugin file, no WordPress needed: `php scripts/ds-write-test.php "<Divi 5 theme folder>"`.
+
+What the plugin guarantees
+- One item per call, read-modify-write of the whole store, nothing deleted, no other item touched.
+- Same id, or same name/label, UPDATES. A script can be run twice.
+- `styleAttrs` / `renderAttrs` come from Divi's own `Conversion::get_preset_attrs()` and `get_preset_attrs_mapping()`.
+  `ds-selftest` re-splits every preset on the site and compares with what is stored. Proven on 29 presets, including
+  one made by hand in the Visual Builder: identical.
+- Content never enters a preset: every `<element>.innerContent` and `module.meta` is removed. Divi's own map is not
+  enough for this: for `divi/button` it lists the text under another path than blocks store it.
+- A module type with presets but no default gets one by Divi's own rule (`maybe_create_default_presets_after_import`).
+  It is named "<Module> 1" with a uuid id; the builder would have named it "<Module> Preset 1".
+- After the write the store is read back; a write Divi ignored is an error (variables need the "Variables Manager"
+  role permission and `edit_theme_options`).
+
+Proven live: module presets. Proven by local tests only: global colours. NOT compared with a builder-made item:
+design variables and option group presets. Before relying on either on a site, have ONE made by hand in the Visual
+Builder and compare it with a `--dry-run` of the same thing.
+
+Builder conventions seen (5.13): new preset ids are 10 lowercase letters (`ruqdqmvbkj`); creating the first preset of a
+module type also creates an empty default "<Module> Preset 1"; "new preset from current styles" moves EVERY design
+setting of the module into the preset (margins, alignment, visibility flags too) and leaves the block with content +
+`modulePreset` only.
+
+### 5.1 Assigning presets to existing modules: the rules that matter (each one cost a failed attempt)
+
+1. **STACK on the default.** A module with its own preset no longer gets the type's default preset. If that default
+   holds settings (a converted site's "Text Preset 1" with heading styles, "Section Preset 1" with a transparent
+   background), assign `"modulePreset":["<default id>","<preset id>"]`. Only the literal strings `default`, `_initial`
+   and `''` are dropped from a stack; a real id is kept and merged first, later ids win
+   (`GD/GlobalPreset.php` ~3160-3310). This is the one case where the default's real id belongs in a block (rule 4 in
+   section 4 is about using the default ALONE).
+2. **A module matches a preset when every setting of the preset is in the module with the same value.** It loses
+   exactly those settings and keeps the rest. Take the preset's settings from the SITE (`design-system --full`), not
+   from the local spec: Divi may have removed something (a divider's "show line" counts as content).
+3. **Never SPLIT an option group between the preset and the module. If it would split, do not assign the preset.**
+   Divi writes a module's CSS from the module's own settings and a preset's CSS from the preset's own settings,
+   separately. Settings that only work together stop working when split: a Text module that kept `maxWidth` locally
+   and got `alignment: center` from its preset lost its centring (`margin-left:auto` was no longer output).
+   - Group = the path up to and including `<breakpoint>.<state>`, e.g. `module.decoration.sizing.desktop.value`.
+   - `layout` and `sizing` of one element are ONE group (alignment CSS depends on `layout.display`).
+   - Giving the module the preset's settings back as local duplicates DOES NOT WORK: at render time Divi removes from a
+     block every setting identical to its preset's value (`ModuleRegistration.php` ~392-402), so the duplicate never
+     reaches the module's CSS.
+   - Where EVERY module of a preset shares a setting in a touched group (a button's `icon.enable: off`), move it into
+     the preset. For a cluster of modules with the same extra setting, make a second, fuller preset.
+   - A desktop computed-style snapshot cannot see hover, icons, tablet or phone: apply the rule, do not rely on the diff.
+4. **Backups are written once.** A dry run after the write must never overwrite the pre-change copies.
+5. **A one-time repair step must be a flag, not default behaviour.** On a second run a script cannot tell a module the
+   builder changed from one it changed itself.
+
+the reference site result: 22 presets, 384 of 618 modules of those types on a preset, 47 put back because of rule 3, verified by
+a 33-URL computed-style snapshot (7,285 elements, colour, type, borders, padding, margin, alignment, width, display).
+Scripts (scratchpad of the the reference site port, worth generalising into the skill): `build-presets.js`, `create-presets.js`,
+`assign-presets.js`, `revert-split.js`, `warm.js`, `snapshot-instrument.js`.

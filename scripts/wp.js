@@ -39,6 +39,15 @@
  *   node wp.js <site> css-get [--raw]              # Divi Theme Options -> Custom CSS, as JSON or raw text
  *   node wp.js <site> css-set --file style.css [--append]
  *                                                  # replaces by default; --append adds to what's there
+ *   --- Design system (read needs >= 1.6, writes need >= 1.8; see references/divi5-presets-variables.md) ---
+ *   node wp.js <site> design-system [--full | --json]   # every preset, variable and global colour, with ids
+ *   node wp.js <site> ds-selftest                  # run BEFORE the first write on a site: proves the preset split
+ *   node wp.js <site> ds-color-set --label L --color C [--id gcid-x] [--dry-run]
+ *   node wp.js <site> ds-variable-set --type numbers --label L --value V [--id gvid-x] [--dry-run]
+ *   node wp.js <site> ds-preset-set --file preset.json [--dry-run] [--summary]
+ *   node wp.js <site> ds-backups [--store S --index N]  # what was kept before each write
+ *   node wp.js <site> ds-restore --store S --index N    # put a whole store back
+ *                                                  # writes add or update ONE item; same name/label = update
  *
  * Output is compact JSON or plain lines on stdout; errors to stderr, exit 1.
  */
@@ -453,6 +462,56 @@ function flags(argv) {
       for (const k of kinds) for (const [id, v] of Object.entries(V[k] || {})) console.log(`  ${id} | ${k} | ${v.label || ''} | ${typeof v.value === 'string' ? v.value.slice(0, 60) : JSON.stringify(v.value).slice(0, 60)}`);
       const C = r.colors || {}; console.log(`\nGLOBAL COLOURS (${Object.keys(C).length})`);
       for (const [id, v] of Object.entries(C)) console.log(`  ${id} | ${v.label || ''} | ${v.color || ''} | ${v.status || ''}`);
+      break;
+    }
+    // ---- Design system WRITES (mu-plugin >= 1.8). One item per call, add or update, never delete. ----
+    // Same id, or same name/label, updates. --dry-run returns what would be stored and writes nothing.
+    case 'ds-selftest': {
+      // Proof before any write: re-splits every module preset on the site and compares with what the builder stored.
+      const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/selftest`, c);
+      if (f.json) { console.log(JSON.stringify(r, null, 2)); break; }
+      console.log(`checked ${r.checked} preset(s), different: ${r.different}`);
+      for (const p of r.presets || []) console.log(`  ${p.match ? 'same ' : 'DIFF '} | ${p.for} | ${p.name} | style ${p.styleAttrs || '-'} | render ${p.renderAttrs || '-'}${p.error ? ' | ' + p.error : ''}`);
+      if (r.different) process.exitCode = 1;
+      break;
+    }
+    case 'ds-color-set': {
+      if (!f.label || !f.color) die('ds-color-set needs --label L --color C [--id gcid-x] [--dry-run]');
+      const p = { label: String(f.label), color: String(f.color), dry_run: !!f['dry-run'] }; if (f.id) p.id = String(f.id);
+      console.log(JSON.stringify(await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/color`, c, p)));
+      break;
+    }
+    case 'ds-variable-set': {
+      if (!f.type || !f.label || f.value === undefined || f.value === true) die('ds-variable-set needs --type numbers|strings|images|links|fonts|gradients --label L --value V [--id gvid-x] [--dry-run]');
+      const p = { type: String(f.type), label: String(f.label), value: String(f.value), dry_run: !!f['dry-run'] }; if (f.id) p.id = String(f.id);
+      console.log(JSON.stringify(await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/variable`, c, p)));
+      break;
+    }
+    case 'ds-preset-set': {
+      // --file = JSON: { moduleName, name, attrs, kind?, id?, groupName?, groupId?, priority?, setDefault? }
+      // attrs = a module's design attrs, shaped as in a block. Content (innerContent, admin label) is removed by the
+      // plugin; styleAttrs / renderAttrs are worked out by Divi's own code on the site. --summary prints one line.
+      if (!f.file) die('ds-preset-set needs --file preset.json [--dry-run] [--summary]');
+      let p; try { p = JSON.parse(fs.readFileSync(f.file, 'utf8')); } catch (e) { die('cannot read ' + f.file + ': ' + e.message); }
+      p.dry_run = !!f['dry-run'];
+      const r = await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/preset`, c, p);
+      if (f.summary) console.log(`${r.dryRun ? 'DRY ' : ''}${r.action} | ${r.id} | ${r.for} | ${r.item && r.item.name}${(r.warnings || []).length ? ' | WARN: ' + r.warnings.join('; ') : ''}${(r.strippedContent || []).length ? ' | content removed: ' + r.strippedContent.length : ''}`);
+      else console.log(JSON.stringify(r, null, 2));
+      break;
+    }
+    case 'ds-backups': {
+      const q = f.store ? `?store=${encodeURIComponent(f.store)}&index=${parseInt(f.index || '0', 10)}` : '';
+      const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/backups${q}`, c);
+      if (q || f.json) { console.log(JSON.stringify(r, null, 2)); break; }
+      for (const b of r.backups || []) console.log(`${b.store} | ${b.index} | ${b.time} | ${b.bytes} bytes${b.firstOfDay ? " | before the first write of that day" : ""}`);
+      if (!(r.backups || []).length) console.log('no backups yet');
+      break;
+    }
+    case 'ds-restore': {
+      // Puts a whole store back as it was. Presets created since then disappear, and modules that use them lose
+      // that styling without any error. The store as it is now becomes backup 0, so a restore can be undone.
+      if (!f.store || f.index === undefined) die('ds-restore needs --store presets|variables|colors --index N   (see ds-backups)');
+      console.log(JSON.stringify(await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/restore`, c, { store: String(f.store), index: parseInt(f.index, 10) })));
       break;
     }
     case 'list-canvases': {

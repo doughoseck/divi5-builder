@@ -1,0 +1,220 @@
+[
+ {
+  "id": "6aabe487668fe",
+  "name": "Text Preset 1",
+  "moduleName": "divi/text",
+  "attrs": {
+   "module": {
+    "advanced": {
+     "text": {
+      "text": {
+       "desktop": {
+        "value": {
+         "color": "dark"
+        }
+       }
+      }
+     }
+    }
+   },
+   "content": {
+    "decoration": {
+     "headingFont": {
+      "h1": {
+       "font": {
+        "desktop": {
+         "value": {
+          "size": "40px",
+          "capitalization": "uppercase"
+         }
+        }
+       }
+      },
+      "h2": {
+       "font": {
+        "desktop": {
+         "value": {
+          "capitalization": "uppercase"
+         }
+        }
+       }
+      },
+      "h3": {
+       "font": {
+        "desktop": {
+         "value": {
+          "capitalization": "uppercase"
+         }
+        }
+       }
+      },
+      "h4": {
+       "font": {
+        "desktop": {
+         "value": {
+          "capitalization": "uppercase"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "styleAttrs": {
+   "content": {
+    "decoration": {
+     "headingFont": {
+      "h1": {
+       "font": {
+        "desktop": {
+         "value": {
+          "size": "40px",
+          "capitalization": "uppercase"
+         }
+        }
+       }
+      },
+      "h2": {
+       "font": {
+        "desktop": {
+         "value": {
+          "capitalization": "uppercase"
+         }
+        }
+       }
+      },
+      "h3": {
+       "font": {
+        "desktop": {
+         "value": {
+          "capitalization": "uppercase"
+         }
+        }
+       }
+      },
+      "h4": {
+       "font": {
+        "desktop": {
+         "value": {
+          "capitalization": "uppercase"
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "renderAttrs": {
+   "module": {
+    "advanced": {
+     "text": {
+      "text": {
+       "desktop": {
+        "value": {
+         "color": "dark"
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ {
+  "id": "6aabe4876692b",
+  "name": "Section Preset 1",
+  "moduleName": "divi/section",
+  "attrs": {
+   "module": {
+    "decoration": {
+     "background": {
+      "desktop": {
+       "value": {
+        "enableColor": "on",
+        "color": "RGBA(0,0,0,0)"
+       }
+      }
+     }
+    }
+   }
+  },
+  "styleAttrs": {
+   "module": {
+    "decoration": {
+     "background": {
+      "desktop": {
+       "value": {
+        "color": "RGBA(0,0,0,0)"
+       }
+      }
+     }
+    }
+   }
+  },
+  "renderAttrs": {}
+ },
+ {
+  "id": "6aabe4876695d",
+  "name": "Fullwidth Header Preset 1",
+  "moduleName": "divi/fullwidth-header",
+  "attrs": {
+   "title": {
+    "decoration": {
+     "font": {
+      "font": {
+       "desktop": {
+        "value": {
+         "lineHeight": "1.4em"
+        }
+       }
+      }
+     }
+    }
+   },
+   "subhead": {
+    "decoration": {
+     "font": {
+      "font": {
+       "desktop": {
+        "value": {
+         "lineHeight": "1.4em"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "styleAttrs": {
+   "title": {
+    "decoration": {
+     "font": {
+      "font": {
+       "desktop": {
+        "value": {
+         "lineHeight": "1.4em"
+        }
+       }
+      }
+     }
+    }
+   },
+   "subhead": {
+    "decoration": {
+     "font": {
+      "font": {
+       "desktop": {
+        "value": {
+         "lineHeight": "1.4em"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "renderAttrs": {}
+ }
+]
