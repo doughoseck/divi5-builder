@@ -10,6 +10,9 @@ description: >
   library, or "build a page from this design brief". Handles credentials from
   the shared .web-creds.txt securely. Trigger even if the user just says "add a
   section to the site", "update the homepage", or names a site + a page change.
+  Also audits the media library and uploads folder of ANY WordPress site (Divi
+  or not): unused media, orphan files, what is taking disk space. Use for "clean
+  up the media library", "the site is too big", "what can we delete before the move".
 argument-hint: "[site] [what to build] (e.g. mysite 'a pricing section')"
 allowed-tools: Bash, Read, Write, Edit
 ---
@@ -623,6 +626,33 @@ no cache to clear here, unlike a page/Theme-Builder write).
 **Scope it.** Custom CSS is global — write selectors scoped to the specific
 element/form/page you're styling (an id like `#gform_wrapper_9`), not bare tag
 selectors that would leak onto the rest of the site.
+
+## Media and large-file audit: any WordPress site (read `references/wp-media-audit.md`)
+
+"The site is too big", "clean up the media library", "what can go before we move it": use this. It does not need
+Divi 5 (or Divi at all), only an administrator's application password and one read-only file the USER uploads:
+`assets/wp-media-audit.php` into `wp-content/mu-plugins/` (it stores nothing; they delete it afterwards).
+
+```bash
+node scripts/media-audit.js scan   <site> --dir <work-folder>   # library items, files on disk, where each is referred to
+node scripts/media-audit.js crawl  <site> --dir <work-folder>   # every public page: the cross-check
+node scripts/media-audit.js report --dir <work-folder>          # REPORT.md + CSV lists, biggest first
+```
+
+- Two findings, kept apart: library items nothing refers to, and files on disk with no library item. Plus the
+  biggest files, local video and audio, broken references, and the size of plugins, themes and the site root.
+- Every library item is USED, MAYBE (kept as used), BACKGROUND (only revisions, trash, old builder copies) or
+  UNUSED. When in doubt, used.
+- **Always run the crawl and read the cross-check line in the report.** It counts items the public pages use that
+  the database scan missed; it must be 0 or understood. It is how a new kind of reference gets noticed.
+- Tables of plugins the site no longer uses still count as uses until you say so: `report --ignore-tables <table>`.
+  The report names every table that alone keeps items used.
+- **Nothing here deletes, and neither do you.** To remove, quarantine: `scripts/media-quarantine.js` (needs a second
+  uploaded file, `assets/wp-media-quarantine.php`) moves the files to a holding folder outside `uploads/`, `verify`
+  checks every public page for newly missing files, `restore` puts back what is needed. Order: `verify` (baseline),
+  `plan`, `move` (dry run, then `--write`), `verify`, the user lives with it for some days, then the USER deletes the
+  quarantine folder and the library rows. One batch per decision.
+- Tests: `php scripts/media-audit-test.php`, `node scripts/media-audit-test.js`, `php scripts/media-quarantine-test.php`.
 
 ## Reference
 

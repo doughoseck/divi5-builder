@@ -192,6 +192,45 @@ candidates, build, create, assign, restore. Every step is a dry run until `--wri
 every page, before and after. The order, the rules and everything that went wrong the first
 time are in `references/divi5-globalize-site.md`.
 
+## Media and large-file audit: any WordPress site
+
+Old sites carry years of uploads nobody uses. This part does not need Divi at all: it works on any WordPress site
+with an administrator's application password.
+
+```bash
+node scripts/media-audit.js scan   <site> --dir audit     # needs assets/wp-media-audit.php in mu-plugins (read-only)
+node scripts/media-audit.js crawl  <site> --dir audit     # loads every public page: the cross-check
+node scripts/media-audit.js report --dir audit            # REPORT.md + CSV lists, biggest first
+node scripts/media-audit.js db     <site> --dir audit     # what takes the space in the database (read-only)
+```
+
+- **Two findings, kept apart:** media library items nothing refers to, and files on disk that belong to no library
+  item. Plus the biggest files, local video and audio, broken references, and the size of plugins, themes and the
+  site root.
+- **Every library item gets a status:** USED, MAYBE (only a bare number matched; kept as used), BACKGROUND (only
+  revisions, trash or an old builder copy refer to it) or UNUSED. When in doubt, used.
+- **It finds references where they hide:** escaped JSON, serialized PHP, shortcode attributes, block attributes,
+  custom fields, options, theme files, every plugin table. A size, a `-scaled` copy or a `.webp` copy counts for
+  its image.
+- **The crawl is the cross-check.** A file a public page loads can never be on the unused list, and the report says
+  how many such files the database scan alone would have missed. On the first real run that number exposed a form
+  of reference the scan did not know (Divi 5's nested gallery IDs), which is now covered.
+
+**Nothing deletes.** To remove files, quarantine them:
+
+```bash
+node scripts/media-quarantine.js verify  <site> --dir audit                 # baseline: what is already missing
+node scripts/media-quarantine.js plan    --dir audit --batch unused --status UNUSED
+node scripts/media-quarantine.js move    <site> --dir audit --batch unused  # dry run; add --write
+node scripts/media-quarantine.js verify  <site> --dir audit                 # newly missing files, and on which page
+node scripts/media-quarantine.js restore <site> --dir audit --batch unused --needed --write
+```
+
+`assets/wp-media-quarantine.php` moves the named files to `wp-content/media-audit-quarantine/<batch>/` (closed to
+the web, with a manifest) and can move them back. It has no delete and does not touch the database. The permanent
+step, deleting the quarantine folder, is the site owner's. First real run: a 2.78 GB uploads folder went to 0.8 GB
+with no file missing on any public page. Playbook: `references/wp-media-audit.md`.
+
 ## When a Divi page is slow: measure, don't guess
 
 `scripts/hook-profiler.js` generates a small, temporary, **key-gated, read-only** mu-plugin that times every callback on the
@@ -233,6 +272,9 @@ None of these needs a site, except the last one.
 node scripts/catalog-test.js          # the module catalogue and its lint
 node scripts/preset-spec-test.js      # modulePreset in a page spec
 node scripts/compile-test.js          # link, swiper-posts, buildModule()
+php  scripts/media-audit-test.php     # media audit: what counts as a reference to a file or an attachment ID
+node scripts/media-audit-test.js      # media audit: the classification, the quarantine plan, the report files
+php  scripts/media-quarantine-test.php   # the quarantine plugin: moves real files in a temp folder and back
 php  scripts/ds-write-test.php "<path to a Divi 5 theme folder>"   # the mu-plugin's design-system writes
 node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts every store back
 ```
