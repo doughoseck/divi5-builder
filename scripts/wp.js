@@ -48,6 +48,9 @@
  *   node wp.js <site> ds-backups [--store S --index N]  # what was kept before each write
  *   node wp.js <site> ds-restore --store S --index N    # put a whole store back
  *                                                  # writes add or update ONE item; same name/label = update
+ *   --- Any other REST route, read only ---
+ *   node wp.js <site> rest-get <path> [--out f]    # GET /wp-json/<path>, e.g. wp-media-audit/v1/info (used by media-audit.js)
+ *   node wp.js <site> quarantine move|restore --data-file f.json   # used by media-quarantine.js; moves files, never deletes
  *
  * Output is compact JSON or plain lines on stdout; errors to stderr, exit 1.
  */
@@ -565,6 +568,24 @@ function flags(argv) {
       const scan = f.scan ? `&scan=${encodeURIComponent(f.scan)}` : '';
       const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/postinfo?id=${id}${scan}`, c);
       console.log(JSON.stringify(r, null, 2));
+      break;
+    }
+    case 'rest-get': {
+      // Read any REST route of the site with the stored credentials. GET only, so it cannot change anything.
+      const p = String(f._[0] || '').replace(/^\/+/, '');
+      if (!p || /^https?:/i.test(p)) die('rest-get needs the path after /wp-json/, e.g. wp-media-audit/v1/info');
+      const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/${p}`, c);
+      const out = typeof r === 'string' ? r : JSON.stringify(r);
+      if (f.out) { fs.writeFileSync(f.out, out); console.log(JSON.stringify({ ok: true, out: f.out, bytes: out.length })); }
+      else console.log(out);
+      break;
+    }
+    case 'quarantine': {
+      // POST to the media quarantine plugin only (assets/wp-media-quarantine.php): quarantine move|restore --data-file f.json
+      const act = f._[0];
+      if (!['move', 'restore'].includes(act) || !f['data-file']) die('quarantine needs move|restore and --data-file <json>');
+      const r = await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/wp-media-quarantine/v1/${act}`, c, JSON.parse(fs.readFileSync(f['data-file'], 'utf8')));
+      console.log(typeof r === 'string' ? r : JSON.stringify(r));
       break;
     }
     // ---- Theme Builder (requires divi5-builder-rest.php >= 1.5) ----------------

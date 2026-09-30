@@ -238,3 +238,37 @@ need a `scroll-margin-top` on the target in practice (one site, 169px fixed head
 offset and had it removed), so do not add one unprompted; offer it only if the landing looks wrong. Verify with an
 instant `scrollIntoView` in a non-painting browser pane: smooth scrolling never progresses there (not even
 `window.scrollTo({behavior:"smooth"})`), so scrollY staying at 0 proves nothing.
+
+## Popups: stacking, click outside, Esc (proven 2026-09-29, Divi 5.13.1)
+
+**A popup opens UNDER the header on the first load of a page, and is fine after a reload.** Two facts cause it:
+1. Divi wraps each Theme Builder area in `.et_builder_inner_content` with its own z-index (`header` box 2, the others
+   1). A popup canvas is printed inside the page or footer box, so its own z-index (however high) never beats the
+   header. The fix is a few lines of script that move every popup to be a direct child of `<body>`.
+2. After ANY save Divi clears its CSS cache. On the first load of each page it prints the module CSS INLINE AT THE
+   BOTTOM of the body (`<style id="et-core-unified-…-cached-inline-styles-2">`), below footer scripts; from the second
+   load on it is a file in the `<head>`. A script that asks `getComputedStyle(el).position === 'fixed'` gets "no" on
+   that first load, skips the popup, and the popup opens under the menu with its close button unreachable.
+**Rule: a front-end script must never decide anything from computed styles at load time.** Read what is in the HTML:
+Divi puts the class `et_pb_section--fixed` on every fixed section. To test a fix, clear the cache with a no-op
+`css-set` and load the page ONCE: that load is the cold one (`style[id*="cached-inline-styles"]` exists in the body).
+
+**Close by clicking beside the video: native.** Make the popup's overlay section (the interaction target) a click
+trigger as well, with ONE effect, `removeVisibility` on itself (`interactionTrigger:"bg<target>"` + `interactions`).
+Safe because Divi's click handler calls `stopPropagation` (the close button's click never reaches the section), a
+click inside a YouTube/Vimeo iframe never reaches the page, and `removeVisibility` on a hidden target does nothing.
+Only for popups that hold nothing but a video and a close button: in a menu popup a click on a parent menu item, and
+in a form popup a click in a field, would close it.
+
+**Divi stops the video itself** whenever an interaction hides a target: `<video>` is paused and a YouTube/Vimeo/
+Dailymotion/Facebook iframe gets its `src` emptied and set again 100 ms later, without `autoplay`. No script needed.
+
+**Esc: no native trigger.** A `keydown` listener that, for every visible popup, clicks the popup's own close trigger
+(`[class*="et-interaction-trigger-close"]`), so Divi closes it the normal way. Name close triggers `close<Target>`.
+
+**Logged-in users:** a popup fixed to the top ignores the admin bar. Inline `top`, `height`, `min-height` and
+`max-height` with `!important` (the popup's own `min-height:100vh` otherwise runs past the bottom of the screen).
+Detect the bar by the `admin-bar` class on `<body>`, which is there from the start; `#wpadminbar` may be printed later.
+
+**The canvas settings "append to main canvas" and z-index do not solve the stacking**: the z-index goes on the canvas
+wrapper, which is still inside the page or footer box.
