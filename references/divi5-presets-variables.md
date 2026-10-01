@@ -683,3 +683,23 @@ Result on the reference site: 22 presets, 385 of 618 modules of those types on a
 a 33-URL computed-style snapshot (7,285 elements, colour, type, borders, padding, margin, alignment, width, display).
 Scripts (scratchpad of the the reference site port, worth generalising into the skill): `build-presets.js`, `create-presets.js`,
 `assign-presets.js`, `revert-split.js`, `warm.js`, `snapshot-instrument.js`.
+
+## More preset facts (2026-10-01)
+
+- **"Content" attributes cannot live in a preset.** Divi marks some settings as content (`features.preset:
+  "content"` in module.json), for example the timeline's direction and position. `ds-preset-set` reports them under
+  `strippedContent`: set them on the module. Run the preset with `--dry-run` first and read `strippedContent` and
+  `inAttrsOnly` (kept in `attrs` but not applied as style).
+- **A preset can carry Custom CSS:** `css.desktop.value.freeForm` is stored in `styleAttrs` and rendered with the
+  preset's class in place of `selector`. Several rules and `@media` blocks work.
+- **A theme can force a property on every heading.** One site had `h1…h6 { line-height: 1.4em !important }` from
+  its theme options: a preset's `lineHeight` is silently ignored (a 230px heading gets 90px of air above and below).
+  Find it by listing the rules that match the element; override in the preset's Custom CSS with `!important`.
+- **Divi prints a global colour's CSS variable (`--gcid-…`) only on pages where a module uses that colour.** A
+  utility class in site CSS that uses `var(--gcid-x)` renders nothing on other pages: always give a fallback,
+  `var(--gcid-x, #979797)`.
+- **Colouring part of a line without inline styles:** small utility classes in the site's Custom CSS
+  (`.accent-yellow { color: var(--gcid-…, #fec10e) }`) used as `<span class="accent-yellow">` inside a text or a
+  title. A small spaced label above a heading works the same way (`.eyebrow { display: block; … }` inside the h2).
+- **Line breaks in headings:** do not type `<br>`. Cap the module's width (`module.decoration.sizing` max-width +
+  alignment centre, in the preset) so the heading wraps by itself and keeps wrapping correctly on small screens.
