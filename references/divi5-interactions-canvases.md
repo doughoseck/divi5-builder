@@ -272,3 +272,24 @@ Detect the bar by the `admin-bar` class on `<body>`, which is there from the sta
 
 **The canvas settings "append to main canvas" and z-index do not solve the stacking**: the z-index goes on the canvas
 wrapper, which is still inside the page or footer box.
+
+## Who owns a popup canvas, and what it costs (2026-10-01)
+
+- A canvas belongs to the post in `_divi_canvas_parent_post_id`: a page, or a Theme Builder layout. Owned by the
+  global footer layout it is available on every page.
+- **Ownership makes no measurable difference to speed.** Divi prints a canvas only on a page where something targets
+  it, whoever owns it. Timed on five pages with 16 extra video popups owned by the footer and then by one page (6
+  loads each, first 2 dropped): within noise on every page, and none of the 16 was in any other page's HTML. So own a
+  popup by the page that uses it, and keep site-wide ones (the menu) on the header or footer.
+- **What does cost:** the page that uses them. 16 popups + a 21-item timeline added about 0.9 s of server time to
+  that page. YouTube players inside hidden popups are not loaded at page load when a lazy loader holds iframes back.
+- `link-canvas <canvas> <post>` also rewrites the POST's `_divi_off_canvas_data` (the builder's note of the last
+  open canvas). On a header or footer layout that is a site-wide layout's meta: ask the user first. Linking a canvas
+  to a footer and back leaves that note pointing at the last canvas linked.
+- **A popup's overlay colour may not come from its preset.** The preset's background rule is written as
+  `.et_builder_inner_content .et_pb_section.preset--…`. A popup that a script moves to `<body>` (to sit above the
+  header) is no longer inside that wrapper, so the rule stops matching and the overlay turns white. Give the overlay
+  its colour in site CSS by the preset's class, `.et_pb_section.preset--module--divi-section--<id> { background-color:
+  … !important }`, not by a list of popup names: new popups then need no CSS.
+- **One popup per video** is the native pattern: clone a working popup canvas, change the target name and the video.
+  A button inside any module (a timeline card, for example) can be the trigger.

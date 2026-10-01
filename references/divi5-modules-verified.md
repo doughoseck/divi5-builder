@@ -209,3 +209,39 @@ click action — the `.dp-ddg-overlay` div is the click target**, `overlayAction
   getComputedStyle on a transitioned property (Divi buttons have `transition: all .2s`) returns the START value
   forever, even for inline `style="...!important"`. Inject `*{transition:none!important}` before measuring, or
   measure a property that does not transition, or let the user's browser be the instrument.
+
+## Timeline module (divi/timeline + divi/timeline-item), proven 2026-10-01 on Divi 5.13.1
+
+A native vertical or horizontal timeline. Built a 21-item "20 years" page with it.
+
+- **Markup:** `divi/timeline` is a container; each `divi/timeline-item` is a child WITH its own children:
+  `<!-- wp:divi/timeline {…} --><!-- wp:divi/timeline-item {…} -->…child modules…<!-- /wp:divi/timeline-item --><!-- /wp:divi/timeline -->`
+- **An item renders, in this order inside its card:** date, title, content (rich text), THEN its child modules. So a
+  card can hold any module: a text used as a tag, a button, an absolutely positioned number. Leave `content` empty
+  and use child text modules when something must sit between the title and the paragraph.
+- **Item content:** `date.innerContent.desktop.value`, `title.innerContent.desktop.value` (renders as h3),
+  `content.innerContent.desktop.value`.
+- **Layout is CONTENT, not style:** `module.advanced.timeline.desktop.value = { direction: "vertical", position:
+  "alternating" | "left" | "right", startFrom: "left" | "right" }`, responsive (`phone.value.position = "right"` for one
+  column on phones). `ds-preset-set` strips these from a preset (`strippedContent`): put them on the module.
+- **Design goes in a preset on the parent** (elements `connector`, `marker`, `card`, `date`, `title`, each with
+  `decoration`): line colour = `connector.decoration.background`, dot = `marker.decoration.{background,border,boxShadow}`,
+  card = `card.decoration.{background,spacing,layout.rowGap}`, fonts = `date|title.decoration.font.font`.
+- **What it has no setting for** goes in the preset's own Custom CSS (`css.desktop.value.freeForm`, the word
+  `selector` stands for the module): line width (the module emits 2px; `selector .et_pb_timeline_connector { width:
+  3px !important; }`), a card border with a hover colour, a branch from card to dot as `.et_pb_timeline_card::before`.
+  Cards are on the left for `:nth-child(odd)` items and on the right for even ones when alternating from the left;
+  on phones (position right) every card is right of the line, so the branch needs a `@media (max-width: 767px)` rule.
+- **Geometry (desktop, alternating):** the dot sits at the top of the item, level with the card's top edge; 27px
+  between a card's edge and the dot's centre.
+- A module inside a card can be positioned in a corner: `module.decoration.position.desktop.value = { mode:
+  "absolute", origin: { absolute: "top right" }, offset: { vertical: "28px", horizontal: "28px" } }` once the card
+  has `position: relative` (Custom CSS above).
+
+### Fullwidth header: details learnt on the same page
+- `buttonOne.innerContent.desktop.value = { text, linkUrl }`; `scrollDown.decoration.icon.desktop.value.show = "on"`
+  gives the native scroll-down arrow; `title.innerContent` keeps simple HTML (`<span>`, `<br>`), so one h1 can hold a
+  small label, a word, and a second word in another colour.
+- A NEW section on a site converted from Divi 4 must carry `module.decoration.layout.desktop.value.display = "block"`
+  to behave like the site's converted hero sections. Without it the section is flex and the header's text column
+  shrinks to a few hundred pixels (a 90px title wraps letter-group by letter-group).

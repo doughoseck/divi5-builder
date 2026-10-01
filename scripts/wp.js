@@ -311,6 +311,7 @@ function flags(argv) {
       if (f.status) payload.status = f.status;
       if (f.slug) payload.slug = f.slug;
       if (f.excerpt) payload.excerpt = f.excerpt;
+      if (f.featured !== undefined) payload.featured_media = Number(f.featured);   // --featured <media id>, 0 removes it
       if (f['content-file']) payload.content = fs.readFileSync(f['content-file'], 'utf8');
       // --now: publish IMMEDIATELY. Setting status=publish alone is not enough
       // on a scheduled post — WordPress keeps a future-dated post as 'future'

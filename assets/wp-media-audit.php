@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Media Audit (read-only)
  * Description: Read-only REST routes for the divi5-builder skill's media-audit.js: lists media library items, files on disk with sizes, and WHERE upload files and attachment IDs are referenced in the database. Works on any WordPress site (no Divi needed). Writes nothing, deletes nothing, returns no content: only file names, sizes, attachment IDs and the place a reference was found. Administrators only. Remove the file when the audit is done.
- * Version: 1.1.0
+ * Version: 1.1.1
  * Author: divi5-builder skill
  *
  * INSTALL: copy this file to wp-content/mu-plugins/wp-media-audit.php (create the folder if it is not there).
@@ -74,7 +74,8 @@ if ( ! function_exists( 'wpma_key_is_media' ) ) :
 		foreach ( $m[1] as $p ) {
 			$p = rtrim( $p, '.:!/' );
 			if ( false !== strpos( $p, '%' ) ) { $p = rawurldecode( $p ); }
-			if ( '' === $p || strlen( $p ) > 400 || false !== strpos( $p, '..' ) ) { continue; }
+			// a ".." FOLDER climbs out of uploads; two dots inside a file name ("Open-Day..jpg") are just a name
+			if ( '' === $p || strlen( $p ) > 400 || preg_match( '#(^|/)\.\.(/|$)#', $p ) ) { continue; }
 			$out[ $p ] = true;
 		}
 		return array_keys( $out );

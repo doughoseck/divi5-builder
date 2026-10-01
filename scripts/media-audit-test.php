@@ -46,6 +46,8 @@ $r = paths( 'See https://example.com/wp-content/uploads/2020/05/f.jpg.' );
 check( 'a full stop at the end of a sentence is not part of the name', same( $r, array( '2020/05/f.jpg' ) ), j( $r ) );
 check( 'no uploads path, no result', same( paths( 'https://example.com/wp-content/themes/x/a.jpg and /uploads.txt' ), array() ) );
 check( 'a path that climbs out with .. is dropped', same( paths( '/wp-content/uploads/../../wp-config.php' ), array() ) );
+$r = paths( 'src="/wp-content/uploads/2024/10/Open-Day..jpg" and /wp-content/uploads/2024/10/a/../b.jpg' );
+check( 'two dots INSIDE a file name are a name, not a climb (found on a real site)', same( $r, array( '2024/10/Open-Day..jpg' ) ), j( $r ) );
 $r = wpma_paths( wpma_norm_text( 'https://example.com/files/2020/a.jpg and https://example.com/wp-content/uploads/b.jpg' ), 'files' );
 check( 'a site with a custom upload folder', same( $r, array( '2020/a.jpg' ) ), j( $r ) );
 

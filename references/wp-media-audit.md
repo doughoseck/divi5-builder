@@ -159,3 +159,17 @@ node scripts/media-quarantine.js status  <site>
   expected. Once the owner is sure, they delete those items in the Media Library (their files are already gone) and
   delete the quarantine folder on the server. **Both permanent steps are the owner's, not yours.**
 - After the clean-up: run `scan`, `crawl`, `report` again, and have the user delete both plugin files.
+
+## Found on later runs (2026-10-01)
+
+- **A file name can contain two dots** (`Open-Day..jpg`). The first version dropped every path containing
+  `..` as a climb out of the folder, so the database scan missed a used image; the crawl caught it (cross-check 1).
+  Only a `..` FOLDER is rejected now (plugin 1.1.1).
+- **Replacing a block of image modules leaves the old images "BACKGROUND", not "UNUSED":** Divi's stored Divi 4 copy
+  of the page (`_et_pb_divi_4_content`) still names them. Plan that batch with `--status BACKGROUND --csv <filtered list>`.
+- **After an image optimiser's bulk run, measure delivery, not the plugin's word:** request every page image with
+  `Accept: image/webp` and count the answers. A first run converted 333 of 1,720 because the optimiser skipped images
+  it had handled before; "force re-optimise" brought it to 1,530 and page image weight from 235 MB to 137 MB.
+- **A missing social image tag is not always the audit's doing.** Compare all posts before blaming a restore: on one
+  site 2 of 107 posts printed no `og:image`, one of them untouched for a year.
+- `wp.js update-post <id> --featured <media id>` sets a featured image (0 removes it).

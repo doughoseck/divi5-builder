@@ -128,6 +128,16 @@ CSS and hard-coded per-module values destroy that.
    **Cards = a styled column**, not a wrapper div: set `background`/`padding`/
    `radius`/`border` on the column, and `hover` (`{borderColor, shadow:{blur}}`)
    for a hover lift — hover states serialize under a `hover` key beside `desktop`.
+   A history, roadmap or "our story" page = the native `timeline` module, whose items can hold other modules
+   (tags, buttons): `references/divi5-modules-verified.md`, "Timeline module".
+5. **Wrap by width, never by typed line breaks.** To make a heading break in a chosen place, cap the module's
+   max-width (in its preset) so the text wraps by itself; a typed `<br>` forces the same split on a phone, where it
+   is wrong. Check the break at desktop, tablet and phone widths.
+6. **A design mock-up is a map, not the style.** When the user supplies an HTML or image design for a site that
+   already has its look, take the layout and the content from the design and the colours, fonts, sizes and heading
+   case from the site's presets. Where the design deviates (normal-case headings, another weight, another colour),
+   follow the site and say so; let the user ask for the exceptions. Colour part of a line with a utility class
+   (`references/divi5-presets-variables.md`, "More preset facts"), never an inline style.
 
 ## Prerequisites — required before you can do anything
 

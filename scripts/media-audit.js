@@ -59,7 +59,7 @@ function pathsIn(text, base) {
   for (const m of normText(text).matchAll(re)) {
     let p = m[1].replace(/[.:!/]+$/, '');
     if (p.includes('%')) { try { p = decodeURIComponent(p); } catch (e) { /* keep */ } }
-    if (p && p.length <= 400 && !p.includes('..')) out.add(p);
+    if (p && p.length <= 400 && !/(^|\/)\.\.(\/|$)/.test(p)) out.add(p);   // a ".." folder, not two dots in a file name
   }
   return [...out];
 }
