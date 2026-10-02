@@ -13,6 +13,9 @@ description: >
   Also audits the media library and uploads folder of ANY WordPress site (Divi
   or not): unused media, orphan files, what is taking disk space. Use for "clean
   up the media library", "the site is too big", "what can we delete before the move".
+  Also updates plugins, themes and WordPress itself on ANY WordPress site, with page
+  checks before and after: use for "update the plugins", "what is out of date on
+  <site>", "run the updates", "update WordPress".
 argument-hint: "[site] [what to build] (e.g. mysite 'a pricing section')"
 allowed-tools: Bash, Read, Write, Edit
 ---
@@ -663,6 +666,37 @@ node scripts/media-audit.js report --dir <work-folder>          # REPORT.md + CS
   `plan`, `move` (dry run, then `--write`), `verify`, the user lives with it for some days, then the USER deletes the
   quarantine folder and the library rows. One batch per decision.
 - Tests: `php scripts/media-audit-test.php`, `node scripts/media-audit-test.js`, `php scripts/media-quarantine-test.php`.
+
+## Updating plugins, themes and WordPress: any WordPress site (read `references/wp-site-updates.md`)
+
+`scripts/site-updates.js` with `assets/wp-site-updates.php` (the user uploads it to `wp-content/mu-plugins/`).
+
+```bash
+node scripts/site-updates.js status <site>                       # what is out of date
+node scripts/site-updates.js update <site> --all                 # the plan; nothing changes without --write
+node scripts/site-updates.js update <site> --all --write         # careful: one at a time, pages checked after each, stops at the first problem
+node scripts/site-updates.js update <site> --all --fast --write  # small brochure site: all in one go, pages checked at the end
+```
+
+- Show the user the plan first and get a go for the run: it changes a live site and there is NO rollback (a bad
+  update is undone from a backup). Careful mode for sites that matter, fast for small brochure sites.
+- After every update the site clears Divi's generated CSS and the page cache by itself: on Divi 5 stale CSS after any
+  plugin, theme or WordPress update is the classic "the site looks broken". `site-updates.js clear <site>` does only that.
+- A new WordPress release (6.8 -> 6.9) needs `--major`; maintenance releases are taken. Premium items without an
+  active licence are listed as blocked, never tried.
+- The page check sees errors and broken pages, not shifted layouts: say what was and was not checked.
+
+## Site search, background video, page cache (field notes)
+
+- **Site search** (search field, a results template that really shows the results, pages before posts, a FAQs page
+  that comes first when a FAQ answers the search, filter-as-you-type): `references/wp-site-search.md`. Start by
+  fetching `/?s=<word>` and `/?s=<nonsense>`: if both list the same posts, the results template ignores the search.
+- **Background video**: one file per breakpoint, plays on phones, always centre-cropped; and a header dropdown that
+  closes on a click elsewhere: `references/divi5-modules-verified.md` and `references/divi5-interactions-canvases.md`.
+- **Page cache**: what helped and what did not, and why writes need a cache clear afterwards:
+  `references/wp-page-cache-notes.md`.
+- **Tool limits**: `upload-media` can be refused (HTTP 413) for files of a few MB, and Theme Builder templates cannot
+  be created, only their layouts edited. In both cases the user does that one step in wp-admin.
 
 ## Reference
 

@@ -245,3 +245,42 @@ A native vertical or horizontal timeline. Built a 21-item "20 years" page with i
 - A NEW section on a site converted from Divi 4 must carry `module.decoration.layout.desktop.value.display = "block"`
   to behave like the site's converted hero sections. Without it the section is flex and the header's text column
   shrinks to a few hundred pixels (a 90px title wraps letter-group by letter-group).
+
+## Background video, per breakpoint (verified 2026-10-01, Divi 5.13.1)
+
+`module.decoration.background.<breakpoint>.value.video = { mp4, width, height, pauseOutsideViewport }` on a section
+(or any module with a background). Source: `server/Packages/Module/Options/Background/BackgroundComponentVideo.php`.
+
+- **One video per breakpoint works.** Divi prints one `<span class="et-pb-background-video[_tablet|_phone]">` per
+  breakpoint that has an `mp4`; CSS shows only the one for the current width, and the front-end script copies
+  `data-src` to `src` only for the visible one, so a phone never downloads the desktop file. Proven: desktop 1080p
+  file at `desktop`, a small 960x720 centre-crop at `tablet` (which phones inherit).
+- **It plays on phones.** The `<video>` is `autoplay loop muted playsinline`; Divi 5 has no "not on mobile" rule.
+  (An iPhone in Low Power Mode shows the first frame.)
+- **It always covers and centre-crops**: the script sizes the video to fill the section and centres it, so a
+  landscape file in a portrait hero loses its sides. A 4:3 crop of the source is a good phone file.
+- Keep `image` in the same background: it shows until the video starts. Use the video's exact first frame
+  (`ffmpeg -i in.mp4 -frames:v 1 first.jpg`) and nothing flashes.
+- Encoding that worked for a busy 30 s clip: `-an -vf scale=1920:1080 -c:v libx264 -preset slow -crf 26 -maxrate 2800k
+  -bufsize 5600k -movflags +faststart` (10.6 MB), and `scale=-2:720,crop=960:720 … -crf 27 -maxrate 1200k` (4.5 MB).
+- A browser pane that is hidden does not autoplay (`document.visibilityState === 'hidden'`): `paused: true` there
+  proves nothing. Check `readyState`, the chosen `currentSrc`, and ask the user to look.
+- The page's HTML time does not change (the video loads after the page).
+
+## Fullwidth header: logo not centred
+
+With text orientation "center" the logo image can still sit left: `.header-content` is a flex column and the logo is
+a block with a max-width. Add `margin-left: auto; margin-right: auto;` to the module's Custom CSS field for the logo
+(`css.desktop.value.logo`). Measure `rect.left + rect.width/2 - viewport/2` before and after at three widths.
+
+## Search module, Blog module as a search results grid
+
+See `references/wp-site-search.md`.
+
+## Tool limits met on shared hosting
+
+- `upload-media` can fail with HTTP 413 for files of a few MB (the REST request is refused by the server, 4.5 MB did
+  not pass on one host). The user uploads large files through the Media Library (or FTP); a background video only
+  needs the URL.
+- Theme Builder TEMPLATES cannot be created with the tool, only layouts edited (`tb-set`). The user creates the
+  template and its empty body; `tb-list` then shows the new body layout id.

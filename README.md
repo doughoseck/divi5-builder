@@ -231,6 +231,34 @@ the web, with a manifest) and can move them back. It has no delete and does not 
 step, deleting the quarantine folder, is the site owner's. First real run: a 2.78 GB uploads folder went to 0.8 GB
 with no file missing on any public page. Playbook: `references/wp-media-audit.md`.
 
+## Updating plugins, themes and WordPress: any WordPress site
+
+`scripts/site-updates.js` with `assets/wp-site-updates.php` (a small mu-plugin you upload once per site). It runs
+WordPress's own updater, the code behind the Updates screen, one update per request.
+
+```bash
+node scripts/site-updates.js status <site>                       # what is out of date (asks the update servers first)
+node scripts/site-updates.js update <site> --all                 # the plan only; nothing changes without --write
+node scripts/site-updates.js update <site> --all --write         # careful: one at a time, pages checked after each
+node scripts/site-updates.js update <site> --all --fast --write  # small brochure site: all in one go
+node scripts/site-updates.js clear  <site>                       # Divi's generated CSS and the page cache
+```
+
+- **Careful mode** (the default) loads a set of pages before the run and again after every update, and stops at the
+  first update that fails or the first page that got worse (an error page, a printed PHP error, a page cut off or one
+  that lost more than half its content). **Fast mode** runs everything and compares once at the end.
+- After every update the site clears Divi's generated CSS and the page cache by itself. On Divi 5, stale static CSS
+  after a plugin, theme or WordPress update is the usual reason a site looks broken afterwards.
+- A new WordPress release (6.8 to 6.9) needs `--major`; maintenance releases are taken. Premium items with no
+  download on offer (no active licence) are listed as blocked and never tried.
+- An update counts as done only when the installed version, read back from disk, is the new one.
+- There is no rollback: a bad update is undone from a backup. The page check sees errors and broken pages, not a
+  layout that shifted. Playbook: `references/wp-site-updates.md`.
+
+Status when published: plugin updates, the plan, the forced fresh check and the cache clearing have run on a real
+site. Theme updates, WordPress core updates, translations, fast mode and multisite are covered by the tests against a
+fake WordPress only; try them first on a site where a failure does not matter.
+
 ## When a Divi page is slow: measure, don't guess
 
 `scripts/hook-profiler.js` generates a small, temporary, **key-gated, read-only** mu-plugin that times every callback on the
@@ -275,6 +303,8 @@ node scripts/compile-test.js          # link, swiper-posts, buildModule()
 php  scripts/media-audit-test.php     # media audit: what counts as a reference to a file or an attachment ID
 node scripts/media-audit-test.js      # media audit: the classification, the quarantine plan, the report files
 php  scripts/media-quarantine-test.php   # the quarantine plugin: moves real files in a temp folder and back
+php  scripts/site-updates-test.php    # the updates plugin against a fake WordPress: who may, what it refuses, each kind of update
+node scripts/site-updates-test.js     # the update plan and the before/after page comparison
 php  scripts/ds-write-test.php "<path to a Divi 5 theme folder>"   # the mu-plugin's design-system writes
 node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts every store back
 ```

@@ -293,3 +293,32 @@ wrapper, which is still inside the page or footer box.
   … !important }`, not by a list of popup names: new popups then need no CSS.
 - **One popup per video** is the native pattern: clone a working popup canvas, change the target name and the video.
   A button inside any module (a timeline card, for example) can be the trigger.
+
+## A dropdown in the header that closes on a click elsewhere (verified 2026-10-01, Divi 5.13.1)
+
+Built as a search dropdown under a magnifier icon; the pattern fits any small panel. All native interactions, in the
+same column as the trigger:
+
+| Element | Hidden at start | Role |
+|---|---|---|
+| Open icon (`divi/icon`) | no | target `xOpen`; click: show panel, show layer, show close icon, hide itself |
+| Close icon (X) | yes | target `xShut`; click: hide panel, hide layer, hide itself, show open icon |
+| Click-outside layer (`divi/divider`, line hidden) | yes | target `xBg` AND a click trigger: hide panel, layer and close icon, show open icon. Custom CSS: `position: fixed; top:0; left:0; width:100vw; height:100vh; z-index:5` (and `selector:before{display:none}`) |
+| Panel (here a `divi/search`) | yes | target `x`; Custom CSS: `position:absolute; top:calc(100% + 12px); right:0; width:360px; max-width:86vw; z-index:6` |
+
+Lessons, each one met the hard way:
+
+- **Use `addVisibility` / `removeVisibility`, not `toggleVisibility`, when several elements must stay in step.** A
+  toggle reads the element's current state; while a fade-in was still at opacity 0 it read "hidden" and showed the
+  panel again, leaving the panel open with the icons saying closed. Explicit show/hide cannot drift.
+- **Divi's Animation setting moves an absolutely positioned element sideways while it plays** (here 59 px left, then
+  a jump back when the animation ends). For such an element use a CSS animation in its own Custom CSS instead:
+  `selector { animation: panelIn .35s ease-out; } @keyframes panelIn { from { opacity:0; transform:translateY(-14px);} to { opacity:1; transform:none; } }`.
+  It replays on every show because the element goes from `display:none` to shown. `@keyframes` is accepted in the
+  `freeForm` field. (Divi's Animation is fine for a normal in-flow row or section.)
+- Hidden-by-default works on any module, not only sections: `disabledOn` on every breakpoint + an `interactionTarget`.
+- The layer is inside the fixed header and still covers the window (`position: fixed` works there; checked at the top
+  of the page and scrolled). Give the icons `position:relative; z-index` above the layer if they must stay clickable.
+- Name the layer's trigger without the word "close" unless the site's Esc script should click it: that script clicks
+  `[class*="et-interaction-trigger-close"]` inside visible popups.
+- No new speed cost on a site that already uses interactions in its header.

@@ -589,6 +589,17 @@ function flags(argv) {
       console.log(typeof r === 'string' ? r : JSON.stringify(r));
       break;
     }
+    case 'updates': {
+      // POST to the site updates plugin only (assets/wp-site-updates.php): updates update|clear-caches [--data-file f.json]
+      // Prints the JSON answer even when the site answers with an error, so the caller can report why.
+      const act = f._[0];
+      if (!['update', 'clear-caches'].includes(act)) die('updates needs update (with --data-file <json>) or clear-caches');
+      const body = Buffer.from(f['data-file'] ? fs.readFileSync(f['data-file'], 'utf8') : '{}');
+      const r = await request('POST', `${c.url.replace(/\/$/, '')}/wp-json/wp-site-updates/v1/${act}`, { Authorization: authHeader(c), 'Content-Type': 'application/json', 'Content-Length': body.length }, body);
+      const text = r.body.toString('utf8'); let j; try { j = JSON.parse(text); } catch (e) { j = { code: 'not_json', message: text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 300) }; }
+      console.log(JSON.stringify(Object.assign({ http: r.status }, j)));
+      break;
+    }
     // ---- Theme Builder (requires divi5-builder-rest.php >= 1.5) ----------------
     case 'plugin-version': {
       const r = await request('GET', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/version`, { Authorization: authHeader(c) });
