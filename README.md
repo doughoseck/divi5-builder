@@ -311,6 +311,9 @@ node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts
 
 ## Security
 
+- **Found a vulnerability? Report it privately** - see [SECURITY.md](SECURITY.md).
+  Run the latest mu-plugin (**1.8.3** fixes a Contributor-level option read; update now).
+- Use the lowest role that works: page building needs an **Editor** Application Password.
 - Never commit `~/.web-creds.txt` or any Application Password.
 - The mu-plugin exposes existing Divi meta keys, the global colour palette and (1.5+)
   Theme Builder layout read/write, each gated by the WordPress capability Divi itself

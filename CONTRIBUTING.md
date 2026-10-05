@@ -79,6 +79,10 @@ Before opening a PR:
 
 ## Security
 
-Report anything sensitive privately rather than in a public issue. This tool holds
+Report vulnerabilities privately, never in a public issue: see [SECURITY.md](SECURITY.md)
+(GitHub Security tab -> "Report a vulnerability"). Any change to a PHP plugin's routes
+must keep `php scripts/permissions-test.php` passing, and new routes need cases in it.
+
+This tool holds
 site credentials at runtime — treat the creds file and any dumped page content as
 secret and keep them out of git.
