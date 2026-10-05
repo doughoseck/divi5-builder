@@ -284,3 +284,95 @@ See `references/wp-site-search.md`.
   needs the URL.
 - Theme Builder TEMPLATES cannot be created with the tool, only layouts edited (`tb-set`). The user creates the
   template and its empty body; `tb-list` then shows the new body layout id.
+
+## Divi FilterGrid (third-party, block `dp-dfg/filtergrid`, plugin 4.3.3, verified 2026-10-05 on Divi 5.13)
+
+A post grid with filters, pagination and a built-in popup. Every setting is a top-level attribute shaped
+`<name>: { innerContent: { desktop: { value } } }` (responsive ones add `tablet` / `phone`); font groups are
+`dpdfgEntryTitleFont`, `dpdfgEntryMetaFont`, `dpdfgPaginationFont`, ... as `{ decoration: { font: { font: {...} } } }`.
+A saved module only holds what differs from the defaults, so read the names from the plugin itself:
+`modules-json/filtergrid/module-default-render-attributes.json` (all defaults) and the option list in
+`d4/includes/modules/DPDFG_FilterGrid/DPDFG_FilterGrid.php` (labels, allowed values). Ask the user for the plugin zip.
+
+- **Any post type, one term:** `custom_query: advanced`, `multiple_cpt: <post type>`, `use_taxonomy_terms: on`,
+  `multiple_taxonomies: <taxonomy>`, `include_terms: <term id>`. It ignores the main query.
+- **Columns:** `items_layout: dp-dfg-layout-grid`; `items_width` becomes `repeat(auto-fill, minmax(X, 1fr))`, so 30% = 3
+  columns, 21% = 4, 40% = 2. On phones the plugin goes to ONE column whatever the value (force a grid in CSS if needed).
+  `column_gutter` / `row_gutter` take a unit (`0em`).
+- **Page size and paging:** `post_number`, `show_pagination: on`, `pagination_type: paged` (AJAX, no reload).
+- **Card content:** `show_title`, `show_post_meta` + `show_terms: on` + `show_terms_taxonomy: <taxonomy>` +
+  `terms_links: off` for a taxonomy line, `show_author/date/comments: off`, `thumbnail_size: dfg_full`.
+- **Card with text over the image:** the item is `article.dp-dfg-item > figure.dp-dfg-image + div.dp-dfg-header +
+  div.dp-dfg-meta`. Make the item a one-column CSS grid (`grid-template-rows: 1fr auto auto`), the figure
+  `grid-row: 1 / -1`, header row 2 and meta row 3 with `z-index` and their own gradient background; an arrow is
+  `.dp-dfg-item::after` on `grid-row: 2 / 4`. No wrapper element and no script needed.
+- **Popup of the post:** `thumbnail_action: popup` (other values: none, link, popup_v, lightbox, lightbox_gallery,
+  gallery_cf). The popup is an IFRAME of the post's own address with `?dp_action=dfg_popup_fetch`; with
+  `popup_template: default` it renders the post's Theme Builder body, header and footer hidden. So "design the popup"
+  = build a Theme Builder template for that post type, and the same layout serves a direct visit.
+  - `popup_width`, `popup_height`, `popup_max_width` need a UNIT (`80%`, `1080px`); a bare number is ignored.
+  - The popup is a 16:9 box (`.mfp-iframe-scaler` with `padding-top: 56.25%`). For a tall popup:
+    `.dp-dfg-popup .mfp-content { height: 85vh !important; } .dp-dfg-popup .mfp-iframe-scaler { height: 100% !important;
+    padding-top: 0 !important; } .dp-dfg-popup iframe#dp-dfg-popup-modal-iframe { margin-top: 40px; height: calc(100% - 40px); }`
+    (the 40px keeps room for the close button).
+  - Inside the iframe the content sits in a `.container` of 80%: `.dp-dfg-modal-content > #page-container > .container
+    { width: 100% !important; max-width: none !important; margin: 0 !important; }` in the template's own CSS.
+  - White flash while loading: `.dp-dfg-popup iframe#dp-dfg-popup-modal-iframe, .dp-dfg-popup .mfp-iframe-scaler
+    { background-color: #000 !important; }`. Loading animation off: `selector .dp-dfg-loader, selector
+    .dp-dfg-loader-wrapper { display: none !important; }` and `.dp-dfg-popup .mfp-preloader { display: none !important; }`.
+  - The popup hangs on `<body>`, outside the module: in the module's Custom CSS those rules must NOT start with
+    `selector` (rules without it are printed as written).
+- In a module's Custom CSS a CSS escape such as `content: "\35"` arrived on the page as another character: write the
+  character itself (`content: "5"`).
+
+## A single-post template driven by custom fields (ACF), every part hidden when empty (verified 2026-10-05)
+
+Built as a Theme Builder body for a custom post type; fields are plain ACF fields (URL, image returning an id).
+
+- **Post text:** `divi/post-content`. **Title / taxonomy inline in one Text module:** tokens work INSIDE the HTML
+  of a text module, several per module, also inside an `href`: `<h1>$variable({"type":"content","value":{"name":
+  "post_title",...}})$</h1><p>...post_categories token with settings { category_type: "<taxonomy>", separator: " / ",
+  link_to_term_page: "off" }...</p>`.
+- **Video module from a field:** `video.innerContent.desktop.value.src` = the `custom_meta_<field>` token. Works for a
+  YouTube address (oEmbed iframe) although the field does not advertise dynamic content in module.json.
+- **Icon module:** glyph AND link live together in `icon.innerContent.desktop.value = { unicode, type, weight, url,
+  target: "on" }`; colour and size in `icon.advanced.color` / `icon.advanced.size` (the module's defaults, 96px and
+  the accent colour, beat Custom CSS). `url` takes a `custom_meta_<field>` token. Font Awesome (`type: "fa"`): brand
+  icons weight `400`, solid icons weight `900` (a solid glyph with 400 renders nothing). Divi's Font Awesome has no X
+  logo; Divi's own font does: `unicode: "&#xe094;", type: "divi"` (the glyph the Social Media Follow module uses).
+  Add `aria-label` / `title` through `module.decoration.attributes`.
+- **Gallery from N image fields = native Slider:** one `divi/slide` per field, the picture as the slide background
+  (`module.decoration.background.desktop.value.image = { url: <custom_meta_image_N token>, size: "contain" }`), a
+  display condition on each slide. Slides whose field is empty are not rendered and the slider runs with the rest
+  (7, 2, 0 tested). `module.advanced.auto: on`, `autoSpeed: "5000"`.
+- **Hide when empty:** display condition `customField` + `isAnyValue` on each optional module; on a ROW or a heading
+  that belongs to several fields, one condition per field with `operator: "OR"`. Rows accept conditions.
+- A Theme Builder template may have its header and footer switched off (`_et_header_layout_enabled: 0`): then a
+  direct visit to the post has no site header. Tell the user; a popup plugin hides them itself.
+- **Checking it:** fetch the post addresses as a visitor and count by class. Module classes in a Theme Builder body
+  are `et_pb_<module>_<n>_tb_body` FIRST, then `et_pb_<module>` (a pattern that expects `et_pb_module et_pb_video`
+  finds nothing and reports "all hidden"). Test data: a few posts with every field, a few with deliberate gaps.
+
+## Button presets and icons (verified 2026-10-05)
+
+- A button preset saved with the icon OFF prints `body #page-container .et_pb_section .preset--...::before
+  { display: none !important }`: a button using that preset cannot show an icon unless its CSS out-ranks that rule
+  (`body #page-container .et_pb_section selector.et_pb_button::before { display: inline-block !important; }`).
+- A preset that switches the icon ON without naming a glyph prints Divi's default arrow with rules that beat the
+  button's own glyph. For "big button with an always-visible icon" presets: leave the icon out of the preset
+  (`button: { enable: "on" }` only), put size, padding, flex layout and the `::before` placement in the preset's Custom
+  CSS, and let each button carry the full icon object:
+  `button.decoration.button.desktop.value = { enable: "on", icon: { enable: "on", settings: { unicode, type, weight },
+  placement: "left", onHover: "off" } }`.
+- A flex section spaces its rows with `module.decoration.layout.desktop.value.rowGap` (60px on this site): that, not
+  row padding, is the gap between a heading row and the row below.
+- The first page load after a save can lack the page's own module CSS (the static CSS file is being rebuilt): load
+  the page twice before measuring computed styles.
+
+## Tool notes
+
+- `wp.js rest-post wp/v2/<route> --data-file body.json`: POST to core content routes (custom post types, `{"acf":
+  {...}}`, taxonomy terms). Used to create a term and fill ACF fields on a custom post type.
+- `wp.js tb-list` without `--json` printed "Theme Builder posts: undefined" and crashed on one run while `--json`
+  worked: look at the non-JSON branch before relying on it.
+- Editing a script through a shell heredoc that contains `\n` inside a JS string breaks the string: use the editor.

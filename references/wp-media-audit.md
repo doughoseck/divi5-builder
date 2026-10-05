@@ -175,3 +175,36 @@ node scripts/media-quarantine.js status  <site>
 - **A missing social image tag is not always the audit's doing.** Compare all posts before blaming a restore: on one
   site 2 of 107 posts printed no `og:image`, one of them untouched for a year.
 - `wp.js update-post <id> --featured <media id>` sets a featured image (0 removes it).
+
+## Finishing: the library rows of quarantined items (done on a real site 2026-10-02)
+
+After the owner has lived with the quarantine for some days and deletes the quarantine folder, the library items whose
+files were moved are still rows in the database: broken thumbnails in the Media Library. The tools never delete; the
+owner removes the rows with an SQL file you prepare.
+
+1. **`media-quarantine.js verify` once more, before anything is deleted.** If it reports files missing that are NOT in
+   quarantine, ask for those files directly before believing it: on one run five files of one page were "missing",
+   all five answered 200 a minute later, and a second full run found 0. A crawl of hundreds of pages meets the odd
+   moment where the server does not answer. Two clean facts are needed: the files answer, and a re-run says 0.
+2. **Build the list from the plans, then check each item against the site as it is today.** An item goes on the list
+   only when: a plan moved its files (`<batch>.plan.json`, the reason `item N` on each file); it still exists in the
+   library (`/attachments`); its main file does not answer (HTTP 404, three tries; no clear answer = held back); its
+   status in the last audit is UNUSED, or it was hand-picked. Everything else goes to a "held back" file with the
+   reason. On the first real run this held back exactly one item: a file that had been restored and was in use.
+   Counting trap: a plan made AFTER an earlier batch lists the earlier batch's items again (already-quarantined items
+   show as UNUSED with 0 MB), so de-duplicate by item id across plans.
+3. **The SQL, in sections the owner runs one at a time**, each with the expected number of rows: a count first
+   (changes nothing), `DELETE FROM <prefix>postmeta WHERE post_id IN (…)`, `DELETE FROM <prefix>term_relationships
+   WHERE object_id IN (…)`, `DELETE FROM <prefix>posts WHERE post_type = 'attachment' AND ID IN (…)`, a count again
+   (expected 0). Chunks of 400 ids. The `post_type = 'attachment'` condition on the posts delete means nothing but a
+   media item can go. In a count that joins chunks with `OR`, bracket the whole list:
+   `post_type = 'attachment' AND (ID IN (…) OR ID IN (…))`. The owner exports the database first.
+4. **Check afterwards**: none of the listed ids is left; EVERY remaining library item's main file answers; the
+   database report (`/db`) shows 0 orphan postmeta and 0 orphan term links; `/batches` is empty; `verify` says 0.
+   Only then are the two helper mu-plugins removed.
+
+Asking the site for a file that is not there costs about two seconds each when WordPress answers the 404 (no static
+404 from the web server): 1,240 checks took 40 minutes. Run it in the background and say so.
+
+Real numbers of the finished run: library 1,933 -> 697 items, every one with its file; uploads 2.78 GB -> about 1.2 GB
+including the WebP copies made later; quarantine about 2 GB deleted by the owner.

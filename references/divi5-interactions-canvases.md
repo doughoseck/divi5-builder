@@ -322,3 +322,47 @@ Lessons, each one met the hard way:
 - Name the layer's trigger without the word "close" unless the site's Esc script should click it: that script clicks
   `[class*="et-interaction-trigger-close"]` inside visible popups.
 - No new speed cost on a site that already uses interactions in its header.
+
+## A strip above a sticky header that scrolls away (built 2026-10-05, Divi 5.13.1)
+
+Wanted: an announcement strip (date, logo, button) above the header; the strip scrolls out with the page, the header
+then sticks to the top as before. The header was a `position: fixed` section whose "scrolled" look came from a small
+sentinel section with two native interactions (`viewportExit` -> `addAttribute data-scrolled` on the header,
+`viewportEnter` -> `removeAttribute`).
+
+- **Let the strip BE the sentinel.** Put the strip first in the header layout as a normal (not fixed) section, move
+  the sentinel's two interactions onto it and delete the sentinel. The moment the strip has left the screen is exactly
+  the moment the header must stick.
+- **Header not fixed until then**, in the header section's own Custom CSS:
+  `body selector.et_pb_section:not([data-scrolled]) { position: absolute !important; top: auto !important; }`.
+  Absolute with `top: auto` keeps the header at its place in the flow, right under the strip and over the hero as
+  before; when `data-scrolled` arrives Divi's own fixed position applies again. No script.
+- The strip's height may differ per breakpoint (stacked on a phone it is much taller): nothing to configure, the
+  trigger is the strip itself.
+- Centre item truly centred between a left and a right item: three columns, the outer two
+  `flex: 1 1 0 !important; width: auto !important; min-width: 0`, the middle one `flex: 0 0 auto`; right column
+  `justify-content: flex-end`. Phone stack in the row's Custom CSS: `flex-direction: column`, columns `width: 100%`,
+  `order: -1` on the one that goes first, text centred.
+- A logo exported at 1x looks soft on dense screens: ask for 3x (or SVG) and show it at the design height with CSS;
+  WordPress then serves a fitting size through `srcset`.
+
+**What cannot be verified from an automated browser:** viewport triggers. Divi's `viewportEnter`/`viewportExit` use
+IntersectionObserver, which does not fire while the page is hidden (`document.visibilityState === 'hidden'`): true
+for the built-in browser pane when it is not displayed AND for a background tab in the user's Chrome. Scrolling by
+script then changes nothing and proves nothing. Verify the two halves you can (layout at each width; set the
+attribute by hand and check the header is fixed at top 0), say plainly that the trigger itself is unverified, and
+ask the user to scroll once on desktop and phone. Same family as: autoplay and CSS animations in a hidden pane.
+
+**Matching a design you only have as a screenshot:** measure it. Take the content width in the screenshot and in the
+page, scale, and compare element WIDTHS (text run width via a Range, logo, button), not guessed font sizes. On this
+build the first guess (site scale: 32px / 15px, logo 76px) was visibly off; the measured values (28px / 13px, logo
+94px, button text 18px) were approved at once. Check the user's own screenshot for display scaling first (a 1900px
+wide capture of a 1536px viewport is 125%). And when sizes are corrected for desktop, do not touch a breakpoint the
+user has already approved: ask, or change desktop only.
+
+## Third-party gallery module: file names on hover
+
+A dynamic-gallery module with the overlay on and an EMPTY "overlay data" list still prints each image's title (the
+file name) in the overlay: the empty list is dropped on save and the module's default shows the title. Hide it in the
+module's Custom CSS (`selector .dp-ddg-title { display: none; }`); the overlay must stay on when a click opens the
+lightbox.
