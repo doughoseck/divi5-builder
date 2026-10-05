@@ -2,14 +2,14 @@
 /**
  * Plugin Name: WP Media Audit (read-only)
  * Description: Read-only REST routes for the divi5-builder skill's media-audit.js: lists media library items, files on disk with sizes, and WHERE upload files and attachment IDs are referenced in the database. Works on any WordPress site (no Divi needed). Writes nothing, deletes nothing, returns no content: only file names, sizes, attachment IDs and the place a reference was found. Administrators only. Remove the file when the audit is done.
- * Version: 1.1.1
+ * Version: 1.1.2
  * Author: divi5-builder skill
  *
  * INSTALL: copy this file to wp-content/mu-plugins/wp-media-audit.php (create the folder if it is not there).
  * REMOVE:  delete the file. It stores nothing, so nothing is left behind.
  * Needs PHP 7.0 or newer.
  *
- * Routes (namespace wp-media-audit/v1, all GET, all need the manage_options capability):
+ * Routes (namespace wp-media-audit/v1, all GET, all need manage_options, or manage_network_options on multisite):
  *   /info                      versions, upload folder, limits, database tables with sizes
  *   /attachments?after=&limit= media library rows with every file each one owns (main file, sizes, original, backups)
  *   /files?root=&dir=&deep=    files in a folder: name, bytes, modified time. root = uploads | content | abspath
@@ -20,7 +20,7 @@
  */
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
-if ( ! defined( 'WPMA_VERSION' ) ) { define( 'WPMA_VERSION', '1.1.0' ); }
+if ( ! defined( 'WPMA_VERSION' ) ) { define( 'WPMA_VERSION', '1.1.2' ); }
 
 if ( ! function_exists( 'wpma_key_is_media' ) ) :
 
@@ -299,7 +299,9 @@ if ( ! function_exists( 'wpma_key_is_media' ) ) :
 	}
 
 	add_action( 'rest_api_init', function () {
-		$perm = function () { return current_user_can( 'manage_options' ); };
+		// 1.1.2: on multisite a subsite admin has manage_options, but root=content|abspath lists the
+		// whole network's files and /info shows server paths, so it needs a network admin there.
+		$perm = function () { return current_user_can( function_exists( 'is_multisite' ) && is_multisite() ? 'manage_network_options' : 'manage_options' ); };
 		$ns   = 'wp-media-audit/v1';
 
 		register_rest_route( $ns, '/info', array(
