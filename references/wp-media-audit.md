@@ -130,7 +130,9 @@ submissions kept on purpose.
 ## Removing: quarantine first, delete later
 
 Nothing in the skill deletes. `scripts/media-quarantine.js` MOVES files out of `uploads/` into
-`wp-content/media-audit-quarantine/<batch>/` (closed to the web, with a manifest) and can move them back. It needs a
+`wp-content/media-audit-quarantine-<random>/<batch>/` (an unguessable name since plugin 1.0.1, so it is not served even
+where the `.htaccess` deny rule does not apply, e.g. nginx; `status` prints the exact folder; dot files such as
+`uploads/.htaccess` are never moved) and can move them back. It needs a
 second file the user uploads, `assets/wp-media-quarantine.php`: kept apart so the audit plugin stays read-only. It has
 no delete and does not touch the database (tests: `php scripts/media-quarantine-test.php`).
 

@@ -8,7 +8,11 @@
  * Set WPMA_PLUGIN_FILE to test another copy of the plugin (used for mutation testing).
  */
 define( 'ABSPATH', __DIR__ . '/' );
-function add_action() {}
+$GLOBALS['T_actions'] = array(); $GLOBALS['T_routes'] = array(); $GLOBALS['T_caps'] = array(); $GLOBALS['T_multisite'] = false;
+function add_action( $h, $cb = null ) { $GLOBALS['T_actions'][ $h ][] = $cb; }
+function register_rest_route( $ns, $path, $def ) { $GLOBALS['T_routes'][ $path ] = $def; }
+function current_user_can( $cap ) { return in_array( $cap, $GLOBALS['T_caps'], true ); }
+function is_multisite() { return $GLOBALS['T_multisite']; }
 require getenv( 'WPMA_PLUGIN_FILE' ) ?: __DIR__ . '/../assets/wp-media-audit.php';
 
 $failed = 0; $n = 0;
@@ -121,6 +125,21 @@ $hits = array();
 wpma_scan_text( $hits, '21', 'wp-content/uploads', null, 'trash', 'postmeta|9|_thumbnail_id|page|trash', '_thumbnail_id' );
 $h = array_values( $hits );
 check( 'a meta value goes through the meta rules and keeps its class', same( $h, array( array( 'i', 21, 's', 'trash', 1, array( 'postmeta|9|_thumbnail_id|page|trash' ) ) ) ), j( $h ) );
+
+echo "--- who may (routes)\n";
+foreach ( $GLOBALS['T_actions']['rest_api_init'] ?? array() as $cb ) { $cb(); }
+$allowed = function () { return array_map( function ( $r ) { return true === call_user_func( $r['permission_callback'] ); }, $GLOBALS['T_routes'] ); };
+check( 'the seven routes are registered', 7 === count( $GLOBALS['T_routes'] ), j( array_keys( $GLOBALS['T_routes'] ) ) );
+$GLOBALS['T_caps'] = array( 'edit_posts', 'edit_others_posts' );
+check( 'an editor is refused on every route', ! in_array( true, $allowed(), true ) );
+$GLOBALS['T_caps'] = array( 'manage_options' );
+check( 'single site: an administrator is allowed on every route', ! in_array( false, $allowed(), true ) );
+$GLOBALS['T_multisite'] = true;
+check( 'multisite: a subsite admin (manage_options only) is refused on every route', ! in_array( true, $allowed(), true ) );
+$GLOBALS['T_caps'] = array( 'manage_options', 'manage_network_options' );
+check( 'multisite: a network admin is allowed', ! in_array( false, $allowed(), true ) );
+$GLOBALS['T_multisite'] = false;
+check( 'the version constant matches the header', (bool) preg_match( '/\* Version: ' . preg_quote( WPMA_VERSION, '/' ) . '\b/', file_get_contents( getenv( 'WPMA_PLUGIN_FILE' ) ?: __DIR__ . '/../assets/wp-media-audit.php' ) ) );
 
 echo "\n" . ( $failed ? "FAILED: $failed of $n" : "ALL $n CHECKS PASSED" ) . "\n";
 exit( $failed ? 1 : 0 );

@@ -24,8 +24,8 @@ Only the latest version on `main` is supported. Always run the newest
 | Plugin | Latest | Notes |
 |---|---|---|
 | `divi5-builder-rest.php` | 1.8.3 | Page building bridge. Meant to stay installed. |
-| `wp-media-audit.php` | 1.1.1 | Read-only. Install for the audit, **remove after use**. |
-| `wp-media-quarantine.php` | 1.0.0 | Moves files. Install for the clean-up, **remove after use**. |
+| `wp-media-audit.php` | 1.1.2 | Read-only. Install for the audit, **remove after use**. |
+| `wp-media-quarantine.php` | 1.0.1 | Moves files. Install for the clean-up, **remove after use**. |
 | `wp-site-updates.php` | 1.0.1 | Runs updates. Install when needed, remove after use. |
 
 ## Hardening advice for users
@@ -39,6 +39,15 @@ Only the latest version on `main` is supported. Always run the newest
 - Revoke an Application Password (Users -> Profile) as soon as you stop using it.
 
 ## Past advisories
+
+- **GHSA-6qm2-h8qg-57m7 - media plugins (quarantine 1.0.1, audit 1.1.2)** - the quarantine
+  folder had a guessable name protected only by an Apache `.htaccess`, so on nginx the
+  moved files could be downloadable; dot files such as `uploads/.htaccess` could be moved;
+  `restore` did not check real paths (a planted link or Windows junction could pull files
+  in or push them out of uploads); on multisite a subsite admin could use both plugins.
+  All fixed, covered by `scripts/media-quarantine-test.php` and `scripts/media-audit-test.php`.
+  These plugins are meant to be removed after use; if you kept one, **update it**, and if an
+  old `wp-content/media-audit-quarantine/` folder remains, restore or delete it.
 
 - **1.8.3** - `GET /postinfo?scan=` let any user who could edit one post (Contributor
   and up) read `wp_options` values; `POST /link-canvas` did not check the target page;

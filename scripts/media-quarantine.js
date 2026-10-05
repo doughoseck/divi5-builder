@@ -11,7 +11,8 @@
  *   node media-quarantine.js status  <site>
  *
  * Needs assets/wp-media-quarantine.php in wp-content/mu-plugins/ (the user uploads it) and a finished
- * `media-audit.js scan` + `crawl` in D. Files go to wp-content/media-audit-quarantine/<batch>/ with a manifest.
+ * `media-audit.js scan` + `crawl` in D. Files go to wp-content/media-audit-quarantine-<random>/<batch>/ with a
+ * manifest (plugin 1.0.1+; `status` prints the exact folder).
  *
  * The order that keeps it safe:
  *   1. verify            BEFORE moving: what is already missing (the baseline)
@@ -145,8 +146,9 @@ function main() {
   if (cmd === 'status') {
     if (!site) { console.error('usage: media-quarantine.js status <site>'); process.exit(2); }
     const r = wp(['rest-get', 'wp-media-quarantine/v1/batches']);
-    console.log(`plugin ${r.version} | folder ${r.folder}` + (r.batches.length ? '' : ' | nothing in quarantine'));
-    r.batches.forEach(b => console.log(`   ${b.batch}: ${b.inQuarantine} files in quarantine (${mb(b.bytes)} MB), ${b.restored} restored, created ${String(b.created).slice(0, 10)}`));
+    console.log(`plugin ${r.version} | folder ${r.folder || '(not made yet)'}` + (r.batches.length ? '' : ' | nothing in quarantine'));
+    if (r.version === '1.0.0') console.log('   UPDATE the plugin to 1.0.1 or newer: 1.0.0 uses a guessable folder that nginx may serve (see SECURITY.md).');
+    r.batches.forEach(b => console.log(`   ${b.batch}: ${b.inQuarantine} files in quarantine (${mb(b.bytes)} MB), ${b.restored} restored, created ${String(b.created).slice(0, 10)}` + (b.legacyFolder ? `\n     WARNING: ${b.warning}` : '')));
     return;
   }
 

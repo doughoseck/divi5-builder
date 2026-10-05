@@ -226,7 +226,7 @@ node scripts/media-quarantine.js verify  <site> --dir audit                 # ne
 node scripts/media-quarantine.js restore <site> --dir audit --batch unused --needed --write
 ```
 
-`assets/wp-media-quarantine.php` moves the named files to `wp-content/media-audit-quarantine/<batch>/` (closed to
+`assets/wp-media-quarantine.php` moves the named files to `wp-content/media-audit-quarantine-<random>/<batch>/` (an unguessable name, closed to
 the web, with a manifest) and can move them back. It has no delete and does not touch the database. The permanent
 step, deleting the quarantine folder, is the site owner's. First real run: a 2.78 GB uploads folder went to 0.8 GB
 with no file missing on any public page. Playbook: `references/wp-media-audit.md`.
