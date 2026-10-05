@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Divi 5 Builder — REST meta bridge
  * Description: Registers Divi's builder/layout post-meta for the WordPress REST API so a page built via REST (e.g. by the divi5-builder skill) can be flipped into "Divi mode" without opening the Visual Builder. v1.2 makes link-canvas attach an et_pb_canvas popup to a page via the real Divi meta (_divi_canvas_parent_post_id + _divi_off_canvas_data), so REST-created Divi 5 popups render. v1.3 adds read/write of Divi's GLOBAL COLOUR palette, which lives in a wp_option rather than in page content and could not be created over REST at all before — so a site can now be themed before its first page is built. v1.5 adds Theme Builder access: list every template and layout, read a header/body/footer layout's raw content, and write one back (hash-checked against concurrent edits, previous content kept for restore), because core REST does not expose those post types. v1.7 adds read/write of the site-wide Custom CSS field (Divi's Theme Options ▸ General ▸ Custom CSS) — this isn't a Divi option at all, it's WordPress core's own Additional CSS system (a `custom_css` post per active theme), and both Divi's own save route and the Theme Options screen reject Application Password auth the same way Theme Builder does, so it was previously only editable from a live wp-admin session. v1.8 adds WRITES to the design system: create or update one global colour, one design variable or one preset at a time, through Divi's own save functions (so Divi's CSS cache is cleared), add-only (nothing is ever deleted), with the previous store kept for restore. Writes are gated by the normal edit-post capability (manage_options for the palette, edit_theme_options for Custom CSS), so only authenticated editors/admins (incl. Application Passwords) can use them.
- * Version: 1.8.2
+ * Version: 1.8.3
  * Author: divi5-builder skill
  *
  * INSTALL (pick one):
@@ -23,7 +23,7 @@
  */
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
-if ( ! defined( 'D5B_REST_VERSION' ) ) { define( 'D5B_REST_VERSION', '1.8.2' ); }
+if ( ! defined( 'D5B_REST_VERSION' ) ) { define( 'D5B_REST_VERSION', '1.8.3' ); }
 
 add_action( 'init', function () {
 	$auth = function ( $allowed, $meta_key, $post_id ) {
@@ -71,21 +71,34 @@ add_action( 'rest_api_init', function () {
 	};
 
 	// GET /divi5-builder/v1/postinfo?id=123[&scan=canvas]
-	// Returns post_parent, post_type, all meta, and (with scan) matching wp_options.
+	// Returns post_parent, post_type, meta, and (with scan) matching wp_options.
+	// 1.8.3 SECURITY: `scan` reads wp_options values (which can hold API keys,
+	// SMTP passwords, salts), so it needs manage_options, not just edit_post on
+	// some post a Contributor can create. Non-admins also only see public meta
+	// plus Divi's own _et_* / _divi_* keys, not every protected _* key.
 	register_rest_route( 'divi5-builder/v1', '/postinfo', array(
 		'methods'             => 'GET',
-		'permission_callback' => $perm,
+		'permission_callback' => function ( $req ) use ( $perm ) {
+			if ( $req->get_param( 'scan' ) && ! current_user_can( 'manage_options' ) ) { return false; }
+			return (int) $req->get_param( 'id' ) && $perm( $req );
+		},
 		'callback'            => function ( $req ) {
 			global $wpdb;
 			$id = (int) $req->get_param( 'id' );
 			$p  = get_post( $id );
 			if ( ! $p ) { return new WP_Error( 'not_found', 'no such post', array( 'status' => 404 ) ); }
+			$meta = get_post_meta( $id );
+			if ( ! current_user_can( 'manage_options' ) ) {
+				foreach ( array_keys( $meta ) as $k ) {
+					if ( is_protected_meta( $k, 'post' ) && ! preg_match( '/^_(et_|divi_)/', $k ) ) { unset( $meta[ $k ] ); }
+				}
+			}
 			$out = array(
 				'id'          => $id,
 				'post_type'   => $p->post_type,
 				'post_parent' => (int) $p->post_parent,
 				'post_status' => $p->post_status,
-				'meta'        => get_post_meta( $id ),
+				'meta'        => $meta,
 			);
 			if ( $req->get_param( 'scan' ) ) {
 				$like = '%' . $wpdb->esc_like( sanitize_text_field( $req->get_param( 'scan' ) ) ) . '%';
@@ -330,9 +343,18 @@ add_action( 'rest_api_init', function () {
 	// Attaches an et_pb_canvas (popup/off-canvas) to a page exactly the way the
 	// Visual Builder does, so Divi appends it on the front end: it writes the
 	// canvas-side identity/parent meta and the page-side off-canvas pointer.
+	// 1.8.3 SECURITY: this writes meta on BOTH posts, so the user must be able
+	// to edit both. (Before, the generic $perm checked `id` or the canvas only,
+	// so a Contributor could flip builder meta on any page, incl. the homepage.)
 	register_rest_route( 'divi5-builder/v1', '/link-canvas', array(
 		'methods'             => 'POST',
-		'permission_callback' => $perm,
+		'permission_callback' => function ( $req ) {
+			$canvas_id = (int) $req->get_param( 'canvas_id' );
+			$page_id   = (int) $req->get_param( 'page_id' );
+			return $canvas_id && $page_id
+				&& current_user_can( 'edit_post', $canvas_id )
+				&& current_user_can( 'edit_post', $page_id );
+		},
 		'callback'            => function ( $req ) {
 			$canvas_id = (int) $req->get_param( 'canvas_id' );
 			$page_id   = (int) $req->get_param( 'page_id' );
@@ -571,7 +593,9 @@ add_action( 'rest_api_init', function () {
 	// overwrite wholesale, it's a single string read and written through
 	// core's own accessor functions, not get_option()/update_option().
 	// ---------------------------------------------------------------------
-	$css_perm = function () { return current_user_can( 'edit_theme_options' ); };
+	// 1.8.3: core's own Additional CSS screen requires edit_css (denied on
+	// multisite / DISALLOW_UNFILTERED_HTML), so require it here too.
+	$css_perm = function () { return current_user_can( 'edit_theme_options' ) && current_user_can( 'edit_css' ); };
 
 	// GET /divi5-builder/v1/custom-css              → { css }
 	// POST /divi5-builder/v1/custom-css { css, mode?: "replace"|"append" }
