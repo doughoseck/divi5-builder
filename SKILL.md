@@ -141,6 +141,14 @@ CSS and hard-coded per-module values destroy that.
    case from the site's presets. Where the design deviates (normal-case headings, another weight, another colour),
    follow the site and say so; let the user ask for the exceptions. Colour part of a line with a utility class
    (`references/divi5-presets-variables.md`, "More preset facts"), never an inline style.
+7. **Never put an em dash (—) into site content.** In dates, ranges and running text use a plain hyphen
+   ("28 - 30 May 2027", "2007 - 2027"). This holds for content you write and for content you take over from a design
+   or a brief: replace the em dashes before the page is written. Clients read an em dash as a typing mistake.
+8. **A hero heading that can wrap needs a line height near 1.15.** Converted sites often carry 2em on hero titles and
+   subheadings; it is invisible on one line and looks double-spaced on two. Check with a long title. If the theme
+   forces a line height on every heading with `!important`, the module setting loses: override it for heroes in the
+   site CSS (`.et_pb_fullwidth_header .header-content h1 { line-height: 1.15em !important; }`) and set the same value
+   in each hero so the builder shows what the page shows.
 
 ## Prerequisites — required before you can do anything
 
@@ -697,6 +705,10 @@ node scripts/site-updates.js update <site> --all --fast --write  # small brochur
   `references/wp-page-cache-notes.md`.
 - **Tool limits**: `upload-media` can be refused (HTTP 413) for files of a few MB, and Theme Builder templates cannot
   be created, only their layouts edited. In both cases the user does that one step in wp-admin.
+- **A post grid with a popup per post, and a single-post template built from custom fields** (third-party Divi
+  FilterGrid; Video, Icon and Slider modules fed by ACF fields, each part hidden when its field is empty; an X icon;
+  big button presets with an always-visible icon): the last sections of `references/divi5-modules-verified.md`.
+  Writing to a custom post type, its ACF fields or a taxonomy: `wp.js rest-post wp/v2/<route> --data-file body.json`.
 
 ## Reference
 

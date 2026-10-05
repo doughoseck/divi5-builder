@@ -50,6 +50,7 @@
  *                                                  # writes add or update ONE item; same name/label = update
  *   --- Any other REST route, read only ---
  *   node wp.js <site> rest-get <path> [--out f]    # GET /wp-json/<path>, e.g. wp-media-audit/v1/info (used by media-audit.js)
+ *   node wp.js <site> rest-post wp/v2/<route> --data-file body.json [--out f]   # POST to a core content route (custom post types, ACF fields, terms)
  *   node wp.js <site> quarantine move|restore --data-file f.json   # used by media-quarantine.js; moves files, never deletes
  *
  * Output is compact JSON or plain lines on stdout; errors to stderr, exit 1.
@@ -578,6 +579,20 @@ function flags(argv) {
       const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/${p}`, c);
       const out = typeof r === 'string' ? r : JSON.stringify(r);
       if (f.out) { fs.writeFileSync(f.out, out); console.log(JSON.stringify({ ok: true, out: f.out, bytes: out.length })); }
+      else console.log(out);
+      break;
+    }
+    case 'rest-post': {
+      // Write to a core content route (wp/v2/...) with a JSON body from a file: custom post types, their ACF fields
+      // ({"acf":{...}}), taxonomy terms. POST only (create or update, never delete), core routes only.
+      //   rest-post wp/v2/book/123 --data-file body.json
+      const p = String(f._[0] || '').replace(/^\/+/, '');
+      if (!/^wp\/v2\/[a-z0-9_\-\/]+$/i.test(p)) die('rest-post needs a wp/v2/... path, e.g. wp/v2/book/123');
+      if (!f['data-file']) die('rest-post needs --data-file <json file>');
+      const body = JSON.parse(fs.readFileSync(f['data-file'], 'utf8'));
+      const r = await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/${p}`, c, body);
+      const out = JSON.stringify(r);
+      if (f.out) { fs.writeFileSync(f.out, out); console.log(JSON.stringify({ ok: true, id: r && r.id, out: f.out, bytes: out.length })); }
       else console.log(out);
       break;
     }
