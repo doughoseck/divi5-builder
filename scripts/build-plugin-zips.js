@@ -23,8 +23,11 @@ const crc32 = buf => { let c = -1; for (const b of buf) c = CRC[(c ^ b) & 0xff] 
 function dosTime(d) {
   return { time: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), date: ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate() };
 }
+// Reproducible: every entry gets the same fixed time (1980-01-01 00:00, the zip epoch), so building
+// the same source twice gives byte-identical zips, and anyone can rebuild and compare with a release.
+const FIXED_TIME = new Date(1980, 0, 1, 0, 0, 0);
 function zip(entries) { // entries: [{ name, data: Buffer }]; folders are implied by the names
-  const locals = []; const centrals = []; let offset = 0; const { time, date } = dosTime(new Date());
+  const locals = []; const centrals = []; let offset = 0; const { time, date } = dosTime(FIXED_TIME);
   const all = [];
   // WordPress and most unzip tools are happy without explicit folder entries, but add them anyway.
   const dirs = new Set(); for (const e of entries) { const parts = e.name.split('/'); for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join('/') + '/'); }
@@ -56,7 +59,9 @@ function zip(entries) { // entries: [{ name, data: Buffer }]; folders are implie
 
 // --- build ---------------------------------------------------------------------------------------
 fs.mkdirSync(OUT, { recursive: true });
-const license = fs.readFileSync(path.join(ROOT, 'LICENSE'));
+const licenseFile = path.join(ROOT, 'LICENSE');
+const license = fs.existsSync(licenseFile) ? fs.readFileSync(licenseFile) : null;
+if (!license) console.error('note: no LICENSE next to assets/, the zips will hold the plugin file only');
 const plugins = fs.readdirSync(path.join(ROOT, 'assets')).filter(f => f.endsWith('.php')).sort();
 let built = 0;
 for (const file of plugins) {
@@ -69,7 +74,9 @@ for (const file of plugins) {
   // Normalise line endings to LF so the zip is the same whatever the checkout's core.autocrlf.
   const php = Buffer.from(src.toString('utf8').replace(/\r\n/g, '\n'), 'utf8');
   const out = path.join(OUT, `${slug}.zip`);
-  fs.writeFileSync(out, zip([{ name: `${slug}/${slug}.php`, data: php }, { name: `${slug}/LICENSE`, data: license }]));
+  const files = [{ name: `${slug}/${slug}.php`, data: php }];
+  if (license) files.push({ name: `${slug}/LICENSE`, data: license });
+  fs.writeFileSync(out, zip(files));
   console.log(`${path.relative(ROOT, out).replace(/\\/g, '/')}  ${slug} ${version}  (${fs.statSync(out).size} bytes)`);
   built++;
 }
