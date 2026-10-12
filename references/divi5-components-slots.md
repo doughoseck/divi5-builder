@@ -190,8 +190,10 @@ Same mechanism. `global_module=` shortcodes convert to `divi/global-layout` bloc
   new module is `divi/global-slot`. The compiler's output is unaffected.
 - **Global variables:** `GlobalData::set_global_variables()` now runs under a lock, accepts an optional
   "expected" snapshot (returns `global_variables_stale` 409 if the store changed), and **rejects the whole
-  save** with `global_variable_ids_missing` if any existing `gvid-` id is missing from what is sent. Our
-  `ds-var-set` sends the whole store, so it passes; but it ignores the returned error (see "To do").
+  save** with `global_variable_ids_missing` if any existing `gvid-` id is missing from what is sent. A
+  variable is deleted by setting `status: "archived"`. mu-plugin 1.8.4 handles all of it (passes on the
+  error, sends the expected snapshot, restore archives instead of dropping): `divi5-presets-variables.md`
+  section 5.0.
 - `divi/code` with a standalone SVG is now sanitised on save.
 - Option names, Theme Builder and canvas storage: unchanged.
 
@@ -219,6 +221,4 @@ creating or editing a Component (its `et_pb_layout` post) over REST.
 - mu-plugin routes: list Components, read one, write one (hash-checked like `tb-set`), so the skill can
   inventory, globalise and edit them.
 - `globalize.js`: include Components as a source.
-- `ds-var-set` / `ds-color-set`: pass the expected snapshot to `set_global_variables()` on 5.15+ and
-  report its WP_Error instead of the generic "needs the Variables Manager role" message.
 - `divi.js`: an optional `{"type":"component","id":123}` that emits an instance (after the live check).

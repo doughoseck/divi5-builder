@@ -529,10 +529,14 @@ Styling rule 2 says type and colour come from globals. This is how to find and u
                                                  # (module presets; option group presets too from 1.8.2)
   node scripts/wp.js <site> ds-color-set --label "Brand" --color "#112233" [--dry-run]
   node scripts/wp.js <site> ds-variable-set --type numbers --label "Gap" --value 20px [--dry-run]
+  node scripts/wp.js <site> ds-variable-archive --id gvid-x [--dry-run]   # delete one variable (>= 1.8.4)
   node scripts/wp.js <site> ds-preset-set --file preset.json [--dry-run] [--summary]
   node scripts/wp.js <site> ds-backups ; node scripts/wp.js <site> ds-restore --store presets --index 0
   ```
-  Same name or label updates, so a script can run twice. `node scripts/ds-live-test.js <site> all`
+  Same name or label updates, so a script can run twice. **Divi 5.15+ never drops a variable:** it
+  refuses a store that leaves an id out and "deletes" by setting status `archived`. So on 5.15+ use
+  mu-plugin >= 1.8.4 (1.8.3 answered `ok:true` to a variables restore Divi had refused); its restore keeps
+  newer variables archived. Details: `references/divi5-presets-variables.md` section 5.0. `node scripts/ds-live-test.js <site> all`
   proves colours, variables, presets and restore on a site and leaves its stores exactly as
   they were: run it once per new site (staging, nobody editing). Option group presets
   (`"kind":"group"`) are proven for one group (Border on a Text module, against a builder-made
