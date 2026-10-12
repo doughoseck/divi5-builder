@@ -599,6 +599,7 @@ calls the same functions the builder ends up in: `GlobalPreset::save_data()`, `G
 node scripts/wp.js <site> ds-selftest                 # FIRST, on every new site. Must say "different: 0"
 node scripts/wp.js <site> ds-color-set --label "Overlay" --color "#112233" [--dry-run]
 node scripts/wp.js <site> ds-variable-set --type numbers --label "Section pad" --value 50px [--dry-run]
+node scripts/wp.js <site> ds-variable-archive --id gvid-x [--dry-run]   # delete one variable (>= 1.8.4, see 5.0)
 node scripts/wp.js <site> ds-preset-set --file preset.json [--dry-run] [--summary]
 node scripts/wp.js <site> ds-backups                   # newest 10 per store + the first of each day (>= 1.8.1)
 node scripts/wp.js <site> ds-restore --store presets --index 0
@@ -609,7 +610,8 @@ Optional: `id`, `kind: "group"` + `groupName` + `groupId`, `priority`, `setDefau
 Local test of the plugin file, no WordPress needed: `php scripts/ds-write-test.php "<Divi 5 theme folder>"`.
 
 What the plugin guarantees
-- One item per call, read-modify-write of the whole store, nothing deleted, no other item touched.
+- One item per call, read-modify-write of the whole store, nothing deleted (except by `ds-variable-archive`, asked for
+  by id), no other item touched.
 - Same id, or same name/label, UPDATES. A script can be run twice.
 - `styleAttrs` / `renderAttrs` come from Divi's own `Conversion::get_preset_attrs()` and `get_preset_attrs_mapping()`.
   `ds-selftest` re-splits every preset on the site and compares with what is stored. Proven on 29 presets, including
@@ -619,7 +621,8 @@ What the plugin guarantees
 - A module type with presets but no default gets one by Divi's own rule (`maybe_create_default_presets_after_import`).
   It is named "<Module> 1" with a uuid id; the builder would have named it "<Module> Preset 1".
 - After the write the store is read back; a write Divi ignored is an error (variables need the "Variables Manager"
-  role permission and `edit_theme_options`).
+  role permission and `edit_theme_options`). From 1.8.4 this holds for restore too, and a `WP_Error` from Divi is
+  passed on (section 5.0).
 
 Prove it on each new site with ONE command, which creates test items, checks Divi's own store after every step and
 puts each store back exactly as it was: `node scripts/ds-live-test.js <site> all` (staging, nobody editing).
@@ -637,6 +640,51 @@ puts each store back exactly as it was: `node scripts/ds-live-test.js <site> all
 
 **A builder-made variable** (5.13): `{ id, label, value, order (a string), status, lastUpdated (UTC, ms), variableType }`,
 `variableType` = the type it is stored under (`numbers`, `strings`, ...).
+
+### 5.0 Variables on Divi 5.15+: deleting means archiving (mu-plugin >= 1.8.4, found 2026-10-12)
+
+Divi 5.15 changed `GlobalData::set_global_variables()` (5.15.1 source, `GlobalData.php` ~line 1354):
+
+- It now RETURNS a `WP_Error` instead of nothing. `validate_global_variable_ids()` (~line 909) refuses the whole save
+  when the new store leaves out ANY `gvid-` id the store has ("CRITICAL: Global variable IDs are missing during
+  sync!"), and `validate_global_variable_changes()` refuses a new or changed variable whose `status` is not `active`
+  or `archived`, or an active one with an empty `value`. Nothing is written.
+- It still returns `null` WITHOUT writing when the user lacks `edit_theme_options` or Divi's "Variables Manager" role
+  permission. Indistinguishable from success unless you read the store back.
+- So a variable is never removed: the builder "deletes" one by setting `status: "archived"`, and it stays in the store
+  for good. Divi also takes a database lock for the save (`409 global_variables_locked` if another save is running).
+
+What this broke in mu-plugin 1.8.3: `d5b_ds_write()` ignored the return value, so `ds-restore --store variables` of a
+backup with FEWER variables than the store answered `{"ok":true}` and changed nothing, and `ds-live-test.js variables`
+left its two "ZZ Test ... (delete me)" variables behind (seen on a staging site, Divi 5.15.1).
+
+What 1.8.4 does:
+
+| | Divi 5.15+ (detected by `validate_global_variable_ids` existing) | older Divi |
+|---|---|---|
+| Any variables write | Divi's `WP_Error` is passed on with its code and a 400; then the store is read back and compared, so the silent permission case is an error (`not_saved`) too | same read-back |
+| `ds-restore --store variables` | the backup, PLUS every variable made since, kept with `status: "archived"`; the answer lists them under `archived` | the backup exactly, newer variables dropped |
+| `ds-variable-archive --id gvid-x [--dry-run]` | sets that one variable's status to `archived` (`action: archived`; `unchanged` if it already was) | removes it (`action: removed`) |
+| `ds-variable-set` by `--label` | matches ACTIVE variables only: the label of a deleted variable is free, a new one is created (as in the builder) | same |
+| `ds-variable-set --id <archived id>` | brings it back to active, answer has `unarchived: true` | same |
+
+Seen live (a staging site, 5.15.1): deleting in the Variable Manager leaves the variable with `status: "archived"`
+and `order: ""`, value and label kept. The plugin's archive does the same; a variable brought back gets a new order.
+`ds-live-test.js all` passed there with 1.8.4 (35 checks), leaving the test variables archived.
+
+`design-system` lists archived variables with `ARCHIVED (deleted)`. A module still pointing at an archived variable
+loses its value without an error, so look before you archive a variable a page might use.
+
+`ds-live-test.js variables` on 5.15+ therefore ends with the two test variables archived, and checks that, plus that
+every other variable is exactly as before. It refuses to start while an ACTIVE "ZZ Test ... (delete me)" variable is
+in the store (a leftover would be updated instead of created) and prints the `ds-variable-archive` commands to clear it.
+
+Colours and presets: `set_global_colors()` still returns nothing and `GlobalPreset::save_data()` the saved data (5.15.1);
+1.8.4 passes on a `WP_Error` from either too, should a later Divi start returning one.
+
+**Comparing stores in a script:** an empty store comes back from PHP as JSON `[]`, and the same store as a map with one
+item taken out as `{}`. Treat both as empty (ds-live-test.js does since 1.8.4; before, its colours test failed
+"every existing colour is untouched" on a site with no colours).
 
 **The builder's option group presets hold too much, and it costs the module its design.** "New preset from current
 styles" on ONE group (Border) stored the WHOLE module's design in the group preset (border, sizing, spacing, layout)

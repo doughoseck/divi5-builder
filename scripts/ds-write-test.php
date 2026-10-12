@@ -50,7 +50,7 @@ function wp_date( $f ) { return gmdate( $f ); }
 function is_wp_error( $x ) { return $x instanceof WP_Error; }
 function et_get_option( $name, $default = '' ) { return array_key_exists( "et:$name", $GLOBALS['d5b_options'] ) ? $GLOBALS['d5b_options'][ "et:$name" ] : $default; }
 function et_update_option( $name, $value ) { $GLOBALS['d5b_options'][ "et:$name" ] = $value; return true; }
-class WP_Error { public $code; public $message; public $data; function __construct( $c = '', $m = '', $d = null ) { $this->code = $c; $this->message = $m; $this->data = $d; } function get_error_code() { return $this->code; } function get_error_message() { return $this->message; } }
+class WP_Error { public $code; public $message; public $data; function __construct( $c = '', $m = '', $d = null ) { $this->code = $c; $this->message = $m; $this->data = $d; } function get_error_code() { return $this->code; } function get_error_message() { return $this->message; } function get_error_data() { return $this->data; } }
 #[AllowDynamicProperties]
 class WP_Block_Type { public $name; function __construct( $name, $args = array() ) { $this->name = $name; foreach ( $args as $k => $v ) { $this->$k = $v; } } }
 class WP_Block_Type_Registry { static function get_instance() { return new self(); } function get_registered( $n ) { return null; } }
@@ -201,6 +201,77 @@ $check( 'colors is not a variable type (they live in the colour store)', is_wp_e
 D5B_Fake_Data::$refuse_vars = true;
 $check( 'a write Divi silently ignored is reported as an ERROR, not as success', is_wp_error( d5b_ds_variable_upsert( array( 'type' => 'numbers', 'label' => 'Ghost', 'value' => '1px' ), false ) ) );
 D5B_Fake_Data::$refuse_vars = false;
+$check( 'older Divi (no id check): archiving a variable removes it', ! is_wp_error( $ar = d5b_ds_variable_archive( array( 'id' => $v['id'] ), false ) ) && 'removed' === $ar['action'] && ! isset( $vars()['numbers'][ $v['id'] ] ) && isset( $vars()['numbers']['gvid-aaa'] ) );
+et_update_option( 'global_variables', array( 'numbers' => array( 'gvid-aaa' => array( 'id' => 'gvid-aaa', 'label' => 'Gap', 'value' => '20px', 'order' => '1', 'status' => 'active' ) ) ) );
+$v13 = d5b_ds_variable_upsert( array( 'type' => 'strings', 'label' => 'Extra', 'value' => 'x' ), false );
+$rr  = d5b_ds_restore( 'variables', 0 );
+$check( 'older Divi: restore drops a newer variable, exactly as before', ! is_wp_error( $rr ) && ! isset( $vars()['strings'] ) && ! isset( $rr['archived'] ) && '20px' === $vars()['numbers']['gvid-aaa']['value'], is_wp_error( $rr ) ? $rr->get_error_message() : '' );
+
+echo "--- variables on Divi 5.15+ (its id check, archive, WP_Error, silent refusal) ---\n";
+// The real Divi 5.15.1 rules, copied from GlobalData::set_global_variables() and its two validators.
+class D5B_Fake_Data515 extends D5B_Fake_Data {
+	static $no_perm = false; static $last_expected = null;
+	static function validate_global_variable_ids( $cur, $next ) { foreach ( $cur as $t => $items ) { if ( array_diff( array_keys( (array) $items ), array_keys( (array) ( $next[ $t ] ?? array() ) ) ) ) { return new WP_Error( 'global_variable_ids_missing', "CRITICAL: Global variable IDs are missing during sync! Type: $t.", array( 'status' => 400 ) ); } } return null; }
+	static function set_global_variables( $d, $expected = null ) {
+		if ( self::$no_perm ) { return null; }
+		self::$last_expected = $expected;
+		if ( null !== $expected && d5b_ds_ksort( $expected ) !== d5b_ds_ksort( et_get_option( 'global_variables', array() ) ) ) { return new WP_Error( 'global_variables_stale', 'Global variables changed after this save was prepared.', array( 'status' => 409 ) ); }
+		$cur = et_get_option( 'global_variables', array() );
+		if ( $e = self::validate_global_variable_ids( $cur, $d ) ) { return $e; }
+		foreach ( $d as $t => $items ) { foreach ( $items as $id => $it ) { if ( ! in_array( $it['status'] ?? null, array( 'active', 'archived' ), true ) ) { return new WP_Error( 'global_variable_invalid_status', "Invalid global variable status during sync! ID: $id." , array( 'status' => 400 ) ); } } }
+		et_update_option( 'global_variables', $d );
+		return null;
+	}
+}
+$GLOBALS['d5b_test_classes']['data'] = 'D5B_Fake_Data515';
+et_update_option( 'global_variables', array( 'numbers' => array( 'gvid-aaa' => array( 'id' => 'gvid-aaa', 'label' => 'Gap', 'value' => '20px', 'order' => '1', 'status' => 'active' ) ) ) );
+$before515 = $vars();
+$t1 = d5b_ds_variable_upsert( array( 'type' => 'numbers', 'label' => 'ZZ Test Gap', 'value' => '1px' ), false );
+$t2 = d5b_ds_variable_upsert( array( 'type' => 'strings', 'label' => 'ZZ Test Text', 'value' => 'hi' ), false );
+$check( '5.15: two test variables created', ! is_wp_error( $t1 ) && ! is_wp_error( $t2 ) && isset( $vars()['strings'][ $t2['id'] ] ) );
+$check( '5.15: a write tells Divi which store it was based on (so a builder save in between is not overwritten)', is_array( D5B_Fake_Data515::$last_expected ) && isset( D5B_Fake_Data515::$last_expected['numbers'][ $t1['id'] ] ) && ! isset( D5B_Fake_Data515::$last_expected['strings'] ) );
+$saved = $vars();
+$st    = d5b_ds_set_variables( 'D5B_Fake_Data515', $saved, array( 'numbers' => array() ) );
+$check( '5.15: a store changed since it was read is refused (409 stale), nothing written', is_wp_error( $st ) && 'global_variables_stale' === $st->get_error_code() && 409 === $st->get_error_data()['status'] && $vars() === $saved );
+// the bug of 1.8.3: restore wrote the backup as it was, Divi refused it, and the route said ok:true
+$saved = $vars();
+$raw   = D5B_Fake_Data515::set_global_variables( $before515 );
+$check( 'the fake behaves like Divi 5.15: a store that drops ids is refused with a WP_Error', is_wp_error( $raw ) && 'global_variable_ids_missing' === $raw->get_error_code() && $vars() === $saved );
+$rr = d5b_ds_restore( 'variables', 1 ); // backup 1 = before the first test write
+$now = $vars();
+$check( '5.15: restore succeeds', ! is_wp_error( $rr ) && true === $rr['ok'], is_wp_error( $rr ) ? $rr->get_error_message() : '' );
+$check( '5.15: restore reports the newer variables as archived', ! is_wp_error( $rr ) && array( $t1['id'], $t2['id'] ) == $rr['archived'] );
+$check( '5.15: the newer variables are still in the store, archived', 'archived' === ( $now['numbers'][ $t1['id'] ]['status'] ?? '' ) && 'archived' === ( $now['strings'][ $t2['id'] ]['status'] ?? '' ) );
+$check( '5.15: every variable of the backup is back exactly', $canon( $now['numbers']['gvid-aaa'] ) === $canon( $before515['numbers']['gvid-aaa'] ) );
+$t3 = d5b_ds_variable_upsert( array( 'type' => 'numbers', 'label' => 'ZZ Test Gap', 'value' => '2px' ), false );
+$check( '5.15: the same label again makes a NEW variable (an archived one is deleted)', ! is_wp_error( $t3 ) && 'created' === $t3['action'] && $t3['id'] !== $t1['id'] );
+$a = d5b_ds_variable_archive( array( 'id' => $t3['id'] ), true );
+$check( '5.15: archive dry run writes nothing', ! is_wp_error( $a ) && 'archived' === $a['action'] && 'active' === $vars()['numbers'][ $t3['id'] ]['status'] );
+$a = d5b_ds_variable_archive( array( 'id' => $t3['id'] ), false );
+$check( '5.15: archive sets the status, empties the order (as the builder does), keeps the id, touches nothing else', ! is_wp_error( $a ) && 'archived' === $vars()['numbers'][ $t3['id'] ]['status'] && '' === $vars()['numbers'][ $t3['id'] ]['order'] && $canon( $vars()['numbers']['gvid-aaa'] ) === $canon( $before515['numbers']['gvid-aaa'] ), is_wp_error( $a ) ? $a->get_error_message() : '' );
+$a2 = d5b_ds_variable_archive( array( 'id' => $t3['id'] ), false );
+$check( '5.15: archiving twice is harmless', ! is_wp_error( $a2 ) && 'unchanged' === $a2['action'] );
+$check( '5.15: archive of an unknown id is refused', is_wp_error( d5b_ds_variable_archive( array( 'id' => 'gvid-nope' ), false ) ) );
+$check( '5.15: archive without an id is refused', is_wp_error( d5b_ds_variable_archive( array( 'label' => 'Gap' ), false ) ) );
+$back = d5b_ds_variable_upsert( array( 'type' => 'numbers', 'id' => $t3['id'], 'label' => 'ZZ Test Gap', 'value' => '3px' ), false );
+$check( '5.15: by id, an archived variable is brought back, and says so', ! is_wp_error( $back ) && 'updated' === $back['action'] && ! empty( $back['unarchived'] ) && 'active' === $vars()['numbers'][ $t3['id'] ]['status'] && '' !== $vars()['numbers'][ $t3['id'] ]['order'] );
+D5B_Fake_Data515::$no_perm = true;
+$saved = $vars();
+$np    = d5b_ds_restore( 'variables', 0 );
+$check( '5.15: a restore Divi silently skipped (no permission) is an ERROR, not ok:true', is_wp_error( $np ) && 'not_saved' === $np->get_error_code() && $vars() === $saved );
+$check( '5.15: an archive Divi silently skipped is an error too', is_wp_error( d5b_ds_variable_archive( array( 'id' => $t3['id'] ), false ) ) );
+$check( '5.15: a create Divi silently skipped is an error too', is_wp_error( d5b_ds_variable_upsert( array( 'type' => 'numbers', 'label' => 'Ghost', 'value' => '1px' ), false ) ) );
+D5B_Fake_Data515::$no_perm = false;
+// a WP_Error from Divi is passed on with its code and an HTTP status
+$GLOBALS['d5b_options']['d5b_ds_backups']['variables'][0]['value'] = array( 'numbers' => array( 'gvid-aaa' => array( 'id' => 'gvid-aaa', 'label' => 'Gap', 'value' => '20px', 'status' => 'bogus' ) ) );
+$bad = d5b_ds_restore( 'variables', 0 );
+$check( '5.15: Divi\'s WP_Error reaches the caller, with its code and a 400', is_wp_error( $bad ) && 'global_variable_invalid_status' === $bad->get_error_code() && 400 === ( $bad->get_error_data()['status'] ?? 0 ) );
+$GLOBALS['d5b_test_classes']['data'] = 'D5B_Fake_Data';
+// Divi's colour and preset savers return no error today; if a later Divi does, it must not become a success
+class D5B_Fake_Refuses { static function save_data( $d ) { return new WP_Error( 'nope', 'refused' ); } static function set_global_colors( $d ) { return new WP_Error( 'nope', 'refused' ); } }
+$GLOBALS['d5b_test_classes'] = array( 'preset' => 'D5B_Fake_Refuses', 'data' => 'D5B_Fake_Refuses' );
+$check( 'a WP_Error from Divi\'s preset or colour saver is passed on', is_wp_error( d5b_ds_write( 'presets', array() ) ) && is_wp_error( d5b_ds_write( 'colors', array() ) ) );
+$GLOBALS['d5b_test_classes'] = array( 'preset' => 'D5B_Fake_Preset', 'data' => 'D5B_Fake_Data' );
 
 echo "--- restore ---\n";
 $now = $canon( D5B_Fake_Preset::$data );

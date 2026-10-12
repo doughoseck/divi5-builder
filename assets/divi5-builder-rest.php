@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Divi 5 Builder — REST meta bridge
- * Description: Registers Divi's builder/layout post-meta for the WordPress REST API so a page built via REST (e.g. by the divi5-builder skill) can be flipped into "Divi mode" without opening the Visual Builder. v1.2 makes link-canvas attach an et_pb_canvas popup to a page via the real Divi meta (_divi_canvas_parent_post_id + _divi_off_canvas_data), so REST-created Divi 5 popups render. v1.3 adds read/write of Divi's GLOBAL COLOUR palette, which lives in a wp_option rather than in page content and could not be created over REST at all before — so a site can now be themed before its first page is built. v1.5 adds Theme Builder access: list every template and layout, read a header/body/footer layout's raw content, and write one back (hash-checked against concurrent edits, previous content kept for restore), because core REST does not expose those post types. v1.7 adds read/write of the site-wide Custom CSS field (Divi's Theme Options ▸ General ▸ Custom CSS) — this isn't a Divi option at all, it's WordPress core's own Additional CSS system (a `custom_css` post per active theme), and both Divi's own save route and the Theme Options screen reject Application Password auth the same way Theme Builder does, so it was previously only editable from a live wp-admin session. v1.8 adds WRITES to the design system: create or update one global colour, one design variable or one preset at a time, through Divi's own save functions (so Divi's CSS cache is cleared), add-only (nothing is ever deleted), with the previous store kept for restore. Writes are gated by the normal edit-post capability (manage_options for the palette, edit_theme_options for Custom CSS), so only authenticated editors/admins (incl. Application Passwords) can use them.
- * Version: 1.8.3
+ * Description: Registers Divi's builder/layout post-meta for the WordPress REST API so a page built via REST (e.g. by the divi5-builder skill) can be flipped into "Divi mode" without opening the Visual Builder. v1.2 makes link-canvas attach an et_pb_canvas popup to a page via the real Divi meta (_divi_canvas_parent_post_id + _divi_off_canvas_data), so REST-created Divi 5 popups render. v1.3 adds read/write of Divi's GLOBAL COLOUR palette, which lives in a wp_option rather than in page content and could not be created over REST at all before — so a site can now be themed before its first page is built. v1.5 adds Theme Builder access: list every template and layout, read a header/body/footer layout's raw content, and write one back (hash-checked against concurrent edits, previous content kept for restore), because core REST does not expose those post types. v1.7 adds read/write of the site-wide Custom CSS field (Divi's Theme Options ▸ General ▸ Custom CSS) — this isn't a Divi option at all, it's WordPress core's own Additional CSS system (a `custom_css` post per active theme), and both Divi's own save route and the Theme Options screen reject Application Password auth the same way Theme Builder does, so it was previously only editable from a live wp-admin session. v1.8 adds WRITES to the design system: create or update one global colour, one design variable or one preset at a time, through Divi's own save functions (so Divi's CSS cache is cleared), add-only (nothing is ever deleted), with the previous store kept for restore. Writes are gated by the normal edit-post capability (manage_options for the palette, edit_theme_options for Custom CSS), so only authenticated editors/admins (incl. Application Passwords) can use them. v1.8.4 follows Divi 5.15's variable rules: a refused save (Divi now returns a WP_Error, or writes nothing when the user lacks the Variables Manager permission) is reported as an error, a restore keeps newer variables ARCHIVED instead of dropping them, and one variable can be deleted (archived) on purpose.
+ * Version: 1.8.4
  * Author: divi5-builder skill
  *
  * INSTALL (pick one):
@@ -23,7 +23,7 @@
  */
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
-if ( ! defined( 'D5B_REST_VERSION' ) ) { define( 'D5B_REST_VERSION', '1.8.3' ); }
+if ( ! defined( 'D5B_REST_VERSION' ) ) { define( 'D5B_REST_VERSION', '1.8.4' ); }
 
 add_action( 'init', function () {
 	$auth = function ( $allowed, $meta_key, $post_id ) {
@@ -651,7 +651,10 @@ add_action( 'rest_api_init', function () {
  *
  * Rules every write follows:
  *   1. ONE item per call, read-modify-write of the complete store. Nothing is
- *      ever deleted and no other item is touched.
+ *      ever deleted and no other item is touched. (The one exception, asked
+ *      for by name: /design-system/variable/archive, which deletes one
+ *      variable the builder's way. Divi 5.15+ keeps a deleted variable in the
+ *      store with status "archived" and refuses a store that drops an id.)
  *   2. Same id, or same name/label, UPDATES. So a script can be run twice.
  *   3. The store as it was is kept first (last 10 per store) and can be put
  *      back with /design-system/restore.
@@ -765,13 +768,75 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 	}
 
 	// Replace a whole store, through Divi. Only restore uses this with anything but "what was read, plus one item".
-	function d5b_ds_write( $store, $value ) {
+	// true, or a WP_Error: an error Divi returns is passed on, never turned into a success.
+	function d5b_ds_write( $store, $value, $expected = null ) {
 		$cls = d5b_ds_class( 'presets' === $store ? 'preset' : 'data' );
 		if ( ! $cls ) { return d5b_ds_err( 'no_divi5', 'Divi 5 is not available on this site', 501 ); }
-		if ( 'presets' === $store ) { $cls::save_data( $value ); return true; }
-		if ( 'variables' === $store ) { $cls::set_global_variables( $value ); return true; }
-		if ( 'colors' === $store ) { $cls::set_global_colors( $value ); return true; }
-		return d5b_ds_err( 'bad_store', 'store must be one of: presets, variables, colors' );
+		if ( 'variables' === $store ) { return d5b_ds_set_variables( $cls, $value, $expected ); }
+		if ( 'presets' === $store ) { $r = $cls::save_data( $value ); }
+		elseif ( 'colors' === $store ) { $r = $cls::set_global_colors( $value ); }
+		else { return d5b_ds_err( 'bad_store', 'store must be one of: presets, variables, colors' ); }
+		return is_wp_error( $r ) ? d5b_ds_divi_err( $r ) : true;
+	}
+
+	// A WP_Error from Divi, with Divi's code and details kept and an HTTP status (400 when Divi gives none).
+	function d5b_ds_divi_err( $e ) {
+		$data = method_exists( $e, 'get_error_data' ) ? $e->get_error_data() : null;
+		$data = is_array( $data ) ? $data : array();
+		if ( empty( $data['status'] ) ) { $data['status'] = 400; }
+		return new WP_Error( $e->get_error_code(), 'Divi refused the save, nothing was written: ' . $e->get_error_message(), $data );
+	}
+
+	// Divi 5.15+ refuses a variables save that leaves out an id the store has ("Global variable IDs are missing during
+	// sync"): a variable is deleted by setting its status to "archived", never by dropping it. Older Divi has no such check.
+	function d5b_ds_variables_archive_only() {
+		$cls = d5b_ds_class( 'data' );
+		return $cls && method_exists( $cls, 'validate_global_variable_ids' );
+	}
+
+	// Replace the whole variable store and prove it took. Divi 5.15+ returns a WP_Error when it refuses the data, and
+	// returns null WITHOUT writing when the user lacks edit_theme_options or Divi's "Variables Manager" permission
+	// (5.13 did the same silently, returning nothing at all). So the store is read back and compared, every time.
+	function d5b_ds_set_variables( $cls, $value, $expected = null ) {
+		// $expected = the store this write was based on: Divi 5.15+ refuses (409 global_variables_stale) when the store
+		// changed in between, e.g. someone saving in the builder. Older Divi takes one argument and ignores the second.
+		$r = null === $expected ? $cls::set_global_variables( $value ) : $cls::set_global_variables( $value, $expected );
+		if ( is_wp_error( $r ) ) { return d5b_ds_divi_err( $r ); }
+		$after = d5b_ds_read( 'variables' );
+		if ( is_wp_error( $after ) ) { return $after; }
+		$norm = function ( $v ) use ( $cls ) {
+			$v = (array) $v;
+			if ( method_exists( $cls, 'sanitize_global_variables_data' ) ) { $v = $cls::sanitize_global_variables_data( $v ); }
+			return d5b_ds_ksort( $v );
+		};
+		if ( $norm( $after ) !== $norm( $value ) ) {
+			return d5b_ds_err( 'not_saved', 'Divi did not store the variables (no error from Divi). This user needs edit_theme_options and the "Variables Manager" permission in Divi > Role Editor', 500 );
+		}
+		return true;
+	}
+
+	// The variable store a restore must write: the backup, plus (on Divi 5.15+) every variable the store has now and the
+	// backup does not, ARCHIVED, which is how the builder deletes one. Returns array( store, archived ids ).
+	function d5b_ds_variables_restore_target( $current, $target ) {
+		$target   = is_array( $target ) ? $target : array();
+		$archived = array();
+		if ( ! d5b_ds_variables_archive_only() ) { return array( $target, $archived ); }
+		foreach ( (array) $current as $type => $items ) {
+			if ( ! is_array( $items ) ) { continue; }
+			foreach ( $items as $id => $item ) {
+				if ( 0 !== strpos( (string) $id, 'gvid-' ) || ! is_array( $item ) ) { continue; }
+				if ( isset( $target[ $type ] ) && is_array( $target[ $type ] ) && array_key_exists( $id, $target[ $type ] ) ) { continue; }
+				if ( 'archived' !== ( $item['status'] ?? '' ) ) {
+					$item['status']      = 'archived';
+					$item['order']       = ''; // as the builder does (seen 2026-10-12, Divi 5.15.1 Variable Manager)
+					$item['lastUpdated'] = d5b_ds_now();
+					$archived[]          = (string) $id;
+				}
+				unset( $item['allowedActions'] );
+				$target[ $type ][ $id ] = $item;
+			}
+		}
+		return array( $target, $archived );
 	}
 
 	function d5b_ds_backup( $store, $value ) {
@@ -805,10 +870,18 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 		$target  = $all[ $store ][ $index ];
 		$current = d5b_ds_read( $store );
 		if ( is_wp_error( $current ) ) { return $current; }
+		$value    = $target['value'];
+		$archived = array();
+		if ( 'variables' === $store ) { list( $value, $archived ) = d5b_ds_variables_restore_target( $current, $value ); }
 		d5b_ds_backup( $store, $current );
-		$w = d5b_ds_write( $store, $target['value'] );
+		$w = d5b_ds_write( $store, $value, $current );
 		if ( is_wp_error( $w ) ) { return $w; }
-		return array( 'ok' => true, 'store' => $store, 'restoredFrom' => $target['time'], 'note' => 'the store as it was a moment ago is now backup 0' );
+		$out = array( 'ok' => true, 'store' => $store, 'restoredFrom' => $target['time'], 'note' => 'the store as it was a moment ago is now backup 0' );
+		if ( 'variables' === $store && d5b_ds_variables_archive_only() ) {
+			$out['archived'] = $archived;
+			$out['note']    .= '; Divi 5.15+ never drops a variable, so variables made since that backup are kept, archived (deleted, as the builder does it)';
+		}
+		return $out;
 	}
 
 	// Now, in UTC, in the form the builder writes: 2026-09-29T11:46:45.168Z. (wp_date() gives the SITE's time, which
@@ -912,11 +985,15 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 		$items = ( isset( $store[ $type ] ) && is_array( $store[ $type ] ) ) ? $store[ $type ] : array();
 		$taken = array();
 		foreach ( $store as $list ) { if ( is_array( $list ) ) { $taken += $list; } }
-		$found  = d5b_ds_find( $items, $id, 'label', $label );
+		// By label, only ACTIVE variables count: an archived one is deleted (Divi 5.15+ keeps it in the store), and a new
+		// variable with its label is a new variable, as in the builder. By id, an archived variable is brought back.
+		$active = array_filter( $items, function ( $it ) { return ! is_array( $it ) || 'archived' !== ( $it['status'] ?? '' ); } );
+		$found  = '' !== $id ? d5b_ds_find( $items, $id, 'label', $label ) : d5b_ds_find( $active, '', 'label', $label );
 		$action = '' !== $found ? 'updated' : 'created';
 		if ( '' === $found ) { $found = '' !== $id ? $id : d5b_ds_new_id( 'gvid-', $taken ); }
 		if ( 'created' === $action && isset( $taken[ $found ] ) ) { return d5b_ds_err( 'id_taken', 'that id belongs to a variable of another type' ); }
 		$old  = isset( $items[ $found ] ) && is_array( $items[ $found ] ) ? $items[ $found ] : array();
+		if ( '' === ( $old['order'] ?? null ) ) { unset( $old['order'] ); } // archived: the builder empties its order, a revived one goes last
 		// Same fields, in the same order, as a variable made in the builder (compared 2026-09-29, Divi 5.13):
 		// id, label, value, order (a string), status, lastUpdated (UTC), variableType.
 		$item = array_merge(
@@ -930,14 +1007,50 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 		$next                    = $store;
 		$next[ $type ]           = $items;
 		$next[ $type ][ $found ] = $item;
+		if ( isset( $old['status'] ) && 'archived' === $old['status'] ) { $out['unarchived'] = true; }
 		d5b_ds_backup( 'variables', $store );
-		$d::set_global_variables( $next ); // replaces the whole store, and silently does nothing without the right role
+		$w = d5b_ds_set_variables( $d, $next, $store ); // replaces the whole store; Divi's refusals (WP_Error or silent) come back as errors
+		if ( is_wp_error( $w ) ) { return $w; }
 		$after = d5b_ds_read( 'variables' );
 		if ( is_wp_error( $after ) || ! isset( $after[ $type ][ $found ]['value'] ) ) { return d5b_ds_err( 'not_saved', 'Divi ignored the write. This user needs edit_theme_options and the "Variables Manager" permission in Divi > Role Editor', 500 ); }
 		$count = function ( $s ) { $n = 0; foreach ( (array) $s as $l ) { $n += is_array( $l ) ? count( $l ) : 0; } return $n; };
 		if ( $count( $after ) < $count( $store ) ) { return d5b_ds_err( 'store_shrank', 'the variable store has fewer variables than before the write; restore backup 0', 500 ); }
 		$out['item'] = $after[ $type ][ $found ];
 		return $out;
+	}
+
+	// { id } Delete one variable the way the builder does: on Divi 5.15+ its status becomes "archived" (Divi refuses a
+	// store that leaves the id out); on older Divi it is removed. Modules that use it fall back to no value.
+	function d5b_ds_variable_archive( $in, $dry ) {
+		$d = d5b_ds_class( 'data' );
+		if ( ! $d ) { return d5b_ds_err( 'no_divi5', 'Divi 5 is not available on this site', 501 ); }
+		$id = isset( $in['id'] ) ? (string) $in['id'] : '';
+		if ( ! preg_match( '/^gvid-[0-9a-z-]{3,40}$/', $id ) ) { return d5b_ds_err( 'bad_id', 'id is required: gvid- followed by lowercase letters, digits or hyphens (see design-system)' ); }
+		$store = d5b_ds_read( 'variables' );
+		if ( is_wp_error( $store ) ) { return $store; }
+		$type = '';
+		foreach ( $store as $t => $items ) { if ( is_array( $items ) && isset( $items[ $id ] ) ) { $type = (string) $t; break; } }
+		if ( '' === $type ) { return d5b_ds_err( 'not_found', "no variable $id on this site", 404 ); }
+		$archive = d5b_ds_variables_archive_only();
+		$item    = (array) $store[ $type ][ $id ];
+		$out     = array( 'ok' => true, 'id' => $id, 'type' => $type, 'label' => (string) ( $item['label'] ?? '' ), 'dryRun' => (bool) $dry );
+		if ( $archive && 'archived' === ( $item['status'] ?? '' ) ) { return $out + array( 'action' => 'unchanged', 'note' => 'already archived' ); }
+		$out['action'] = $archive ? 'archived' : 'removed';
+		if ( $dry ) { return $out; }
+		$next = $store;
+		if ( $archive ) {
+			$item['status']      = 'archived';
+			$item['order']       = ''; // as the builder does (seen 2026-10-12, Divi 5.15.1 Variable Manager)
+			$item['lastUpdated'] = d5b_ds_now();
+			unset( $item['allowedActions'] );
+			$next[ $type ][ $id ] = $item;
+		} else {
+			unset( $next[ $type ][ $id ] );
+			if ( ! $next[ $type ] ) { unset( $next[ $type ] ); }
+		}
+		d5b_ds_backup( 'variables', $store );
+		$w = d5b_ds_set_variables( $d, $next, $store );
+		return is_wp_error( $w ) ? $w : $out;
 	}
 
 	// { moduleName, name, attrs, kind?: module|group, id?, groupName?, groupId?, primaryAttrName?, groupPresets?, priority?, setDefault? }
@@ -1134,6 +1247,7 @@ add_action( 'rest_api_init', function () {
 	};
 	$post( '/design-system/color', 'd5b_ds_color_upsert' );
 	$post( '/design-system/variable', 'd5b_ds_variable_upsert' );
+	$post( '/design-system/variable/archive', 'd5b_ds_variable_archive' );
 	$post( '/design-system/preset', 'd5b_ds_preset_upsert' );
 
 	register_rest_route( 'divi5-builder/v1', '/design-system/selftest', array(

@@ -44,6 +44,7 @@
  *   node wp.js <site> ds-selftest                  # run BEFORE the first write on a site: proves the preset split
  *   node wp.js <site> ds-color-set --label L --color C [--id gcid-x] [--dry-run]
  *   node wp.js <site> ds-variable-set --type numbers --label L --value V [--id gvid-x] [--dry-run]
+ *   node wp.js <site> ds-variable-archive --id gvid-x [--dry-run]   # delete one variable, the builder's way (mu-plugin >= 1.8.4)
  *   node wp.js <site> ds-preset-set --file preset.json [--dry-run] [--summary]
  *   node wp.js <site> ds-backups [--store S --index N]  # what was kept before each write
  *   node wp.js <site> ds-restore --store S --index N    # put a whole store back
@@ -467,7 +468,7 @@ function flags(argv) {
       for (const p of P.group) console.log(`  ${p.id} | ${p.isDefault ? 'DEFAULT' : '-'} | ${p.for} | ${p.name}`);
       const V = r.variables || {}; const kinds = Object.keys(V);
       console.log(`\nVARIABLES (${kinds.map(k => k + ':' + Object.keys(V[k] || {}).length).join(', ') || 'none'})`);
-      for (const k of kinds) for (const [id, v] of Object.entries(V[k] || {})) console.log(`  ${id} | ${k} | ${v.label || ''} | ${typeof v.value === 'string' ? v.value.slice(0, 60) : JSON.stringify(v.value).slice(0, 60)}`);
+      for (const k of kinds) for (const [id, v] of Object.entries(V[k] || {})) console.log(`  ${id} | ${k} | ${v.label || ''} | ${typeof v.value === 'string' ? v.value.slice(0, 60) : JSON.stringify(v.value).slice(0, 60)}${v.status === 'archived' ? ' | ARCHIVED (deleted)' : ''}`);
       const C = r.colors || {}; console.log(`\nGLOBAL COLOURS (${Object.keys(C).length})`);
       for (const [id, v] of Object.entries(C)) console.log(`  ${id} | ${v.label || ''} | ${v.color || ''} | ${v.status || ''}`);
       break;
@@ -493,6 +494,13 @@ function flags(argv) {
       if (!f.type || !f.label || f.value === undefined || f.value === true) die('ds-variable-set needs --type numbers|strings|images|links|fonts|gradients --label L --value V [--id gvid-x] [--dry-run]');
       const p = { type: String(f.type), label: String(f.label), value: String(f.value), dry_run: !!f['dry-run'] }; if (f.id) p.id = String(f.id);
       console.log(JSON.stringify(await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/variable`, c, p)));
+      break;
+    }
+    case 'ds-variable-archive': {
+      // Divi 5.15+ deletes a variable by setting its status to "archived" and refuses a store that drops an id; on
+      // older Divi the plugin removes it. Modules that use the variable lose its value, without an error.
+      if (!f.id || f.id === true) die('ds-variable-archive needs --id gvid-x [--dry-run]   (ids: design-system)');
+      console.log(JSON.stringify(await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/variable/archive`, c, { id: String(f.id), dry_run: !!f['dry-run'] })));
       break;
     }
     case 'ds-preset-set': {

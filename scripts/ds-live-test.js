@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /*
- * ds-live-test.js — prove the design-system WRITES on a real site (mu-plugin >= 1.8.2), and leave no trace.
+ * ds-live-test.js — prove the design-system WRITES on a real site (mu-plugin >= 1.8.4), and leave no trace.
+ * (One trace on Divi 5.15+: Divi never drops a variable, it archives it, so the two test variables stay in the store
+ * with status "archived", which is exactly what deleting them in the Variable Manager leaves behind.)
  *
  *   node ds-live-test.js <site> colors | variables | presets | all
  *
@@ -17,7 +19,9 @@ const WP = path.join(__dirname, 'wp.js');
 const run = a => { try { return { ok: true, out: execFileSync('node', [WP, site, ...a], { encoding: 'utf8', maxBuffer: 64e6, stdio: ['ignore', 'pipe', 'pipe'] }) }; } catch (e) { return { ok: false, out: String(e.stderr || e.message) }; } };
 const J = a => { const r = run(a); if (!r.ok) return { __error: r.out.replace(/\s+/g, ' ').slice(0, 220) }; try { return JSON.parse(r.out); } catch (e) { return { __error: 'not json: ' + r.out.slice(0, 120) }; } };
 const ds = () => J(['design-system', '--json', '--full']);
-const sort = v => Array.isArray(v) ? v.map(sort) : (v && typeof v === 'object' ? Object.keys(v).sort().reduce((o, k) => (o[k] = sort(v[k]), o), {}) : v);
+// An empty PHP array comes back as JSON [] whether it was a list or a map, so an empty store reads as [] and the same
+// store with the test item taken out as {}: both count as empty.
+const sort = v => Array.isArray(v) ? (v.length ? v.map(sort) : {}) : (v && typeof v === 'object' ? Object.keys(v).sort().reduce((o, k) => (o[k] = sort(v[k]), o), {}) : v);
 const same = (a, b) => JSON.stringify(sort(a)) === JSON.stringify(sort(b));
 const empty = v => !v || (typeof v === 'object' && Object.values(v).every(x => !x || (typeof x === 'object' && !Object.keys(x).length)));
 let failed = 0; const check = (name, ok, detail) => { console.log((ok ? '  PASS  ' : '  FAIL  ') + name + (!ok && detail ? '\n          ' + String(detail).slice(0, 300) : '')); if (!ok) failed++; return ok; };
@@ -45,6 +49,9 @@ const tests = {
   },
   variables() {
     const before = ds().variables; const LABEL = 'ZZ Test Gap (delete me)'; let writes = 0;
+    const find = (v, id) => { for (const items of Object.values(v || {})) if (items && items[id]) return items[id]; return null; };
+    const live = Object.values(before || {}).flatMap(items => Object.entries(items || {})).filter(([, x]) => /^ZZ Test .*\(delete me\)$/.test(x.label || '') && x.status !== 'archived');
+    if (!check('no ACTIVE test variable left over from an earlier run', !live.length, 'archive them first: ' + live.map(([id]) => `wp.js ${site} ds-variable-archive --id ${id}`).join(' ; '))) return;
     const dry = J(['ds-variable-set', '--type', 'numbers', '--label', LABEL, '--value', '20px', '--dry-run']);
     check('dry run answers and writes nothing', dry.ok && dry.dryRun === true && (same(ds().variables, before) || (empty(ds().variables) && empty(before))), dry.__error);
     const c = J(['ds-variable-set', '--type', 'numbers', '--label', LABEL, '--value', '20px']);
@@ -57,9 +64,21 @@ const tests = {
     const s = J(['ds-variable-set', '--type', 'strings', '--label', 'ZZ Test Text (delete me)', '--value', 'Hello & <b>bye</b>']); if (s.ok) writes++; now = ds().variables;
     check('a second type is added, the first is kept, the text is stored character for character', s.ok && now.numbers && now.numbers[c.id] && now.strings && now.strings[s.id] && now.strings[s.id].value === 'Hello & <b>bye</b>', s.__error || JSON.stringify((now.strings || {})[s.id]));
     const badT = run(['ds-variable-set', '--type', 'colors', '--label', 'ZZ', '--value', '#fff']); check('type "colors" is refused (colours have their own store)', !badT.ok && /bad_type/.test(badT.out));
+    const ad = J(['ds-variable-archive', '--id', s.id, '--dry-run']); now = ds().variables;
+    check('archive dry run answers and writes nothing', ad.ok && ad.dryRun === true && ['archived', 'removed'].includes(ad.action) && find(now, s.id) && find(now, s.id).status !== 'archived', ad.__error || JSON.stringify(ad));
+    const a = J(['ds-variable-archive', '--id', s.id]); if (a.ok) writes++; now = ds().variables;
+    check('archive: Divi 5.15+ keeps it with status "archived", older Divi removes it; the other variable is untouched', a.ok && (a.action === 'archived' ? find(now, s.id) && find(now, s.id).status === 'archived' : a.action === 'removed' && !find(now, s.id)) && now.numbers[c.id].value === '24px', a.__error || JSON.stringify(find(now, s.id)));
+    const again = J(['ds-variable-set', '--type', 'strings', '--label', 'ZZ Test Text (delete me)', '--value', 'x', '--dry-run']);
+    check('the label of a deleted variable is free again (a new one would be created)', again.ok && again.action === 'created' && again.id !== s.id, again.__error || JSON.stringify(again).slice(0, 200));
     const r = undo('variables', writes); now = ds().variables;
     check('restore of the backup taken before the test', r.ok, r.__error);
-    check('END STATE: the variable store is exactly what it was', same(now, before) || (empty(now) && empty(before)), JSON.stringify(now).slice(0, 200));
+    // Divi 5.15+ refuses a store that drops a variable, so the restore archives what the test made (as the builder
+    // deletes); on older Divi it is dropped. Either way, nothing of the test may stay ACTIVE and nothing else may change.
+    const testIds = [c.id, s.id];
+    const strip = v => { const o = {}; for (const [t, items] of Object.entries(v || {})) { const k = {}; for (const [id, x] of Object.entries(items || {})) if (!testIds.includes(id)) k[id] = x; if (Object.keys(k).length) o[t] = k; } return o; };
+    const left = testIds.filter(id => find(now, id));
+    if (left.length) check('Divi 5.15+: the test variables are kept, ARCHIVED (deleted the way the builder does it)', left.every(id => find(now, id).status === 'archived') && (r.archived || []).includes(c.id), JSON.stringify(left.map(id => [id, find(now, id).status])) + ' archived by restore: ' + JSON.stringify(r.archived));
+    check('END STATE: every variable that was there before is exactly as it was, no test variable is active', same(strip(now), strip(before)), JSON.stringify(strip(now)).slice(0, 200));
   },
   presets() {
     const before = ds().presets; const NAME = 'ZZ Test Preset (delete me)'; let writes = 0; const f = path.join(os.tmpdir(), 'd5b-live-test-preset.json');
@@ -83,7 +102,7 @@ const tests = {
   },
 };
 const v = J(['plugin-version']); const ver = String(v.version || '0').split('.').map(Number);
-if (v.__error || ver[0] < 1 || (ver[0] === 1 && (ver[1] < 8 || (ver[1] === 8 && (ver[2] || 0) < 2)))) { console.error('STOP: this test needs mu-plugin >= 1.8.2 on the site (found ' + (v.version || 'none') + ')'); process.exit(1); }
+if (v.__error || ver[0] < 1 || (ver[0] === 1 && (ver[1] < 8 || (ver[1] === 8 && (ver[2] || 0) < 4)))) { console.error('STOP: this test needs mu-plugin >= 1.8.4 on the site (found ' + (v.version || 'none') + ')'); process.exit(1); }
 for (const t of what === 'all' ? ['colors', 'variables', 'presets'] : [what]) { console.log('--- ' + t + ' ---'); try { tests[t](); } catch (e) { check(t + ' ran to the end', false, e.message); } }
 console.log(failed ? '\n' + failed + ' FAILED. Check the stores with `wp.js <site> design-system`; `wp.js <site> ds-backups` lists what can be restored.' : '\nall passed, nothing left behind');
 process.exit(failed ? 1 : 0);
