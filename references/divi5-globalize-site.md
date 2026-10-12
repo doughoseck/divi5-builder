@@ -159,3 +159,65 @@ text-align, max-width/width and display.
 Modules whose design occurs only once or twice, hero modules with many small variants, and the clusters rule 3 kept
 out. They stay exactly as they were. Globalising 60% of a site without a visible change is a good result; chasing the
 rest means changing the design, which is a decision for the site owner.
+
+
+## Restoring sections that were deleted, and bringing old Divi 4 markup in line (2026-10-07)
+
+- **Keep the lint snapshots.** `tools/skill/lint-<site>/pages-<id>.html` (written by `catalog.js lint`) are often the
+  OLDEST Divi 5 copies of every page. On one site they were the only copy of two sections the owner had deleted as
+  "hidden" and the client later wanted back; the later backups all post-dated the deletion. Never clean them up.
+- **A restored section predates every pass that ran since.** It carried 80 literal colours, no presets and no global
+  colours where the rest of the page had two literal colours. Re-run the site's own passes on that page only: copies
+  of the colour/heading pass scripts with the page list filtered to one id and the layout/canvas loops emptied,
+  and the preset assignment with its `--only=page-<id>` switch. Count before and after (literal colours, `gcid-`
+  tokens, non-default presets).
+- **Divi 4 leftovers to look for in old markup:** a `weight: 400` pin on an h1 that the site's heading preset wants
+  bold (put the module on the site's heading preset stack and drop its `content.decoration`); a row with
+  `margin right: 193px / left: auto` (an old centring hack that now pushes the row left: delete the spacing); inline
+  `style="color: #hex"` on spans and links inside text HTML (swap for the site's utility classes, e.g.
+  `class="accent-yellow"`); duplicate CSS ids on two modules; dead `#anchor` links on blurbs.
+- **Quotes inside block JSON are stored as the six characters `"`.** A regex that must match them needs the
+  backslash doubled in its source (`'\\\\u0022'` in a JS string), and replacement text must carry the literal
+  sequence: build it with `String.fromCharCode(92) + 'u0022'`, because an editor or a tool may turn `"` in
+  a source file into a real quote and break every block it touches. Parse each changed block with `JSON.parse`
+  before writing; refuse the write if one fails.
+- **Ticket / call-to-action buttons live in two module types:** `divi/button` (`button.innerContent`) and the
+  Fullwidth Header's `buttonOne` / `buttonTwo` (`<name>.innerContent.desktop.value = { text, linkUrl, linkTarget }`).
+  A sweep for placeholder links must read both, on pages AND Theme Builder layouts.
+- **Re-read after every header layout write.** One `tb-set` on the site header reported ok with a new hash, yet a
+  minute later the stored layout still held the old value (something else saved over it, most likely a builder
+  session on that layout). The second write stuck. Treat a header write as done only when a fresh `tb-get` shows it.
+- **Divi 5 builder preference "Action Icons On Hover":** read at load from the site option
+  `et_fb_pref_app.interaction_layers` (`{actionOnHover, parentActionOnHover, xRay}`, defaults true/true/false),
+  or from the user's default workspace (`et_divi_builder_preferences_workspaces` user meta). The toolbar toggle is
+  a session switch; it persists only when saved as a preference / workspace. Source:
+  `builder-5/server/VisualBuilder/AppPreferences/AppPreferences.php`, `Workspace/Workspace.php`.
+
+
+## Removing a page and everything that points at it (2026-10-08)
+
+A client drops a page (here a video page with its own header). Order of work:
+
+1. **Snapshot before anything**: the page in edit context (raw blocks, meta, rendered HTML), every Theme Builder
+   template whose `_et_use_on` names the page (`singular:post_type:page:id:<id>`) and that template's own layouts
+   (`tb-get --out`), the menus, the canvases. `assets/page-removal-sweep.js <site> <page-id>` does the snapshot
+   and the sweep below in one run and changes nothing.
+2. **The sweep**: every Theme Builder layout (a header may show a WordPress menu by `menuId`: the menu named after
+   the page is the one to delete); every WordPress menu with its items (`wp/v2/menus`, `wp/v2/menu-items?menus=`;
+   include menus on hidden Max Mega Menu locations); every REST post type in edit context so drafts count; every
+   canvas (`list-canvases` + `get-canvas`); the site CSS. Match the slug, the title, `?p=<id>` and `"<id>"`. Not
+   reachable: WPCode snippets, widgets, Customizer text, Divi Library items: say so.
+3. **Media**: list the page's upload URLs and featured image, then search the other post types for each file
+   stem; report the unused ones with ids. Leave deletion to the owner.
+4. **Who deletes what**: the tool trashes the page only (`delete-page <id>` without `--force`: reversible, the slug
+   becomes `<slug>__trashed`, the URL answers 404 at once). The owner empties the trash, trashes the template in
+   the Theme Builder, deletes the menu, deletes the media. A shared layout (the footer on every template) stays.
+5. **A template trashed in the Theme Builder is NOT gone from the database.** Divi detaches it (`post_parent` 0,
+   dropped from the live theme-builder post's `_et_template` list) and stamps it and its own layouts with
+   `_et_theme_builder_marked_as_unused = <date>`; `et_theme_builder_trash_draft_and_unused_posts()` (on every
+   Theme Builder save) trashes marked posts older than 7 days, 50 at a time. `wp.js tb-list` therefore shows the
+   template as `publish` for a week after the owner says it is gone: check `postinfo <id>` for the mark before
+   reporting a failed delete. Old orphan layouts on a site are the same mechanism waiting for a save.
+6. **Links that replace the page**: a button that pointed at it is edited in the module (`linkUrl`,
+   `linkTarget: on`); a menu entry's target is a core REST write, `rest-post wp/v2/menu-items/<id>` with
+   `{"target":"_blank"}`, re-read afterwards. Then add a 301 for the old URL on the live site: it is indexed.

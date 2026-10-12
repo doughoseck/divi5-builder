@@ -208,3 +208,19 @@ Asking the site for a file that is not there costs about two seconds each when W
 
 Real numbers of the finished run: library 1,933 -> 697 items, every one with its file; uploads 2.78 GB -> about 1.2 GB
 including the WebP copies made later; quarantine about 2 GB deleted by the owner.
+
+## A graphics size guide for a client's designer (2026-10-07)
+
+Measure, do not guess: `assets/image-slots-measure.js` run in the browser on each important page at a 1920-wide
+and a 375-wide viewport lists every visible picture (img and CSS background), the box it fills, the file's own
+pixel size and where it sits (hero, column fraction, grid card, blog card, logo). Pictures smaller than their box
+are the ones to replace; the recommended supply size is about twice the desktop box for tiles and logos (sharp on
+dense screens), 1920x1080 for full-width heroes (phone shows the centre third), one shape per slot type. Deliver as
+a doc or PDF with: the size table, per-slot notes, file rules, and the list of pictures measured too small.
+
+## Database weight besides media: form entries
+
+Forminator keeps every submission in `<prefix>frmt_form_entry` + `<prefix>frmt_form_entry_meta` (plus `_views`,
+`_reports`). On one site 13,774 entries were 38 MB of an 88 MB database. Clean-up = the owner exports, then runs
+`DELETE` on meta, entries, views, reports and `OPTIMIZE TABLE` (InnoDB answers "does not support optimize, doing
+recreate + analyze": normal), then counts to 0. Never deleted by the tool.

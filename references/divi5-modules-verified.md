@@ -376,3 +376,24 @@ Built as a Theme Builder body for a custom post type; fields are plain ACF field
 - `wp.js tb-list` without `--json` printed "Theme Builder posts: undefined" and crashed on one run while `--json`
   worked: look at the non-JSON branch before relying on it.
 - Editing a script through a shell heredoc that contains `\n` inside a JS string breaks the string: use the editor.
+
+
+## Replacing dashes in post text: WordPress puts them back on display (2026-10-05)
+
+WordPress (`wptexturize`) shows a typed ` - ` as an en dash and ` -- ` / `---` as an em dash wherever text goes through
+`the_content` or `the_title`: blog posts, custom post types, a Post Content module. Text typed into Divi modules is not
+affected. So "replace every dash with a plain hyphen" is two steps: fix the stored text, AND stop the conversion with a
+small PHP snippet that keeps curly quotes:
+
+```php
+add_filter( 'gettext_with_context', function ( $translation, $text, $context, $domain ) {
+	if ( 'default' === $domain && ( 'en dash' === $context || 'em dash' === $context ) ) { return '-'; }
+	return $translation;
+}, 10, 4 );
+```
+
+Check the RENDERED page, never the stored text: a re-read of the stored text said "none left" while every visitor still
+saw dashes. When replacing: never inside an address (skip a dash inside a URL or an href/src value), do not send the slug,
+use `- ` for a dash that opens a line or an opening tag and ` - ` elsewhere, include the HTML forms (`&ndash;`, `&#8211;`)
+and the JSON escape (`\u2013`) used inside Divi blocks, and write the backup file once (a second run must not overwrite
+it with the already-changed text).
