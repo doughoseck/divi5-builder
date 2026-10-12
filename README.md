@@ -71,17 +71,31 @@ See `.web-creds.example.txt`. **Never commit this file** — it's in `.gitignore
 `wp.js` reads it at runtime, builds the Basic-auth header in memory, and never
 prints the password. No password ever reaches the Claude prompt!
 
-## The mu-plugin (one-time per site)
+## The plugin (one-time per site)
 
 Divi 5 flags a page as "a Divi page" with **protected `_et_*` post-meta** that core
 REST won't write, and Divi's own builder REST routes reject Application-Password
 auth (they need a cookie-session nonce). `assets/divi5-builder-rest.php` exposes
 just those specific meta keys (and a canvas-link helper) to REST **behind an
 `edit_post`/`manage_options` capability check** — so only authenticated editors can
-use them. Copy it to `wp-content/mu-plugins/` (create the folder if needed); mu-plugins
-auto-activate. It does **not** modify Divi.
+use them. It does **not** modify Divi.
 
-Confirm it's active: `node scripts/wp.js <site> check-plugin` → `pluginActive:true`.
+Install it either way (not both at once):
+
+- **From the WordPress admin (no FTP):** download `divi5-builder-rest.zip` from the
+  [latest release](https://github.com/doughoseck/divi5-builder/releases/latest), then
+  **Plugins → Add New → Upload Plugin**, and **Activate**. To update, upload the newer zip
+  and choose **Replace current with uploaded**. Any admin can deactivate a normal plugin,
+  and the tool stops working until it is active again.
+- **As a must-use plugin (FTP):** copy `assets/divi5-builder-rest.php` to
+  `wp-content/mu-plugins/` (create the folder if needed). Must-use plugins are always on
+  and cannot be switched off from the admin, which is why this is the sturdier option.
+
+The site-maintenance plugins (`wp-media-audit`, `wp-media-quarantine`, `wp-site-updates`)
+come as zips in the same release: install for the job, then deactivate and delete.
+Build the zips yourself with `node scripts/build-plugin-zips.js` (writes `dist/`).
+
+Confirm it's active: `node scripts/wp.js <site> plugin-version` → the version number.
 
 ### Theme Builder headers, footers and body layouts (plugin 1.5+)
 

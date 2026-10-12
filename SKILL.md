@@ -168,7 +168,10 @@ renders broken, or is in the wrong format entirely.
    access at all. `node scripts/wp.js <site> whoami` must return 200 + your name.
 
 2. **The `divi5-builder-rest.php` mu-plugin installed & active on that site**
-   (bundled in `assets/`; drop it in `wp-content/mu-plugins/`). This is what makes
+   (bundled in `assets/`; the user either drops it in `wp-content/mu-plugins/` by FTP, or
+   uploads `divi5-builder-rest.zip` from the GitHub release in Plugins → Add New → Upload
+   Plugin and activates it; never both. `node scripts/build-plugin-zips.js` builds the zips
+   of every plugin in `assets/` into `dist/`). This is what makes
    a page actually render as Divi — without it you can POST block content but you
    **cannot** set the `_et_pb_use_builder` flag (protected meta; core REST drops
    it and Divi's own routes reject app-password auth with `invalid_nonce`), so the
@@ -652,7 +655,8 @@ selectors that would leak onto the rest of the site.
 
 "The site is too big", "clean up the media library", "what can go before we move it": use this. It does not need
 Divi 5 (or Divi at all), only an administrator's application password and one read-only file the USER uploads:
-`assets/wp-media-audit.php` into `wp-content/mu-plugins/` (it stores nothing; they delete it afterwards).
+`assets/wp-media-audit.php` into `wp-content/mu-plugins/`, or `wp-media-audit.zip` from the GitHub release via
+Plugins → Add New → Upload Plugin (it stores nothing; they delete it afterwards).
 
 ```bash
 node scripts/media-audit.js scan   <site> --dir <work-folder>   # library items, files on disk, where each is referred to
@@ -677,7 +681,8 @@ node scripts/media-audit.js report --dir <work-folder>          # REPORT.md + CS
 
 ## Updating plugins, themes and WordPress: any WordPress site (read `references/wp-site-updates.md`)
 
-`scripts/site-updates.js` with `assets/wp-site-updates.php` (the user uploads it to `wp-content/mu-plugins/`).
+`scripts/site-updates.js` with `assets/wp-site-updates.php` (the user uploads it to `wp-content/mu-plugins/`, or
+installs `wp-site-updates.zip` from the GitHub release in Plugins → Add New → Upload Plugin).
 
 ```bash
 node scripts/site-updates.js status <site>                       # what is out of date
