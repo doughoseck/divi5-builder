@@ -540,6 +540,31 @@ Styling rule 2 says type and colour come from globals. This is how to find and u
   group's settings only; the plugin leaves out the rest and reports it. On a site with
   mu-plugin < 1.8, ask the user to make the preset in the builder and read its id.
 
+## Components and Slots, Divi 5.15+ (read `references/divi5-components-slots.md`)
+
+Components are Divi's old Global Elements, renamed and extended in 5.15.0: a saved design in the Divi
+Library (`et_pb_layout`, scope `global`) placed on pages as `divi/global-layout` blocks. Any nested
+attribute can be unsynced per instance, and a `divi/global-slot` module (a "Slot module", not a preset
+slot) holds free-form per-instance content. Sites ported from Divi 4 may already hold them.
+
+- **Look before you write:** `wp.js <site> dump-blocks <id> --tree`; a `global-layout` means Components.
+- **Never rebuild such a page from a spec.** Change only the blocks you mean to and keep every
+  `divi/global-layout` block, with everything inside it, byte for byte.
+- **A per-copy value needs two edits on the block that owns the field** (proven over REST on 5.15.1):
+  the value in that block's attributes AND the full path (e.g. `content.innerContent.desktop.value`)
+  in THAT block's `localAttrOverridePaths`, for a nested module the nested block, not the outer
+  `global-layout`. The Component must have the field unsynced ("Make editable on instance"). A value
+  without its path, or a path for a synced field, does nothing, silently.
+- **Placing a copy over REST works:** a self-closing
+  `<!-- wp:divi/global-layout {"globalModule":"<id as a STRING>","blockName":"divi/section","builderVersion":"5.15.1","localAttrs":{},"localAttrOverridePaths":[]} /-->`
+  renders the Component as saved. Find ids by exporting from the Components Manager, or from an
+  existing copy on a page.
+- **The shared design lives in the Component, not on the page.** No REST route for Components yet
+  (Divi's need a nonce): the user edits it in the builder's Component mode or with the Divi AI Agent.
+- **`globalize.js` does not reach Components yet** (it reads pages, Theme Builder, canvases).
+- Order of a design system: colours and variables, presets, then Components for repeated blocks.
+
+
 ## Globalising an existing site (read `references/divi5-globalize-site.md`)
 
 Moving a site with hard-coded values onto global colours and presets WITHOUT a visible
