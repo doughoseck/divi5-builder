@@ -448,7 +448,7 @@ The compiler emits these module `type`s (all verified from live builds; keys in
   ⚠ `builder-version` reads the FIRST EXISTING BLOCK's stamp, not the installed
   Divi, so it goes stale after an upgrade. Both detailed in the format reference.
 - **Third-party:** `filtergrid` (Divi Plugins `dp-dfg/filtergrid` — needs their plugin;
-  the author has the lifetime license). Query-driven CPT grid with built-in content/video
+  requires that commercial plugin). Query-driven CPT grid with built-in content/video
   popups + skins; verified props + a raw `settings:{}` passthrough for any option.
 
 **Data-driven (Loop Builder + dynamic content):**
@@ -739,6 +739,14 @@ node scripts/site-updates.js update <site> --all --fast --write  # small brochur
   FilterGrid; Video, Icon and Slider modules fed by ACF fields, each part hidden when its field is empty; an X icon;
   big button presets with an always-visible icon): the last sections of `references/divi5-modules-verified.md`.
   Writing to a custom post type, its ACF fields or a taxonomy: `wp.js rest-post wp/v2/<route> --data-file body.json`.
+- **Restoring deleted sections and bringing old Divi 4 markup in line** (lint snapshots as the oldest copies, the
+  passes re-run on one page, the leftovers to look for, the `"` quoting trap, header writes that did not
+  stick): the end of `references/divi5-globalize-site.md`. **A graphics size guide for a client's designer** and
+  **form entries as database weight**: the end of `references/wp-media-audit.md`, with `assets/image-slots-measure.js`.
+- **Removing a page and everything that points at it** (snapshot first, the reference sweep over layouts, menus,
+  canvases, content, CSS; what the tool trashes and what the owner deletes; a Theme Builder template "deleted" in
+  the UI stays in the database for 7 days; menu entries set to a new tab over core REST):
+  `assets/page-removal-sweep.js <site> <page-id>` and the last section of `references/divi5-globalize-site.md`.
 
 ## Reference
 

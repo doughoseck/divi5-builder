@@ -366,3 +366,21 @@ A dynamic-gallery module with the overlay on and an EMPTY "overlay data" list st
 file name) in the overlay: the empty list is dropped on save and the module's default shows the title. Hide it in the
 module's Custom CSS (`selector .dp-ddg-title { display: none; }`); the overlay must stay on when a click opens the
 lightbox.
+
+
+## Video trigger the Divi 5 way: one column, the click on the column (verified 2026-10-07)
+
+The Divi 4 pattern for "picture with a play button that opens a popup" was an Image module plus an absolutely
+positioned Blurb (icon) over it, both carrying the click interaction and often the same CSS id. In Divi 5 it is ONE
+column: the still as the column background (`cover`), a translucent layer as `selector::before` in the column's Custom
+CSS (a background colour with opacity sits UNDER the image, not over it), the column laid out as flex
+(`justifyContent` / `alignItems` centre, or `flex-end` / `flex-start` for a bottom-left icon), one Icon module, and the
+interaction (`interactionTrigger` + `interactions`) on the COLUMN itself: a column renders `data-interaction-trigger`
+and the whole picture opens the popup. `aspect-ratio: W / H` in the column CSS keeps the picture's shape with no
+fixed heights. When rebuilding, replace only the trigger COLUMNS (innermost columns, regex that stops at the next
+column open tag) so sections, rows and neighbouring columns keep their settings.
+
+A canvas (popup) is linked to its owner by `_divi_canvas_parent_post_id` on the CANVAS post (`postinfo <canvas id>`),
+not by anything on the page; a page's `_divi_off_canvas_data` only names its main canvas. Popups used from many pages
+are best owned by the footer layout. Give every popup section the canvas name as admin label so the interaction's
+target and the canvas list read the same.
