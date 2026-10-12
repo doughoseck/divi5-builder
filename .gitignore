@@ -29,3 +29,6 @@ catalog/
 d5b-profiler.php
 d5b-profiler.key
 *.key
+
+# built plugin zips (scripts/build-plugin-zips.js); published as GitHub release assets
+dist/
