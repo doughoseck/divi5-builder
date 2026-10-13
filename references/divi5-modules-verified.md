@@ -397,3 +397,43 @@ saw dashes. When replacing: never inside an address (skip a dash inside a URL or
 use `- ` for a dash that opens a line or an opening tag and ` - ` elsewhere, include the HTML forms (`&ndash;`, `&#8211;`)
 and the JSON escape (`\u2013`) used inside Divi blocks, and write the backup file once (a second run must not overwrite
 it with the already-changed text).
+
+## FilterGrid cards with custom fields, a sold-out badge, a filter dropdown; the popup template (2026-10-13)
+
+Second FilterGrid build (a "packages" post type with ACF fields, three grids on three pages, one popup template):
+
+- **A custom field on the card** (`show_custom_fields: on`, `custom_fields` = a JSON string
+  `[{"name":"short_pricing","label":""}]`, `custom_content_container: on`): prints
+  `<div class="dp-dfg-custom-content"><p class="dp-dfg-custom-field dp-dfg-cf-<name>"><span class="...-label">label</span><span class="...-value">value</span></p>`.
+  ACF fields go through `get_field()`: text is printed, select/checkbox/taxonomy are joined, anything else (a
+  true/false, an image) prints the words "ACF field type unsupported". A field with an empty value is skipped
+  entirely.
+- **A sold-out badge without PHP:** add the true/false field with the label "Sold out" and hide its value span with
+  CSS. False = empty = no paragraph; true = the label shows. Anchor the badge to the card: the plugin positions
+  `.dp-dfg-custom-content` itself, so set it `position: static` (a grid item keeps its z-index when static) and
+  make the badge the LABEL span (`display: inline-block; padding`), because the site and the plugin both reset
+  paragraph padding.
+- **Filters list the whole taxonomy**, not the terms of the query results. `filter_terms: "102,103,..."` limits
+  them. Dropdown layout: `filter_layout: select`, `filter_dropdown_placeholder`, `all_text`; markup
+  `.dp-dfg-filters-dropdown-layout` (a 4-column grid of white boxes by default) > `.dp-dfg-filters-dropdown` >
+  `p.dp-dfg-dropdown-label` (+ `.dp-dfg-dropdown-placeholder`, which the plugin hides once a term is chosen, and a
+  `.dp-dfg-dropdown-tag` chip per chosen term, grey with WHITE text by default) > `ul.dp-dfg-level` (absolute,
+  hidden until open) > `a.dp-dfg-filter-link` (`.active`). Buttons layout: `li.dp-dfg-filter > a.dp-dfg-filter-link.active`.
+- **Cards the same shape whatever the upload:** `selector .dp-dfg-image img { aspect-ratio: 3 / 2; object-fit:
+  cover; object-position: center; }`. One square picture among 3:2 photos otherwise breaks the rows.
+- **Popup template (Theme Builder body for the post type):** cap the hero so the text is visible on opening
+  (`selector img { max-height: 80vh; object-fit: cover; object-position: 50% 100%; }`, bottom-anchored crop); a
+  multi-line ACF textarea printed through a `custom_meta_<field>` token keeps its newlines with
+  `white-space: pre-line` on the module; presets are per module type, so a text preset's border/padding
+  (the site's "yellow bar") is set by hand in the post-content module's own decoration; a true/false field in a
+  display condition is `displayRule: 'is' | 'isNot'` with `customFieldValue: '1'`, two conditions with
+  `operator: 'AND'`; the same button can sit twice (under the title block and above the gallery), both hidden when
+  the link is empty or the item is sold out.
+- **ACF over REST:** the field group needs "Show in REST API" = Yes, or `acf` comes back `[]` and a POST with an
+  `acf` object is silently ignored (nothing written, no error). Image fields accept attachment ids; `features`
+  textarea takes newlines; true/false takes booleans.
+- **Photos for a post type:** number the client's photos and tile them into contact sheets
+  (`assets/photo-contact-sheet.js`), recommend by number, then compress the chosen ones with ffmpeg (long side
+  1600, `-q:v 4`) before `upload-media`; EWWW makes the WebP on upload, so no bulk run is needed.
+- **Tool notes:** `wp.js rendered <id>` reads pages only (a post needs its front-end URL); when you change a Divi
+  menu entry's target, `rest-post wp/v2/menu-items/<id>` with `{"target":"_blank"}` is a core route.
