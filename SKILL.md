@@ -751,6 +751,16 @@ node scripts/site-updates.js update <site> --all --fast --write  # small brochur
   canvases, content, CSS; what the tool trashes and what the owner deletes; a Theme Builder template "deleted" in
   the UI stays in the database for 7 days; menu entries set to a new tab over core REST):
   `assets/page-removal-sweep.js <site> <page-id>` and the last section of `references/divi5-globalize-site.md`.
+- **A post type shown as grid cards + popup, fed by ACF** (FilterGrid custom fields on the card, a sold-out badge
+  without PHP, filters limited to the right terms, the dropdown layout's markup, cards cropped to one shape, the popup
+  template's hero cap and multi-line fields, ACF "Show in REST" or writes are silently dropped; choosing photos with
+  `assets/photo-contact-sheet.js`): the last section of `references/divi5-modules-verified.md`.
+- **A popup-only post type with no single page** (`assets/wpcode-no-single-page.php`) and **opening an
+  Interaction-revealed section from a `#hash` link** (`assets/wpcode-open-revealed-section.js`): the end of
+  `references/divi5-interactions-canvases.md`.
+- **Go-live (dev over live):** `references/wp-go-live.md` with `assets/content-delta.js` (what live gained since the
+  copy) and `assets/site-check.js` (page sweep + rules, before and after), the old-site folder route, wp-config
+  constants such as Forminator's encryption key.
 
 ## Reference
 

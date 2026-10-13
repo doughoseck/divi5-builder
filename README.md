@@ -273,6 +273,27 @@ Status when published: plugin updates, the plan, the forced fresh check and the 
 site. Theme updates, WordPress core updates, translations, fast mode and multisite are covered by the tests against a
 fake WordPress only; try them first on a site where a failure does not matter.
 
+## Going live: moving the rebuilt site over the old one
+
+Two scripts and a checklist for the day a rebuilt staging site replaces the live one (`references/wp-go-live.md`):
+
+```bash
+node assets/content-delta.js https://live.example.com https://staging.example.com 2026-09-18T12:31:00 posts pages media
+node assets/site-check.js https://staging.example.com --pages pages.json               # baseline before the move
+node assets/site-check.js https://live.example.com --pages pages.json --old-host staging.example.com   # after it
+```
+
+`content-delta.js` lists what was created or edited on the live site since the staging copy was taken, and whether
+staging has it (public REST, no login). `site-check.js` fetches every listed page and reports missing pages, leftover
+staging-host references, leaked block markup, a `noindex` left on, failed per-page expectations (a grid's card
+count, a form, a link) and redirect rules (removed pages, popup-only post types). The reference covers the rest: what
+to keep from the old root, the wp-config constants a copy loses (such as a form plugin's encryption key), the
+settings to flip, and the same-day checks.
+
+Two small WPCode snippets that came out of the same build: `assets/wpcode-no-single-page.php` (a post type that only
+lives in a grid popup: direct visits redirect, the popup request passes with `noindex`) and
+`assets/wpcode-open-revealed-section.js` (a `#hash` link that opens a section hidden behind a click Interaction).
+
 ## When a Divi page is slow: measure, don't guess
 
 `scripts/hook-profiler.js` generates a small, temporary, **key-gated, read-only** mu-plugin that times every callback on the

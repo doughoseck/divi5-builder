@@ -384,3 +384,23 @@ A canvas (popup) is linked to its owner by `_divi_canvas_parent_post_id` on the 
 not by anything on the page; a page's `_divi_off_canvas_data` only names its main canvas. Popups used from many pages
 are best owned by the footer layout. Give every popup section the canvas name as admin label so the interaction's
 target and the canvas list read the same.
+
+## Opening an Interaction-revealed section from a link (2026-10-13)
+
+A section hidden until a click Interaction reveals it (tile -> `toggleVisibility` on the section) cannot be opened by
+a `#hash` link: the hash scrolls, it does not fire an Interaction. `assets/wpcode-open-revealed-section.js` (WPCode
+JS, site-wide footer) maps hash -> trigger id and clicks the trigger on arrival, then scrolls. Three things bit:
+the Interaction runtime binds a moment after load (retry until the section is displayed); the reveal animation
+(`et_pb_slideTop`) transforms the section for a second, so measure with `offsetTop`, not the bounding rect; and
+Divi's own hash handling animates `html, body` towards the still-hidden target, i.e. the top of the page, about
+0.7 to 1.8 s after load, so stop that animation (`jQuery('html, body').stop(true)`) and scroll again at 0.8 and 2 s.
+A hidden browser pane reports `innerHeight 0` and cannot scroll at all: the opening can be verified there, the
+scroll only in a visible browser.
+
+## A post type that only lives in a popup (no single page)
+
+FilterGrid's popup loads `/<type>/<slug>/?dp_action=dfg_popup_fetch` in an iframe, so the single page must stay
+reachable for that request. `assets/wpcode-no-single-page.php` (WPCode PHP) answers a direct visit with a 301 to
+the page that holds the grid (by taxonomy term) and gives the popup request a `noindex, nofollow` header. Pair it
+with Yoast "show in search results: No" for the post type (noindex + sitemap) and "exclude from search" on the post
+type. Verify three ways: direct address 301, the `dp_action` address 200 with the header, the popup still opens.
