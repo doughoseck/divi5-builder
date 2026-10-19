@@ -53,3 +53,51 @@ and a renamed config copy is downloadable. Mind disk space (old uploads can be g
 popup, search, every popup type (video, grid item), both forms (inbox + integration), phone width, speed (3 loads,
 use the 3rd) against dev, Search Console (sitemap, redirect of removed pages). Keep dev as staging only with
 "discourage search engines" ON.
+
+## What the first real go-live day taught (2026-10-19)
+
+**Migration tools and a Cloudflare-fronted destination.** A push migration (Migrate Guru / BlogVault) failed twice:
+the destination sat behind Cloudflare, whose bot rules challenge the migration service's requests, and the first
+attempt left a half-copied site (the 404 page rendered with the new theme while the homepage, login and xmlrpc
+answered 500: the signature of a transfer that died mid-way). All-in-One WP Migration's browser upload of a 2 GB
+archive died too. What worked: Duplicator Lite, package built WITHOUT `wp-content/uploads`, installer run in the
+owner's own browser (a browser passes Cloudflare), overwrite install into the fresh database, "chunking mode" for the
+database so no request outlives Cloudflare's 100-second limit, then the uploads folder by FTP. Expect in the free
+installer: the "Partial Backup Check" warning (the excluded uploads), no charset selector (its "Mode: Custom" is the
+SQL mode; `utf8mb3` falling back to the server's `utf8` is harmless, `latin1` would not be), and a rewritten
+`.htaccess` and `wp-config.php` afterwards. All-in-One 7.112 (free): the import cap is `wp_max_upload_size()`, no
+constant any more; a `upload_size_limit` filter returning 4 GB lifts it (the upload is chunked), and "Restore" on
+its Backups page needs the paid extension. If Cloudflare can be paused for the window, the push tools work.
+
+**Which folder serves the site.** Fetch files that exist only in one candidate folder and compare sizes with the
+file manager listing; a Softaculous or WP Toolkit install record is not evidence (one pointed at a WordPress 4.7
+copy in a sub-folder, on the live database). A stale copy inside the web root still EXECUTES for its own path, with
+the live database: deny it with `Require all denied` in its own `.htaccess` (the Apache 2.2 `Deny from all` is
+ignored by 2.4), or move it out. A WordPress 404 for `/<folder>/` means the folder is not under the web root. Before
+moving "all the old files", read cPanel > Domains: other domains' document roots can live inside `public_html`, and
+a `test.php` of 19 bytes answering 96 KB is a public `phpinfo()`.
+
+**Keep from the old root:** wp-config (one site had NO Forminator encryption key, so its integration keys depended on
+the old salts and had to be re-entered on the new site: "Add Key" first, then connect), `.htaccess` (it held no
+https/www rules at all: WordPress's canonical redirect does both from the site address, so there was nothing to
+carry; what it held was a hotlink block to drop and cPanel's PHP blocks), `php.ini` AND `.user.ini` (the second one
+raised memory and execution time; both left the root with the move and had to be copied back), the search-engine
+verification file. `robots.txt` is virtual in WordPress: nothing to copy.
+
+**After the move:** the "discourage search engines" tick travels from staging and the cached homepage keeps the
+noindex meta until the page cache is cleared (check a fresh AND a cached copy). EWWW's `.htaccess` WebP rewrite does
+not survive the new `.htaccess`, and Cloudflare caches images without `Vary: Accept`, so switch EWWW to "Picture
+WebP" and test by counting `<picture>` + `<source type="image/webp">` in the page, not by the Accept header.
+Changes to a canvas's Custom CSS over REST do not show until Divi's static CSS is cleared (`site-updates.js clear`).
+A tracking comparison (`assets/tracking-compare.js`) is worth running before and after; the official Meta plugin 5.x
+starts the pixel through `FacebookSignal.initPixel("id")`, not `fbq('init')`, which fooled the first comparison.
+
+**Expectations drift.** The owner and the client kept editing staging in the last week (packages set to draft, a
+section hidden again, a page rebuilt with another module): the baseline check failed on three pages for reasons that
+were deliberate. Re-read the failures before "fixing" anything, and keep the expectations file current.
+
+**Phone sweep after go-live** (`assets/phone-headings-scan.js` per page at 375px): the two real faults were a tile
+title preset with a 60px size and no phone size (fixed on the preset: 46px tablet, 34px phone) and Divi's full-width
+header text block at 80% width on phones, which made long page titles overflow (one site-CSS rule). Long sentences
+wrapping are not faults. Heading levels used for styling (a privacy page with 18 h1s) are a content fix: a regex over
+the stored block JSON (`\u003ch1` -> `\u003ch2`, open and close counts must match).

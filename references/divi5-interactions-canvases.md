@@ -404,3 +404,16 @@ reachable for that request. `assets/wpcode-no-single-page.php` (WPCode PHP) answ
 the page that holds the grid (by taxonomy term) and gives the popup request a `noindex, nofollow` header. Pair it
 with Yoast "show in search results: No" for the post type (noindex + sitemap) and "exclude from search" on the post
 type. Verify three ways: direct address 301, the `dp_action` address 200 with the header, the popup still opens.
+
+## Two popup lessons from a go-live (2026-10-19)
+
+- **A section that carries viewport Interactions must stay rendered.** A client hid the header's top strip with
+  "Disable on" all devices; the strip's `viewportExit` / `viewportEnter` interactions set `data-scrolled` on the
+  header, so the header stopped sticking. Hide such a section with its own Custom CSS instead (`height: 1px;
+  padding: 0; overflow: hidden; visibility: hidden; pointer-events: none`): the 1px line still leaves the viewport
+  and the interactions still fire. Say so in the section's admin label.
+- **A fixed, full-height, flex-centred popup clips what does not fit** (short laptop, landscape phone, the 32px admin
+  bar for logged-in users): content taller than the box spills out at both ends and the top is unreachable. Custom CSS
+  on the popup section: `overflow-y: auto; justify-content: flex-start`, the row with `margin-top: auto; margin-bottom:
+  auto; max-height: none` (centred while it fits, scrollable when not), and `body.admin-bar selector { top: 32px;
+  height: calc(100vh - 32px) }` (46px under 783px). The change shows only after Divi's static CSS is cleared.

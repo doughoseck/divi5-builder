@@ -294,6 +294,11 @@ Two small WPCode snippets that came out of the same build: `assets/wpcode-no-sin
 lives in a grid popup: direct visits redirect, the popup request passes with `noindex`) and
 `assets/wpcode-open-revealed-section.js` (a `#hash` link that opens a section hidden behind a click Interaction).
 
+Two more checks from a real go-live day: `node assets/tracking-compare.js <live> <staging>` (GA4, GTM and Meta pixel ids
+on both homepages, including the official Meta plugin's own loader) and `assets/phone-headings-scan.js`, a console snippet
+that lists only the headings that break at phone width. The reference's last section is the day itself: migration
+tools behind Cloudflare, proving which folder serves a site, what to keep from the old root, expectations drift.
+
 ## When a Divi page is slow: measure, don't guess
 
 `scripts/hook-profiler.js` generates a small, temporary, **key-gated, read-only** mu-plugin that times every callback on the

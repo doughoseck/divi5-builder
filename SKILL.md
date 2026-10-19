@@ -760,7 +760,9 @@ node scripts/site-updates.js update <site> --all --fast --write  # small brochur
   `references/divi5-interactions-canvases.md`.
 - **Go-live (dev over live):** `references/wp-go-live.md` with `assets/content-delta.js` (what live gained since the
   copy) and `assets/site-check.js` (page sweep + rules, before and after), the old-site folder route, wp-config
-  constants such as Forminator's encryption key.
+  constants such as Forminator's encryption key; its last section is what a real go-live day taught (migration tools
+  behind Cloudflare, which folder serves the site, what to keep from the old root, expectations drift). Also
+  `assets/tracking-compare.js <url-a> <url-b>` and `assets/phone-headings-scan.js` (headings that break on a phone).
 
 ## Reference
 
