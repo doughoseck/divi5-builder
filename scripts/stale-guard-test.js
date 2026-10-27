@@ -26,6 +26,8 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
       const [p, q = ''] = opts.path.split('?');
       const m = p.match(/^\/wp-json\/wp\/v2\/(pages|posts|et_pb_canvas)(?:\/(\d+))?$/);
       let status = 200, out;
+      // st.recordMethods: keep every request's method and path (the live-check test asserts it only ever GETs).
+      if (st.recordMethods) { st.requests = st.requests || []; st.requests.push(opts.method + ' ' + p); fs.writeFileSync(STATE, JSON.stringify(st)); }
       // The site-updates plugin (st.su = { version }), recording what it is asked: GET status, GET with ?refresh, POST refresh.
       const suStatus = () => ({ plugin_version: st.su.version, site: 'https://fake.test', wordpress: { version: '6.8.1' }, php: '8.2', multisite: false, plugins: [], themes: [], translations: 0, last_checked: 'now' });
       const suNew = st.su && st.su.version >= '1.0.2';
@@ -40,6 +42,9 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
       }
       // The combined plugin's status route (st.d5 = the status answer); no st.d5 = the plugin is not on the site.
       else if (p === '/wp-json/divi5-builder/v1/status' && opts.method === 'GET') { if (!st.d5) { status = 404; out = { code: 'rest_no_route' }; } else out = st.d5; }
+      // The REST index (st.index = namespaces) and core settings (st.settings = an object, or a number = that HTTP error).
+      else if (p === '/wp-json/' && opts.method === 'GET') out = { name: 'fake', namespaces: st.index || ['oembed/1.0', 'wp/v2'] };
+      else if (p === '/wp-json/wp/v2/settings' && opts.method === 'GET') { if (typeof st.settings === 'number') { status = st.settings; out = { code: 'rest_forbidden' }; } else out = st.settings || { title: 'fake' }; }
       else if (p === '/wp-json/divi5-builder/v1/design-system') out = { colors: st.colors || {}, presets: st.presets || { module: [], group: [] }, variables: st.variables || [] };
       else if (!m) { status = 404; out = { code: 'rest_no_route' }; }
       else {

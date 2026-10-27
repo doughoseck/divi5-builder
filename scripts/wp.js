@@ -661,8 +661,9 @@ function flags(argv) {
     case 'rest-get': {
       // Read any REST route of the site with the stored credentials. GET only, so it cannot change anything.
       const p = String(f._[0] || '').replace(/^\/+/, '');
-      if (!p || /^https?:/i.test(p)) die('rest-get needs the path after /wp-json/, e.g. wp-media-audit/v1/info');
-      const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/${p}`, c);
+      // rest-get --index reads the REST index itself (/wp-json/, which lists the namespaces); still a GET.
+      if (!f.index && (!p || /^https?:/i.test(p))) die('rest-get needs the path after /wp-json/, e.g. wp-media-audit/v1/info (or --index for the REST index)');
+      const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/${f.index ? '' : p}`, c);
       const out = typeof r === 'string' ? r : JSON.stringify(r);
       if (f.out) { fs.writeFileSync(f.out, out); console.log(JSON.stringify({ ok: true, out: f.out, bytes: out.length })); }
       else console.log(out);
