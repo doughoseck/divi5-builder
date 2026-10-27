@@ -175,11 +175,16 @@ renders broken, or is in the wrong format entirely.
    `url`/`user`/`pass` (a WordPress **Application Password**). No creds → no API
    access at all. `node scripts/wp.js <site> whoami` must return 200 + your name.
 
-2. **The `divi5-builder-rest.php` mu-plugin installed & active on that site**
-   (bundled in `assets/`; the user either drops it in `wp-content/mu-plugins/` by FTP, or
-   uploads `divi5-builder-rest.zip` from the GitHub release in Plugins → Add New → Upload
-   Plugin and activates it; never both. `node scripts/build-plugin-zips.js` builds the zips
-   of every plugin in `assets/` into `dist/`). This is what makes
+2. **The `divi5-builder` plugin (2.0.0 or later) installed & active on that site**
+   (source in `plugin/divi5-builder/`; the user uploads `divi5-builder.zip` from the GitHub
+   release in Plugins → Add New → Upload Plugin and activates it, or copies the
+   `divi5-builder/` folder plus `plugin/mu-loader/divi5-builder-loader.php` into
+   `wp-content/mu-plugins/` by FTP; never both. Updates are manual: upload the new zip over
+   the old one. `node scripts/build-plugin-zips.js` builds the zip into `dist/`. Old sites
+   still running the four single-file plugins: the old files are in `assets/legacy/`,
+   security fixes only until 2027-01-31; installing the new plugin takes over from them.
+   Page building is always on; Media audit, Media clean-up and Updates are switches in
+   Settings > Divi 5 Builder, off by default.) This is what makes
    a page actually render as Divi — without it you can POST block content but you
    **cannot** set the `_et_pb_use_builder` flag (protected meta; core REST drops
    it and Divi's own routes reject app-password auth with `invalid_nonce`), so the
@@ -217,7 +222,7 @@ with `url`/`user`/`pass`; `pass` is a WordPress **Application Password**).
    ```
    If `whoami` fails → creds missing/wrong (see Prerequisites). If `check-plugin`
    reports `pluginActive:false` → stop and have the user install
-   `assets/divi5-builder-rest.php`; you can build block content but the page won't
+   `divi5-builder.zip`; you can build block content but the page won't
    render as Divi until it's active.
 
 3. **Set up the design system first** (see "Design system first" above):
@@ -311,10 +316,9 @@ with `url`/`user`/`pass`; `pass` is a WordPress **Application Password**).
    **Prerequisite (one-time per site):** these are protected `_et_*` meta that
    core REST won't write and Divi's own REST routes gate behind a cookie-session
    nonce (an Application Password can't satisfy it). So the site must have the
-   bundled `assets/divi5-builder-rest.php` installed (drop it in
-   `wp-content/mu-plugins/`), which exposes those meta keys to REST behind an
-   edit-capability check. If `set-builder` reports the meta "did NOT stick", the
-   mu-plugin isn't installed — point the user at `assets/divi5-builder-rest.php`.
+   `divi5-builder` plugin installed (`divi5-builder.zip`), which exposes those meta
+   keys to REST behind an edit-capability check. If `set-builder` reports the meta
+   "did NOT stick", the plugin isn't installed or active — point the user at `divi5-builder.zip`.
    Verify what's set with `node scripts/wp.js <site> page-meta <id>`.
 
 8. **Verify it renders (don't just trust the POST).** Confirm the blocks
@@ -648,9 +652,9 @@ what a visitor sees.
 
 Core REST does not expose Divi's Theme Builder post types (`et_template`,
 `et_header_layout`, `et_body_layout`, `et_footer_layout`), so these commands go
-through the mu-plugin. Check it first: `node scripts/wp.js <site> plugin-version`
-must report 1.5.0 or later, otherwise the user re-uploads
-`assets/divi5-builder-rest.php`.
+through the plugin. Check it first: `node scripts/wp.js <site> status`
+must show `divi5-builder` 2.0.0 or later (or an old `divi5-builder-rest` 1.5.0 or later),
+otherwise the user uploads the newest `divi5-builder.zip`.
 
 | Command | Does |
 |---|---|
@@ -735,9 +739,10 @@ selectors that would leak onto the rest of the site.
 ## Media and large-file audit: any WordPress site (read `references/wp-media-audit.md`)
 
 "The site is too big", "clean up the media library", "what can go before we move it": use this. It does not need
-Divi 5 (or Divi at all), only an administrator's application password and one read-only file the USER uploads:
-`assets/wp-media-audit.php` into `wp-content/mu-plugins/`, or `wp-media-audit.zip` from the GitHub release via
-Plugins → Add New → Upload Plugin (it stores nothing; they delete it afterwards).
+Divi 5 (or Divi at all), only an administrator's application password and the `divi5-builder` plugin with its **Media audit** switch on. The USER
+installs `divi5-builder.zip` from the GitHub release (Plugins → Add New → Upload Plugin) and turns the switch on in
+Settings > Divi 5 Builder (off by default; only an administrator can flip it). The audit stores nothing; the user
+turns the switch off afterwards.
 
 ```bash
 node scripts/media-audit.js scan   <site> --dir <work-folder>   # library items, files on disk, where each is referred to
@@ -753,8 +758,8 @@ node scripts/media-audit.js report --dir <work-folder>          # REPORT.md + CS
   the database scan missed; it must be 0 or understood. It is how a new kind of reference gets noticed.
 - Tables of plugins the site no longer uses still count as uses until you say so: `report --ignore-tables <table>`.
   The report names every table that alone keeps items used.
-- **Nothing here deletes, and neither do you.** To remove, quarantine: `scripts/media-quarantine.js` (needs a second
-  uploaded file, `assets/wp-media-quarantine.php`) moves the files to a holding folder outside `uploads/`, `verify`
+- **Nothing here deletes, and neither do you.** To remove, quarantine: `scripts/media-quarantine.js` (needs the **Media clean-up**
+  switch, also off by default) moves the files to a holding folder outside `uploads/`, `verify`
   checks every public page for newly missing files, `restore` puts back what is needed. Order: `verify` (baseline),
   `plan`, `move` (dry run, then `--write`), `verify`, the user lives with it for some days, then the USER deletes the
   quarantine folder and the library rows. One batch per decision.
@@ -771,8 +776,9 @@ node scripts/media-audit.js report --dir <work-folder>          # REPORT.md + CS
 
 ## Updating plugins, themes and WordPress: any WordPress site (read `references/wp-site-updates.md`)
 
-`scripts/site-updates.js` with `assets/wp-site-updates.php` (the user uploads it to `wp-content/mu-plugins/`, or
-installs `wp-site-updates.zip` from the GitHub release in Plugins → Add New → Upload Plugin).
+`scripts/site-updates.js` with the **Updates** switch of the `divi5-builder` plugin (the user installs `divi5-builder.zip`
+from the GitHub release in Plugins → Add New → Upload Plugin and turns the switch on in Settings > Divi 5 Builder; it is
+off by default and only an administrator can flip it).
 
 ```bash
 node scripts/site-updates.js status <site>                       # what is out of date

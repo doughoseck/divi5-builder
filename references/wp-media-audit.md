@@ -11,7 +11,7 @@ First run: a 5-year-old site converted from Divi 4. Uploads 2.78 GB in 36,207 fi
 
 | File | What it is |
 |---|---|
-| `assets/wp-media-audit.php` | mu-plugin, read-only REST routes, administrators only. The USER uploads it to `wp-content/mu-plugins/` and deletes it afterwards. Stores nothing. Returns file names, sizes, IDs and the place of a reference, never content. PHP 7.0+. |
+| `plugin/divi5-builder/` (Media audit part) | read-only REST routes, administrators only. The USER installs `divi5-builder.zip`, turns the **Media audit** switch on in Settings > Divi 5 Builder (off by default) and turns it off afterwards. Old sites can still run `assets/legacy/wp-media-audit.php` (security fixes only until 2027-01-31). Stores nothing. Returns file names, sizes, IDs and the place of a reference, never content. PHP 7.0+. |
 | `scripts/media-audit.js` | `scan`, `crawl`, `report`. No command in it changes the site. |
 | `scripts/media-audit-test.php` | the reference finder, no WordPress needed |
 | `scripts/media-audit-test.js` | the classification and the report files, on a made-up site |
@@ -133,7 +133,7 @@ Nothing in the skill deletes. `scripts/media-quarantine.js` MOVES files out of `
 `wp-content/media-audit-quarantine-<random>/<batch>/` (an unguessable name since plugin 1.0.1, so it is not served even
 where the `.htaccess` deny rule does not apply, e.g. nginx; `status` prints the exact folder; dot files such as
 `uploads/.htaccess` are never moved) and can move them back. It needs a
-second file the user uploads, `assets/wp-media-quarantine.php`: kept apart so the audit plugin stays read-only. It has
+separate **Media clean-up** switch (off by default, also in Settings > Divi 5 Builder; old sites: `assets/legacy/wp-media-quarantine.php`): kept apart so the audit stays read-only. It has
 no delete and does not touch the database (tests: `php scripts/media-quarantine-test.php`).
 
 ```bash
@@ -201,7 +201,7 @@ owner removes the rows with an SQL file you prepare.
    `post_type = 'attachment' AND (ID IN (…) OR ID IN (…))`. The owner exports the database first.
 4. **Check afterwards**: none of the listed ids is left; EVERY remaining library item's main file answers; the
    database report (`/db`) shows 0 orphan postmeta and 0 orphan term links; `/batches` is empty; `verify` says 0.
-   Only then are the two helper mu-plugins removed.
+   Only then are the Media audit and Media clean-up switches turned off.
 
 Asking the site for a file that is not there costs about two seconds each when WordPress answers the 404 (no static
 404 from the web server): 1,240 checks took 40 minutes. Run it in the background and say so.

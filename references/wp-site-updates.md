@@ -1,11 +1,15 @@
 # Updating plugins, themes and WordPress (any WordPress site)
 
-`scripts/site-updates.js` + `assets/wp-site-updates.php`. The plugin runs WordPress's own updater (the code behind the
+`scripts/site-updates.js` + the **Updates** part of the `divi5-builder` plugin (`plugin/divi5-builder/parts/`). The plugin runs WordPress's own updater (the code behind the
 Updates screen), one update per request; the client decides the order, checks pages, and stops when something breaks.
 
 ## Set-up, once per site
 
-The user uploads `assets/wp-site-updates.php` to `wp-content/mu-plugins/`. The application password must belong to a
+The user installs `divi5-builder.zip` (Plugins > Add New > Upload Plugin) and turns on the **Updates** switch in
+Settings > Divi 5 Builder (Network Admin > Settings on a multisite). The switch is off by default and only an
+administrator in wp-admin can flip it; while it is off the update routes do not exist, and the script says "Switch
+Updates on in Settings > Divi 5 Builder". Old sites can still run the single-file plugin from `assets/legacy/`
+(security fixes only until 2027-01-31). The application password must belong to a
 user who may update: an administrator, on a multisite a network administrator.
 
 ## The commands

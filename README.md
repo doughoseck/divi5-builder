@@ -31,7 +31,7 @@ gives you:
   settings + global colour/preset variables.
 - **`scripts/wp.js`** — a secure WP REST **client** (pages, media, "Divi mode"
   meta, canvases, block inspection).
-- **`assets/divi5-builder-rest.php`** — a tiny must-use plugin that bridges the few
+- **`plugin/divi5-builder/`** — one WordPress plugin (`divi5-builder.zip`) that bridges the few
   gaps the REST API leaves (see below).
 
 ## Requirements
@@ -41,7 +41,7 @@ gives you:
 - A WordPress **Application Password** for a user who can edit pages
   (Administrator/Editor). App passwords inherit the user's capabilities.
 - **Node.js** 18+ (uses only built-ins — no `npm install`).
-- The bundled **mu-plugin** installed on the target site (one-time).
+- The **divi5-builder plugin** installed on the target site (one-time).
 
 ## Install
 
@@ -75,27 +75,41 @@ prints the password. No password ever reaches the Claude prompt!
 
 Divi 5 flags a page as "a Divi page" with **protected `_et_*` post-meta** that core
 REST won't write, and Divi's own builder REST routes reject Application-Password
-auth (they need a cookie-session nonce). `assets/divi5-builder-rest.php` exposes
+auth (they need a cookie-session nonce). The `divi5-builder` plugin exposes
 just those specific meta keys (and a canvas-link helper) to REST **behind an
 `edit_post`/`manage_options` capability check** — so only authenticated editors can
 use them. It does **not** modify Divi.
 
 Install it either way (not both at once):
 
-- **From the WordPress admin (no FTP):** download `divi5-builder-rest.zip` from the
+- **From the WordPress admin (no FTP):** download `divi5-builder.zip` from the
   [latest release](https://github.com/doughoseck/divi5-builder/releases/latest), then
-  **Plugins → Add New → Upload Plugin**, and **Activate**. To update, upload the newer zip
-  and choose **Replace current with uploaded**. Any admin can deactivate a normal plugin,
-  and the tool stops working until it is active again.
-- **As a must-use plugin (FTP):** copy `assets/divi5-builder-rest.php` to
-  `wp-content/mu-plugins/` (create the folder if needed). Must-use plugins are always on
-  and cannot be switched off from the admin, which is why this is the sturdier option.
+  **Plugins → Add New → Upload Plugin**, and **Activate**. There is no update checker:
+  to update, upload the newer zip and choose **Replace current with uploaded**. Any admin
+  can deactivate a normal plugin, and the tool stops working until it is active again.
+- **As a must-use plugin (FTP):** copy the `divi5-builder/` folder from `plugin/` into
+  `wp-content/mu-plugins/` (create the folder if needed) and put
+  `plugin/mu-loader/divi5-builder-loader.php` next to it in the same folder. Must-use
+  plugins are always on and cannot be switched off from the admin, which is why this is
+  the sturdier option.
 
-The site-maintenance plugins (`wp-media-audit`, `wp-media-quarantine`, `wp-site-updates`)
-come as zips in the same release: install for the job, then deactivate and delete.
-Build the zips yourself with `node scripts/build-plugin-zips.js` (writes `dist/`).
+Page building is always on. The three site-maintenance parts, **Media audit**, **Media
+clean-up** and **Updates**, each have a switch in **Settings > Divi 5 Builder** (on
+multisite: Network Admin > Settings). All three are **off by default**, each shows a note
+about its risk, and only an administrator in wp-admin can flip one (the scripts cannot).
+While a switch is off its REST routes do not exist. When you finish a job, switch it off
+again. The scripts print "Switch ... on in Settings > Divi 5 Builder" when one is off.
 
-Confirm it's active: `node scripts/wp.js <site> plugin-version` → the version number.
+Coming from the four old single-file plugins (`divi5-builder-rest.php`,
+`wp-media-audit.php`, `wp-media-quarantine.php`, `wp-site-updates.php`)? On activation the
+new plugin deactivates old normal copies. Old must-use files cannot be deactivated from
+code: the plugin stands aside for that part and shows a notice naming the file to delete.
+The old files are kept in `assets/legacy/` (security fixes only until 2027-01-31) and are
+no longer built into zips. Build the zip yourself with `node scripts/build-plugin-zips.js`
+(writes `dist/`).
+
+Confirm it's active: `node scripts/wp.js <site> plugin-version` → the version number, or
+`node scripts/wp.js <site> status` for the plugin and its three switches.
 
 ### Theme Builder headers, footers and body layouts (plugin 1.5+)
 
@@ -114,7 +128,7 @@ is re-uploading the file.
 ```bash
 node scripts/wp.js mysite whoami          # 200 + your name  → creds OK
 node scripts/wp.js mysite divi-check      # verdict:"divi5"  → right engine
-node scripts/wp.js mysite check-plugin    # pluginActive:true → mu-plugin OK
+node scripts/wp.js mysite check-plugin    # pluginActive:true → plugin OK
 node scripts/wp.js mysite global-colors   # discover gcid global-colour ids
 
 node scripts/divi.js compile examples/spec.json --out content.html
@@ -157,7 +171,7 @@ referenced (`references/divi5-presets-variables.md`, plus a read-only
 ## Presets, global colours and variables: create them from outside the builder (plugin 1.8+)
 
 Divi's own routes for these need a logged-in browser session and replace the whole store with
-whatever is posted. The mu-plugin calls the same Divi functions from inside WordPress instead,
+whatever is posted. The plugin calls the same Divi functions from inside WordPress instead,
 one item at a time:
 
 ```bash
@@ -212,7 +226,7 @@ Old sites carry years of uploads nobody uses. This part does not need Divi at al
 with an administrator's application password.
 
 ```bash
-node scripts/media-audit.js scan   <site> --dir audit     # needs assets/wp-media-audit.php in mu-plugins (read-only)
+node scripts/media-audit.js scan   <site> --dir audit     # needs the Media audit switch on (read-only)
 node scripts/media-audit.js crawl  <site> --dir audit     # loads every public page: the cross-check
 node scripts/media-audit.js report --dir audit            # REPORT.md + CSV lists, biggest first
 node scripts/media-audit.js db     <site> --dir audit     # what takes the space in the database (read-only)
@@ -240,14 +254,14 @@ node scripts/media-quarantine.js verify  <site> --dir audit                 # ne
 node scripts/media-quarantine.js restore <site> --dir audit --batch unused --needed --write
 ```
 
-`assets/wp-media-quarantine.php` moves the named files to `wp-content/media-audit-quarantine-<random>/<batch>/` (an unguessable name, closed to
+With the **Media clean-up** switch on, the plugin moves the named files to `wp-content/media-audit-quarantine-<random>/<batch>/` (an unguessable name, closed to
 the web, with a manifest) and can move them back. It has no delete and does not touch the database. The permanent
 step, deleting the quarantine folder, is the site owner's. First real run: a 2.78 GB uploads folder went to 0.8 GB
 with no file missing on any public page. Playbook: `references/wp-media-audit.md`.
 
 ## Updating plugins, themes and WordPress: any WordPress site
 
-`scripts/site-updates.js` with `assets/wp-site-updates.php` (a small mu-plugin you upload once per site). It runs
+`scripts/site-updates.js` with the **Updates** switch of the plugin (off by default; an administrator turns it on in Settings > Divi 5 Builder). It runs
 WordPress's own updater, the code behind the Updates screen, one update per request.
 
 ```bash
@@ -345,17 +359,23 @@ node scripts/media-audit-test.js      # media audit: the classification, the qua
 php  scripts/media-quarantine-test.php   # the quarantine plugin: moves real files in a temp folder and back
 php  scripts/site-updates-test.php    # the updates plugin against a fake WordPress: who may, what it refuses, each kind of update
 node scripts/site-updates-test.js     # the update plan and the before/after page comparison
-php  scripts/ds-write-test.php "<path to a Divi 5 theme folder>"   # the mu-plugin's design-system writes
+php  scripts/plugin-switches-test.php   # the three switches: off by default, who may flip them, routes absent while off
+php  scripts/plugin-takeover-test.php   # old copies of the four plugins: deactivated, or a notice naming the file to delete
+php  scripts/plugin-settings-test.php   # the Settings > Divi 5 Builder page (and Network Admin)
+php  scripts/plugin-anysite-test.php    # the loader on any site, also when loaded twice
+node scripts/switch-advice-test.js    # what the scripts say when a switch is off
+node scripts/build-plugin-zips-test.js  # the zip build
+php  scripts/ds-write-test.php "<path to a Divi 5 theme folder>"   # the plugin's design-system writes
 node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts every store back
 ```
 
 ## Security
 
 - **Found a vulnerability? Report it privately** - see [SECURITY.md](SECURITY.md).
-  Run the latest mu-plugin (**1.8.3 or newer**: 1.8.3 fixed a Contributor-level option read).
+  Run the latest plugin (**divi5-builder 2.0.0**; the old single-file 1.8.3 and newer already fixed a Contributor-level option read).
 - Use the lowest role that works: page building needs an **Editor** Application Password.
 - Never commit `~/.web-creds.txt` or any Application Password.
-- The mu-plugin exposes existing Divi meta keys, the global colour palette and (1.5+)
+- The plugin exposes existing Divi meta keys, the global colour palette and (1.5+)
   Theme Builder layout read/write, each gated by the WordPress capability Divi itself
   requires for that thing — review it before installing.
 - Prefer **draft-first**; treat publish / live-page edits / homepage changes as

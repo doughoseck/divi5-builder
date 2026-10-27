@@ -1,6 +1,6 @@
 # Security policy
 
-This project ships PHP must-use plugins that run on live WordPress sites, and Node
+This project ships a WordPress plugin that runs on live WordPress sites, and Node
 scripts that hold WordPress Application Passwords. Security reports are very welcome.
 
 ## Reporting a vulnerability
@@ -17,23 +17,31 @@ out, and reporters are credited unless they prefer not to be.
 
 ## Supported versions
 
-Only the latest version on `main` is supported. Always run the newest
-`assets/divi5-builder-rest.php` (the version is in its header and in
-`GET /wp-json/divi5-builder/v1/version`).
+Only the latest version on `main` is supported. Always run the newest `divi5-builder`
+plugin (the version is in its header and in `GET /wp-json/divi5-builder/v1/version`).
 
 | Plugin | Latest | Notes |
 |---|---|---|
-| `divi5-builder-rest.php` | 1.8.5 | Page building bridge. Meant to stay installed. |
-| `wp-media-audit.php` | 1.1.2 | Read-only. Install for the audit, **remove after use**. |
-| `wp-media-quarantine.php` | 1.0.1 | Moves files. Install for the clean-up, **remove after use**. |
-| `wp-site-updates.php` | 1.0.2 | Runs updates. Install when needed, remove after use. (1.0.2: refreshing the status is a POST.) |
+| `divi5-builder` (`divi5-builder.zip`) | 2.0.0 | One plugin: page building (always on), plus Media audit, Media clean-up and Updates, each a switch in Settings > Divi 5 Builder, **off by default**. Only an administrator in wp-admin can flip a switch. |
+| `divi5-builder-rest.php` | 1.8.5 | Replaced by `divi5-builder` 2.0.0. Security fixes only until 2027-01-31. In `assets/legacy/`. |
+| `wp-media-audit.php` | 1.1.2 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
+| `wp-media-quarantine.php` | 1.0.1 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
+| `wp-site-updates.php` | 1.0.2 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
+
+### Moving from the four old plugins
+
+Install `divi5-builder.zip` (Plugins > Add New > Upload Plugin) and activate it. It deactivates
+old normal copies of the four plugins by itself. Old must-use files cannot be deactivated
+from code: the plugin stands aside for that part and shows a notice naming the file to
+delete. Delete what the notice lists. A red warning shows when an old updates or clean-up
+copy is still live while its switch is off. After 2027-01-31 the old files get no more fixes.
 
 ## Hardening advice for users
 
 - Use the **lowest role that does the job**: page building needs an **Editor**
   Application Password; only design-system writes, options, Theme Builder, Custom CSS
   and the site-maintenance tools need an Administrator.
-- Only install the plugins you use, and remove the maintenance plugins when done.
+- Leave the Media audit, Media clean-up and Updates switches off, and turn one on only for the job.
 - Keep `~/.web-creds.txt` readable by your user only (`chmod 600` on macOS/Linux;
   on Windows keep it in your user profile). Never commit it.
 - Revoke an Application Password (Users -> Profile) as soon as you stop using it.
@@ -53,3 +61,24 @@ Only the latest version on `main` is supported. Always run the newest
   and up) read `wp_options` values; `POST /link-canvas` did not check the target page;
   `/postinfo` returned protected post meta; `/custom-css` did not require `edit_css`.
   All fixed in 1.8.3, covered by `scripts/permissions-test.php`. **Update to 1.8.3.**
+## Supported versions
+
+Only the latest version on `main` is supported. Always run the newest `divi5-builder`
+plugin (the version is in its header and in `GET /wp-json/divi5-builder/v1/version`).
+
+| Plugin | Latest | Notes |
+|---|---|---|
+| `divi5-builder` (`divi5-builder.zip`) | 2.0.0 | One plugin: page building (always on), plus Media audit, Media clean-up and Updates, each a switch in Settings > Divi 5 Builder, **off by default**. Only an administrator in wp-admin can flip a switch. |
+| `divi5-builder-rest.php` | 1.8.5 | Replaced by `divi5-builder` 2.0.0. Security fixes only until 2027-01-31. In `assets/legacy/`. |
+| `wp-media-audit.php` | 1.1.2 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
+| `wp-media-quarantine.php` | 1.0.1 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
+| `wp-site-updates.php` | 1.0.2 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
+
+### Moving from the four old plugins
+
+Install `divi5-builder.zip` (Plugins > Add New > Upload Plugin) and activate it. It deactivates
+old normal copies of the four plugins by itself. Old must-use files cannot be deactivated
+from code: the plugin stands aside for that part and shows a notice naming the file to
+delete. Delete what the notice lists. A red warning shows when an old updates or clean-up
+copy is still live while its switch is off. After 2027-01-31 the old files get no more fixes.
+

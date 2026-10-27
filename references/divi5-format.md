@@ -313,11 +313,10 @@ a live Divi 5 site (2026-07-22):
   cookie-session nonce; an Application Password can't produce one that validates.
   Route-specific nonces from `/divi/v1/settings-data/nonces` don't help either.
 
-**Solution used by this skill:** the bundled mu-plugin
-`assets/divi5-builder-rest.php` registers those `_et_*` keys for REST behind an
-`edit_post` capability check. Once it's in the site's `wp-content/mu-plugins/`,
+**Solution used by this skill:** the `divi5-builder` plugin (`divi5-builder.zip`) registers those `_et_*` keys for REST behind an
+`edit_post` capability check. Once it is active on the site,
 `wp.js set-builder <id>` sets the flag via a normal core-REST meta write — no
-nonce, no cookie, app-password-friendly. The mu-plugin only exposes existing meta
+nonce, no cookie, app-password-friendly. The plugin only exposes existing meta
 keys; it doesn't modify Divi.
 
 ## Popups: Canvas + Interaction (reverse-engineered, verified live)

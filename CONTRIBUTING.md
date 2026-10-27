@@ -49,7 +49,7 @@ reference docs — honesty about confidence matters here.
 - A **Divi 5** test site + a WordPress **Application Password** (admin user).
 - Credentials: copy `.web-creds.example.txt` to `~/.web-creds.txt` (or set
   `WEB_CREDS_PATH`). **Never commit it.**
-- Install the mu-plugin (`assets/divi5-builder-rest.php`) on the test site.
+- Install the plugin (`divi5-builder.zip`, built with `node scripts/build-plugin-zips.js`) on the test site.
 
 ## Testing
 
@@ -67,8 +67,13 @@ Before opening a PR:
    node scripts/spec-check-test.js    # unknown spec keys are reported; every documented example checks clean
    node scripts/blocks-test.js        # block-level edits leave the rest of the page byte for byte
    node scripts/media-audit-test.js && node scripts/site-updates-test.js
+   node scripts/switch-advice-test.js    # what the scripts say when a switch is off
+   node scripts/build-plugin-zips-test.js
    php scripts/permissions-test.php && php scripts/double-load-test.php && php scripts/media-quarantine-test.php && php scripts/media-audit-test.php
+   php scripts/plugin-switches-test.php && php scripts/plugin-takeover-test.php && php scripts/plugin-settings-test.php && php scripts/plugin-anysite-test.php
    ```
+   Two more need arguments (a WordPress `wp-includes` folder, a Divi 5 theme folder) and are optional:
+   `php scripts/tree-guard-test.php <wp-includes> <sent.html> <stored.html>` and `php scripts/ds-write-test.php "<Divi theme folder>"`.
    Anything that changes a write path in `wp.js` needs a case in `stale-guard-test.js`, which runs `wp.js`
    against a fake WordPress (state in a JSON file) so a "save in the builder" can be simulated.
 3. **Live round-trip** for anything new — create a draft, flip Divi mode, verify it
@@ -87,6 +92,13 @@ Before opening a PR:
 - **Never commit** credentials, `snapshots/`, private page content, real site URLs,
   or client data. `.gitignore` blocks the obvious cases — double-check your diff.
 - Match the existing code style (plain Node, small functions, terse comments).
+
+## Adding a route to the plugin
+
+Plugin code lives in `plugin/divi5-builder/`. Put a new REST route in the matching file in
+`plugin/divi5-builder/parts/` (`page-building.php`, `media-audit.php`, `media-clean-up.php` or
+`updates.php`). A route in one of the three switch parts must not exist while its switch is off;
+`scripts/plugin-switches-test.php` covers that.
 
 ## Security
 
