@@ -19,7 +19,8 @@ if (!site || !/^\d+$/.test(id || '')) { console.error('usage: node roundtrip-tes
 const here = __dirname, spec = specArg || path.join(here, '..', 'assets', 'roundtrip-spec.json');
 const run = (script, args) => execFileSync(process.execPath, [path.join(here, script), ...args], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 
-const status = JSON.parse(run('wp.js', [site, 'get-page', id])).status;
+const info = JSON.parse(run('wp.js', [site, 'get-page', id]));
+const status = info.status;
 if (status !== 'draft') { console.error(`STOP: page ${id} is "${status}", not a draft. This test overwrites content.`); process.exit(2); }
 
 const tmp = path.join(os.tmpdir(), `d5b-roundtrip-${process.pid}.html`);
@@ -33,8 +34,8 @@ check('compiled output has no raw \\" or \\\\ inside block comments', !/\\"|\\\\
 const blocks = [...sent.matchAll(/<!-- wp:\S+ (\{.*?\}) \/?-->/gs)].map(m => m[1]);
 check(`found the block JSON to inspect (${blocks.length} blocks)`, blocks.length >= 5);
 check('compiled output has no raw -- inside block JSON', !blocks.some(j => j.includes('--')));
-run('wp.js', [site, 'update-page', id, '--content-file', tmp]);
-const stored = run('wp.js', [site, 'get-page', id, '--raw']).replace(/\r?\n$/, '');
+run('wp.js', [site, 'update-page', id, '--content-file', tmp, '--expect-hash', info.hash]);
+const stored = run('wp.js', [site, 'get-page', id, '--raw']);   // byte for byte
 fs.unlinkSync(tmp);
 let at = 0; while (at < sent.length && sent[at] === stored[at]) at++;
 check(`stored content is byte-identical to what was sent (${sent.length} chars)`, sent === stored,

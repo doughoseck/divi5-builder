@@ -9,12 +9,15 @@
  * Usage:
  *   node wp.js <site> whoami
  *   node wp.js <site> list-pages
- *   node wp.js <site> get-page <id> [--raw]        # --raw dumps content.raw only
+ *   node wp.js <site> get-page <id> [--raw | --out F]   # summary with the content HASH; --raw = content byte for byte
+ *   --- Content writes are stale-guarded: they need the hash from the read you based the change on ---
+ *   --- (get-page / get-post / get-canvas, or md5 of their --raw output); exit 3 = changed since then.   ---
+ *   --- --force overwrites anyway. What a content write replaces is kept in ~/.divi5-builder/backups/. ---
  *   node wp.js <site> rendered <id>                # server-rendered Divi HTML (proof of render)
  *   node wp.js <site> builder-version              # detect site's Divi builderVersion
  *   node wp.js <site> global-colors                # discover gcid global-color IDs in use
  *   node wp.js <site> create-page --title T --content-file F [--status draft|publish] [--slug S]
- *   node wp.js <site> update-page <id> [--title T] [--content-file F] [--status ...]
+ *   node wp.js <site> update-page <id> [--title T] [--content-file F --expect-hash H | --force] [--status ...]
  *   node wp.js <site> delete-page <id> [--force]   # --force = permanent (skip trash)
  *   node wp.js <site> set-homepage <id>            # show_on_front=page, page_on_front=id
  *   node wp.js <site> reset-homefront              # show_on_front=posts (undo)
@@ -26,7 +29,7 @@
  *   node wp.js <site> list-canvases                # id | status | modified | title
  *   node wp.js <site> get-canvas <id> [--raw | --out F]
  *   node wp.js <site> create-canvas --title T --content-file F
- *   node wp.js <site> update-canvas <id> --content-file F [--title T]
+ *   node wp.js <site> update-canvas <id> --content-file F (--expect-hash H | --force) [--title T]
  *   node wp.js <site> link-canvas <canvas_id> <parent_id>   # parent = page, or a Theme Builder layout
  *   --- Theme Builder (needs divi5-builder-rest.php >= 1.5; see SKILL.md) ---
  *   node wp.js <site> plugin-version               # which mu-plugin version is installed
@@ -60,6 +63,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const https = require('https');
+const crypto = require('crypto');
 const { URL } = require('url');
 
 // Default: .web-creds.txt in the user's home folder. Node does not expand "~", so it is done here
@@ -120,6 +124,44 @@ async function jreq(method, url, c, payload) {
   return json !== null ? json : text;
 }
 
+// ---- Stale-write guard for pages, posts and canvases (issue #14) ------------------------------------
+// The content hash is the MD5 of the raw content exactly as stored (`content.raw`), the same scheme as the
+// Theme Builder's tb-get / tb-set. Every get command prints it, and `--raw` prints the content byte for
+// byte, so a script can also take md5(what it read). A content write re-reads the post just before
+// writing and refuses (exit 3) when the hash differs: someone saved it in the Visual Builder since.
+// What it replaces is always kept first, in WP_BACKUP_DIR (default ~/.divi5-builder/backups/<site>/).
+// A small window remains between that re-read and the write; the check is client-side, no plugin needed.
+const md5 = s => crypto.createHash('md5').update(String(s), 'utf8').digest('hex');
+const STALE_EXIT = 3;
+
+async function guardContentWrite({ c, api, site, kind, id, f }) {
+  const cur = await jreq('GET', `${api}/${kind}/${id}?context=edit&_fields=content,modified_gmt`, c);
+  const raw = (cur.content && cur.content.raw) || '';
+  const now = md5(raw);
+  const expect = typeof f['expect-hash'] === 'string' ? f['expect-hash'].trim().toLowerCase() : '';
+  if (!f.force) {
+    if (!expect) die(`${kind} ${id}: a content write needs --expect-hash <hash> (printed by the get command you read it with), or --force to overwrite whatever is stored now`);
+    if (expect !== now) {
+      const ago = cur.modified_gmt ? Math.round((Date.now() - Date.parse(cur.modified_gmt + 'Z')) / 60000) : NaN;
+      const when = Number.isFinite(ago) ? (ago < 1 ? 'less than a minute ago' : ago < 120 ? `${ago} minutes ago` : `${Math.round(ago / 60)} hours ago`) : 'at an unknown time';
+      process.stderr.write(`STALE: ${kind} ${id} changed since you read it. It was last saved ${when} (${cur.modified_gmt} UTC).\n` +
+        `  expected hash ${expect}\n  current hash  ${now}\n` +
+        `Nothing was written. STOP and ask the user before doing anything else with this ${kind === 'et_pb_canvas' ? 'canvas' : kind.slice(0, -1)}:\n` +
+        `someone may have it open in the Visual Builder right now${Number.isFinite(ago) && ago < 30 ? ' (it was saved very recently)' : ''}, and the builder's\n` +
+        `next save writes the whole page from the browser, which would wipe your change. Wait until they confirm\n` +
+        `it is saved and closed, then read it again and redo the change on top of theirs. Do not retry in a loop,\n` +
+        `and do not use --force to get past this unless the user explicitly says to overwrite their version.\n`);
+      process.exit(STALE_EXIT);
+    }
+  }
+  const dir = path.join((process.env.WP_BACKUP_DIR || '~/.divi5-builder/backups').replace(/^~(?=$|[\\/])/, os.homedir()),
+    site.replace(/[^A-Za-z0-9._-]+/g, '_'));
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${kind}-${id}-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`);
+  fs.writeFileSync(file, raw, 'utf8');
+  return { backup: file, previousHash: now };
+}
+
 // crude flag parser: --key value  (or --key for booleans)
 function flags(argv) {
   const out = { _: [] };
@@ -153,9 +195,12 @@ function flags(argv) {
     }
     case 'get-page': {
       const id = f._[0]; if (!id) die('get-page needs <id>');
-      const p = await jreq('GET', `${api}/pages/${id}?context=edit&_fields=id,title,status,slug,link,content`, c);
-      if (f.raw) { process.stdout.write(p.content.raw); }
-      else console.log(JSON.stringify({ id: p.id, title: p.title.raw, status: p.status, slug: p.slug, link: p.link, contentLength: (p.content.raw || '').length }, null, 2));
+      const p = await jreq('GET', `${api}/pages/${id}?context=edit&_fields=id,title,status,slug,link,content,modified_gmt`, c);
+      const raw = p.content.raw || '';
+      if (f.raw) { process.stdout.write(raw); break; }
+      const info = { id: p.id, title: p.title.raw, status: p.status, slug: p.slug, link: p.link, modified_gmt: p.modified_gmt, contentLength: raw.length, hash: md5(raw) };
+      if (f.out) { fs.writeFileSync(f.out, raw, 'utf8'); info.saved = f.out; }
+      console.log(JSON.stringify(info, null, 2));
       break;
     }
     case 'rendered': {
@@ -293,7 +338,11 @@ function flags(argv) {
     case 'get-post': {
       const id = f._[0]; if (!id) die('get-post needs <id>');
       const p = await jreq('GET', `${api}/posts/${id}?context=edit`, c);
-      console.log(f.raw ? p.content.raw : JSON.stringify({ id: p.id, status: p.status, slug: p.slug, title: p.title.raw }, null, 2));
+      const raw = p.content.raw || '';
+      if (f.raw) { process.stdout.write(raw); break; }   // byte for byte: md5(output) = the hash
+      const info = { id: p.id, status: p.status, slug: p.slug, title: p.title.raw, modified_gmt: p.modified_gmt, contentLength: raw.length, hash: md5(raw) };
+      if (f.out) { fs.writeFileSync(f.out, raw, 'utf8'); info.saved = f.out; }
+      console.log(JSON.stringify(info, null, 2));
       break;
     }
     case 'create-post': {
@@ -302,8 +351,8 @@ function flags(argv) {
       const payload = { title: f.title, content, status: f.status || 'draft' };
       if (f.slug) payload.slug = f.slug;
       if (f.excerpt) payload.excerpt = f.excerpt;
-      const p = await jreq('POST', `${api}/posts`, c, payload);
-      console.log(JSON.stringify({ ok: true, id: p.id, status: p.status, link: p.link, slug: p.slug }));
+      const p = await jreq('POST', `${api}/posts?context=edit&_fields=id,status,link,slug,content`, c, payload);
+      console.log(JSON.stringify({ ok: true, id: p.id, status: p.status, link: p.link, slug: p.slug, hash: md5((p.content && p.content.raw) || '') }));
       break;
     }
     case 'update-post': {
@@ -314,7 +363,11 @@ function flags(argv) {
       if (f.slug) payload.slug = f.slug;
       if (f.excerpt) payload.excerpt = f.excerpt;
       if (f.featured !== undefined) payload.featured_media = Number(f.featured);   // --featured <media id>, 0 removes it
-      if (f['content-file']) payload.content = fs.readFileSync(f['content-file'], 'utf8');
+      let guard = null;
+      if (f['content-file']) {
+        payload.content = fs.readFileSync(f['content-file'], 'utf8');
+        guard = await guardContentWrite({ c, api, site, kind: 'posts', id, f });   // exits if stale
+      }
       // --now: publish IMMEDIATELY. Setting status=publish alone is not enough
       // on a scheduled post — WordPress keeps a future-dated post as 'future'
       // and answers {ok:true} while it stays queued. The date has to move too.
@@ -322,9 +375,11 @@ function flags(argv) {
         payload.status = 'publish';
         payload.date_gmt = new Date().toISOString().replace(/\.\d+Z$/, '');
       }
-      const p = await jreq('POST', `${api}/posts/${id}`, c, payload);
+      const p = await jreq('POST', `${api}/posts/${id}?context=edit`, c, payload);
       const warn = p.status === 'future' ? ' (STILL SCHEDULED — use --now to publish immediately)' : '';
-      console.log(JSON.stringify({ ok: true, id: p.id, status: p.status + warn, slug: p.slug, link: p.link, date: p.date }));
+      const out = { ok: true, id: p.id, status: p.status + warn, slug: p.slug, link: p.link, date: p.date };
+      if (guard) { const stored = (p.content && p.content.raw) || ''; Object.assign(out, { hash: md5(stored), storedAsSent: stored === payload.content, previousHash: guard.previousHash, backup: guard.backup }); }
+      console.log(JSON.stringify(out));
       break;
     }
     // ---- Categories -------------------------------------------------------
@@ -357,8 +412,8 @@ function flags(argv) {
       const content = f['content-file'] ? fs.readFileSync(f['content-file'], 'utf8') : (f.content || '');
       const payload = { title: f.title, content, status: f.status || 'draft' };
       if (f.slug) payload.slug = f.slug;
-      const p = await jreq('POST', `${api}/pages`, c, payload);
-      console.log(JSON.stringify({ ok: true, id: p.id, status: p.status, link: p.link, slug: p.slug }));
+      const p = await jreq('POST', `${api}/pages?context=edit&_fields=id,status,link,slug,content`, c, payload);
+      console.log(JSON.stringify({ ok: true, id: p.id, status: p.status, link: p.link, slug: p.slug, hash: md5((p.content && p.content.raw) || '') }));
       break;
     }
     case 'update-page': {
@@ -371,9 +426,15 @@ function flags(argv) {
       // exactly like one that had. The slug is echoed back below for the same
       // reason: an answer you cannot check is not an answer.
       if (f.slug) payload.slug = f.slug;
-      if (f['content-file']) payload.content = fs.readFileSync(f['content-file'], 'utf8');
-      const p = await jreq('POST', `${api}/pages/${id}`, c, payload);
-      console.log(JSON.stringify({ ok: true, id: p.id, status: p.status, slug: p.slug, link: p.link }));
+      let guard = null;
+      if (f['content-file']) {
+        payload.content = fs.readFileSync(f['content-file'], 'utf8');
+        guard = await guardContentWrite({ c, api, site, kind: 'pages', id, f });   // exits if stale
+      }
+      const p = await jreq('POST', `${api}/pages/${id}?context=edit&_fields=id,status,slug,link,content`, c, payload);
+      const out = { ok: true, id: p.id, status: p.status, slug: p.slug, link: p.link };
+      if (guard) { const stored = (p.content && p.content.raw) || ''; Object.assign(out, { hash: md5(stored), storedAsSent: stored === payload.content, previousHash: guard.previousHash, backup: guard.backup }); }
+      console.log(JSON.stringify(out));
       break;
     }
     case 'delete-page': {
@@ -541,9 +602,10 @@ function flags(argv) {
       const id = f._[0]; if (!id) die('get-canvas needs <id>');
       const k = await jreq('GET', `${api}/et_pb_canvas/${id}?context=edit&_fields=id,title,status,modified,content.raw`, c);
       const raw = (k.content && k.content.raw) || '';
-      if (f.out) { fs.writeFileSync(f.out, raw, 'utf8'); console.log(JSON.stringify({ ok: true, id: k.id, saved: f.out, chars: raw.length })); }
-      else if (f.raw) console.log(raw);
-      else console.log(JSON.stringify({ id: k.id, title: k.title && k.title.raw, status: k.status, modified: k.modified, contentLength: raw.length }, null, 2));
+      // --raw is byte for byte (it used to add a newline, which globalize.js then wrote back into the canvas).
+      if (f.out) { fs.writeFileSync(f.out, raw, 'utf8'); console.log(JSON.stringify({ ok: true, id: k.id, saved: f.out, chars: raw.length, hash: md5(raw) })); }
+      else if (f.raw) process.stdout.write(raw);
+      else console.log(JSON.stringify({ id: k.id, title: k.title && k.title.raw, status: k.status, modified: k.modified, contentLength: raw.length, hash: md5(raw) }, null, 2));
       break;
     }
     case 'update-canvas': {
@@ -552,10 +614,11 @@ function flags(argv) {
       const id = f._[0]; if (!id) die('update-canvas needs <id>');
       if (!f['content-file']) die('update-canvas needs --content-file');
       const content = fs.readFileSync(f['content-file'], 'utf8');
+      const guard = await guardContentWrite({ c, api, site, kind: 'et_pb_canvas', id, f });   // exits if stale
       const body = { content }; if (f.title) body.title = f.title;
       const k = await jreq('POST', `${api}/et_pb_canvas/${id}?context=edit&_fields=id,status,content.raw`, c, body);
       const stored = (k.content && k.content.raw) || '';
-      console.log(JSON.stringify({ ok: true, id: k.id, status: k.status, sentChars: content.length, storedChars: stored.length, storedAsSent: stored === content }));
+      console.log(JSON.stringify({ ok: true, id: k.id, status: k.status, sentChars: content.length, storedChars: stored.length, storedAsSent: stored === content, hash: md5(stored), previousHash: guard.previousHash, backup: guard.backup }));
       break;
     }
     case 'link-canvas': {

@@ -56,11 +56,14 @@ const outside = s => s.replace(/<!-- wp:[a-z0-9-]+\/[a-z0-9-]+ \{[\s\S]*?\} \/?-
 function sources() {
   const out = [];
   const pages = run(['list-pages']).split('\n').filter(l => l.startsWith('#')).map(l => ({ id: l.slice(1).split('\t')[0], status: l.split('\t')[1], title: l.split('\t')[2] })).filter(p => /publish/.test(p.status));
-  for (const p of pages) out.push({ key: 'page-' + p.id, label: p.title, get: () => run(['get-page', p.id, '--raw']), put: f => run(['update-page', p.id, '--content-file', f]) });
+  // Pages and canvases are stale-guarded like Theme Builder layouts: put() passes the hash of the content the
+  // last get() read, so a page saved in the builder meanwhile is refused instead of overwritten.
+  const md5 = s => require('crypto').createHash('md5').update(s, 'utf8').digest('hex');
+  for (const p of pages) { let hash; out.push({ key: 'page-' + p.id, label: p.title, get: () => { const r = run(['get-page', p.id, '--raw']); hash = md5(r); return r; }, put: f => run(['update-page', p.id, '--content-file', f, '--expect-hash', hash]) }); }
   let tb = []; try { tb = run(['tb-list']).split('\n').filter(l => /^\s+\d+ \| (header|body|footer) \|/.test(l)).map(l => l.trim().split('|').map(x => x.trim())); } catch (e) { console.error('note: no Theme Builder access (mu-plugin >= 1.5 needed), layouts skipped'); }
   for (const l of tb) { let hash; out.push({ key: 'tb-' + l[0], label: l[1] + ' layout', get: () => { const tmp = path.join(mk('tmp'), 'tb-' + l[0] + '.txt'); const meta = run(['tb-get', l[0], '--out', tmp]); hash = (meta.match(/"hash": ?"([a-f0-9]+)"/) || [])[1]; return fs.readFileSync(tmp, 'utf8'); }, put: f => run(['tb-set', l[0], '--content-file', f, '--expect-hash', hash]) }); }
   let cv = []; try { cv = run(['list-canvases']).split('\n').filter(l => /^\s*\d+ \|/.test(l)).map(l => l.trim().split('|').map(x => x.trim())); } catch (e) { /* none */ }
-  for (const c of cv) out.push({ key: 'canvas-' + c[0], label: c[3] || 'canvas', get: () => run(['get-canvas', c[0], '--raw']), put: f => run(['update-canvas', c[0], '--content-file', f]) });
+  for (const c of cv) { let hash; out.push({ key: 'canvas-' + c[0], label: c[3] || 'canvas', get: () => { const r = run(['get-canvas', c[0], '--raw']); hash = md5(r); return r; }, put: f => run(['update-canvas', c[0], '--content-file', f, '--expect-hash', hash]) }); }
   return ONLY ? out.filter(s => s.key === ONLY) : out;
 }
 // Run `transform` over every source. Backup once, refuse to touch anything outside block comments, write on --write.

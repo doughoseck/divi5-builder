@@ -244,11 +244,24 @@ with `url`/`user`/`pass`; `pass` is a WordPress **Application Password**).
    so you can verify before it's public:
    ```bash
    node scripts/wp.js <site> create-page --title "..." --content-file content.html --status draft
-   # editing an existing page instead:
-   node scripts/wp.js <site> update-page <id> --content-file content.html
+   # editing an existing page instead: read it (prints its "hash"), change it, write it with that hash
+   node scripts/wp.js <site> get-page <id> --out current.html
+   node scripts/wp.js <site> update-page <id> --content-file content.html --expect-hash <hash>
    ```
    Publishing, or changing an existing live page, is a visible change — get the
    user's OK before flipping a page to `publish` or editing a live page.
+
+   **Content writes are stale-guarded** (`update-page`, `update-post`, `update-canvas`, like `tb-set`):
+   they need the hash of the read the change was based on, and refuse with **exit 3 "STALE"** when the
+   page was saved since. **On STALE: STOP and ask the user.** Tell them which page, and when it was last
+   saved (the message says), and ask whether someone has it open in the Visual Builder. Do not retry, do
+   not loop, do not move on to other writes on that page: the builder keeps the page in the browser and
+   its next save writes the WHOLE page, wiping any REST change made meanwhile, even one that went through.
+   Only when the user confirms it is saved and closed: read it again and redo the change on top of
+   theirs, once. Never reach for `--force` to get past STALE: that overwrites their work. `--force` is
+   for a replace the user explicitly asked for. Every content write first keeps what it replaces in
+   `~/.divi5-builder/backups/<site>/` (`WP_BACKUP_DIR` to change), and prints the new `hash` for the next
+   write. `md5` of `get-page --raw` is the same hash, so a script can compute it from what it read.
 
 7. **Flip the page into "Divi mode" (essential — do this for every page you build).**
    Writing Divi blocks into `content` is NOT enough on its own: a page only
@@ -344,7 +357,7 @@ written (single `_divi_off_canvas_data` pointer). Full serialization in
 `references/divi5-format.md`.
 
 Working on a canvas afterwards: `wp.js list-canvases`, `get-canvas <id> [--raw | --out f]`,
-`update-canvas <id> --content-file f`. A canvas can belong to a Theme Builder header,
+`update-canvas <id> --content-file f --expect-hash <hash from get-canvas>`. A canvas can belong to a Theme Builder header,
 footer or body layout exactly as it belongs to a page (same two meta keys, the parent
 id is the layout's id), and it only reaches the front end when something in the layout
 being rendered targets an element inside it. A canvas on a header is on every page
