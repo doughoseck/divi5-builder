@@ -65,6 +65,7 @@ if ( ! function_exists( 'd5b_settings_render' ) ) {
 		echo '</table>';
 		echo '<p class="submit"><input type="submit" class="button button-primary" value="Save changes" /></p>';
 		echo '</form>';
+		d5b_legacy_refresh();
 		foreach ( d5b_takeover_lines() as $line ) {
 			echo '<p>' . esc_html( $line['text'] ) . '</p>';
 		}
@@ -97,6 +98,7 @@ if ( ! function_exists( 'd5b_admin_notice' ) ) {
 	/** Shows the takeover lines to people who can manage plugins: red ones as errors, the rest as warnings. */
 	function d5b_admin_notice(): void {
 		if ( ! current_user_can( is_multisite() ? 'manage_network_plugins' : 'activate_plugins' ) ) { return; }
+		d5b_legacy_refresh();
 		foreach ( d5b_takeover_lines() as $line ) {
 			echo '<div class="notice ' . ( $line['red'] ? 'notice-error' : 'notice-warning' ) . '"><p>' . esc_html( $line['text'] ) . '</p></div>';
 		}

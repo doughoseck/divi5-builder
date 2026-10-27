@@ -165,6 +165,12 @@ fresh(); t_set_caps( array( 'manage_options' ) );
 $out = html( 'd5b_settings_render' );
 check( 'Divi 5 detected shows when it is', false !== strpos( $out, 'Divi 5 detected' ) && false === strpos( $out, 'not detected' ), $out );
 
+// ---- the stand-aside record is refreshed in wp-admin only on sites that still carry an old copy
+echo "no old copy: the notice and the page build no REST server\n";
+fresh(); t_set_caps( array( 'activate_plugins', 'manage_options' ) );
+html( 'd5b_admin_notice' ); html( 'd5b_settings_render' );
+check( 'no legacy constant: no rest_get_server() call, no gate run', 0 === $GLOBALS['T_server_calls'] && ! isset( $GLOBALS['d5b_gate_ran'] ) && array() === $GLOBALS['T_routes'], array( $GLOBALS['T_server_calls'], array_keys( $GLOBALS['T_routes'] ) ) );
+
 // ---- admin notice
 echo "admin notice\n";
 fresh();
@@ -190,6 +196,30 @@ check( 'on multisite manage_network_plugins sees it', false !== strpos( html( 'd
 t_set_multisite( false ); t_set_caps( array( 'activate_plugins' ) );
 $GLOBALS['T_server_routes'] = array(); $GLOBALS['T_options'] = array(); $GLOBALS['d5b_stood_aside'] = array();
 check( 'when the route copy is gone the plain line is gone from the notice', false === strpos( html( 'd5b_admin_notice' ), esc_html( $plain ) ), html( 'd5b_admin_notice' ) );
+
+// A person re-activates the old updates plugin in wp-admin. The next page is a wp-admin page, not a REST request:
+// a fresh request, a server not built yet, and a record that still says nothing is stood aside.
+echo "old plugin re-activated in wp-admin: the red line shows on the very next admin page\n";
+fresh(); t_set_caps( array( 'activate_plugins', 'manage_options' ) );
+update_option( 'active_plugins', array( 'wp-site-updates/wp-site-updates.php' ) );
+$GLOBALS['T_server_routes'] = array( '/wp-site-updates/v1/info' => array() ); // its routes, as rest_api_init would register them
+check( 'premise: no REST request yet, nothing recorded', null === get_option( 'd5b_legacy_seen', null ) && ! isset( $GLOBALS['d5b_gate_ran'] ) );
+$out = html( 'd5b_admin_notice' );
+check( 'the notice shows the red LIVE line at once', false !== strpos( $out, '<div class="notice notice-error"><p>Updates is LIVE on this site through the old copy, even though its switch here is off.</p></div>' ), $out );
+check( 'and names the re-activated plugin', false !== strpos( $out, 'The old plugin wp-site-updates/wp-site-updates.php is active again and is in charge of Updates.' ), $out );
+check( 'the record is now written, through one REST server build', array( 'updates' ) === get_option( 'd5b_legacy_seen' ) && 1 === $GLOBALS['T_server_calls'], array( get_option( 'd5b_legacy_seen', null ), $GLOBALS['T_server_calls'] ) );
+check( 'the settings page shows the red line too', false !== strpos( html( 'd5b_settings_render' ), 'Updates is LIVE on this site through the old copy' ) );
+// The settings page on its own (no notice before it on that request) refreshes as well.
+fresh(); t_set_caps( array( 'manage_options' ) );
+update_option( 'active_plugins', array( 'wp-site-updates/wp-site-updates.php' ) );
+$GLOBALS['T_server_routes'] = array( '/wp-site-updates/v1/info' => array() );
+check( 'settings page alone: the red line shows at once', false !== strpos( html( 'd5b_settings_render' ), 'Updates is LIVE on this site through the old copy' ) && array( 'updates' ) === get_option( 'd5b_legacy_seen' ) );
+
+echo "old copy inert (constant, no routes): plain line only\n";
+fresh(); t_set_caps( array( 'activate_plugins' ) );
+update_option( 'd5b_legacy_seen', array( 'updates' ) ); // a stale record from when it was serving
+$out = html( 'd5b_admin_notice' );
+check( 'the refresh clears the stale record; plain "installed but inactive", no red line', false !== strpos( $out, '<div class="notice notice-warning"><p>An old copy of Updates is installed but inactive. Delete it to finish the move.</p></div>' ) && false === strpos( $out, 'notice-error' ) && array() === get_option( 'd5b_legacy_seen' ), $out );
 
 echo "\n" . ( $failed ? "$failed FAILED of $n" : "all $n passed" ) . "\n";
 foreach ( glob( $mu . '/*' ) ?: array() as $f ) { @unlink( $f ); }

@@ -210,6 +210,25 @@ if ( ! function_exists( 'd5b_takeover_lines' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_legacy_refresh' ) ) {
+	/**
+	 * Called by the admin notice and the settings page before they show the takeover lines: brings the
+	 * stand-aside record up to date, so the red LIVE line never lags behind a person re-activating an old
+	 * plugin. Runs only when an old copy's constant is defined; otherwise it does nothing at all.
+	 * rest_get_server() builds the server and fires rest_api_init once (core), which runs the gate for it;
+	 * the direct d5b_gate() call is then a no-op (once per server) and covers a removed gate hook.
+	 */
+	function d5b_legacy_refresh(): void {
+		$any = false;
+		foreach ( d5b_parts() as $part ) {
+			if ( defined( $part['legacy_const'] ) ) { $any = true; break; }
+		}
+		if ( ! $any || ! function_exists( 'rest_get_server' ) ) { return; }
+		$server = rest_get_server();
+		if ( function_exists( 'd5b_gate' ) ) { d5b_gate( $server ); }
+	}
+}
+
 if ( ! function_exists( 'd5b_legacy_rest_ids' ) ) {
 	/**
 	 * The ids core's /wp/v2/plugins uses for the old plugins: the basename without ".php"
