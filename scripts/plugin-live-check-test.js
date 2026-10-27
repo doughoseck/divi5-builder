@@ -49,6 +49,14 @@ check('updates on but wp-site-updates/v1 absent -> exit 1, names it, no "all che
 r = run({ d5: d5({ updates: true }, { updates: 'route' }), index: CORE, settings: { title: 'fake' } });
 check('... unless that part stood aside -> exit 0 with a note', r.code === 0 && /NOTE/.test(r.out) && /stood aside/.test(r.out), [r.code, r.out]);
 
+console.log('--- an old copy installed but inactive (status.inactive)');
+r = run({ d5: Object.assign(d5({}), { inactive: ['updates', 'media_audit'] }), index: CORE, settings: { title: 'fake' } });
+check('inactive old copies -> exit 0 with a note naming each part', r.code === 0 && /NOTE/.test(r.out) && /inactive/.test(r.out) && /updates/.test(r.out) && /media_audit/.test(r.out), [r.code, r.out]);
+r = run({ d5: Object.assign(d5({}), { inactive: ['updates'] }), index: CORE.concat(['wp-site-updates/v1']), settings: { title: 'fake' } });
+check('... an inactive copy does not excuse a switched-off namespace -> exit 1', r.code === 1 && /FAIL/.test(r.out), [r.code, r.out]);
+r = run({ d5: Object.assign(d5({}), { inactive: 'garbage' }), index: CORE, settings: { title: 'fake' } });
+check('... an inactive key that is not a list is ignored, no crash -> exit 0', r.code === 0, [r.code, r.out]);
+
 console.log('--- the option leaks into settings');
 r = run({ d5: d5({}), index: CORE, settings: { title: 'fake', d5b_switches: { updates: true } } });
 check('d5b_switches in /wp/v2/settings -> exit 1', r.code === 1 && /FAIL/.test(r.out) && /d5b_switches/.test(r.out), [r.code, r.out]);

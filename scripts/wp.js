@@ -704,7 +704,8 @@ function flags(argv) {
     }
     // ---- Theme Builder (requires divi5-builder-rest.php >= 1.5) ----------------
     case 'status': {
-      // GET divi5-builder/v1/status: version, divi5, which switches are on, which parts stood aside. Read-only.
+      // GET divi5-builder/v1/status: version, divi5, which switches are on, which parts stood aside, and which have an
+      // old copy installed but inactive. Read-only.
       // The scripts use it to say which switch to flip; nothing here (or anywhere in the scripts) switches anything on.
       const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/status`, c);
       console.log(typeof r === 'string' ? r : JSON.stringify(r));

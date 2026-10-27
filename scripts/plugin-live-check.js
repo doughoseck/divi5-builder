@@ -6,7 +6,8 @@
  *
  * Only ever reads, through wp.js (which holds the credentials; this script never sees or prints them):
  *   1. GET /wp-json/                       the REST namespaces present
- *   2. GET divi5-builder/v1/status         version, switches, which parts stood aside for an old copy
+ *   2. GET divi5-builder/v1/status         version, switches, which parts stood aside for an old copy, and which
+ *                                          parts have an old copy installed but inactive (noted, not a failure)
  *   3. GET /wp/v2/settings                 the d5b_switches option must NOT be exposed there (needs an administrator)
  * Checks: a switched-off part's namespace must be absent (unless that part stood aside: an old copy provides it,
  * reported as a note); d5b_switches must not appear in settings.
@@ -55,6 +56,9 @@ function check(site, wpjs) {
       else if (sw[part] && !present) { failed = true; say(`FAIL: ${part} switch is on but ${PARTS[part]} is not present (the part did not load).`); }
       else say(`ok: ${part} ${sw[part] ? 'on, ' + PARTS[part] + ' present' : 'off, ' + PARTS[part] + ' absent'}`);
     }
+    // Old copies installed but serving nothing: not a failure, but they should be deleted to finish the move.
+    const inactive = Array.isArray(status.inactive) ? status.inactive.filter(p => typeof p === 'string') : [];
+    if (inactive.length) say(`NOTE: an old copy is installed but inactive for: ${inactive.join(', ')}. Delete it to finish the move.`);
   }
 
   const se = get(site, ['wp/v2/settings'], wpjs);

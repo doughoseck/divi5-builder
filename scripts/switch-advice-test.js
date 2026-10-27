@@ -23,6 +23,7 @@ for (const [part, label] of [['media_audit', 'Media audit'], ['media_clean_up', 
 check('page_building with no plugin -> install zip', adviceFor('page_building', null) === 'Install divi5-builder.zip from the latest release.', adviceFor('page_building', null));
 check('a switch that is on is not told to switch it on', !/^Switch /.test(adviceFor('updates', status('updates'))), adviceFor('updates', status('updates')));
 check('a status with the switch off is NOT given the install advice', !/Install divi5-builder\.zip/.test(adviceFor('updates', off())), adviceFor('updates', off()));
+check('a status with the inactive list gives the same advice as without it', adviceFor('updates', Object.assign(off(), { inactive: ['updates'] })) === adviceFor('updates', off()) && adviceFor('updates', Object.assign(status('updates'), { inactive: ['updates'] })) === adviceFor('updates', status('updates')), adviceFor('updates', Object.assign(off(), { inactive: ['updates'] })));
 check('an unknown part throws', (() => { try { adviceFor('nope', null); return false; } catch (e) { return true; } })());
 
 console.log('--- no script writes the switch');
