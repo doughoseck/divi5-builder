@@ -3,7 +3,7 @@
  * media-quarantine.js — move unused files out of uploads into a holding folder, check the site, put back what is
  * needed. REVERSIBLE: nothing is deleted, the database is not touched. Works from a media-audit.js scan.
  *
- *   node media-quarantine.js plan    --dir D --batch B [--status UNUSED[,BACKGROUND]] [--csv list.csv]
+ *   node media-quarantine.js plan    --dir D --batch B [--status UNUSED[,BACKGROUND]] [--csv list.csv] [--maybe-cleared ids.txt]
  *                                    [--orphan-folders 2017,2018] [--include-referenced] [--ignore-tables a,b]
  *   node media-quarantine.js move    <site> --dir D --batch B [--write]
  *   node media-quarantine.js verify  <site> --dir D            # loads every public page and asks for every upload file on it
@@ -38,11 +38,17 @@ const mb = b => (b / 1048576).toFixed(b >= 10485760 ? 0 : 1);
 // Pure: which files move. R = analyse(raw). sel = { status: [...], ids: [..] | null, orphanFolders: [...], includeReferenced }
 function buildPlan(R, sel) {
   const allowed = new Set(sel.status || []); const ids = sel.ids ? new Set(sel.ids) : null;
+  // MAYBE (only a bare number equal to the id was found) never moves, unless the id is BOTH on the owner's reviewed
+  // list (--csv) AND on a cleared list (--maybe-cleared) from an exhaustive check that every such number sits in a field
+  // that cannot hold an image (a customer id on orders, a quote number, a price). The audit keeps only 3 places per
+  // reference, so that check must be run on the full database, not on the scan.
+  const maybeOk = new Set(sel.maybeCleared || []);
+  const ok = a => allowed.has(a.status) || (a.status === 'MAYBE' && ids && ids.has(a.id) && maybeOk.has(a.id));
   const chosen = new Set(); const files = new Map(); const held = [];
   const byId = new Map(R.attachments.map(a => [a.id, a]));
   for (const a of R.attachments) {
     if (ids ? !ids.has(a.id) : !allowed.has(a.status)) continue;
-    if (!allowed.has(a.status)) { held.push([`library item ${a.id} (${a.file})`, `its status is ${a.status}, not ${[...allowed].join(' or ')}`]); continue; }
+    if (!ok(a)) { held.push([`library item ${a.id} (${a.file})`, `its status is ${a.status}, not ${[...allowed].join(' or ')}${a.status === 'MAYBE' ? ' (and not on --maybe-cleared)' : ''}`]); continue; }
     chosen.add(a.id);
   }
   if (ids) for (const id of ids) if (!byId.has(id)) held.push([`library item ${id}`, 'not in the scan']);
@@ -101,7 +107,10 @@ function main() {
     const orphanFolders = list(flag('orphan-folders', ''));
     const status = flag('status', null) ? list(flag('status', '')).map(s => s.toUpperCase()) : (ids ? ['UNUSED'] : (orphanFolders.length ? [] : ['UNUSED']));
     if (status.some(s => !['UNUSED', 'BACKGROUND'].includes(s))) { console.error('--status may be UNUSED and/or BACKGROUND; items that are USED or MAYBE never move'); process.exit(2); }
-    const P = buildPlan(R, { status, ids, orphanFolders, includeReferenced: flag('include-referenced', false) === true });
+    const mcFile = flag('maybe-cleared', null);
+    const maybeCleared = mcFile && mcFile !== true ? fs.readFileSync(mcFile, 'utf8').split(/\r?\n/).map(l => Number((l.match(/^(\d+)/) || [])[1])).filter(Boolean) : [];
+    if (maybeCleared.length && !ids) { console.error('--maybe-cleared needs --csv: MAYBE items only move when the owner reviewed them'); process.exit(2); }
+    const P = buildPlan(R, { status, ids, orphanFolders, includeReferenced: flag('include-referenced', false) === true, maybeCleared });
     fs.mkdirSync(qDir, { recursive: true });
     fs.writeFileSync(planFile(), JSON.stringify({ batch, created: new Date().toISOString(), scanFinished: (raw.meta || {}).finished, selection: { status, csv: csvFile || null, orphanFolders }, ...P }));
     const by = {}; P.files.forEach(f => { const k = f[2].startsWith('orphan') ? f[2] : f[2].replace(/ \d+$/, '').replace(/^extra copy of item$/, 'extra copies of library items'); by[k] = by[k] || { n: 0, b: 0 }; by[k].n++; by[k].b += f[1]; });

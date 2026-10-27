@@ -437,3 +437,12 @@ Second FilterGrid build (a "packages" post type with ACF fields, three grids on 
   1600, `-q:v 4`) before `upload-media`; EWWW makes the WebP on upload, so no bulk run is needed.
 - **Tool notes:** `wp.js rendered <id>` reads pages only (a post needs its front-end URL); when you change a Divi
   menu entry's target, `rest-post wp/v2/menu-items/<id>` with `{"target":"_blank"}` is a core route.
+
+## Divi Menu module (`divi/menu`) over REST (2026-10-12, Divi 5.15.1)
+
+- Logo: `logo.innerContent.desktop.value = { src, alt, linkUrl }`; its size via `logo.decoration.sizing` (`maxHeight`).
+- Menu: `menu.advanced.menuId.desktop.value = "<nav menu term id, as a string>"`, `menu.advanced.style` (e.g.
+  `left_aligned`), the font in `menu.decoration.font.font`, `menu.advanced.activeLinkColor`, the hamburger colour in
+  `hamburgerMenuIcon.decoration.font.font`.
+- **Menu items to the right of a left logo:** `module.advanced.text.text.desktop.value.orientation = "right"` (Divi's
+  own defaults already set right on tablet and phone).
