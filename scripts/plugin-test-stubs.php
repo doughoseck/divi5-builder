@@ -72,3 +72,30 @@ function get_post_meta( $id, $k = '', $single = false ) { return ''; }
 function is_protected_meta( $k, $t = null ) { return '_' === $k[0]; }
 function get_post( $id ) { return null; }
 function wp_upload_dir() { return array( 'basedir' => ABSPATH . 'wp-content/uploads', 'baseurl' => 'https://x.example/wp-content/uploads' ); }
+
+// ---- admin page stand-ins (Task 4). t_reset() does not clear these; t_admin_reset() does.
+//   T_referer_ok      what check_admin_referer returns (real WordPress dies on failure; the code under test must stop either way)
+//   T_referer_calls   list of the actions check_admin_referer was asked about
+//   T_dies            list of wp_die messages (the stub does not exit, the code must return after it)
+//   T_redirects       list of wp_safe_redirect targets
+//   T_menus           list of array( function, args... ) for add_options_page / add_submenu_page
+//   T_network_admin   what is_network_admin returns;  T_user_login   what wp_get_current_user()->user_login is
+function t_admin_reset() {
+	$GLOBALS['T_referer_ok'] = true; $GLOBALS['T_referer_calls'] = array(); $GLOBALS['T_dies'] = array();
+	$GLOBALS['T_redirects'] = array(); $GLOBALS['T_menus'] = array(); $GLOBALS['T_network_admin'] = false; $GLOBALS['T_user_login'] = 'tester';
+}
+t_admin_reset();
+function check_admin_referer( $action = -1, $arg = '_wpnonce' ) { $GLOBALS['T_referer_calls'][] = $action; return $GLOBALS['T_referer_ok']; }
+function wp_die( $msg = '', $title = '', $args = array() ) { $GLOBALS['T_dies'][] = $msg; }
+function wp_safe_redirect( $url, $status = 302 ) { $GLOBALS['T_redirects'][] = $url; return true; }
+function wp_get_current_user() { return (object) array( 'user_login' => $GLOBALS['T_user_login'] ); }
+function is_network_admin() { return $GLOBALS['T_network_admin']; }
+function admin_url( $p = '' ) { return 'https://x.example/wp-admin/' . ltrim( $p, '/' ); }
+function network_admin_url( $p = '' ) { return 'https://x.example/wp-admin/network/' . ltrim( $p, '/' ); }
+function wp_nonce_field( $action = -1, $name = '_wpnonce', $referer = true, $echo = true ) { $h = '<input type="hidden" name="' . $name . '" value="nonce-for-' . $action . '" />'; if ( $echo ) { echo $h; } return $h; }
+function add_options_page( $title, $menu, $cap, $slug, $cb = '' ) { $GLOBALS['T_menus'][] = array( 'add_options_page', $title, $menu, $cap, $slug, $cb ); return 'settings_page_' . $slug; }
+function add_submenu_page( $parent, $title, $menu, $cap, $slug, $cb = '' ) { $GLOBALS['T_menus'][] = array( 'add_submenu_page', $parent, $title, $menu, $cap, $slug, $cb ); return $parent . '_page_' . $slug; }
+function esc_html( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
+function esc_attr( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
+function esc_url( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
+function wp_unslash( $v ) { return is_array( $v ) ? array_map( 'wp_unslash', $v ) : stripslashes( (string) $v ); }
