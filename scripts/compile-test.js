@@ -46,4 +46,53 @@ check('pricing: none stated, German computer -> "€"', JSON.stringify(p.cur) ==
 p = priced([{ title: 'A', price: '9' }], null, 'en-AQ');
 check('pricing: a region not in the table -> Divi\'s "$", and the warning says why', JSON.stringify(p.cur) === '["$"]' && /not in the table/.test(p.warn), [p.cur, p.warn]);
 
+// ---- issue #33: compiler gaps. Every attribute path below was read from builder-saved markup on live sites and
+// from Divi 5.15.1's own Divi 4 converter (image: borders/box_shadow -> image.decoration.*, max_width ->
+// module.advanced.sizing; any element's CSS id/class -> module.advanced.htmlAttributes).
+const D = require(DIVI_FILE);
+const blocksOf = (o) => [...o.matchAll(/<!-- wp:([a-z0-9-]+\/[a-z0-9-]+)(?: (\{[\s\S]*?\}))? (\/)?-->/g)].map(m => ({ name: m[1], attrs: m[2] ? JSON.parse(m[2]) : {} }));
+const g = (o, p) => p.split('.').reduce((x, k) => (x == null ? undefined : x[k]), o);
+const page = (mods, rowExtra, colExtra, secExtra) => blocksOf(D.compile({ sections: [Object.assign({ rows: [Object.assign({ columns: [Object.assign({ modules: mods }, colExtra || {})] }, rowExtra || {})] }, secExtra || {})] }));
+// 1. image frame
+let ib = page([{ type: 'image', src: 'https://example.com/a.png', alt: 'a', frame: { radius: '12px', shadow: true, border: { width: '2px', color: '#000' }, maxWidth: '300px' }, align: 'right' }]).find(b => b.name === 'divi/image').attrs;
+check('#33 image: frame radius + border on the IMAGE element (image.decoration.border)', g(ib, 'image.decoration.border.desktop.value.radius.topLeft') === '12px' && g(ib, 'image.decoration.border.desktop.value.styles.all.width') === '2px', JSON.stringify(ib));
+check('#33 image: frame shadow on the IMAGE element (image.decoration.boxShadow)', !!g(ib, 'image.decoration.boxShadow.desktop.value.blur'), JSON.stringify(ib));
+check('#33 image: max-width in module.advanced.sizing, alignment in module.advanced.align', g(ib, 'module.advanced.sizing.desktop.value.maxWidth') === '300px' && g(ib, 'module.advanced.align.desktop.value') === 'right', JSON.stringify(ib));
+check('#33 image: nothing left in module.decoration border / boxShadow / sizing (not image groups)', g(ib, 'module.decoration.border') === undefined && g(ib, 'module.decoration.boxShadow') === undefined && g(ib, 'module.decoration.sizing') === undefined, JSON.stringify(ib));
+ib = page([{ type: 'image', src: 'https://example.com/a.png', frame: { maxWidth: '300px' } }]).find(b => b.name === 'divi/image').attrs;
+check('#33 image: max-width without an alignment is centred (as before)', g(ib, 'module.advanced.align.desktop.value') === 'center', JSON.stringify(ib));
+// 2. CSS id and class on every element
+let B33 = page([{ type: 'text', html: '<p>x</p>', cssId: 'intro', cssClass: 'lead big' }], { cssId: 'r1' }, { cssClass: 'card' }, { cssId: 'contact', cssClass: 'dark' });
+const of33 = (n) => B33.find(b => b.name === n).attrs;
+check('#33 section: cssId + cssClass -> module.advanced.htmlAttributes (anchors like #contact)', JSON.stringify(g(of33('divi/section'), 'module.advanced.htmlAttributes.desktop.value')) === '{"id":"contact","class":"dark"}', JSON.stringify(of33('divi/section')));
+check('#33 row, column and module take them too', g(of33('divi/row'), 'module.advanced.htmlAttributes.desktop.value.id') === 'r1' && g(of33('divi/column'), 'module.advanced.htmlAttributes.desktop.value.class') === 'card' && JSON.stringify(g(of33('divi/text'), 'module.advanced.htmlAttributes.desktop.value')) === '{"id":"intro","class":"lead big"}', JSON.stringify(B33.map(b => [b.name, g(b.attrs, 'module.advanced.htmlAttributes')])));
+let threw33 = false; try { D.compile({ sections: [{ cssId: 'has space', rows: [] }] }); } catch (e) { threw33 = /cssId/.test(e.message); }
+check('#33 a cssId that cannot be an HTML id is refused', threw33);
+// 3. hide on a device
+B33 = page([{ type: 'text', html: '<p>x</p>', hideOn: ['tablet', 'desktop'] }], null, { hideOn: ['phone'] });
+check('#33 column hideOn ["phone"] -> disabledOn.phone only', JSON.stringify(g(of33('divi/column'), 'module.decoration.disabledOn')) === '{"phone":{"value":"on"}}', JSON.stringify(of33('divi/column')));
+check('#33 hideOn ["tablet","desktop"] -> tabletOnly + desktopAbove, NEVER "desktop" (Divi\'s base device: that would hide it everywhere)', JSON.stringify(g(of33('divi/text'), 'module.decoration.disabledOn')) === '{"tabletOnly":{"value":"on"},"desktopAbove":{"value":"on"}}', JSON.stringify(of33('divi/text')));
+threw33 = false; try { page([{ type: 'text', html: '<p>x</p>', hideOn: ['mobile'] }]); } catch (e) { threw33 = /hideOn/.test(e.message); }
+check('#33 an unknown device in hideOn is refused', threw33);
+// 4. unequal column layouts (Divi 5.15.1's own offset-columns templates)
+const rowOf = (layout, n) => blocksOf(D.compile({ sections: [{ rows: [{ layout, columns: Array.from({ length: n }, () => ({ modules: [{ type: 'text', html: '<p>x</p>' }] })) }] }] }));
+B33 = rowOf('2-1', 2);
+const cols33 = B33.filter(b => b.name === 'divi/column').map(b => g(b.attrs, 'module.decoration.sizing'));
+check('#33 layout "2-1" = Divi\'s offset-columns_5: 16_24 + 8_24, full width on phone', g(B33.find(b => b.name === 'divi/row').attrs, 'module.advanced.flexColumnStructure.desktop.value') === 'offset-columns_5' && cols33[0].desktop.value.flexType === '16_24' && cols33[1].desktop.value.flexType === '8_24' && cols33[0].phone.value.flexType === '24_24', JSON.stringify(cols33));
+B33 = rowOf('1-2-1', 3);
+check('#33 layout "1-2-1" = offset-columns_11: 6_24 + 12_24 + 6_24', B33.filter(b => b.name === 'divi/column').map(b => g(b.attrs, 'module.decoration.sizing.desktop.value.flexType')).join() === '6_24,12_24,6_24');
+B33 = rowOf('3-1-1-1', 4);
+check('#33 layout "3-1-1-1" = offset-columns_7: tablet puts the wide column alone, then three thirds', B33.filter(b => b.name === 'divi/column').map(b => g(b.attrs, 'module.decoration.sizing.tablet.value.flexType')).join() === '24_24,8_24,8_24,8_24');
+threw33 = false; try { rowOf('5-5', 2); } catch (e) { threw33 = /layout "5-5"/.test(e.message) && /2-1/.test(e.message); }
+check('#33 an unknown layout is refused, listing the known ones (it used to become ONE column silently)', threw33);
+threw33 = false; try { rowOf('2-1', 3); } catch (e) { threw33 = /2 columns/.test(e.message); }
+check('#33 a layout with the wrong number of columns is refused', threw33);
+// the new markup passes the catalogue lint (block names, groups, options)
+const t33 = path.join(os.tmpdir(), 'd5b-33.html');
+fs.writeFileSync(t33, D.compile({ sections: [{ cssId: 'contact', rows: [{ layout: '2-1', columns: [{ hideOn: ['phone'], modules: [{ type: 'image', src: 'https://example.com/a.png', frame: { radius: '8px', shadow: true, maxWidth: '200px' } }] }, { modules: [{ type: 'text', html: '<p>x</p>', cssClass: 'a' }] }] }] }] }));
+const l33 = spawnSync('node', [path.join(__dirname, 'catalog.js'), 'lint', t33], { encoding: 'utf8' }); const lo33 = (l33.stdout || '') + (l33.stderr || '');
+// NOTE: the lint checks block names, option values and nesting, but NOT which element owns a style group: it also
+// passes the OLD, wrong image markup (border in module.decoration). The path checks above are what prove #33.
+check('#33 catalogue lint (block names, options, nesting) finds no error in the new markup', /no errors/.test(lo33) && !/^\s+ERROR\s/m.test(lo33), lo33.slice(-500));
+
 console.log(failed ? failed + ' FAILED' : 'all passed'); process.exit(failed ? 1 : 0);

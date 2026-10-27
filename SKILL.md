@@ -121,6 +121,10 @@ CSS and hard-coded per-module values destroy that.
      documented native method. Just `{"layout":"1-1"|"1-1-1"|"1-1-1-1", …}` — the
      compiler sets the fractions + wrap breakpoints. (`mode:"flexwrap"` = the old
      100%-columns+wrap, for dynamic-count reflow.)
+   - **Unequal columns** use Divi's own "offset" structures: `"2-1"`, `"1-2"`, `"3-1"`,
+     `"1-3"`, `"3-2"`, `"2-3"`, `"2-1-1"`, `"1-1-2"`, `"1-2-1"`, `"1-3-1"`, `"3-1-1-1"`,
+     `"1-1-1-3"` (proportions on desktop; Divi's own tablet/phone stacking). The number of
+     columns must match. An unknown layout is an error (it used to become one column).
    - **Card / pricing / gallery / looped grids → CSS Grid.** Put `grid` on the row:
      `{"grid":{"cols":{"desktop":3,"tablet":2,"phone":1},"spans":[{"target":"first-child","span":2}]}, "columns":[…]}`. Child-agnostic (add/remove/loop freely).
      ⚠ a `span` rule does NOT reset on mobile — a spanned item won't collapse to 1
@@ -229,8 +233,13 @@ with `url`/`user`/`pass`; `pass` is a WordPress **Application Password**).
    shape and every module type are documented in the header of `scripts/divi.js`.
    Quick reference:
    - Sections carry `background` (`color` / `colorVar` / `image`+`gradientOverlay`)
-     and `padding`. Rows carry `layout` (`"1"`,`"1-1"`,`"1-1-1"`,`"1-1-1-1"`) and
-     `columns`. Columns carry `modules`.
+     and `padding`. Rows carry `layout` (`"1"`,`"1-1"`,`"1-1-1"`,`"1-1-1-1"`, or an
+     unequal one such as `"2-1"`) and `columns`. Columns carry `modules`.
+   - **Any section, row, column or module** also takes `cssId` / `cssClass` (Divi's "CSS
+     ID & Classes": `"cssId":"contact"` makes `#contact` anchors work) and `hideOn`
+     (`["phone"]`, `["tablet"]`, `["desktop"]` or a mix: hidden on just those devices).
+   - Image `frame` (`radius`, `shadow`, `border`, `maxWidth`) and `align` style the IMAGE
+     itself, so rounded corners really clip the photo.
    - Modules: `heading`, `text` (HTML), `button` (`text`+`url`), `image`
      (`src`+`alt`+`id`), `blurb` (`title`+`html`+`icon`), `iconlist`
      (`items`+`icon`), `code` (raw HTML/CSS fallback), and `raw` (escape hatch to

@@ -57,11 +57,15 @@
  * Give both control buttons the same full id list (incl. their own ids). Used for
  * monthly/annual pricing, show-more, etc.
  *
- * COLUMNS/LAYOUT: rows take layout "1" | "1-1" | "1-1-1" | "1-1-1-1" + optional
- * wrapAt ("phone" default | "tablet"). Every column is 100% (flexType 24_24); the
- * row uses flex and wraps (stacks) at wrapAt — nowrap above it. Columns also take
- * bgImage/bgPosition (image, cover), background (gcid|hex), rowGap, and CARD props:
- * padding, radius, border{color,width}, hover{borderColor, shadow{blur,spread}}.
+ * COLUMNS/LAYOUT: rows take layout "1" | "1-1" | "1-1-1" | "1-1-1-1" (equal, fractional flex: per-breakpoint
+ * flexType, the default) or an unequal one: "2-1" "1-2" "3-1" "1-3" "3-2" "2-3" "2-1-1" "1-1-2" "1-2-1" "1-3-1"
+ * "3-1-1-1" "1-1-1-3" (Divi's own offset-columns structures; the column count must match). An unknown layout
+ * is an error. mode:"flexwrap" = legacy 100% columns that wrap at wrapAt. grid:{…} on a row = CSS Grid. Columns
+ * also take bgImage/bgPosition (image, cover), background (gcid|hex), rowGap, and CARD props: padding, radius,
+ * border{color,width}, shadow, hover{borderColor, shadow{blur,spread}}.
+ *
+ * ANY section, row, column or module also takes "cssId" / "cssClass" (CSS ID & Classes; anchors such as
+ * #contact) and "hideOn": ["phone"|"tablet"|"desktop"] (hidden on just those devices).
  */
 const fs = require('fs');
 
@@ -99,6 +103,45 @@ function withPreset(spec, lines) {
   if (!m) throw new Error('modulePreset: cannot find the opening block of ' + (spec.type || 'this element'));
   const attrs = m[2] ? JSON.parse(m[2]) : {};
   attrs.modulePreset = ids;
+  return [`<!-- wp:${m[1]} ${attrJSON(attrs)} ${m[3] ? '/' : ''}-->`].concat(lines.slice(1));
+}
+
+// Issue #33: two things any section, row, column or module may carry (read from builder-saved pages and Divi 5.15.1):
+//   "cssId": "contact", "cssClass": "dark wide"  -> module.advanced.htmlAttributes (Divi's "CSS ID & Classes"; anchors)
+//   "hideOn": ["phone"|"tablet"|"desktop"]       -> module.decoration.disabledOn on Divi's disabled-on breakpoints:
+//        phone -> "phone", tablet -> "tabletOnly", desktop -> "desktopAbove". NOT "desktop": that is Divi's base
+//        device, so a rule there applies at every width and would hide the element everywhere.
+const HIDE_BP = { phone: 'phone', tablet: 'tabletOnly', desktop: 'desktopAbove' };
+function withCommon(spec, lines) {
+  if (!spec || (spec.cssId == null && spec.cssClass == null && spec.hideOn == null)) return lines;
+  const html = {};
+  if (spec.cssId != null && spec.cssId !== '') {
+    if (!/^[A-Za-z][\w-]*$/.test(String(spec.cssId))) throw new Error(`cssId "${spec.cssId}" is not a valid HTML id (a letter, then letters, digits, - or _)`);
+    html.id = String(spec.cssId);
+  }
+  if (spec.cssClass != null && spec.cssClass !== '') {
+    if (!/^[\w -]+$/.test(String(spec.cssClass))) throw new Error(`cssClass "${spec.cssClass}" has characters a class name cannot hold`);
+    html.class = String(spec.cssClass).trim().replace(/\s+/g, ' ');
+  }
+  const hide = {};
+  for (const d of [].concat(spec.hideOn || [])) {
+    if (!HIDE_BP[d]) throw new Error(`hideOn: "${d}" is not a device (use "phone", "tablet" or "desktop")`);
+    hide[HIDE_BP[d]] = { value: 'on' };
+  }
+  if (!Object.keys(html).length && !Object.keys(hide).length) return lines;
+  const m = /^<!-- wp:([a-z0-9-]+\/[a-z0-9-]+)(?: (\{[\s\S]*\}))? (\/)?-->$/.exec(lines[0] || '');
+  if (!m) throw new Error('cssId/cssClass/hideOn: cannot find the opening block of ' + (spec.type || 'this element'));
+  const attrs = m[2] ? JSON.parse(m[2]) : {};
+  attrs.module = attrs.module || {};
+  if (Object.keys(html).length) {
+    attrs.module.advanced = attrs.module.advanced || {};
+    const cur = (attrs.module.advanced.htmlAttributes && attrs.module.advanced.htmlAttributes.desktop && attrs.module.advanced.htmlAttributes.desktop.value) || {};
+    attrs.module.advanced.htmlAttributes = { desktop: { value: Object.assign({}, cur, html) } };
+  }
+  if (Object.keys(hide).length) {
+    attrs.module.decoration = attrs.module.decoration || {};
+    attrs.module.decoration.disabledOn = Object.assign({}, attrs.module.decoration.disabledOn || {}, hide);
+  }
   return [`<!-- wp:${m[1]} ${attrJSON(attrs)} ${m[3] ? '/' : ''}-->`].concat(lines.slice(1));
 }
 
@@ -377,15 +420,18 @@ function mImage(m) {
   const iv = { src: m.src || '', id: m.id || '', alt: m.alt || '' };
   if (m.url) { iv.linkUrl = m.url; iv.linkTarget = m.newTab === false ? 'off' : 'on'; } // link the image (opens new tab by default)
   const attrs = { image: { innerContent: { desktop: { value: iv } } }, builderVersion: BV };
-  // Optional framing (rounded corners / drop shadow / border / max width).
+  // Optional framing (rounded corners / drop shadow / border / max width). Issue #33: on divi/image the MODULE
+  // element has no border, boxShadow or sizing groups (it does not clip the photo, so corners stayed square).
+  // Divi's own Divi 4 converter and builder-saved pages put border + boxShadow on the IMAGE element
+  // (image.decoration.*), max-width in module.advanced.sizing and the alignment in module.advanced.align.
   const f = m.frame;
   if (f) {
-    const dec = {};
-    if (f.radius) dec.border = { desktop: { value: { radius: { topLeft: f.radius, topRight: f.radius, bottomLeft: f.radius, bottomRight: f.radius, sync: 'on' } } } };
-    if (f.border) { dec.border = dec.border || { desktop: { value: {} } }; dec.border.desktop.value.styles = { all: { width: f.border.width || '1px', color: f.border.color || '#e6eae6', style: 'solid' } }; }
-    if (f.shadow) { const sh = f.shadow === true ? { h: '0px', v: '18px', blur: '40px', spread: '0px', color: 'rgba(16,40,28,0.18)' } : f.shadow; dec.boxShadow = { desktop: { value: { horizontal: sh.h || '0px', vertical: sh.v || '18px', blur: sh.blur || '40px', spread: sh.spread || '0px', position: 'outer', color: sh.color || 'rgba(0,0,0,0.2)', style: 'preset1' } } }; }
-    if (f.maxWidth) dec.sizing = { desktop: { value: { maxWidth: f.maxWidth, alignment: m.align || 'center' } } };
-    attrs.module = { decoration: dec };
+    const idec = {};
+    if (f.radius) idec.border = { desktop: { value: { radius: { topLeft: f.radius, topRight: f.radius, bottomLeft: f.radius, bottomRight: f.radius, sync: 'on' } } } };
+    if (f.border) { idec.border = idec.border || { desktop: { value: {} } }; idec.border.desktop.value.styles = { all: { width: f.border.width || '1px', color: f.border.color || '#e6eae6', style: 'solid' } }; }
+    if (f.shadow) { const sh = f.shadow === true ? { h: '0px', v: '18px', blur: '40px', spread: '0px', color: 'rgba(16,40,28,0.18)' } : f.shadow; idec.boxShadow = { desktop: { value: { horizontal: sh.h || '0px', vertical: sh.v || '18px', blur: sh.blur || '40px', spread: sh.spread || '0px', position: 'outer', color: sh.color || 'rgba(0,0,0,0.2)', style: 'preset1' } } }; }
+    if (Object.keys(idec).length) attrs.image.decoration = idec;
+    if (f.maxWidth) attrs.module = { advanced: { sizing: { desktop: { value: { maxWidth: f.maxWidth } } }, align: { desktop: { value: m.align || 'center' } } } };
   }
   return [open('divi/image', attrs), close('divi/image')];
 }
@@ -717,7 +763,7 @@ function mSwiperPostsSlider(m) {
   return [open('dp-dss/posts-slider', attrs), close('dp-dss/posts-slider')];
 }
 
-function buildModule(m) { return withPreset(m, buildModuleBare(m)); }
+function buildModule(m) { return withPreset(m, withCommon(m, buildModuleBare(m))); }
 function buildModuleBare(m) {
   switch (m.type) {
     case 'heading': return mHeading(m);
@@ -772,6 +818,23 @@ const FRACTION = {
   '1-1-1':   { sizing: { desktop: '8_24', tablet: '12_24', phone: '24_24' }, wrap: ['tablet', 'phone'] },
   '1-1-1-1': { sizing: { desktop: '6_24', tablet: '12_24', phone: '24_24' }, wrap: ['tablet', 'phone'] },
 };
+// Unequal layouts (issue #33): Divi 5.15.1's own "offset-columns" templates, read from the builder's
+// constant-library.js, per column per breakpoint (a breakpoint left out inherits the larger one), plus where the
+// row wraps. "2-1" = two thirds + one third, "1-2-1" = quarter + half + quarter, and so on.
+const OFFSET = {
+  '3-2': { name: 'offset-columns_1', wrap: ['phone'], cols: [{ desktop: '3_5', phone: '24_24' }, { desktop: '2_5', phone: '24_24' }] },
+  '2-3': { name: 'offset-columns_2', wrap: ['phone'], cols: [{ desktop: '2_5', phone: '24_24' }, { desktop: '3_5', phone: '24_24' }] },
+  '2-1-1': { name: 'offset-columns_3', wrap: ['tablet'], cols: [{ desktop: '12_24', tablet: '24_24' }, { desktop: '6_24', tablet: '12_24', phone: '24_24' }, { desktop: '6_24', tablet: '12_24', phone: '24_24' }] },
+  '1-1-2': { name: 'offset-columns_4', wrap: ['tablet'], cols: [{ desktop: '6_24', tablet: '12_24', phone: '24_24' }, { desktop: '6_24', tablet: '12_24', phone: '24_24' }, { desktop: '12_24', tablet: '24_24' }] },
+  '2-1': { name: 'offset-columns_5', wrap: ['phone'], cols: [{ desktop: '16_24', phone: '24_24' }, { desktop: '8_24', phone: '24_24' }] },
+  '1-2': { name: 'offset-columns_6', wrap: ['phone'], cols: [{ desktop: '8_24', phone: '24_24' }, { desktop: '16_24', phone: '24_24' }] },
+  '3-1-1-1': { name: 'offset-columns_7', wrap: ['tablet'], cols: [{ desktop: '12_24', tablet: '24_24' }, { desktop: '4_24', tablet: '8_24', phone: '12_24' }, { desktop: '4_24', tablet: '8_24', phone: '12_24' }, { desktop: '4_24', tablet: '8_24', phone: '12_24' }] },
+  '1-1-1-3': { name: 'offset-columns_8', wrap: ['tablet'], cols: [{ desktop: '4_24', tablet: '8_24', phone: '12_24' }, { desktop: '4_24', tablet: '8_24', phone: '12_24' }, { desktop: '4_24', tablet: '8_24', phone: '12_24' }, { desktop: '12_24', tablet: '24_24' }] },
+  '3-1': { name: 'offset-columns_9', wrap: ['phone'], cols: [{ desktop: '18_24', phone: '24_24' }, { desktop: '6_24', phone: '24_24' }] },
+  '1-3': { name: 'offset-columns_10', wrap: ['phone'], cols: [{ desktop: '6_24', phone: '24_24' }, { desktop: '18_24', phone: '24_24' }] },
+  '1-2-1': { name: 'offset-columns_11', wrap: ['phone'], cols: [{ desktop: '6_24', phone: '24_24' }, { desktop: '12_24', phone: '24_24' }, { desktop: '6_24', phone: '24_24' }] },
+  '1-3-1': { name: 'offset-columns_12', wrap: ['phone'], cols: [{ desktop: '1_5', phone: '24_24' }, { desktop: '3_5', phone: '24_24' }, { desktop: '1_5', phone: '24_24' }] },
+};
 
 // col: { modules:[...], bgImage, bgPosition, background(gcid|hex), rowGap,
 //        padding("22px"|{top,...}), radius("14px"), border:{color(gcid|hex),width},
@@ -819,7 +882,7 @@ function buildColumn(col, sizing) {
   const lines = [open('divi/column', attrs)];
   for (const m of (col.modules || [])) lines.push(...buildModule(m));
   lines.push(close('divi/column'));
-  return withPreset(col, lines);
+  return withPreset(col, withCommon(col, lines));
 }
 
 // CSS Grid row. row.grid = { cols:{desktop,tablet,phone}, widths?:"equal",
@@ -845,12 +908,21 @@ function buildGridRow(row) {
 // row: { layout:"1-1", columns:[...], mode?:"fractional"(default)|"flexwrap",
 //        wrap?:["tablet","phone"], grid?:{...} }
 function buildRow(row) {
-  if (row.grid) return withPreset(row, buildGridRow(row));
+  if (row.grid) return withPreset(row, withCommon(row, buildGridRow(row)));
   const key = row.layout || '1';
-  const n = LAYOUT[key] || 1;
-  const module = { advanced: { flexColumnStructure: { desktop: { value: 'equal-columns_' + n } } } };
+  const O = OFFSET[key];
+  // An unknown layout used to become ONE column, silently. Refuse it instead, and list what exists.
+  if (!O && !LAYOUT[key]) throw new Error(`layout "${key}" is not known. Equal: ${Object.keys(LAYOUT).join(', ')}. Unequal: ${Object.keys(OFFSET).join(', ')}. For card grids put "grid" on the row.`);
+  const ncols = (row.columns || []).length;
+  if (O && ncols !== O.cols.length) throw new Error(`layout "${key}" has ${O.cols.length} columns, the row has ${ncols}`);
+  const n = O ? O.cols.length : LAYOUT[key];
+  const module = { advanced: { flexColumnStructure: { desktop: { value: O ? O.name : 'equal-columns_' + n } } } };
   let sizing = { desktop: '24_24' };
-  if (n > 1) {
+  if (O) {
+    const layout = { desktop: { value: { flexWrap: 'nowrap' } } };
+    (row.wrap || O.wrap).forEach((bp) => { layout[bp] = { value: { flexWrap: 'wrap' } }; });
+    module.decoration = { layout };
+  } else if (n > 1) {
     if (row.mode === 'flexwrap') {
       module.decoration = { layout: { desktop: { value: { flexWrap: 'nowrap' } }, [(row.wrapAt || 'phone')]: { value: { flexWrap: 'wrap' } } } };
     } else { // fractional (default)
@@ -875,9 +947,9 @@ function buildRow(row) {
     module.decoration = Object.assign(module.decoration || {}, { sizing: { desktop: { value: v } } });
   }
   const lines = [open('divi/row', { module, builderVersion: BV })];
-  for (const col of (row.columns || [])) lines.push(...buildColumn(col, sizing));
+  (row.columns || []).forEach((col, i) => lines.push(...buildColumn(col, O ? O.cols[i] : sizing)));
   lines.push(close('divi/row'));
-  return withPreset(row, lines);
+  return withPreset(row, withCommon(row, lines));
 }
 
 function buildSection(sec) {
@@ -910,7 +982,7 @@ function buildSection(sec) {
   const lines = [open('divi/section', attrs)];
   for (const row of (sec.rows || [])) lines.push(...buildRow(row));
   lines.push(close('divi/section'));
-  return withPreset(sec, lines);
+  return withPreset(sec, withCommon(sec, lines));
 }
 
 function compile(spec) {
