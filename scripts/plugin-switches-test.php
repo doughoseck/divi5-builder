@@ -67,19 +67,23 @@ $attacks = array(
 	array( 'name' => 'd5b_switches', 'option' => 'd5b_switches', 'value' => array( 'updates' => array( 'on' => false ) ) ),
 	array( 'name' => 'd5b_switches', 'option' => 'd5b_switches', 'switches' => array( 'media_audit' => false ), 'key' => 'd5b_switches', 'updates' => false ),
 );
-$called = 0; $errors = 0; set_error_handler( function () { return true; } ); // the routes meet a bare WordPress here; warnings are expected
+$perm_ok = 0; $cb_ok = 0; $cb_threw = array(); $cb_all = array(); set_error_handler( function () { return true; } ); // the routes meet a bare WordPress here; warnings are expected
 foreach ( $GLOBALS['T_routes'] as $key => $r ) {
-	foreach ( $attacks as $params ) {
+	foreach ( $attacks as $i => $params ) {
 		foreach ( array( 'permission_callback', 'callback' ) as $cb ) {
 			if ( ! isset( $r[ $cb ] ) || ! is_callable( $r[ $cb ] ) ) { continue; }
-			try { call_user_func( $r[ $cb ], new T_Request( $params ) ); $called++; } catch ( Throwable $e ) { $errors++; }
+			if ( 'callback' === $cb ) { $cb_all[ $key ] = true; }
+			try { call_user_func( $r[ $cb ], new T_Request( $params ) ); 'callback' === $cb ? $cb_ok++ : $perm_ok++; } catch ( Throwable $e ) { if ( 'callback' === $cb ) { $cb_threw[ $key ] = true; } }
 		}
 	}
 }
 restore_error_handler();
 $after = serialize( array( $GLOBALS['T_options'], $GLOBALS['T_site_options'] ) );
 $names = array_map( function ( $w ) { return $w[1]; }, array_filter( $GLOBALS['T_writes'], function ( $w ) { return in_array( $w[0], array( 'update_option', 'update_site_option', 'add_option', 'add_site_option', 'delete_option' ), true ); } ) );
-check( 'every recorded route was exercised as administrator', $called > 100, "$called calls, $errors errors" );
+echo '  info  ' . count( $cb_threw ) . ' of ' . count( $cb_all ) . ' route callbacks throw under the stubs (the static scan below covers their bodies): ' . implode( ', ', array_keys( $cb_threw ) ) . "
+";
+check( 'permission callbacks all ran', $perm_ok >= 3 * count( $GLOBALS['T_routes'] ), "$perm_ok" );
+check( 'callback floor: at least 60 callback calls (20 routes x 3 params, 64 today) complete', $cb_ok >= 60, "$cb_ok callback successes" );
 check( 'no route wrote d5b_switches (update/add/delete option calls)', ! in_array( 'd5b_switches', $names, true ), $names );
 check( 'the stored switches are byte-identical afterwards', $before === $after );
 fresh();
@@ -87,6 +91,26 @@ d5b_switches(); d5b_gate(); d5b_switch_set( 'updates', false, 'x' ); d5b_switche
 fresh();
 check( 'no register_setting call names d5b_switches', ! in_array( 'd5b_switches', array_column( $SEEN_SETTINGS, 1 ), true ), $SEEN_SETTINGS );
 check( 'no register_setting call opens anything to REST', array() === array_filter( $SEEN_SETTINGS, function ( $s ) { return ! empty( $s[2]['show_in_rest'] ); } ) );
+
+// ---- static guard: nothing outside the allow-list can name the switch option or set a switch.
+// This reads the source, so it holds for routes whose callbacks never get far under the stubs.
+echo "only the switch files touch the switches\n";
+$allow = array( 'inc/switches.php', 'inc/settings.php' );
+$it = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir, FilesystemIterator::SKIP_DOTS ) );
+$scanned = 0; $bad = array();
+foreach ( $it as $file ) {
+	if ( 'php' !== $file->getExtension() ) { continue; }
+	$rel = ltrim( str_replace( '\\', '/', substr( $file->getPathname(), strlen( $dir ) ) ), '/' );
+	$scanned++;
+	if ( in_array( $rel, $allow, true ) ) { continue; }
+	$src  = file_get_contents( $file->getPathname() );
+	$rest = str_replace( array( 'd5b_switches(', 'd5b_switch_is_on(' ), '', $src ); // read-only calls are fine anywhere
+	if ( false !== strpos( $rest, 'd5b_switches' ) ) { $bad[] = "$rel names the option d5b_switches"; }
+	if ( false !== strpos( $src, 'd5b_switch_set' ) ) { $bad[] = "$rel mentions d5b_switch_set"; }
+	if ( preg_match( '/[\'"]d5b_[\'"]\s*\./', $src ) ) { $bad[] = "$rel builds an option name from pieces"; }
+}
+check( 'scanned the plugin source (not vacuous)', $scanned >= 7, "$scanned files" );
+check( 'no file outside inc/switches.php and inc/settings.php names d5b_switches or calls d5b_switch_set', array() === $bad, $bad );
 
 // ---- page_building cannot be switched
 echo "page_building cannot be switched\n";
