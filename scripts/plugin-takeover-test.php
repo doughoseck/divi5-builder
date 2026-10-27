@@ -46,6 +46,16 @@ $mu = sys_get_temp_dir() . '/d5b-mu-' . getmypid();
 if ( ! is_dir( $mu ) ) { mkdir( $mu ); }
 define( 'WPMU_PLUGIN_DIR', $mu );
 define( 'D5B_FILE', $mu . '/divi5-builder.php' );
+// The plugins folder: the "Replaced ... you can delete them" line names only old plugins whose file is still there.
+$plugdir = sys_get_temp_dir() . '/d5b-plugins-' . getmypid();
+if ( ! is_dir( $plugdir ) ) { mkdir( $plugdir ); }
+define( 'WP_PLUGIN_DIR', $plugdir );
+function plugin_file( $b, $on = true ) {
+	$f = WP_PLUGIN_DIR . '/' . $b;
+	if ( $on ) { if ( ! is_dir( dirname( $f ) ) ) { mkdir( dirname( $f ), 0777, true ); } file_put_contents( $f, "<?php\n" ); }
+	elseif ( is_file( $f ) ) { unlink( $f ); }
+}
+function remove_tree( $d ) { foreach ( scandir( $d ) as $f ) { if ( '.' !== $f && '..' !== $f ) { is_dir( "$d/$f" ) ? remove_tree( "$d/$f" ) : unlink( "$d/$f" ); } } rmdir( $d ); }
 
 // ---- activation
 echo "activation deactivates old normal plugins\n";
@@ -63,7 +73,13 @@ $rec = get_option( 'd5b_takeover' );
 check( 'd5b_takeover saved: done_at ISO-8601 UTC and the list', is_array( $rec ) && 1 === preg_match( '/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/', $rec['done_at'] ) && $old === $rec['deactivated'], $rec );
 check( 'saved through add_option, not autoloaded', 1 === writes_of( 'd5b_takeover' ) && in_array( array( 'add_option', 'd5b_takeover' ), $GLOBALS['T_writes'], true ) && 'no' === $GLOBALS['T_autoload']['d5b_takeover'], array( $GLOBALS['T_writes'], $GLOBALS['T_autoload'] ) );
 update_option( 'active_plugins', array_values( array_diff( $active, $old ) ) ); // what WordPress would have done
+plugin_file( 'divi5-builder-rest.php' ); plugin_file( 'wp-site-updates/wp-site-updates.php' ); // their files are still there
 check( 'the replaced-plugins line lists them', has_line( 'Replaced by Divi 5 Builder, you can delete them: divi5-builder-rest.php, wp-site-updates/wp-site-updates.php' ), texts( d5b_takeover_lines() ) );
+// The owner deletes them (Plugins > Delete). A deleted plugin is "not active" too, but there is nothing left to delete.
+plugin_file( 'divi5-builder-rest.php', false );
+check( 'one deleted: the line names only the one still there', has_line( 'Replaced by Divi 5 Builder, you can delete them: wp-site-updates/wp-site-updates.php' ) && 1 === count( texts( d5b_takeover_lines() ) ), texts( d5b_takeover_lines() ) );
+plugin_file( 'wp-site-updates/wp-site-updates.php', false );
+check( 'both deleted: the line is gone', array() === texts( d5b_takeover_lines() ), texts( d5b_takeover_lines() ) );
 fresh();
 d5b_takeover_on_activation( false );
 check( 'with nothing old active, it saves the record and deactivates nothing', array() === $GLOBALS['T_deactivate_calls'] && array() === get_option( 'd5b_takeover' )['deactivated'] );
@@ -120,10 +136,18 @@ $GLOBALS['T_deactivate_calls'] = array();
 d5b_takeover_mu_admin_init();
 check( 'network admin again: once only', array() === $GLOBALS['T_deactivate_calls'] );
 update_option( 'active_plugins', array() ); update_site_option( 'active_sitewide_plugins', array() );
+plugin_file( 'wp-site-updates/wp-site-updates.php' ); plugin_file( 'wp-media-audit/wp-media-audit.php' );
 check( 'this site reads both records for the Replaced line', has_line( 'Replaced by Divi 5 Builder, you can delete them: wp-site-updates/wp-site-updates.php, wp-media-audit/wp-media-audit.php' ), texts( d5b_takeover_lines() ) );
 $site_a_options = $GLOBALS['T_options']; $GLOBALS['T_options'] = array(); // another subsite
 t_set_caps( array( 'activate_plugins' ) );
 check( 'another subsite sees only the network record, not the first site\'s own', has_line( 'Replaced by Divi 5 Builder, you can delete them: wp-media-audit/wp-media-audit.php' ), texts( d5b_takeover_lines() ) );
+// A network record naming a plugin whose file is not in the plugins folder (never there, or deleted): not listed.
+$net_rec = get_site_option( 'd5b_takeover' );
+update_site_option( 'd5b_takeover', array( 'done_at' => $net_rec['done_at'], 'deactivated' => array( 'wp-media-audit/wp-media-audit.php', 'wp-media-quarantine.php' ) ) );
+check( 'a subsite does not list a network-deactivated plugin with no file', has_line( 'Replaced by Divi 5 Builder, you can delete them: wp-media-audit/wp-media-audit.php' ), texts( d5b_takeover_lines() ) );
+plugin_file( 'wp-media-audit/wp-media-audit.php', false );
+check( 'and once that file is deleted the line is gone on the subsite too', array() === texts( d5b_takeover_lines() ), texts( d5b_takeover_lines() ) );
+update_site_option( 'd5b_takeover', $net_rec ); plugin_file( 'wp-media-audit/wp-media-audit.php' );
 $GLOBALS['T_deactivate_calls'] = array(); d5b_takeover_mu_admin_init();
 check( 'another subsite admin: the network record counts as done, nothing runs again', array() === $GLOBALS['T_deactivate_calls'], $GLOBALS['T_deactivate_calls'] );
 $GLOBALS['T_options'] = $site_a_options;
@@ -262,6 +286,8 @@ t_new_request(); d5b_gate();
 check( 'switch off: nothing stood aside, nothing recorded, no audit routes', array() === $GLOBALS['d5b_stood_aside'] && null === get_option( 'd5b_legacy_seen', null ) && array() === routes_in( 'wp-media-audit/v1' ), $GLOBALS['d5b_stood_aside'] );
 check( 'switch off: no red LIVE line (nothing is live)', array() === red_lines(), d5b_takeover_lines() );
 check( 'switch off: the plain inactive line names the part', has_line( 'An old copy of Media audit is installed but inactive. Delete it to finish the move.' ), texts( d5b_takeover_lines() ) );
+$st = d5b_status();
+check( 'the status route lists the installed-but-inactive copies, each part once', array( 'media_audit', 'media_clean_up', 'updates' ) === $st['inactive'] && array() === $st['stood_aside'], $st );
 d5b_switch_set( 'media_audit', true, 'admin' );
 $GLOBALS['T_routes'] = array();
 t_new_request(); d5b_gate();
@@ -284,4 +310,5 @@ check( 'media audit switch is off, so the red line shows too', has_line( 'Media 
 echo "\n" . ( $failed ? "$failed FAILED of $n" : "all $n passed" ) . "\n";
 foreach ( glob( $mu . '/*' ) ?: array() as $f ) { @unlink( $f ); }
 @rmdir( $mu );
+remove_tree( $plugdir );
 exit( $failed ? 1 : 0 );

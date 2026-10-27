@@ -3,6 +3,8 @@
  * Plugin Name: Divi 5 Builder
  * Description: Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.
  * Version: 2.0.0
+ * Requires at least: 5.6
+ * Requires PHP: 7.4
  * Author: divi5-builder skill
  * Update URI: https://github.com/doughoseck/divi5-builder
  * License: MIT
@@ -10,7 +12,10 @@
  * INSTALL (pick one):
  *   A) Normal plugin: upload divi5-builder.zip in Plugins > Add New, then activate it.
  *   B) Must-use plugin: copy the folder divi5-builder/ into wp-content/mu-plugins/ and, next to it,
- *      the one file divi5-builder-loader.php (it is in plugin/mu-loader/ in the repository).
+ *      the one file divi5-builder-loader.php (a file of its own in each release, next to the zip; in the
+ *      repository it is plugin/mu-loader/divi5-builder-loader.php).
+ *
+ * uninstall.php (run by WordPress when the plugin is deleted) removes the options this plugin stored.
  *
  * This file only loads the code and adds the hooks. Page building is always on. Media audit, media
  * clean-up and updates each register their routes only while their switch is on (Settings > Divi 5

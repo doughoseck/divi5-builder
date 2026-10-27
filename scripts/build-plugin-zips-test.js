@@ -34,15 +34,19 @@ function walk(dir, rel) { let o = []; for (const e of fs.readdirSync(dir, { with
 
 try {
   const a = build('a'), b = build('b');
-  check('only divi5-builder.zip is built', JSON.stringify(fs.readdirSync(a)) === JSON.stringify(['divi5-builder.zip']), fs.readdirSync(a));
+  check('exactly two release files: divi5-builder.zip and divi5-builder-loader.php', JSON.stringify(fs.readdirSync(a).sort()) === JSON.stringify(['divi5-builder-loader.php', 'divi5-builder.zip']), fs.readdirSync(a));
   const za = fs.readFileSync(path.join(a, 'divi5-builder.zip')), zb = fs.readFileSync(path.join(b, 'divi5-builder.zip'));
   check('two builds are byte-identical', za.equals(zb));
+  const lpath = d => path.join(d, 'divi5-builder-loader.php');
+  const la = fs.existsSync(lpath(a)) ? fs.readFileSync(lpath(a)) : Buffer.alloc(0), lb = fs.existsSync(lpath(b)) ? fs.readFileSync(lpath(b)) : Buffer.alloc(1);
+  const lsrc = fs.readFileSync(path.join(ROOT, 'plugin', 'mu-loader', 'divi5-builder-loader.php'), 'utf8').replace(/\r\n/g, '\n');
+  check('the must-use loader is the source file, LF endings, the same in both builds', la.equals(lb) && la.toString('utf8') === lsrc && !la.includes('\r') && /Plugin Name: Divi 5 Builder \(must-use loader\)/.test(lsrc));
 
   const es = entries(za); const files = es.filter(e => !e.name.endsWith('/')); const names = files.map(e => e.name);
   const src = walk(path.join(ROOT, 'plugin', 'divi5-builder'), '').map(f => 'divi5-builder/' + f);
   if (fs.existsSync(path.join(ROOT, 'LICENSE'))) src.push('divi5-builder/LICENSE');
   check('the zip holds exactly the plugin folder plus LICENSE, under divi5-builder/', JSON.stringify([...names].sort()) === JSON.stringify([...src].sort()), { names, src });
-  for (const want of ['divi5-builder/divi5-builder.php', 'divi5-builder/readme.txt', 'divi5-builder/LICENSE']) check('holds ' + want, names.includes(want));
+  for (const want of ['divi5-builder/divi5-builder.php', 'divi5-builder/uninstall.php', 'divi5-builder/readme.txt', 'divi5-builder/LICENSE']) check('holds ' + want, names.includes(want));
   check('holds inc/ and parts/ files', names.filter(x => x.startsWith('divi5-builder/inc/')).length >= 5 && names.filter(x => x.startsWith('divi5-builder/parts/')).length >= 4);
   check('every name sits under divi5-builder/', names.every(x => x.startsWith('divi5-builder/')), names);
   check('no old plugin, no assets/, no must-use loader in the zip', !names.some(x => /legacy|assets|mu-loader|divi5-builder-rest|wp-media|wp-site-updates|divi5-builder-loader/.test(x)), names);

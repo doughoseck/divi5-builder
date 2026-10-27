@@ -48,6 +48,11 @@ check( 'header: plugin name, slug version, update URI, description', false !== s
 check( 'the header Version: equals D5B_VERSION as defined by the loader', 1 === preg_match( "/define\(\s*'D5B_VERSION',\s*'(\d+\.\d+\.\d+)'\s*\)/", $head, $m ) && 1 === preg_match( '/^\s*\*\s*Version:\s*(\S+)/m', $head, $h ) && $m[1] === $h[1], array( $m ?? null, $h ?? null ) );
 check( 'the old constants are never defined by the loader', 1 !== preg_match( "/define\(\s*'(D5B_REST_VERSION|WPMA_VERSION|WPMQ_VERSION|WPSU_VERSION)'/", $head ) );
 check( 'the loader lists exactly the .php files under inc/ and parts/ (no glob)', loader_list( $head ) === disk_list( $src ) && false === strpos( $head, 'glob(' ), array( loader_list( $head ), disk_list( $src ) ) );
+check( 'uninstall.php exists and the loader never loads it (WordPress runs it on delete)', is_file( "$src/uninstall.php" ) && false === strpos( $head, "'uninstall.php'" ) && 1 !== preg_match( '/(require|include)(_once)?[^;]*uninstall/', $head ) );
+$top = array(); foreach ( scandir( $src ) as $f ) { if ( preg_match( '/\\.php$/', $f ) ) { $top[] = $f; } }
+check( 'the plugin folder holds exactly two top-level .php files: the loader and uninstall.php', array( 'divi5-builder.php', 'uninstall.php' ) === $top, $top );
+check( 'header: Requires PHP 7.4 and Requires at least 5.6, the same as readme.txt', 1 === preg_match( '/^\s*\*\s*Requires PHP:\s*7\.4\s*$/m', $head ) && 1 === preg_match( '/^\s*\*\s*Requires at least:\s*5\.6\s*$/m', $head )
+	&& 1 === preg_match( '/^Requires PHP:\s*7\.4\s*$/m', file_get_contents( "$src/readme.txt" ) ) && 1 === preg_match( '/^Requires at least:\s*5\.6\s*$/m', file_get_contents( "$src/readme.txt" ) ) );
 
 // ---- no Divi
 echo "no Divi: loads, status divi5 false\n";
@@ -133,6 +138,17 @@ $GLOBALS['T_post_meta'] = array();
 define( 'D5B_REST_VERSION', '1.8.5' );
 fire( 'init' );
 check( 'with D5B_REST_VERSION defined, init registers no meta', array() === $GLOBALS['T_post_meta'], $GLOBALS['T_post_meta'] );
+
+// ---- the must-use loader, next to a folder with another name (a renamed download, "divi5-builder-main/")
+echo "must-use loader: header, and no fatal when the folder has another name\n";
+$mul = __DIR__ . '/../plugin/mu-loader/divi5-builder-loader.php';
+$mulsrc = file_get_contents( $mul );
+check( 'it has a Plugin Name header (listed under Must-Use)', 1 === preg_match( '/^\s*\*\s*Plugin Name:\s*Divi 5 Builder \(must-use loader\)\s*$/m', $mulsrc ), substr( $mulsrc, 0, 300 ) );
+mkdir( "$tmp/mu2/divi5-builder-main", 0777, true );
+copy( $mul, "$tmp/mu2/divi5-builder-loader.php" );
+$PHP_WARNINGS = array(); $err = '';
+try { require "$tmp/mu2/divi5-builder-loader.php"; } catch ( Throwable $e ) { $err = get_class( $e ) . ': ' . $e->getMessage(); }
+check( 'required with no divi5-builder/ folder next to it: no error, no warning', '' === $err && array() === $PHP_WARNINGS, array( $err, $PHP_WARNINGS ) );
 
 remove_tree( $tmp );
 echo $failed ? "\n$failed of $n FAILED\n" : "\nall $n passed\n";

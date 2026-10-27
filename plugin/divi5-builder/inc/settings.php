@@ -45,7 +45,7 @@ if ( ! function_exists( 'd5b_settings_render' ) ) {
 		echo '<div class="wrap"><h1>Divi 5 Builder</h1>';
 		if ( isset( $_GET['updated'] ) ) { echo '<div class="notice notice-success"><p>Settings saved.</p></div>'; }
 		echo '<p>Version ' . esc_html( D5B_VERSION ) . '. ';
-		echo defined( 'ET_BUILDER_5_DIR' ) ? 'Divi 5 detected.' : 'Divi 5 not detected: page building is idle.';
+		echo defined( 'ET_BUILDER_5_DIR' ) ? 'Divi 5 detected.' : 'Divi 5 not detected: routes that need Divi will answer with an error.';
 		echo '</p>';
 		echo '<p>Page building is always on. The parts below are off until you switch them on, and each one can do real harm to a site if used carelessly.</p>';
 		echo '<form method="post" action="' . esc_url( $action ) . '">';
@@ -65,11 +65,67 @@ if ( ! function_exists( 'd5b_settings_render' ) ) {
 		echo '</table>';
 		echo '<p class="submit"><input type="submit" class="button button-primary" value="Save changes" /></p>';
 		echo '</form>';
-		d5b_legacy_refresh();
-		foreach ( d5b_takeover_lines() as $line ) {
-			echo '<p>' . esc_html( $line['text'] ) . '</p>';
+		d5b_legacy_refresh( true ); // always here: an old copy with no constant (a code snippet) is found too
+		$lines = d5b_takeover_lines();
+		if ( is_multisite() ) { $lines = array_merge( $lines, d5b_network_legacy_lines() ); }
+		foreach ( $lines as $line ) {
+			echo '<p' . ( $line['red'] ? ' style="color:#b32d2e;font-weight:600"' : '' ) . '>' . esc_html( $line['text'] ) . '</p>';
 		}
 		echo '</div>';
+	}
+}
+
+if ( ! function_exists( 'd5b_network_legacy_lines' ) ) {
+	/**
+	 * Multisite: the other sites where an old copy was serving a part at their last REST request (their own
+	 * d5b_legacy_seen), with the red line when that part's switch is off. The switch lives on the network page,
+	 * so that is where "live while off" must show. At most 500 sites are read, one option each.
+	 * @return array<int, array{text:string,red:bool}>
+	 */
+	function d5b_network_legacy_lines(): array {
+		if ( ! is_multisite() || ! function_exists( 'get_sites' ) || ! function_exists( 'get_blog_option' ) ) { return array(); }
+		$parts = d5b_parts();
+		$here  = function_exists( 'get_current_blog_id' ) ? (int) get_current_blog_id() : 0;
+		$lines = array();
+		foreach ( get_sites( array( 'fields' => 'ids', 'number' => 500 ) ) as $id ) {
+			$id = (int) $id;
+			if ( $id === $here ) { continue; } // this site's own lines are already above
+			$seen = get_blog_option( $id, 'd5b_legacy_seen', array() );
+			if ( ! is_array( $seen ) || array() === $seen ) { continue; }
+			$home = get_blog_option( $id, 'home', '' );
+			$name = is_string( $home ) && '' !== $home ? $home . ' (site ' . $id . ')' : 'site ' . $id;
+			foreach ( $seen as $part ) {
+				if ( ! is_string( $part ) || ! isset( $parts[ $part ] ) ) { continue; }
+				$label   = $parts[ $part ]['label'];
+				$lines[] = array( 'text' => 'On ' . $name . ', an old copy is serving ' . $label . '. Remove it there to finish the move.', 'red' => false );
+				if ( $parts[ $part ]['has_switch'] && ! d5b_switch_is_on( $part ) ) {
+					$lines[] = array( 'text' => $label . ' is LIVE on ' . $name . ' through the old copy, even though its switch is off.', 'red' => true );
+				}
+			}
+		}
+		return $lines;
+	}
+}
+
+if ( ! function_exists( 'd5b_switches_unreachable' ) ) {
+	/**
+	 * Multisite: is this plugin active on this subsite only? The switches live in Network Admin > Settings, and
+	 * Network Admin loads only network-activated plugins, must-use plugins and the main site's plugins, so then
+	 * nobody can reach them. $file is the plugin's main file (D5B_FILE when empty).
+	 */
+	function d5b_switches_unreachable( string $file = '' ): bool {
+		if ( '' === $file ) { $file = defined( 'D5B_FILE' ) ? D5B_FILE : ''; }
+		if ( '' === $file || ! is_multisite() || is_network_admin() ) { return false; }
+		if ( function_exists( 'd5b_takeover_is_mu' ) && d5b_takeover_is_mu( $file ) ) { return false; }
+		$base = function_exists( 'plugin_basename' ) ? plugin_basename( $file ) : basename( dirname( $file ) ) . '/' . basename( $file );
+		$sw   = get_site_option( 'active_sitewide_plugins', array() );
+		if ( is_array( $sw ) && isset( $sw[ $base ] ) ) { return false; }
+		if ( ! function_exists( 'is_main_site' ) || is_main_site() ) { return false; }
+		if ( function_exists( 'get_main_site_id' ) && function_exists( 'get_blog_option' ) ) {
+			$main = get_blog_option( get_main_site_id(), 'active_plugins', array() );
+			if ( is_array( $main ) && in_array( $base, $main, true ) ) { return false; }
+		}
+		return true;
 	}
 }
 
@@ -95,8 +151,15 @@ if ( ! function_exists( 'd5b_settings_save' ) ) {
 }
 
 if ( ! function_exists( 'd5b_admin_notice' ) ) {
-	/** Shows the takeover lines to people who can manage plugins: red ones as errors, the rest as warnings. */
+	/**
+	 * Shows the takeover lines to people who can manage plugins: red ones as errors, the rest as warnings.
+	 * On a subsite where the plugin is active for that site only, super admins are first told where the switches
+	 * are and how to reach them.
+	 */
 	function d5b_admin_notice(): void {
+		if ( current_user_can( 'manage_network_options' ) && d5b_switches_unreachable() ) {
+			echo '<div class="notice notice-warning"><p>' . esc_html( "Divi 5 Builder's switches are in Network Admin > Settings. Network-activate the plugin (or activate it on the main site) to reach them." ) . '</p></div>';
+		}
 		if ( ! current_user_can( is_multisite() ? 'manage_network_plugins' : 'activate_plugins' ) ) { return; }
 		d5b_legacy_refresh();
 		foreach ( d5b_takeover_lines() as $line ) {

@@ -9,7 +9,9 @@
  * inc/, parts/, readme.txt) plus LICENSE: the layout WordPress expects. Reproducible: sorted names, fixed
  * timestamps, LF line endings. Node built-ins only (zlib + a small zip writer below).
  * The single-file plugins in assets/legacy/ are no longer packaged.
- * Prints the zip with the plugin version read from its header.
+ * Next to the zip it writes divi5-builder-loader.php (from plugin/mu-loader/, LF endings): the second release
+ * file, for a must-use install.
+ * Prints the zip with the plugin version read from its header, then the loader.
  */
 const fs = require('fs');
 const path = require('path');
@@ -98,3 +100,11 @@ fs.mkdirSync(OUT, { recursive: true });
 const out = path.join(OUT, `${SLUG}.zip`);
 fs.writeFileSync(out, zip(files));
 console.log(`${path.relative(ROOT, out).replace(/\\/g, '/')}  ${SLUG} ${version}  (${fs.statSync(out).size} bytes, ${files.length} files)`);
+
+// The second release file: the must-use loader, published next to the zip so a must-use install needs no repository.
+// Copied as it is (LF line endings), so it is the same byte for byte on every build.
+const LOADER = path.join(ROOT, 'plugin', 'mu-loader', `${SLUG}-loader.php`);
+if (!fs.existsSync(LOADER)) { console.error(`STOP: ${path.relative(ROOT, LOADER)} not found`); process.exit(1); }
+const loaderOut = path.join(OUT, `${SLUG}-loader.php`);
+fs.writeFileSync(loaderOut, Buffer.from(fs.readFileSync(LOADER, 'utf8').replace(/\r\n/g, '\n'), 'utf8'));
+console.log(`${path.relative(ROOT, loaderOut).replace(/\\/g, '/')}  the must-use loader  (${fs.statSync(loaderOut).size} bytes)`);

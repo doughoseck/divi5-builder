@@ -31,7 +31,8 @@ foreach ( array( 'page-building', 'media-audit', 'media-clean-up', 'updates' ) a
 $mu = sys_get_temp_dir() . '/d5b-set-mu-' . getmypid();
 if ( ! is_dir( $mu ) ) { mkdir( $mu ); }
 define( 'WPMU_PLUGIN_DIR', $mu );
-define( 'D5B_FILE', $mu . '/divi5-builder.php' );
+define( 'WP_PLUGIN_DIR', sys_get_temp_dir() . '/d5b-set-plugins-' . getmypid() );
+define( 'D5B_FILE', WP_PLUGIN_DIR . '/divi5-builder/divi5-builder.php' ); // installed as a normal plugin
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . ( is_string( $detail ) ? $detail : json_encode( $detail ) ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
@@ -133,7 +134,7 @@ echo "render\n";
 fresh(); t_set_caps( array( 'manage_options' ) );
 $out = html( 'd5b_settings_render' );
 check( 'shows the version', false !== strpos( $out, '2.0.0' ), $out );
-check( 'Divi 5 not detected: says page building is idle', false !== strpos( $out, 'Divi 5 not detected: page building is idle' ) && false === strpos( $out, 'Divi 5 detected' ), $out );
+check( 'Divi 5 not detected: says routes that need Divi will answer with an error', false !== strpos( $out, 'Divi 5 not detected: routes that need Divi will answer with an error.' ) && false === strpos( $out, 'Divi 5 detected' ) && false === strpos( $out, 'idle' ), $out );
 foreach ( array( 'media_audit', 'media_clean_up', 'updates' ) as $p ) {
 	check( "single site: $p note is printed as d5b_risk_note gives it", false !== strpos( $out, esc_html( d5b_risk_note( $p ) ) ) && '' !== d5b_risk_note( $p ), $p );
 	check( "$p has one checkbox", 1 === substr_count( $out, 'name="d5b_on[' . $p . ']"' ), $p );
@@ -166,10 +167,77 @@ $out = html( 'd5b_settings_render' );
 check( 'Divi 5 detected shows when it is', false !== strpos( $out, 'Divi 5 detected' ) && false === strpos( $out, 'not detected' ), $out );
 
 // ---- the stand-aside record is refreshed in wp-admin only on sites that still carry an old copy
-echo "no old copy: the notice and the page build no REST server\n";
+echo "no old copy: the notice builds no REST server; the settings page always refreshes\n";
 fresh(); t_set_caps( array( 'activate_plugins', 'manage_options' ) );
-html( 'd5b_admin_notice' ); html( 'd5b_settings_render' );
-check( 'no legacy constant: no rest_get_server() call, no gate run', 0 === $GLOBALS['T_server_calls'] && ! isset( $GLOBALS['d5b_gate_ran'] ) && array() === $GLOBALS['T_routes'], array( $GLOBALS['T_server_calls'], array_keys( $GLOBALS['T_routes'] ) ) );
+html( 'd5b_admin_notice' );
+check( 'no legacy constant, empty record: the notice makes no rest_get_server() call, no gate run', 0 === $GLOBALS['T_server_calls'] && ! isset( $GLOBALS['d5b_gate_ran'] ) && array() === $GLOBALS['T_routes'], array( $GLOBALS['T_server_calls'], array_keys( $GLOBALS['T_routes'] ) ) );
+html( 'd5b_settings_render' );
+check( 'the settings page refreshes once even so (one server build)', 1 === $GLOBALS['T_server_calls'], $GLOBALS['T_server_calls'] );
+
+// An old copy with no constant of its own (a code snippet) is live: only its routes show it. No REST request yet.
+echo "snippet copy live, no REST request yet: the settings page shows the red line\n";
+fresh(); t_set_caps( array( 'manage_options' ) );
+$GLOBALS['T_server_routes'] = array( '/wp-media-quarantine/v1/batches' => array() );
+check( 'premise: no media clean-up constant, nothing recorded', ! defined( 'WPMQ_VERSION' ) && null === get_option( 'd5b_legacy_seen', null ) );
+$out = html( 'd5b_settings_render' );
+check( 'the settings page shows Media clean-up is LIVE, in red', false !== strpos( $out, 'Media clean-up is LIVE on this site through the old copy, even though its switch here is off.' ) && false !== strpos( $out, 'color:#b32d2e' ), $out );
+check( '... and the record now names it', array( 'media_clean_up' ) === get_option( 'd5b_legacy_seen' ), get_option( 'd5b_legacy_seen', null ) );
+
+// The owner deletes the old copy. The record still names it; the next page is an ordinary wp-admin page.
+echo "old copy deleted: the red line clears on the next admin page, with no REST request\n";
+fresh(); t_set_caps( array( 'activate_plugins' ) );
+update_option( 'd5b_legacy_seen', array( 'media_clean_up' ) ); // left from when the copy was serving
+check( 'premise: without a refresh the stale record would still give the red line', 1 === count( array_filter( d5b_takeover_lines(), function ( $l ) { return $l['red']; } ) ) );
+$out = html( 'd5b_admin_notice' );
+check( 'the notice has no red line and no line at all', '' === $out, $out );
+check( 'the record is cleared, through one server build', array() === get_option( 'd5b_legacy_seen' ) && 1 === $GLOBALS['T_server_calls'], array( get_option( 'd5b_legacy_seen', null ), $GLOBALS['T_server_calls'] ) );
+
+// ---- multisite, plugin activated on one subsite only: the switches live in Network Admin, which never loads it
+echo "multisite, activated on a subsite only: super admins are told where the switches are\n";
+$unreach = "Divi 5 Builder's switches are in Network Admin > Settings. Network-activate the plugin (or activate it on the main site) to reach them.";
+function subsite( array $caps ) { fresh(); t_set_multisite( true ); t_set_caps( $caps ); $GLOBALS['T_blog_id'] = 5; $GLOBALS['T_options']['active_plugins'] = array( 'divi5-builder/divi5-builder.php' ); }
+subsite( array( 'manage_network_options', 'manage_network_plugins' ) );
+$out = html( 'd5b_admin_notice' );
+check( 'a super admin on that subsite sees the line, once, as a warning', 1 === substr_count( $out, esc_html( $unreach ) ) && false !== strpos( $out, 'notice-warning' ), $out );
+subsite( array( 'activate_plugins', 'manage_options' ) );
+check( 'a subsite administrator (not a super admin) does not', false === strpos( html( 'd5b_admin_notice' ), esc_html( $unreach ) ) );
+subsite( array( 'manage_network_options', 'manage_network_plugins' ) );
+$GLOBALS['T_site_options']['active_sitewide_plugins'] = array( 'divi5-builder/divi5-builder.php' => 1 );
+check( 'network-activated: no line', false === strpos( html( 'd5b_admin_notice' ), esc_html( $unreach ) ) );
+subsite( array( 'manage_network_options', 'manage_network_plugins' ) );
+$GLOBALS['T_blogs'][1] = array( 'active_plugins' => array( 'divi5-builder/divi5-builder.php' ) );
+check( 'also active on the main site: no line', false === strpos( html( 'd5b_admin_notice' ), esc_html( $unreach ) ) );
+subsite( array( 'manage_network_options', 'manage_network_plugins' ) );
+$GLOBALS['T_blog_id'] = 1;
+check( 'on the main site itself: no line', false === strpos( html( 'd5b_admin_notice' ), esc_html( $unreach ) ) );
+subsite( array( 'manage_network_options', 'manage_network_plugins' ) );
+$GLOBALS['T_network_admin'] = true;
+check( 'in Network Admin: no line', false === strpos( html( 'd5b_admin_notice' ), esc_html( $unreach ) ) );
+subsite( array( 'manage_network_options', 'manage_network_plugins' ) );
+check( 'as a must-use plugin (loaded everywhere): no line', ! d5b_switches_unreachable( WPMU_PLUGIN_DIR . '/divi5-builder/divi5-builder.php' ) && d5b_switches_unreachable() );
+fresh(); t_set_caps( array( 'manage_network_options', 'manage_options', 'activate_plugins' ) );
+check( 'single site: no line', false === strpos( html( 'd5b_admin_notice' ), esc_html( $unreach ) ) && ! d5b_switches_unreachable() );
+
+// ---- the network settings page lists the subsites where an old copy is serving
+echo "network settings page: subsites with an old copy serving\n";
+fresh(); t_set_multisite( true ); t_set_caps( array( 'manage_network_options' ) ); $GLOBALS['T_network_admin'] = true;
+$GLOBALS['T_blogs'] = array(
+	1 => array( 'home' => 'https://net.example' ),
+	2 => array( 'home' => 'https://two.net.example', 'd5b_legacy_seen' => array( 'updates' ) ),
+	3 => array( 'home' => 'https://three.net.example', 'd5b_legacy_seen' => array() ),
+	4 => array( 'home' => 'https://four.net.example<b>', 'd5b_legacy_seen' => array( 'media_audit', 'page_building' ) ),
+);
+d5b_switch_set( 'media_audit', true, 'net' ); // on: no red line for it
+$out = html( 'd5b_settings_render' );
+check( 'site 2: the old copy is named, and Updates is LIVE in red (switch off)', false !== strpos( $out, 'On https://two.net.example (site 2), an old copy is serving Updates. Remove it there to finish the move.' ) && false !== strpos( $out, 'color:#b32d2e;font-weight:600">Updates is LIVE on https://two.net.example (site 2) through the old copy, even though its switch is off.' ), $out );
+check( 'site 4: both parts named, no red line (one is on, one has no switch), home escaped', false !== strpos( $out, 'On https://four.net.example&lt;b&gt; (site 4), an old copy is serving Media audit.' ) && false !== strpos( $out, '(site 4), an old copy is serving Page building.' ) && false === strpos( $out, 'Media audit is LIVE' ) && false === strpos( $out, 'Page building is LIVE' ) && false === strpos( $out, '<b>' ), $out );
+check( 'site 3 (empty record) and the main site are not listed', false === strpos( $out, 'site 3)' ) && false === strpos( $out, 'site 1)' ), $out );
+check( 'sites read in one get_sites call, ids only, capped at 500', array( array( 'fields' => 'ids', 'number' => 500 ) ) === $GLOBALS['T_get_sites'], $GLOBALS['T_get_sites'] );
+$GLOBALS['T_blogs'] = array(); for ( $i = 1; $i <= 600; $i++ ) { $GLOBALS['T_blogs'][ $i ] = array( 'd5b_legacy_seen' => array( 'updates' ) ); }
+check( '600 sites with an old copy: at most 500 are read', 499 === substr_count( html( 'd5b_settings_render' ), 'Updates is LIVE on site ' ) );
+fresh(); t_set_caps( array( 'manage_options' ) );
+$GLOBALS['T_blogs'] = array( 2 => array( 'd5b_legacy_seen' => array( 'updates' ) ) );
+check( 'single site: no network list, get_sites never called', false === strpos( html( 'd5b_settings_render' ), 'site 2' ) && array() === $GLOBALS['T_get_sites'] );
 
 // ---- admin notice
 echo "admin notice\n";

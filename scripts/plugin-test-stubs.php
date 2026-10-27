@@ -29,6 +29,7 @@ function t_reset() {
 	$GLOBALS['T_autoload'] = array(); $GLOBALS['T_priorities'] = array(); $GLOBALS['T_activation'] = array(); $GLOBALS['T_post_meta'] = array(); $GLOBALS['T_filters'] = array(); $GLOBALS['T_server_calls'] = 0;
 	$GLOBALS['T_options'] = array(); $GLOBALS['T_site_options'] = array(); $GLOBALS['T_server_routes'] = array();
 	unset( $GLOBALS['d5b_stood_aside'], $GLOBALS['d5b_gate_ran'], $GLOBALS['T_server'] );
+	if ( function_exists( 't_blogs_reset' ) ) { t_blogs_reset(); }
 }
 // A new request: WordPress starts a request with the gate not yet run.
 function t_new_request() { unset( $GLOBALS['d5b_gate_ran'] ); }
@@ -76,6 +77,33 @@ function delete_option( $n ) { $GLOBALS['T_writes'][] = array( 'delete_option', 
 function get_site_option( $n, $d = false ) { return array_key_exists( $n, $GLOBALS['T_site_options'] ) ? $GLOBALS['T_site_options'][ $n ] : $d; }
 function update_site_option( $n, $v ) { $GLOBALS['T_writes'][] = array( 'update_site_option', $n ); $GLOBALS['T_site_options'][ $n ] = $v; return true; }
 function add_site_option( $n, $v ) { $GLOBALS['T_writes'][] = array( 'add_site_option', $n ); $GLOBALS['T_site_options'][ $n ] = $v; return true; }
+function delete_site_option( $n ) { $GLOBALS['T_writes'][] = array( 'delete_site_option', $n ); unset( $GLOBALS['T_site_options'][ $n ] ); return true; }
+
+// ---- the other sites of a network (final review). t_reset() clears them.
+//   T_blogs          blog id => array( option name => value ): what get_blog_option reads for each site
+//   T_blog_id        what get_current_blog_id returns;  T_main_site   what get_main_site_id returns
+//   T_get_sites      list of the argument arrays get_sites was called with
+function t_blogs_reset() { $GLOBALS['T_blogs'] = array(); $GLOBALS['T_blog_id'] = 1; $GLOBALS['T_main_site'] = 1; $GLOBALS['T_get_sites'] = array(); }
+t_blogs_reset();
+function get_current_blog_id() { return $GLOBALS['T_blog_id']; }
+function get_main_site_id( $network_id = null ) { return $GLOBALS['T_main_site']; }
+function is_main_site( $site_id = null, $network_id = null ) { return ( null === $site_id ? $GLOBALS['T_blog_id'] : (int) $site_id ) === $GLOBALS['T_main_site']; }
+// fields => ids only, as the plugin asks for; number (WordPress defaults to 100) and offset honoured.
+function get_sites( $args = array() ) {
+	$GLOBALS['T_get_sites'][] = $args;
+	$ids = array_keys( $GLOBALS['T_blogs'] ); sort( $ids );
+	return array_slice( $ids, (int) ( $args['offset'] ?? 0 ), (int) ( $args['number'] ?? 100 ) );
+}
+function get_blog_option( $id, $n, $d = false ) { return isset( $GLOBALS['T_blogs'][ $id ] ) && array_key_exists( $n, $GLOBALS['T_blogs'][ $id ] ) ? $GLOBALS['T_blogs'][ $id ][ $n ] : $d; }
+function delete_blog_option( $id, $n ) { $GLOBALS['T_writes'][] = array( 'delete_blog_option', $n, $id ); unset( $GLOBALS['T_blogs'][ $id ][ $n ] ); return true; }
+// Relative to WP_PLUGIN_DIR (or WPMU_PLUGIN_DIR) as core's plugin_basename is; otherwise folder/file.
+function plugin_basename( $file ) {
+	$f = str_replace( '\\', '/', $file );
+	foreach ( array( 'WP_PLUGIN_DIR', 'WPMU_PLUGIN_DIR' ) as $c ) {
+		if ( defined( $c ) ) { $d = rtrim( str_replace( '\\', '/', constant( $c ) ), '/' ) . '/'; if ( 0 === strpos( $f, $d ) ) { return substr( $f, strlen( $d ) ); } }
+	}
+	return basename( dirname( $f ) ) . '/' . basename( $f );
+}
 
 function sanitize_text_field( $s ) { return trim( strip_tags( (string) $s ) ); }
 function sanitize_key( $s ) { return preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $s ) ); }

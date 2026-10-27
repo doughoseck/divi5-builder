@@ -96,20 +96,30 @@ check( 'no register_setting call opens anything to REST', array() === array_filt
 // This reads the source, so it holds for routes whose callbacks never get far under the stubs.
 echo "only the switch files touch the switches\n";
 $allow = array( 'inc/switches.php', 'inc/settings.php' );
+// uninstall.php may name the option, but only to delete it: it must contain no option write and no switch setter.
+$delete_only = array( 'uninstall.php' );
 $it = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir, FilesystemIterator::SKIP_DOTS ) );
-$scanned = 0; $bad = array();
+$scanned = 0; $bad = array(); $saw_delete_only = 0;
 foreach ( $it as $file ) {
 	if ( 'php' !== $file->getExtension() ) { continue; }
 	$rel = ltrim( str_replace( '\\', '/', substr( $file->getPathname(), strlen( $dir ) ) ), '/' );
 	$scanned++;
 	if ( in_array( $rel, $allow, true ) ) { continue; }
 	$src  = file_get_contents( $file->getPathname() );
+	if ( in_array( $rel, $delete_only, true ) ) {
+		$saw_delete_only++;
+		if ( preg_match( '/\b(update|add)_(site_|blog_|network_)?option\s*\(/', $src ) ) { $bad[] = "$rel writes an option (it may only delete)"; }
+		if ( false !== strpos( $src, 'd5b_switch_set' ) ) { $bad[] = "$rel mentions d5b_switch_set"; }
+		if ( preg_match( '/[\'"]d5b_[\'"]\s*\./', $src ) ) { $bad[] = "$rel builds an option name from pieces"; }
+		continue;
+	}
 	$rest = str_replace( array( 'd5b_switches(', 'd5b_switch_is_on(' ), '', $src ); // read-only calls are fine anywhere
 	if ( false !== strpos( $rest, 'd5b_switches' ) ) { $bad[] = "$rel names the option d5b_switches"; }
 	if ( false !== strpos( $src, 'd5b_switch_set' ) ) { $bad[] = "$rel mentions d5b_switch_set"; }
 	if ( preg_match( '/[\'"]d5b_[\'"]\s*\./', $src ) ) { $bad[] = "$rel builds an option name from pieces"; }
 }
 check( 'scanned the plugin source (not vacuous)', $scanned >= 7, "$scanned files" );
+check( 'uninstall.php was scanned under the delete-only rule', 1 === $saw_delete_only );
 check( 'no file outside inc/switches.php and inc/settings.php names d5b_switches or calls d5b_switch_set', array() === $bad, $bad );
 
 // ---- page_building cannot be switched
@@ -159,8 +169,8 @@ $st = $GLOBALS['T_routes']['GET divi5-builder/v1/status'];
 t_set_caps( array( 'edit_posts' ) );
 check( 'edit_posts user may read status', true === call_user_func( $st['permission_callback'] ) );
 $out = call_user_func( $st['callback'], new T_Request() );
-check( 'status shape', array( 'version', 'divi5', 'switches', 'stood_aside' ) === array_keys( $out ) && '2.0.0' === $out['version'] && false === $out['divi5']
-	&& array( 'media_audit' => false, 'media_clean_up' => false, 'updates' => false ) === $out['switches'] && array() === $out['stood_aside'], $out );
+check( 'status shape', array( 'version', 'divi5', 'switches', 'stood_aside', 'inactive' ) === array_keys( $out ) && '2.0.0' === $out['version'] && false === $out['divi5']
+	&& array( 'media_audit' => false, 'media_clean_up' => false, 'updates' => false ) === $out['switches'] && array() === $out['stood_aside'] && array() === $out['inactive'], $out );
 t_set_caps( array( 'read' ) );
 check( 'user without edit_posts is refused', false === call_user_func( $st['permission_callback'] ) );
 fresh(); switch_on( array( 'updates' ) ); d5b_gate();

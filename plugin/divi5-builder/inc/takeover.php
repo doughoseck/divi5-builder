@@ -184,7 +184,12 @@ if ( ! function_exists( 'd5b_takeover_lines' ) ) {
 		$t     = d5b_takeover_get();
 		if ( $t && ! empty( $t['deactivated'] ) && is_array( $t['deactivated'] ) ) {
 			$active = d5b_takeover_active_basenames( true );
-			$gone   = array_values( array_diff( $t['deactivated'], $active ) );
+			// Not active AND still on disk: a deleted plugin is "not active" too, and there is nothing left to delete.
+			// This also drops a name from the network record that was never installed where this site can see it.
+			$gone = array();
+			foreach ( array_diff( $t['deactivated'], $active ) as $b ) {
+				if ( is_string( $b ) && defined( 'WP_PLUGIN_DIR' ) && file_exists( rtrim( WP_PLUGIN_DIR, '/\\' ) . '/' . $b ) ) { $gone[] = $b; }
+			}
 			if ( $gone ) {
 				$lines[] = array( 'text' => 'Replaced by Divi 5 Builder, you can delete them: ' . implode( ', ', $gone ), 'red' => false );
 			}
@@ -214,14 +219,18 @@ if ( ! function_exists( 'd5b_legacy_refresh' ) ) {
 	/**
 	 * Called by the admin notice and the settings page before they show the takeover lines: brings the
 	 * stand-aside record up to date, so the red LIVE line never lags behind a person re-activating an old
-	 * plugin. Runs only when an old copy's constant is defined; otherwise it does nothing at all.
+	 * plugin, nor stays after a person deactivates or deletes it. The admin notice refreshes only when an old
+	 * copy's constant is defined or the record still names a part; otherwise it does nothing at all. The
+	 * settings page passes $always = true, so an old copy with no constant (a code snippet) shows there too.
 	 * rest_get_server() builds the server and fires rest_api_init once (core), which runs the gate for it;
 	 * the direct d5b_gate() call is then a no-op (once per server) and covers a removed gate hook.
 	 */
-	function d5b_legacy_refresh(): void {
-		$any = false;
-		foreach ( d5b_parts() as $part ) {
-			if ( defined( $part['legacy_const'] ) ) { $any = true; break; }
+	function d5b_legacy_refresh( bool $always = false ): void {
+		$any = $always || ( function_exists( 'd5b_legacy_seen_get' ) && array() !== d5b_legacy_seen_get() );
+		if ( ! $any ) {
+			foreach ( d5b_parts() as $part ) {
+				if ( defined( $part['legacy_const'] ) ) { $any = true; break; }
+			}
 		}
 		if ( ! $any || ! function_exists( 'rest_get_server' ) ) { return; }
 		$server = rest_get_server();

@@ -73,14 +73,25 @@ if ( ! function_exists( 'd5b_legacy_seen_sync' ) ) {
 }
 
 if ( ! function_exists( 'd5b_status' ) ) {
+	/**
+	 * GET divi5-builder/v1/status. stood_aside: part => 'constant'|'route', an old copy serving it this request.
+	 * inactive: the parts with an old copy installed that serves nothing (its constant is defined, no routes).
+	 */
 	function d5b_status() {
 		$switches = array();
 		foreach ( d5b_switches() as $key => $row ) { $switches[ $key ] = $row['on']; }
+		$inactive = array();
+		if ( function_exists( 'd5b_legacy_report' ) ) {
+			foreach ( d5b_legacy_report() as $row ) {
+				if ( 'inactive' === $row['how'] ) { $inactive[] = $row['part']; }
+			}
+		}
 		return array(
 			'version'     => D5B_VERSION,
 			'divi5'       => defined( 'ET_BUILDER_5_DIR' ),
 			'switches'    => $switches,
 			'stood_aside' => isset( $GLOBALS['d5b_stood_aside'] ) ? $GLOBALS['d5b_stood_aside'] : array(),
+			'inactive'    => $inactive,
 		);
 	}
 }
