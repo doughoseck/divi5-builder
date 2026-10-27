@@ -122,11 +122,13 @@ function parseBlocks(t) { const re = /<!--\s+(\/)?wp:([a-z0-9-]+\/[a-z0-9-]+)(?:
 // Top-level keys any block may carry (seen on builder-written blocks), so never "unknown elements".
 const UNIVERSAL = new Set(['builderVersion', 'modulePreset', 'groupPreset', 'css', 'presets', 'locked', 'collapsed', 'label', 'globalParent', 'globalModule', 'themeBuilderArea']);
 // Misplaced groups VERIFIED in Divi 5.15.1's render code (includes/builder-5/server/Packages/ModuleLibrary/...).
-// Add an entry only with a source line that shows where Divi really reads the value.
+// Add an entry only with a source line that shows where Divi really reads the value, and make it an error only when
+// the result is visibly wrong: ImageModule::module_styles also runs the generic $elements->style('module'), which draws
+// ANY module.decoration group on the wrapper. A misplaced max-width was measured working live (2026-10-27).
 const MISPLACED = {
   'divi/image': {
-    'module.decoration.sizing': { home: 'module.advanced.sizing', level: 'error', why: 'ImageModule.php: "Image module stores sizing data at module.advanced.sizing"; its preset resolver translates the two' },
-    'module.decoration.spacing': { home: 'module.advanced.spacing', level: 'error', why: 'ImageModule.php renders spacing from module.advanced.spacing only' },
+    'module.decoration.sizing': { home: 'module.advanced.sizing', level: 'warning', why: 'it still draws, on the wrapper, but the builder\'s Sizing panel reads module.advanced.sizing. When moving it, its "alignment" goes to module.advanced.align, or the image stops being centred' },
+    'module.decoration.spacing': { home: 'module.advanced.spacing', level: 'warning', why: 'the generic module style draws it on the wrapper, but the builder\'s Spacing panel and the image\'s own spacing read module.advanced.spacing' },
     'module.decoration.border': { home: 'image.decoration.border', level: 'error', why: 'ImageModule.php renders the border from image.decoration.border; on the wrapper the photo keeps square corners' },
     'module.decoration.boxShadow': { home: 'image.decoration.boxShadow', level: 'warning', why: 'the builder puts it on the image element; here it styles the wrapper instead' },
   },
