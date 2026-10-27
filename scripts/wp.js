@@ -70,10 +70,21 @@ const { URL } = require('url');
 // (also for a WEB_CREDS_PATH that starts with "~").
 const CREDS_PATH = (process.env.WEB_CREDS_PATH || '~/.web-creds.txt').replace(/^~(?=$|[\\/])/, os.homedir());
 
+// The creds file holds Application Passwords: on macOS/Linux, warn when other users on the computer can read it
+// (issue #22). Windows does not use these permission bits (every file reports as readable), so there the advice is
+// documentation only: keep the file in your own user folder. D5B_PERMS_PLATFORM lets the test run the check anywhere.
+function warnCredsPerms(file) {
+  if ((process.env.D5B_PERMS_PLATFORM || process.platform) === 'win32') return;
+  let st; try { st = fs.statSync(file); } catch (e) { return; }
+  if (st.mode & 0o077) process.stderr.write(`WARNING: ${file} can be read by other users on this computer (mode ${(st.mode & 0o777).toString(8)}). ` +
+    `It holds Application Passwords: run  chmod 600 "${file}"\n`);
+}
+
 function parseCreds(site) {
   let txt;
   try { txt = fs.readFileSync(CREDS_PATH, 'utf8'); }
   catch (e) { die(`cannot read creds file at ${CREDS_PATH}: ${e.message}`); }
+  warnCredsPerms(CREDS_PATH);
   const sections = {};
   let cur = null;
   for (const line of txt.split(/\r?\n/)) {
@@ -677,10 +688,10 @@ function flags(argv) {
       break;
     }
     case 'updates': {
-      // POST to the site updates plugin only (assets/wp-site-updates.php): updates update|clear-caches [--data-file f.json]
+      // POST to the site updates plugin only (assets/wp-site-updates.php): updates update|clear-caches|refresh [--data-file f.json]
       // Prints the JSON answer even when the site answers with an error, so the caller can report why.
       const act = f._[0];
-      if (!['update', 'clear-caches'].includes(act)) die('updates needs update (with --data-file <json>) or clear-caches');
+      if (!['update', 'clear-caches', 'refresh'].includes(act)) die('updates needs update (with --data-file <json>), clear-caches or refresh');
       const body = Buffer.from(f['data-file'] ? fs.readFileSync(f['data-file'], 'utf8') : '{}');
       const r = await request('POST', `${c.url.replace(/\/$/, '')}/wp-json/wp-site-updates/v1/${act}`, { Authorization: authHeader(c), 'Content-Type': 'application/json', 'Content-Length': body.length }, body);
       const text = r.body.toString('utf8'); let j; try { j = JSON.parse(text); } catch (e) { j = { code: 'not_json', message: text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').slice(0, 300) }; }

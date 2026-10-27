@@ -23,10 +23,10 @@ Only the latest version on `main` is supported. Always run the newest
 
 | Plugin | Latest | Notes |
 |---|---|---|
-| `divi5-builder-rest.php` | 1.8.3 | Page building bridge. Meant to stay installed. |
+| `divi5-builder-rest.php` | 1.8.4 | Page building bridge. Meant to stay installed. |
 | `wp-media-audit.php` | 1.1.2 | Read-only. Install for the audit, **remove after use**. |
 | `wp-media-quarantine.php` | 1.0.1 | Moves files. Install for the clean-up, **remove after use**. |
-| `wp-site-updates.php` | 1.0.1 | Runs updates. Install when needed, remove after use. |
+| `wp-site-updates.php` | 1.0.2 | Runs updates. Install when needed, remove after use. (1.0.2: refreshing the status is a POST.) |
 
 ## Hardening advice for users
 

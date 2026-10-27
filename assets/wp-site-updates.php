@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WP Site Updates (REST)
  * Description: For the divi5-builder skill's site-updates.js. Lists what is out of date (plugins, themes, WordPress, translations) and runs ONE update per request with WordPress's own updater, the same code as the Updates screen. Works on any WordPress site.
- * Version: 1.0.1
+ * Version: 1.0.2
  * Author: divi5-builder skill
  *
  * INSTALL: copy this file to wp-content/mu-plugins/wp-site-updates.php
@@ -12,7 +12,8 @@
  * Routes (namespace wp-site-updates/v1). Reading needs update_plugins; each update needs the capability WordPress
  * itself asks for (update_plugins, update_themes, update_core, update_languages):
  *   GET  /info                         versions, whether this site allows updates at all
- *   GET  /status[?refresh=1]           every plugin and theme with its installed and available version, WordPress, translations
+ *   GET  /status                       every plugin and theme with its installed and available version, WordPress, translations
+ *   POST /refresh                      the same, after asking the update servers (clears WordPress's update cache first)
  *   POST /update { type, item, dry_run }
  *        type = plugin (item = folder/file.php) | theme (item = folder) | core (item = the version to go to) | translations
  *   POST /clear-caches                 Divi's generated CSS and the page cache (also done after every update)
@@ -24,7 +25,7 @@
  */
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
-if ( ! defined( 'WPSU_VERSION' ) ) { define( 'WPSU_VERSION', '1.0.1' ); }
+if ( ! defined( 'WPSU_VERSION' ) ) { define( 'WPSU_VERSION', '1.0.2' ); }
 
 if ( ! function_exists( 'wpsu_kind' ) ) :
 
@@ -263,10 +264,22 @@ add_action( 'rest_api_init', function () {
 			return array( 'plugin_version' => WPSU_VERSION, 'wordpress' => get_bloginfo( 'version' ), 'php' => PHP_VERSION, 'multisite' => is_multisite(), 'site_blocked' => wpsu_site_blocked() );
 		},
 	) );
+	// 1.0.2: reading is a GET and changes nothing. Refreshing clears WordPress's update cache and calls the update
+	// servers, so it is a POST (/refresh). A 1.0.1-style GET ?refresh=1 is answered with an error, not obeyed.
 	register_rest_route( $ns, '/status', array(
 		'methods'             => 'GET',
 		'permission_callback' => $read,
-		'callback'            => function ( $req ) { $r = (bool) $req->get_param( 'refresh' ); return wpsu_status( $r, $r ); },
+		'callback'            => function ( $req ) {
+			if ( $req->get_param( 'refresh' ) ) {
+				return new WP_Error( 'wpsu_use_post', 'Refreshing changes things (it clears the update cache and asks the update servers), so since 1.0.2 it is POST /wp-site-updates/v1/refresh. Update site-updates.js.', array( 'status' => 405 ) );
+			}
+			return wpsu_status( false );
+		},
+	) );
+	register_rest_route( $ns, '/refresh', array(
+		'methods'             => 'POST',
+		'permission_callback' => $read,
+		'callback'            => function () { return wpsu_status( true, true ); },
 	) );
 	register_rest_route( $ns, '/clear-caches', array(
 		'methods'             => 'POST',

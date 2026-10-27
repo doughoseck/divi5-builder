@@ -26,7 +26,19 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
       const [p, q = ''] = opts.path.split('?');
       const m = p.match(/^\/wp-json\/wp\/v2\/(pages|posts|et_pb_canvas)(?:\/(\d+))?$/);
       let status = 200, out;
-      if (p === '/wp-json/divi5-builder/v1/design-system') out = { colors: st.colors || {}, presets: { module: [], group: [] } };
+      // The site-updates plugin (st.su = { version }), recording what it is asked: GET status, GET with ?refresh, POST refresh.
+      const suStatus = () => ({ plugin_version: st.su.version, site: 'https://fake.test', wordpress: { version: '6.8.1' }, php: '8.2', multisite: false, plugins: [], themes: [], translations: 0, last_checked: 'now' });
+      const suNew = st.su && st.su.version >= '1.0.2';
+      if (p.startsWith('/wp-json/wp-site-updates/v1/') && !st.su) { status = 404; out = { code: 'rest_no_route' }; }
+      else if (p === '/wp-json/wp-site-updates/v1/status' && opts.method === 'GET') {
+        if (/refresh=1/.test(q)) { st.su.getRefresh = (st.su.getRefresh || 0) + 1; if (suNew) { status = 405; out = { code: 'wpsu_use_post', message: 'since 1.0.2 it is POST /refresh' }; } else { st.su.refreshes = (st.su.refreshes || 0) + 1; out = suStatus(); } }
+        else { st.su.gets = (st.su.gets || 0) + 1; out = suStatus(); }
+        fs.writeFileSync(STATE, JSON.stringify(st));
+      } else if (p === '/wp-json/wp-site-updates/v1/refresh' && opts.method === 'POST') {
+        if (!suNew) { status = 404; out = { code: 'rest_no_route', message: 'No route was found' }; }
+        else { st.su.refreshes = (st.su.refreshes || 0) + 1; out = suStatus(); fs.writeFileSync(STATE, JSON.stringify(st)); }
+      }
+      else if (p === '/wp-json/divi5-builder/v1/design-system') out = { colors: st.colors || {}, presets: { module: [], group: [] } };
       else if (!m) { status = 404; out = { code: 'rest_no_route' }; }
       else {
         const [, kind, id] = m; st[kind] = st[kind] || {};
@@ -181,6 +193,35 @@ console.log('--- globalize.js passes the hash of what it read (a bulk writer on 
     check('a builder save between globalize\'s read and write: NOT overwritten', st().pages[50].content === 'BUILDER SAVE MEANWHILE', [st().pages[50].content.slice(0, 80), g.stdout.slice(-300)]);
     check('... and globalize reports that page as not written (STALE), not "ok"', /STALE/.test(g.stdout + g.stderr) , (g.stdout + g.stderr).slice(-400));
   }
+}
+
+console.log('--- site-updates.js: reading the status is a GET, refreshing it is a POST (issue #22)');
+{
+  const SU = process.env.SITE_UPDATES_FILE || path.join(path.dirname(WPJS), 'site-updates.js');
+  const su = (version, ...a) => {
+    fs.writeFileSync(STATE, JSON.stringify({ pages: {}, posts: {}, et_pb_canvas: {}, su: { version } }));
+    const r = spawnSync(process.execPath, [SU, ...a], { encoding: 'utf8', env: Object.assign({}, process.env, { FAKE_WP_STATE: STATE, WEB_CREDS_PATH: CREDS, NODE_OPTIONS: `--require ${__filename.replace(/\\/g, '/')}` }) });
+    return { code: r.status, out: r.stdout + r.stderr, su: st().su };
+  };
+  let r = su('1.0.2', 'status', 'fake', '--dir', path.join(tmp, 'su'));
+  check('status refreshes with ONE POST /refresh and no GET ?refresh=1', r.code === 0 && r.su.refreshes === 1 && !r.su.getRefresh && /up to date/.test(r.out), [r.code, r.su, r.out.slice(-300)]);
+  r = su('1.0.2', 'status', 'fake', '--no-refresh', '--dir', path.join(tmp, 'su'));
+  check('status --no-refresh only reads (a GET), nothing refreshed', r.code === 0 && r.su.gets === 1 && !r.su.refreshes && !r.su.getRefresh, [r.code, r.su]);
+  r = su('1.0.1', 'status', 'fake', '--dir', path.join(tmp, 'su'));
+  check('a site with the old plugin (1.0.1) is told to upload 1.0.2, and nothing is refreshed', r.code !== 0 && /upload 1\.0\.2/.test(r.out) && !r.su.refreshes, [r.code, r.su, r.out.slice(-300)]);
+}
+
+console.log('--- the creds file: warn when other users can read it (issue #22)');
+{
+  const perms = (platform) => { const r = spawnSync(process.execPath, ['-r', __filename, WPJS, 'fake', 'get-page', '10'], { encoding: 'utf8',
+    env: Object.assign({}, process.env, { FAKE_WP_STATE: STATE, WEB_CREDS_PATH: CREDS, WP_BACKUP_DIR: BACKUPS, D5B_PERMS_PLATFORM: platform }) }); return r.stderr; };
+  fs.writeFileSync(STATE, JSON.stringify({ pages: { 10: { id: 10, title: 'x', status: 'draft', content: 'x' } } }));
+  try { fs.chmodSync(CREDS, 0o644); } catch (e) {}
+  const open = (fs.statSync(CREDS).mode & 0o077) !== 0;   // Windows reports every file as readable by all
+  check('a creds file readable by others: WARNING with the chmod 600 fix (macOS/Linux)', open && /WARNING: .*can be read by other users.*chmod 600/.test(perms('linux')), perms('linux'));
+  check('on Windows the check stays quiet (the permission bits mean nothing there)', !/WARNING/.test(perms('win32')));
+  if (process.platform !== 'win32') { fs.chmodSync(CREDS, 0o600); check('a creds file only its owner can read: no warning', !/WARNING/.test(perms('linux'))); }
+  else console.log('  SKIP  "chmod 600 gives no warning" (cannot make a 600 file on Windows)');
 }
 
 console.log('--- secrets');

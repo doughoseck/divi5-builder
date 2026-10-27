@@ -82,7 +82,8 @@ function call( $path, $params = array() ) { return call_user_func( $GLOBALS['rou
 function row( $rows, $item ) { foreach ( $rows as $r ) { if ( $r['item'] === $item ) { return $r; } } return null; }
 
 echo "--- who may\n";
-check( 'four routes', 4 === count( $GLOBALS['routes'] ), array_keys( $GLOBALS['routes'] ) );
+check( 'five routes', 5 === count( $GLOBALS['routes'] ), array_keys( $GLOBALS['routes'] ) );
+check( 'refreshing changes things, so it is a POST (/refresh); reading the status is a GET (issue #22)', isset( $GLOBALS['routes']['/refresh'] ) && 'POST' === $GLOBALS['routes']['/refresh']['methods'] && 'GET' === $GLOBALS['routes']['/status']['methods'] );
 check( 'all open to a user who may update plugins', ! in_array( false, array_map( function ( $r ) { return call_user_func( $r['permission_callback'] ); }, $GLOBALS['routes'] ), true ) );
 $keep = $GLOBALS['W']['caps']; $GLOBALS['W']['caps'] = array();
 check( 'and closed to anyone else', ! in_array( true, array_map( function ( $r ) { return call_user_func( $r['permission_callback'] ); }, $GLOBALS['routes'] ), true ) );
@@ -111,8 +112,10 @@ check( 'themes: parent and child both count as in use, the spare one does not', 
 check( 'WordPress: newest offer, called major, and every offer listed in order', '6.9' === $s['wordpress']['new_version'] && 'major' === $s['wordpress']['kind'] && array( '6.8.3', '6.9' ) === $s['wordpress']['offered'], $s['wordpress'] );
 check( 'translations counted', 2 === $s['translations'] );
 check( 'status alone does not ask the update servers', ! in_array( 'check', $GLOBALS['W']['calls'], true ) );
-call( '/status', array( 'refresh' => 1 ) );
-check( '... with refresh it does, and first forgets what WordPress remembered (else the answer can be 12 hours old)', array( 'forget', 'check' ) === $GLOBALS['W']['calls'], $GLOBALS['W']['calls'] );
+$r = call( '/status', array( 'refresh' => 1 ) );
+check( 'GET /status?refresh=1 (the 1.0.1 way) no longer changes anything: it answers with an error pointing to POST /refresh', is_wp_error( $r ) && false !== strpos( $r->message, 'POST' ) && array() === $GLOBALS['W']['calls'], array( $r, $GLOBALS['W']['calls'] ) );
+$s = call( '/refresh', array() );
+check( 'POST /refresh asks the update servers, first forgetting what WordPress remembered (else the answer can be 12 hours old)', array( 'forget', 'check' ) === $GLOBALS['W']['calls'] && 7 === count( $s['plugins'] ), $GLOBALS['W']['calls'] );
 $r = wpsu_plugin_rows( array( 'a/a.php' => array( 'Name' => 'A', 'Version' => '1.0' ) ), array( 'a/a.php' => array( 'new_version' => '1.1', 'package' => 'z', 'requires' => '7.0' ) ), array(), '8.1', '6.8.1' );
 check( 'needs a newer WordPress: blocked', false !== strpos( $r[0]['blocked'], 'needs WordPress 7.0' ) );
 

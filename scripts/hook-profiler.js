@@ -5,7 +5,7 @@
  *   node scripts/hook-profiler.js gen [out-dir]        -> writes d5b-profiler.php + d5b-profiler.key into out-dir (default: cwd)
  *   node scripts/hook-profiler.js run <page-url> [--key-file F] [--runs N]   -> loads the page with the key, prints the report
  *
- * The user uploads d5b-profiler.php to wp-content/mu-plugins/ and DELETES IT when done. Without ?d5bprof=<key> in the URL the file
+ * The user uploads d5b-profiler.php to wp-content/mu-plugins/ and DELETES IT when done. Without the key in the X-D5B-Prof header the file
  * does nothing at all (checked: no key and a wrong key register zero hooks). With the key it wraps every callback on wp,
  * template_redirect, wp_head, wp_enqueue_scripts, wp_footer, the_content, et_builder_render_layout and the block-render hooks with
  * a timer, and prints the slowest as ONE HTML comment at the end of the page: seconds, calls, PHP files loaded during the callback,
@@ -22,7 +22,9 @@ const fs = require('fs'), path = require('path'), crypto = require('crypto');
 const [cmd, ...rest] = process.argv.slice(2); const flag = (n, d) => { const i = rest.indexOf('--' + n); return i >= 0 ? rest[i + 1] : d; };
 if (cmd === 'run') { const url = rest.find(a => /^https?:/.test(a)); if (!url) { console.error('usage: hook-profiler.js run <page-url> [--key-file F] [--runs N]'); process.exit(2); }
   const key = fs.readFileSync(flag('key-file', path.join(process.cwd(), 'd5b-profiler.key')), 'utf8').trim(); const runs = Number(flag('runs', 2));
-  (async () => { for (let i = 1; i <= runs; i++) { const t0 = Date.now(); const r = await fetch(url + (url.includes('?') ? '&' : '?') + 'd5bprof=' + key, { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126 Safari/537.36' } }); const h = await r.text();
+  // The key travels in a header (X-D5B-Prof), never in the URL, where server and proxy logs would keep it (issue #22).
+  // The URL still carries a NON-secret d5bprof=<timestamp>: that makes page caches serve a fresh, profiled page.
+  (async () => { for (let i = 1; i <= runs; i++) { const t0 = Date.now(); const r = await fetch(url + (url.includes('?') ? '&' : '?') + 'd5bprof=' + Date.now(), { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126 Safari/537.36', 'X-D5B-Prof': key } }); const h = await r.text();
       console.log(`\n===== run ${i}: HTTP ${r.status}  ${Date.now() - t0}ms  html ${Math.round(h.length / 1024)}KB`); if (i === runs) { const m = h.match(/<!-- D5BPROF([\s\S]*?)D5BPROF -->/); console.log(m ? m[1].split(key).join('<key>') : 'NO PROFILER REPORT IN THE PAGE (file not uploaded, or a page cache served it)'); } } })().catch(e => { console.error('ERROR ' + e.message); process.exit(1); });
   return; }
 if (cmd !== 'gen') { console.log(fs.readFileSync(__filename, 'utf8').split('*/')[0].replace(/^#!.*\n\/\*\*\n?/, '').replace(/^ \* ?/gm, '')); process.exit(cmd ? 2 : 0); }
@@ -30,11 +32,12 @@ const outDir = path.resolve(rest[0] || process.cwd()); fs.mkdirSync(outDir, { re
 const php = `<?php
 /**
  * Plugin Name: D5B temporary hook profiler  (DELETE AFTER USE)
- * Description: Read-only timing. Only acts when the URL carries ?d5bprof=<key>. Wraps every callback on a few hooks with a timer and
- * prints the slowest as an HTML comment at the very end of the page. Changes nothing, stores nothing. Remove this file when done.
+ * Description: Read-only timing. Only acts when the request carries the header X-D5B-Prof: <key> (never in the URL, so the key stays
+ * out of server logs). Wraps every callback on a few hooks with a timer and prints the slowest as an HTML comment at the very end of
+ * the page. Changes nothing, stores nothing. Remove this file when done.
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
-if ( ! isset( \$_GET['d5bprof'] ) || ! hash_equals( '${key}', (string) \$_GET['d5bprof'] ) ) { return; }
+if ( ! isset( \$_SERVER['HTTP_X_D5B_PROF'] ) || ! hash_equals( '${key}', (string) \$_SERVER['HTTP_X_D5B_PROF'] ) ) { return; }
 
 \$GLOBALS['d5bprof'] = array( 'rows' => array(), 't0' => microtime( true ), 'depth' => 0 );
 
