@@ -20,11 +20,41 @@ if ( ! function_exists( 'd5b_gate' ) ) {
 				call_user_func( $part['routes'] );
 			}
 		}
+		d5b_legacy_seen_sync();
 		register_rest_route( 'divi5-builder/v1', '/status', array(
 			'methods'             => 'GET',
 			'permission_callback' => function () { return current_user_can( 'edit_posts' ); },
 			'callback'            => 'd5b_status',
 		) );
+	}
+}
+
+if ( ! function_exists( 'd5b_legacy_seen_get' ) ) {
+	/** Parts an old copy was seen providing through a route (a snippet leaves no constant or file to find later). */
+	function d5b_legacy_seen_get(): array {
+		$v = is_multisite() ? get_site_option( 'd5b_legacy_seen', array() ) : get_option( 'd5b_legacy_seen', array() );
+		return is_array( $v ) ? array_values( array_filter( $v, 'is_string' ) ) : array();
+	}
+}
+
+if ( ! function_exists( 'd5b_legacy_seen_sync' ) ) {
+	/** Keep d5b_legacy_seen equal to the parts detected by route. Writes only when that set changes. */
+	function d5b_legacy_seen_sync(): void {
+		$now = array();
+		foreach ( isset( $GLOBALS['d5b_stood_aside'] ) ? $GLOBALS['d5b_stood_aside'] : array() as $part => $how ) {
+			if ( 'route' === $how ) { $now[] = $part; }
+		}
+		sort( $now );
+		$was = d5b_legacy_seen_get();
+		sort( $was );
+		if ( $now === $was ) { return; }
+		if ( is_multisite() ) {
+			update_site_option( 'd5b_legacy_seen', $now );
+		} elseif ( null === get_option( 'd5b_legacy_seen', null ) ) {
+			add_option( 'd5b_legacy_seen', $now, '', 'no' );
+		} else {
+			update_option( 'd5b_legacy_seen', $now, false );
+		}
 	}
 }
 

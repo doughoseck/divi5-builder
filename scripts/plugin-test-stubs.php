@@ -9,6 +9,7 @@
  *   T_writes         list of array( function, option name )   (update_option, add_option, update_site_option, add_site_option, delete_option)
  *   T_settings       list of register_setting calls: array( group, name, args )
  *   T_deactivated    list of deactivate_plugins calls
+ *   T_deactivate_calls  list of array( plugins, silent, network ) for each deactivate_plugins call
  *   T_actions        hook => list of callbacks (add_action, never run)
  *   T_autoload       option name => the autoload argument last given to add_option / update_option
  *   T_options        option name => value (site options too, in T_site_options)
@@ -19,7 +20,7 @@ if ( ! defined( 'ABSPATH' ) ) { define( 'ABSPATH', sys_get_temp_dir() . '/d5b-st
 
 function t_reset() {
 	$GLOBALS['T_routes'] = array(); $GLOBALS['T_writes'] = array(); $GLOBALS['T_settings'] = array();
-	$GLOBALS['T_deactivated'] = array(); $GLOBALS['T_actions'] = array();
+	$GLOBALS['T_deactivated'] = array(); $GLOBALS['T_deactivate_calls'] = array(); $GLOBALS['T_actions'] = array();
 	$GLOBALS['T_autoload'] = array();
 	$GLOBALS['T_options'] = array(); $GLOBALS['T_site_options'] = array(); $GLOBALS['T_server_routes'] = array();
 	unset( $GLOBALS['d5b_stood_aside'] );
@@ -50,7 +51,10 @@ function register_rest_route( $ns, $path, $args ) {
 	}
 }
 function register_setting( $group, $name, $args = array() ) { $GLOBALS['T_settings'][] = array( $group, $name, $args ); }
-function deactivate_plugins( $plugins, $silent = false, $network = null ) { $GLOBALS['T_deactivated'][] = $plugins; }
+// Set T_NO_DEACTIVATE in the environment to run without deactivate_plugins (as before wp-admin/includes/plugin.php is loaded).
+if ( ! getenv( 'T_NO_DEACTIVATE' ) ) {
+	function deactivate_plugins( $plugins, $silent = false, $network = null ) { $GLOBALS['T_deactivated'][] = $plugins; $GLOBALS['T_deactivate_calls'][] = array( $plugins, $silent, $network ); }
+}
 
 function get_option( $n, $d = false ) { return array_key_exists( $n, $GLOBALS['T_options'] ) ? $GLOBALS['T_options'][ $n ] : $d; }
 function update_option( $n, $v, $autoload = null ) { $GLOBALS['T_writes'][] = array( 'update_option', $n ); $GLOBALS['T_options'][ $n ] = $v; if ( null !== $autoload ) { $GLOBALS['T_autoload'][ $n ] = $autoload; } return true; }
