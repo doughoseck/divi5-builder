@@ -32,5 +32,18 @@ const okAlign = lint(withAlign('center')); check('control: a VALID option value 
 must('a value that is not one of the field\'s options', withAlign('middle'), /"middle" is not an option\. Allowed: left \| center \| right/);
 must('attributes that are not valid JSON', swap('"builderVersion":"5.13"} -->\n<!-- wp:divi/row', '"builderVersion":"5.13" -->\n<!-- wp:divi/row'), /not valid JSON|never closed|does not match/);
 must('a block that is never closed', swap('<!-- /wp:divi/row -->', ''), /never closed|does not match/);
+// Misplaced groups (issue #17): only the ones verified in Divi's render code are errors.
+const img = (attrs) => `<!-- wp:divi/placeholder --><!-- wp:divi/section {"builderVersion":"5.13"} --><!-- wp:divi/row {"builderVersion":"5.13"} --><!-- wp:divi/column {"builderVersion":"5.13"} --><!-- wp:divi/image ${JSON.stringify(Object.assign({ image: { innerContent: { desktop: { value: { src: 'https://x/a.png' } } } }, builderVersion: '5.13' }, attrs))} /--><!-- /wp:divi/column --><!-- /wp:divi/row --><!-- /wp:divi/section --><!-- /wp:divi/placeholder -->`;
+const radius = { desktop: { value: { radius: { topLeft: '8px', topRight: '8px', bottomLeft: '8px', bottomRight: '8px', sync: 'on' } } } };
+must('image: border on the module element (photo keeps square corners) -> image.decoration.border', img({ module: { decoration: { border: radius } } }), /module\.decoration\.border is in the wrong place: it belongs in image\.decoration\.border/);
+must('image: max-width in module.decoration.sizing (Divi never reads it) -> module.advanced.sizing', img({ module: { decoration: { sizing: { desktop: { value: { maxWidth: '200px' } } } } } }), /module\.decoration\.sizing is in the wrong place: it belongs in module\.advanced\.sizing/);
+must('image: spacing in module.decoration -> module.advanced.spacing', img({ module: { decoration: { spacing: { desktop: { value: { margin: { top: '1px' } } } } } } }), /module\.decoration\.spacing is in the wrong place/);
+const ok = lint(img({ image: { innerContent: { desktop: { value: { src: 'https://x/a.png' } } }, decoration: { border: radius } }, module: { advanced: { sizing: { desktop: { value: { maxWidth: '200px' } } } } } }));
+check('control: the same image the way the builder saves it lints clean', ok.code === 0 && /no errors/.test(ok.out), ok.out);
+const sh = lint(img({ module: { decoration: { boxShadow: { desktop: { value: { blur: '18px' } } } } } }));
+check('image: a shadow on the module element is a WARNING, not an error (it still draws, on the wrapper)', sh.code === 0 && /warn\s+divi\/image: module\.decoration\.boxShadow is in the wrong place/.test(sh.out), sh.out);
+const blurb = `<!-- wp:divi/placeholder --><!-- wp:divi/section {"builderVersion":"5.13"} --><!-- wp:divi/row {"builderVersion":"5.13"} --><!-- wp:divi/column {"builderVersion":"5.13"} --><!-- wp:divi/blurb {"imageIcon":{"innerContent":{"desktop":{"value":{"useIcon":"on"}}},"decoration":{"sizing":{"desktop":{"value":{"iconFontSize":"30px"}}}}},"builderVersion":"5.13"} --><!-- /wp:divi/blurb --><!-- /wp:divi/column --><!-- /wp:divi/row --><!-- /wp:divi/section --><!-- /wp:divi/placeholder -->`;
+const bl = lint(blurb);
+check('no false alarm: a blurb\'s imageIcon.decoration.sizing (undeclared in module.json, but rendered by BlurbModule.php) lints clean', bl.code === 0 && !/wrong place/.test(bl.out), bl.out);
 for (const n of ['spec.json', 'clean.html', 'case.html']) try { fs.unlinkSync(tmp(n)); } catch (e) {}
 console.log(failed ? `\n${failed} check(s) FAILED` : '\nall checks passed'); process.exit(failed ? 1 : 0);
