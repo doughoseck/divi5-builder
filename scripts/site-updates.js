@@ -36,7 +36,7 @@
  */
 const fs = require('fs'); const path = require('path'); const { execFileSync } = require('child_process');
 const WP = path.join(__dirname, 'wp.js');
-const MIN_PLUGIN = '1.0.1';
+const MIN_PLUGIN = '1.0.2';
 
 // ---- pure ----
 
@@ -111,7 +111,17 @@ if (require.main === module) (async () => {
   const post = (act, body) => { fs.mkdirSync(dir, { recursive: true }); const f = path.join(dir, '.request.json'); fs.writeFileSync(f, JSON.stringify(body || {}));
     let out; try { out = run(['updates', act, '--data-file', f]); } catch (e) { out = JSON.stringify({ http: 0, code: 'no_answer', message: String(e.stderr || e.message).replace(/\s+/g, ' ').slice(0, 300) }); } finally { try { fs.unlinkSync(f); } catch (e) {} }
     try { return JSON.parse(out); } catch (e) { return { http: 0, code: 'not_json', message: out.slice(0, 300) }; } };
-  const getStatus = refresh => { const s = get('wp-site-updates/v1/status' + (refresh ? '?refresh=1' : '')); if (cmp(s.plugin_version, MIN_PLUGIN) < 0) die(`the site has wp-site-updates ${s.plugin_version}; upload ${MIN_PLUGIN} or newer`); return s; };
+  // Reading the status is a GET; refreshing it (ask the update servers) is a POST since plugin 1.0.2 (issue #22).
+  const getStatus = refresh => {
+    let s;
+    if (refresh) {
+      s = post('refresh');
+      if (s.http === 404 || s.code === 'rest_no_route') die(`the site's wp-site-updates plugin is older than ${MIN_PLUGIN} (no POST /refresh): upload ${MIN_PLUGIN} or newer`);
+      if (s.http >= 400 || !s.plugins) die('refresh failed: ' + (s.message || s.code || JSON.stringify(s).slice(0, 200)));
+    } else s = get('wp-site-updates/v1/status');
+    if (cmp(s.plugin_version, MIN_PLUGIN) < 0) die(`the site has wp-site-updates ${s.plugin_version}; upload ${MIN_PLUGIN} or newer`);
+    return s;
+  };
   const show = s => {
     console.log(`${s.site}   WordPress ${s.wordpress.version}, PHP ${s.php}${s.multisite ? ', multisite' : ''}   (checked ${s.last_checked || 'never'})`);
     if (s.site_blocked) console.log('  THIS SITE REFUSES UPDATES: ' + s.site_blocked);
