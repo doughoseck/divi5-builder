@@ -12,7 +12,8 @@
  *                                                            # --ignore-tables: tables of plugins that are no longer used;
  *                                                            # a mention there stops counting as a use
  *
- * Needs assets/wp-media-audit.php in wp-content/mu-plugins/ of the site (the user uploads it; it is read-only and
+ * Needs the divi5-builder plugin (divi5-builder.zip from the latest release) on the site with the Media audit switch on
+ * in Settings > Divi 5 Builder (an administrator does that in wp-admin; this script never switches anything on; the part is read-only and
  * stores nothing) and an administrator's application password in the creds file. <site> is the creds section.
  * D defaults to ./media-audit. Nothing on the site is changed by any command here: there is no delete in this file.
  *
@@ -32,6 +33,7 @@
  * scan alone would have missed it, the report says so. See references/wp-media-audit.md.
  */
 const fs = require('fs'); const path = require('path'); const { execFileSync } = require('child_process');
+const { adviceForSite } = require('./switch-advice.js');
 const WP = path.join(__dirname, 'wp.js');
 const NS = 'wp-media-audit/v1';
 const MIN_PLUGIN = '1.0.2';
@@ -297,8 +299,8 @@ function main() {
   if (cmd === 'scan') {
     if (!site) { console.error('usage: media-audit.js scan <site> [--dir D]'); process.exit(2); }
     fs.mkdirSync(rawDir, { recursive: true });
-    let info; try { info = get(NS + '/info'); } catch (e) { console.error(e.http === '404' ? 'The site has no wp-media-audit plugin. Upload assets/wp-media-audit.php to wp-content/mu-plugins/ and run this again.' : e.http === '401' || e.http === '403' ? 'The user in the creds file must be an administrator.' : 'ERROR: ' + e.message); process.exit(1); }
-    if (info.version < MIN_PLUGIN) { console.error('plugin ' + info.version + ' is older than ' + MIN_PLUGIN + ': upload the current assets/wp-media-audit.php'); process.exit(1); }
+    let info; try { info = get(NS + '/info'); } catch (e) { console.error(e.http === '404' ? adviceForSite(site, 'media_audit') : e.http === '401' || e.http === '403' ? 'The user in the creds file must be an administrator.' : 'ERROR: ' + e.message); process.exit(1); }
+    if (info.version < MIN_PLUGIN) { console.error('the media audit part is version ' + info.version + ', older than ' + MIN_PLUGIN + ': install divi5-builder.zip from the latest release'); process.exit(1); }
     const meta = { site, started: new Date().toISOString(), plugin: info.version, errors: [], skippedTables: [] };
     save('info', info); say(`site ${info.home} | WordPress ${info.wp} | PHP ${info.php} | ${info.attachments} library items | ${info.tables.length} tables`);
     if (info.multisite) say('NOTE: multisite. Only this site of the network is audited; untested.');
@@ -358,7 +360,7 @@ function main() {
     // What takes the space in the database (plugin >= 1.1.0). Read-only: counts and sizes, written to D/DB-REPORT.md.
     if (!site) { console.error('usage: media-audit.js db <site> [--dir D]'); process.exit(2); }
     fs.mkdirSync(rawDir, { recursive: true });
-    const info = get(NS + '/info'); let db; try { db = get(NS + '/db'); } catch (e) { console.error(e.http === '404' ? 'the plugin on the site is older than 1.1.0: upload the current assets/wp-media-audit.php' : 'ERROR: ' + e.message); process.exit(1); }
+    let info, db; try { info = get(NS + '/info'); db = get(NS + '/db'); } catch (e) { console.error(e.http === '404' ? adviceForSite(site, 'media_audit') : 'ERROR: ' + e.message); process.exit(1); }
     save('db', { info, db });
     const L = []; const tables = info.tables.slice().sort((a, b) => b.bytes - a.bytes); const total = tables.reduce((s, t) => s + t.bytes, 0);
     const short = n => n.slice(info.prefix.length);

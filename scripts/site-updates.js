@@ -15,7 +15,8 @@
  *            --core                      WordPress
  *            --translations
  *
- * Needs assets/wp-site-updates.php in wp-content/mu-plugins/ (the user uploads it) and an application password of a
+ * Needs the divi5-builder plugin (divi5-builder.zip from the latest release) with the Updates switch on in
+ * Settings > Divi 5 Builder (an administrator does that in wp-admin; these scripts never switch anything on) and an application password of a
  * user who may update (an administrator; on a multisite a network administrator).
  *
  * Without --write it only prints the plan. With --write:
@@ -35,6 +36,7 @@
  * run (what was updated from which version, and the page checks) is saved in --dir (default ./site-updates/<site>/).
  */
 const fs = require('fs'); const path = require('path'); const { execFileSync } = require('child_process');
+const { adviceForSite } = require('./switch-advice.js');
 const WP = path.join(__dirname, 'wp.js');
 const MIN_PLUGIN = '1.0.2';
 
@@ -106,7 +108,7 @@ if (require.main === module) (async () => {
   if (!['status', 'update', 'clear'].includes(cmd) || !site || site.startsWith('--')) die('usage: site-updates.js status|update|clear <site> … (see the top of this file)');
   const run = args => execFileSync('node', [WP, site, ...args], { encoding: 'utf8', maxBuffer: 64e6, stdio: ['ignore', 'pipe', 'pipe'] });
   const get = p => { try { return JSON.parse(run(['rest-get', p])); } catch (e) { const msg = String(e.stderr || e.message).replace(/\s+/g, ' ').slice(0, 300);
-    die(/404|rest_no_route/.test(msg) ? 'the site has no wp-site-updates plugin: upload assets/wp-site-updates.php to wp-content/mu-plugins/' : /401|403|rest_forbidden/.test(msg) ? 'this user may not update on that site (needs an administrator; on a multisite a network administrator)' : msg); } };
+    die(/404|rest_no_route/.test(msg) ? adviceForSite(site, 'updates') : /401|403|rest_forbidden/.test(msg) ? 'this user may not update on that site (needs an administrator; on a multisite a network administrator)' : msg); } };
   const dir = path.resolve(String(flag('dir', path.join('site-updates', site.replace(/[^\w.-]+/g, '_'))))); const WRITE = has('write');
   const post = (act, body) => { fs.mkdirSync(dir, { recursive: true }); const f = path.join(dir, '.request.json'); fs.writeFileSync(f, JSON.stringify(body || {}));
     let out; try { out = run(['updates', act, '--data-file', f]); } catch (e) { out = JSON.stringify({ http: 0, code: 'no_answer', message: String(e.stderr || e.message).replace(/\s+/g, ' ').slice(0, 300) }); } finally { try { fs.unlinkSync(f); } catch (e) {} }
@@ -116,10 +118,10 @@ if (require.main === module) (async () => {
     let s;
     if (refresh) {
       s = post('refresh');
-      if (s.http === 404 || s.code === 'rest_no_route') die(`the site's wp-site-updates plugin is older than ${MIN_PLUGIN} (no POST /refresh): upload ${MIN_PLUGIN} or newer`);
+      if (s.http === 404 || s.code === 'rest_no_route') die(adviceForSite(site, 'updates'));
       if (s.http >= 400 || !s.plugins) die('refresh failed: ' + (s.message || s.code || JSON.stringify(s).slice(0, 200)));
     } else s = get('wp-site-updates/v1/status');
-    if (cmp(s.plugin_version, MIN_PLUGIN) < 0) die(`the site has wp-site-updates ${s.plugin_version}; upload ${MIN_PLUGIN} or newer`);
+    if (cmp(s.plugin_version, MIN_PLUGIN) < 0) die(`the site has the updates part at version ${s.plugin_version}, older than ${MIN_PLUGIN}: install divi5-builder.zip from the latest release`);
     return s;
   };
   const show = s => {
