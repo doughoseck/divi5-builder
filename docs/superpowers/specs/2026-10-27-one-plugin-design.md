@@ -160,8 +160,7 @@ Builder's call: keep the plugin a **single PHP file** as today, if that stays re
 - **Where the tests run** (my call): the offline suites use WordPress stand-ins, as today. The stand-ins share the builder's assumptions, so the two security tests also run **live** through the scripts on the dev site:
   - list `/wp-json/` and check which namespaces exist with each switch on and off
   - read `/wp/v2/settings` and check the option is absent
-  - POST an **empty body** to every page-building route as an administrator, then confirm the option is unchanged
-  - **Never live, with the risky switches ON:** a POST to `wp-site-updates/v1/update` or `wp-media-quarantine/v1/move` could run a real update or move real files. That check is offline only.
+  - **No live POSTs at all** (corrected while planning): an empty POST to `divi5-builder/v1/custom-css` could clear a site's CSS, and `wp-site-updates/v1/update` or `wp-media-quarantine/v1/move` could run a real update or move real files. "No route writes the switch option" is proved offline only, where every option write is recorded.
 - **Live, on the maintainer's own dev site.** The maintainer uploads the must-use files; an agent cannot.
   - **First real multisite target:** a production network of the maintainer's that still runs an old must-use copy, which is exactly the "stand aside + notice" case.
   - fresh install
