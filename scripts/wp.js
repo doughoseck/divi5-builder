@@ -18,6 +18,7 @@
  *   node wp.js <site> global-colors                # discover gcid global-color IDs in use
  *   node wp.js <site> create-page --title T --content-file F [--status draft|publish] [--slug S]
  *   node wp.js <site> update-page <id> [--title T] [--content-file F --expect-hash H | --force] [--status ...]
+ *                                                  # to change ONE section/module of it: blocks.js (header there)
  *   node wp.js <site> delete-page <id> [--force]   # --force = permanent (skip trash)
  *   node wp.js <site> set-homepage <id>            # show_on_front=page, page_on_front=id
  *   node wp.js <site> reset-homefront              # show_on_front=posts (undo)

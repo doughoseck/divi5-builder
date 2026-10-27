@@ -65,6 +65,7 @@ Before opening a PR:
    node scripts/compile-test.js && node scripts/preset-spec-test.js && node scripts/catalog-test.js
    node scripts/stale-guard-test.js   # page/post/canvas writes refuse when the content changed since the read
    node scripts/spec-check-test.js    # unknown spec keys are reported; every documented example checks clean
+   node scripts/blocks-test.js        # block-level edits leave the rest of the page byte for byte
    node scripts/media-audit-test.js && node scripts/site-updates-test.js
    php scripts/permissions-test.php && php scripts/double-load-test.php && php scripts/media-quarantine-test.php && php scripts/media-audit-test.php
    ```
