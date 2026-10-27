@@ -51,7 +51,8 @@ function check(site, wpjs) {
       const present = ns.includes(PARTS[part]);
       if (!sw[part] && present && aside[part]) say(`NOTE: ${part} switch is off but ${PARTS[part]} is present: this part stood aside (${aside[part]}) for an old copy of it running on the site. Expected.`);
       else if (!sw[part] && present) { failed = true; say(`FAIL: ${part} switch is off but ${PARTS[part]} is present.`); }
-      else if (sw[part] && !present) say(`WARNING: ${part} switch is on but ${PARTS[part]} is not present.`);
+      else if (sw[part] && !present && aside[part]) say(`NOTE: ${part} switch is on, ${PARTS[part]} is not present, and this part stood aside (${aside[part]}).`);
+      else if (sw[part] && !present) { failed = true; say(`FAIL: ${part} switch is on but ${PARTS[part]} is not present (the part did not load).`); }
       else say(`ok: ${part} ${sw[part] ? 'on, ' + PARTS[part] + ' present' : 'off, ' + PARTS[part] + ' absent'}`);
     }
   }

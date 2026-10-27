@@ -43,6 +43,12 @@ check('updates ON and wp-site-updates/v1 present -> exit 0 (that is expected)', 
 r = run({ d5: d5({ updates: true }), index: CORE.concat(['wp-media-quarantine/v1']), settings: { title: 'fake' } });
 check('only updates on, but wp-media-quarantine/v1 present -> exit 1', r.code === 1 && /wp-media-quarantine\/v1/.test(r.out), [r.code, r.out]);
 
+console.log('--- a switched-on part that did not load');
+r = run({ d5: d5({ updates: true }), index: CORE, settings: { title: 'fake' } });
+check('updates on but wp-site-updates/v1 absent -> exit 1, names it, no "all checks passed"', r.code === 1 && /FAIL/.test(r.out) && /updates/.test(r.out) && /wp-site-updates\/v1/.test(r.out) && !/all checks passed/.test(r.out), [r.code, r.out]);
+r = run({ d5: d5({ updates: true }, { updates: 'route' }), index: CORE, settings: { title: 'fake' } });
+check('... unless that part stood aside -> exit 0 with a note', r.code === 0 && /NOTE/.test(r.out) && /stood aside/.test(r.out), [r.code, r.out]);
+
 console.log('--- the option leaks into settings');
 r = run({ d5: d5({}), index: CORE, settings: { title: 'fake', d5b_switches: { updates: true } } });
 check('d5b_switches in /wp/v2/settings -> exit 1', r.code === 1 && /FAIL/.test(r.out) && /d5b_switches/.test(r.out), [r.code, r.out]);
