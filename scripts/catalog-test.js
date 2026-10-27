@@ -36,8 +36,12 @@ must('a block that is never closed', swap('<!-- /wp:divi/row -->', ''), /never c
 const img = (attrs) => `<!-- wp:divi/placeholder --><!-- wp:divi/section {"builderVersion":"5.13"} --><!-- wp:divi/row {"builderVersion":"5.13"} --><!-- wp:divi/column {"builderVersion":"5.13"} --><!-- wp:divi/image ${JSON.stringify(Object.assign({ image: { innerContent: { desktop: { value: { src: 'https://x/a.png' } } } }, builderVersion: '5.13' }, attrs))} /--><!-- /wp:divi/column --><!-- /wp:divi/row --><!-- /wp:divi/section --><!-- /wp:divi/placeholder -->`;
 const radius = { desktop: { value: { radius: { topLeft: '8px', topRight: '8px', bottomLeft: '8px', bottomRight: '8px', sync: 'on' } } } };
 must('image: border on the module element (photo keeps square corners) -> image.decoration.border', img({ module: { decoration: { border: radius } } }), /module\.decoration\.border is in the wrong place: it belongs in image\.decoration\.border/);
-must('image: max-width in module.decoration.sizing (Divi never reads it) -> module.advanced.sizing', img({ module: { decoration: { sizing: { desktop: { value: { maxWidth: '200px' } } } } } }), /module\.decoration\.sizing is in the wrong place: it belongs in module\.advanced\.sizing/);
-must('image: spacing in module.decoration -> module.advanced.spacing', img({ module: { decoration: { spacing: { desktop: { value: { margin: { top: '1px' } } } } } } }), /module\.decoration\.spacing is in the wrong place/);
+// sizing and spacing on the module element still draw (on the wrapper; a misplaced max-width measured working live):
+// a WARNING that points home, and for sizing says where its alignment must go
+const sz = lint(img({ module: { decoration: { sizing: { desktop: { value: { maxWidth: '200px', alignment: 'center' } } } } } }));
+check('image: max-width in module.decoration.sizing is a WARNING (it draws) -> module.advanced.sizing, alignment -> module.advanced.align', sz.code === 0 && /warn\s+divi\/image: module\.decoration\.sizing is in the wrong place: it belongs in module\.advanced\.sizing.*module\.advanced\.align/.test(sz.out), sz.out);
+const sp = lint(img({ module: { decoration: { spacing: { desktop: { value: { margin: { top: '1px' } } } } } } }));
+check('image: spacing in module.decoration is a WARNING -> module.advanced.spacing', sp.code === 0 && /warn\s+divi\/image: module\.decoration\.spacing is in the wrong place/.test(sp.out), sp.out);
 const ok = lint(img({ image: { innerContent: { desktop: { value: { src: 'https://x/a.png' } } }, decoration: { border: radius } }, module: { advanced: { sizing: { desktop: { value: { maxWidth: '200px' } } } } } }));
 check('control: the same image the way the builder saves it lints clean', ok.code === 0 && /no errors/.test(ok.out), ok.out);
 const sh = lint(img({ module: { decoration: { boxShadow: { desktop: { value: { blur: '18px' } } } } } }));
