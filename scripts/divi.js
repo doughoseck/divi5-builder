@@ -214,6 +214,12 @@ function effectInteraction(triggerId, effect, targetIds, extra) {
 }
 // Toggle visibility of many targets at once (monthly/annual switch etc.).
 function togglesDecoration(triggerId, targetIds) { return effectInteraction(triggerId, 'toggleVisibility', targetIds); }
+// Issue #16: a module on a preset (modulePreset, or a group preset via `preset`) writes ONLY the style settings its
+// spec asks for, so the preset stays in control. Without a preset the compiler's usual defaults apply, unchanged.
+// styleDefault(m, value, fallback): the spec's value if given, else the fallback only when there is no preset.
+function onPreset(m) { return [].concat(m.modulePreset == null ? [] : m.modulePreset).some((x) => String(x) !== '') || !!m.preset; }
+function styleDefault(m, value, fallback) { return value ? value : (onPreset(m) ? undefined : fallback); }
+
 // A module's groupPreset reference: { slot, id, group } → attach an existing preset by id.
 function presetAttr(m, attrs) {
   if (m.preset) attrs.groupPreset = { [m.preset.slot || 'designTitleText']: { presetId: [m.preset.id], groupName: m.preset.group || 'divi/font' } };
@@ -280,7 +286,8 @@ function mText(m) {
 // Interactions: popup (canvas), toggles[] (visibility switch), scrollTo:"<id>"
 // (scrollToElement), togglePreset:{target,presetId}. `url` is skipped if scrollTo set.
 function mButton(m) {
-  const module = { advanced: { alignment: { desktop: { value: m.align || 'left' } } } };
+  const align = styleDefault(m, m.align, 'left');
+  const module = align ? { advanced: { alignment: { desktop: { value: align } } } } : {};
   const dec = {};
   if (m.padding) dec.spacing = { desktop: { value: { padding: Object.assign({ syncVertical: 'on', syncHorizontal: 'on' }, m.padding) } } };
   if (m.interactions) Object.assign(dec, interactionsDecoration(m));
@@ -292,14 +299,16 @@ function mButton(m) {
   if (m.hidden) Object.assign(dec, hiddenDecoration());
   if (Object.keys(dec).length) module.decoration = dec;
   const bdec = {};
-  const fv = fontValue({ color: m.color, size: m.size, weight: m.weight || '700', family: m.family, caps: m.caps });
+  const fv = fontValue({ color: m.color, size: m.size, weight: styleDefault(m, m.weight, '700'), family: m.family, caps: m.caps });
   if (Object.keys(fv).length) bdec.font = { font: { desktop: { value: fv } } };
   const bg = colorVal(m.bg); if (bg) bdec.background = { desktop: { value: { color: bg } } };
   if (m.radius) bdec.border = { desktop: { value: { radius: { topLeft: m.radius, topRight: m.radius, bottomLeft: m.radius, bottomRight: m.radius, sync: 'on' } } } };
-  bdec.button = { desktop: { value: { icon: { enable: m.icon ? 'on' : 'off' } } } };
+  if (m.icon !== undefined || !onPreset(m)) bdec.button = { desktop: { value: { icon: { enable: m.icon ? 'on' : 'off' } } } };
   const inner = { text: m.text || 'Learn more', linkUrl: m.url || '#' };
   if (m.newTab) inner.linkTarget = 'on';
-  const attrs = { module, button: { innerContent: { desktop: { value: inner } }, decoration: bdec }, builderVersion: BV };
+  const button = { innerContent: { desktop: { value: inner } } };
+  if (Object.keys(bdec).length) button.decoration = bdec;
+  const attrs = Object.keys(module).length ? { module, button, builderVersion: BV } : { button, builderVersion: BV };
   return [open('divi/button', attrs), close('divi/button')];
 }
 // Link: the WHOLE module renders as a real <a href>, unlike icon-list-item (which has
@@ -354,11 +363,13 @@ function mVideo(m) {
 }
 // A Divi font-icon module — used as the popup close button (X = unicode &#x51; in the "divi" icon font).
 function mIcon(m) {
-  const attrs = {
-    icon: { innerContent: { desktop: { value: { unicode: m.unicode || '&#x51;', type: m.iconType || 'divi', weight: m.weight || '400' } } },
-      advanced: { size: { desktop: { value: m.size || '40px' } }, color: { desktop: { value: m.color || '#ffffff' } } } },
-    builderVersion: BV,
-  };
+  // unicode/type/weight pick WHICH glyph (content), so they are always written; size and colour are style.
+  const adv = {};
+  const size = styleDefault(m, m.size, '40px'); if (size) adv.size = { desktop: { value: size } };
+  const color = styleDefault(m, m.color, '#ffffff'); if (color) adv.color = { desktop: { value: color } };
+  const icon = { innerContent: { desktop: { value: { unicode: m.unicode || '&#x51;', type: m.iconType || 'divi', weight: m.weight || '400' } } } };
+  if (Object.keys(adv).length) icon.advanced = adv;
+  const attrs = { icon, builderVersion: BV };
   if (m.absolute) attrs.module = { decoration: { position: { desktop: { value: { mode: 'absolute', origin: { absolute: m.origin || 'top right' }, offset: { horizontal: m.offsetX || '-50px' } } } } } };
   return [selfClose('divi/icon', attrs)];
 }
@@ -386,24 +397,29 @@ function mBlurb(m) {
   const iconInner = {};
   if (m.icon) { iconInner.useIcon = 'on'; iconInner.icon = { unicode: m.icon.unicode || m.icon, type: m.icon.type || 'fa', weight: m.icon.weight || '900' }; }
   else if (m.image) { iconInner.useIcon = 'off'; iconInner.src = m.image; iconInner.id = m.imageId || ''; iconInner.alt = m.alt || ''; }
-  const imageIcon = { innerContent: { desktop: { value: iconInner } }, advanced: { placement: { desktop: { value: m.iconPlacement || 'top' } } } };
+  const imageIcon = { innerContent: { desktop: { value: iconInner } } };
+  const placement = styleDefault(m, m.iconPlacement, 'top');
+  if (placement) imageIcon.advanced = { placement: { desktop: { value: placement } } };
   if (m.iconSize) imageIcon.decoration = { sizing: { desktop: { value: { iconFontSize: m.iconSize } } } };
   const title = { innerContent: { desktop: { value: { text: m.title || '' } } } };
   if (m.titleLevel) title.decoration = { font: { font: { desktop: { value: { headingLevel: m.titleLevel } } } } };
   const attrs = {
     imageIcon,
-    module: {},
+    module: {},   // (an empty object; kept for byte-identical output without a preset, dropped below with one)
     title,
     content: { innerContent: { desktop: { value: m.html || (m.text ? `<p>${m.text}</p>` : '') } } },
     builderVersion: BV,
   };
   if (m.chip) attrs.css = { desktop: { value: { blurbImage: `padding:${m.chip.padding || '6px'};border-radius:${m.chip.radius || '8px'};background:${colorVal(m.chip.bg) || 'rgba(15,77,42,.08)'};` } } };
+  if (onPreset(m)) delete attrs.module;
   return [open('divi/blurb', attrs), close('divi/blurb')];
 }
 // Invisible spacer / height-holder. A common Divi trick: put an off divider in a
 // column to give the column height so a COLUMN background image can `cover` the space.
 function mDivider(m) {
-  const attrs = { divider: { advanced: { line: { desktop: { value: { show: m.showLine ? 'on' : 'off' } } } } }, builderVersion: BV };
+  const attrs = (m.showLine !== undefined || !onPreset(m))
+    ? { divider: { advanced: { line: { desktop: { value: { show: m.showLine ? 'on' : 'off' } } } } }, builderVersion: BV }
+    : { builderVersion: BV };
   if (m.height) attrs.module = { decoration: { sizing: { desktop: { value: { height: m.height } } } } };
   return [selfClose('divi/divider', attrs)];
 }

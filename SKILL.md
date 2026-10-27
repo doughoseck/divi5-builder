@@ -62,6 +62,10 @@ the other way round:
    ```
    A module on a preset carries **content and placement only** (text, url, image,
    margin, alignment). No colours, no fonts, no padding next to a preset.
+   The compiler follows this: on a module with a preset it leaves out its own style defaults
+   (a button's 700 weight, left alignment and icon off; a blurb's icon placement; an icon's 40px
+   size and white colour; a divider's line setting). What the spec sets explicitly is still
+   written, and then overrides the preset, so only set what the preset must not decide.
 4. **Need a look that no preset has?** Used once: set it on the module, with global
    colours. Used twice: make a preset. Never copy a preset's values onto a module.
 
