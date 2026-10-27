@@ -121,6 +121,16 @@ function parseBlocks(t) { const re = /<!--\s+(\/)?wp:([a-z0-9-]+\/[a-z0-9-]+)(?:
   return out; }
 // Top-level keys any block may carry (seen on builder-written blocks), so never "unknown elements".
 const UNIVERSAL = new Set(['builderVersion', 'modulePreset', 'groupPreset', 'css', 'presets', 'locked', 'collapsed', 'label', 'globalParent', 'globalModule', 'themeBuilderArea']);
+// Misplaced groups VERIFIED in Divi 5.15.1's render code (includes/builder-5/server/Packages/ModuleLibrary/...).
+// Add an entry only with a source line that shows where Divi really reads the value.
+const MISPLACED = {
+  'divi/image': {
+    'module.decoration.sizing': { home: 'module.advanced.sizing', level: 'error', why: 'ImageModule.php: "Image module stores sizing data at module.advanced.sizing"; its preset resolver translates the two' },
+    'module.decoration.spacing': { home: 'module.advanced.spacing', level: 'error', why: 'ImageModule.php renders spacing from module.advanced.spacing only' },
+    'module.decoration.border': { home: 'image.decoration.border', level: 'error', why: 'ImageModule.php renders the border from image.decoration.border; on the wrapper the photo keeps square corners' },
+    'module.decoration.boxShadow': { home: 'image.decoration.boxShadow', level: 'warning', why: 'the builder puts it on the image element; here it styles the wrapper instead' },
+  },
+};
 function lint(file, strict) { const cat = load(); const t = fs.readFileSync(file, 'utf8'); const blocks = parseBlocks(t); const errs = [], warns = []; let n = 0;
   for (const b of blocks) { if (b.error) { errs.push(b.error); continue; } if (b.name === 'divi/placeholder') continue; n++; const m = cat.modules[b.name];
     if (!b.name.startsWith('divi/')) { warns.push(`${b.name}: not a Divi block, not checked`); continue; }
@@ -129,6 +139,20 @@ function lint(file, strict) { const cat = load(); const t = fs.readFileSync(file
     if (!Object.keys(m.elements).length) continue;
     for (const k of Object.keys(b.attrs)) { if (UNIVERSAL.has(k)) continue; if (!m.elements[k]) { errs.push(`${b.name}: unknown element "${k}". It has: ${Object.keys(m.elements).join(', ')}`); continue; }
       const el = m.elements[k]; const v = b.attrs[k]; if (!v || typeof v !== 'object') continue;
+      // MISPLACED groups (issue #17, found fixing #33). Only the ones VERIFIED in Divi's render code are errors (see
+      // MISPLACED above). A group this element does not declare but another place in the module does is only a
+      // --strict hint: module.json's group lists are incomplete (the blurb's imageIcon.decoration.sizing is undeclared
+      // yet BlurbModule.php renders it), so "declared elsewhere" alone proves nothing.
+      for (const sec of ['decoration', 'advanced']) {
+        for (const g of Object.keys((v[sec] && typeof v[sec] === 'object') ? v[sec] : {})) {
+          const known = (MISPLACED[b.name] || {})[`${k}.${sec}.${g}`];
+          if (known) { (known.level === 'error' ? errs : warns).push(`${b.name}: ${k}.${sec}.${g} is in the wrong place: it belongs in ${known.home} (${known.why})`); continue; }
+          if (!strict || !el[sec] || !el[sec].length || el[sec].includes(g) || ['interactionTarget', 'interactionTrigger'].includes(g)) continue;
+          const homes = [];
+          for (const [ek, e] of Object.entries(m.elements)) for (const s2 of ['decoration', 'advanced']) if ((ek !== k || s2 !== sec) && (e[s2] || []).includes(g)) homes.push(`${ek}.${s2}.${g}`);
+          if (homes.length) warns.push(`${b.name}: ${k}.${sec}.${g} is not declared there; the catalogue lists it on ${homes.join(' or ')} (a hint only: the group lists are incomplete)`);
+        }
+      }
       // Divi itself writes attributes its settings tree never declares (row columnStructure, column type, htmlAttributes:
       // seen on 100+ builder-written blocks), so "not declared" proves nothing. Only reported with --strict, as a hint.
       if (strict) for (const sec of Object.keys(v)) { if (sec === 'decoration') { for (const g of Object.keys(v.decoration || {})) if (el.decoration.length && !el.decoration.includes(g) && !['interactionTarget', 'interactionTrigger'].includes(g)) warns.push(`${b.name}: ${k}.decoration.${g} is not a decoration group this element declares (${el.decoration.join(', ')})`); }

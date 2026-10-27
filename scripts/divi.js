@@ -68,6 +68,7 @@
  * #contact) and "hideOn": ["phone"|"tablet"|"desktop"] (hidden on just those devices).
  */
 const fs = require('fs');
+const path = require('path');
 
 let BV = '5.9.0'; // overwritten from spec.builderVersion
 
@@ -985,7 +986,14 @@ function buildSection(sec) {
   return withPreset(sec, withCommon(sec, lines));
 }
 
-function compile(spec) {
+// Unknown keys (issue #17): a WARNING on stderr per key, or an error with opts.strict. opts.quiet silences the
+// warnings; compile.warnings keeps those of the last call either way.
+function reportSpec(warnings, opts) {
+  if (warnings.length && opts.strict) throw new Error('spec check failed:\n  ' + warnings.join('\n  '));
+  if (!opts.quiet) for (const w of warnings) process.stderr.write('WARNING: ' + w + '\n');
+}
+function compile(spec, opts = {}) {
+  compile.warnings = checkSpec(spec, 'page'); reportSpec(compile.warnings, opts);
   BV = spec.builderVersion || BV;
   const lines = ['<!-- wp:divi/placeholder -->'];
   for (const sec of (spec.sections || [])) lines.push(...buildSection(sec));
@@ -997,7 +1005,8 @@ function compile(spec) {
 // interactionTarget matches a trigger elsewhere. Content is created as an
 // et_pb_canvas post, then attached to a page via `wp.js link-canvas`.
 // popup = { targetId, overlayColor, width, modules:[...], builderVersion }
-function compilePopupCanvas(popup) {
+function compilePopupCanvas(popup, opts = {}) {
+  compilePopupCanvas.warnings = checkSpec(popup, 'popup'); reportSpec(compilePopupCanvas.warnings, opts);
   BV = popup.builderVersion || BV;
   const target = popup.targetId;
   const sectionAttrs = { builderVersion: BV, module: { decoration: {
@@ -1026,18 +1035,130 @@ function compilePopupCanvas(popup) {
   return lines.join('\n') + PLACEHOLDER_CLOSE;
 }
 
+// ---- Spec check (issue #17): unknown keys are reported, not silently ignored ----
+// The known keys are read from THIS file's own source, so a new option is known the moment a builder reads it:
+// for each builder, every `<param>.<key>` it reads, following helpers that receive the same object (fontValue(m),
+// withCommon(sec, …)). Keys starting with "_" or "$" are free for notes ("_comment").
+let KNOWN = null;
+function knownKeys() {
+  if (KNOWN) return KNOWN;
+  const src = fs.readFileSync(__filename, 'utf8');
+  const fns = {};
+  for (const h of src.matchAll(/^function (\w+)\(([^)]*)\)\s*\{/gm)) {
+    let i = h.index + h[0].length - 1, depth = 0, j = i;
+    for (; j < src.length; j++) { if (src[j] === '{') depth++; else if (src[j] === '}' && !--depth) break; }
+    fns[h[1]] = { param: (h[2].split(',')[0] || '').trim(), body: src.slice(i, j + 1) };
+  }
+  const keysOf = (name, seen = new Set()) => {
+    const f = fns[name]; const out = new Set(); if (!f || !f.param || seen.has(name)) return out; seen.add(name);
+    const p = f.param.replace(/[^\w$]/g, '');
+    for (const k of f.body.matchAll(new RegExp('\\b' + p + '\\.(\\w+)', 'g'))) out.add(k[1]);
+    for (const c of f.body.matchAll(new RegExp('\\b(\\w+)\\(\\s*' + p + '\\s*[,)]', 'g'))) if (c[1] !== name) keysOf(c[1], seen).forEach((k) => out.add(k));
+    return out;
+  };
+  const shared = new Set(['type', ...keysOf('withPreset'), ...keysOf('withCommon')]);
+  const sw = (fns.buildModuleBare || {}).body || '';
+  const module = {};
+  for (const c of sw.matchAll(/case '([\w-]+)': return (\w+)\(m\)/g)) module[c[1]] = new Set([...shared, ...keysOf(c[2])]);
+  KNOWN = {
+    page: keysOf('compile'), section: keysOf('buildSection'), column: keysOf('buildColumn'),
+    row: new Set([...shared, ...keysOf('buildRow'), ...keysOf('buildGridRow')]), popup: keysOf('compilePopupCanvas'), module,
+  };
+  return KNOWN;
+}
+function editDistance(a, b) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[a.length][b.length];
+}
+// checkSpec(spec, kind = 'page'|'popup') -> [ "unknown key ..." ] (empty when every key is one a builder reads)
+function checkSpec(spec, kind = 'page') {
+  const K = knownKeys(); const out = [];
+  const suggest = (k, allowed) => {
+    let best = null, bd = 3;
+    for (const a of allowed) { const dd = a.toLowerCase() === k.toLowerCase() ? 0 : editDistance(k.toLowerCase(), a.toLowerCase()); if (dd < bd) { bd = dd; best = a; } }
+    return best ? ` (did you mean "${best}"?)` : '';
+  };
+  const visit = (o, kd, where) => {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return;
+    const allowed = kd === 'module' ? K.module[o.type] : K[kd];
+    if (!allowed) return; // an unknown module type is refused by buildModule itself
+    const label = kd === 'module' ? `${o.type} module` : kd;
+    for (const k of Object.keys(o)) if (!/^[_$]/.test(k) && !allowed.has(k)) out.push(`unknown key "${k}" on the ${label} at ${where}${suggest(k, allowed)}`);
+    const kids = (arr, kk, name) => (Array.isArray(arr) ? arr : []).forEach((x, i) => visit(x, kk(x), `${where}.${name}[${i}]`));
+    if (kd === 'page') kids(o.sections, () => 'section', 'sections');
+    if (kd === 'section') kids(o.rows, () => 'row', 'rows');
+    if (kd === 'row') kids(o.columns, () => 'column', 'columns');
+    if (kd === 'column' || kd === 'popup' || kd === 'module') kids(o.modules, (x) => (x && x.type === 'row' ? 'row' : 'module'), 'modules');
+  };
+  visit(spec, kind, kind === 'page' ? 'spec' : 'popup');
+  return out;
+}
+
+// ---- Checks after compiling (issue #17) ----
+// The global colours, variables and presets the compiled markup REFERENCES, read from the output itself.
+function referencedIds(out) {
+  const t = out.replace(/\\u0022/g, '"');
+  const ids = { colors: new Set(t.match(/gcid-[a-z0-9-]+/g) || []), variables: new Set(t.match(/gvid-[a-z0-9-]+/g) || []), presets: new Set() };
+  for (const m of t.matchAll(/"(?:modulePreset|presetId)":\[([^\]]*)\]/g)) for (const id of m[1].split(',')) { const s = id.replace(/"/g, '').trim(); if (s && s !== 'default') ids.presets.add(s); }
+  return ids;
+}
+const BUILTIN_COLORS = ['gcid-primary-color', 'gcid-secondary-color', 'gcid-heading-color', 'gcid-body-color', 'gcid-link-color'];
+// --site <name>: every referenced colour, variable and preset must exist on that site (a missing one renders nothing).
+function checkAgainstSite(out, site) {
+  const { execFileSync } = require('child_process');
+  const ds = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, 'wp.js'), site, 'design-system', '--json', '--full'], { encoding: 'utf8', maxBuffer: 64e6 }));
+  const ids = referencedIds(out); const problems = [];
+  const colors = ds.colors || {};
+  for (const c of ids.colors) {
+    if (BUILTIN_COLORS.includes(c)) continue;
+    if (!colors[c]) problems.push(`global colour ${c} does not exist on ${site} (take ids from: wp.js ${site} design-system)`);
+    else if (colors[c].status && colors[c].status !== 'active') problems.push(`global colour ${c} ("${colors[c].label}") is ${colors[c].status} on ${site}`);
+  }
+  const vars = new Set((Array.isArray(ds.variables) ? ds.variables : Object.values(ds.variables || {}).flatMap((x) => (Array.isArray(x) ? x : Object.values(x || {})))).map((v) => v && v.id).filter(Boolean));
+  for (const v of ids.variables) if (!vars.has(v)) problems.push(`design variable ${v} does not exist on ${site}`);
+  const presets = new Set([...((ds.presets || {}).module || []), ...((ds.presets || {}).group || [])].map((p) => p.id));
+  for (const p of ids.presets) if (!presets.has(p)) problems.push(`preset ${p} does not exist on ${site} (take ids from: wp.js ${site} design-system)`);
+  return problems;
+}
+
 // ---- CLI ----
+//   node divi.js compile|compile-canvas <spec.json> [--out F] [--strict] [--site <name>] [--no-lint]
+//   --strict       an unknown spec key, or a catalogue lint error, fails the run (exit 1)
+//   --site <name>  check every global colour, variable and preset the page uses exists on that site (exit 1 if not)
+//   --no-lint      skip the catalogue lint that runs after compiling when catalog/catalog.json exists
 if (require.main === module) {
   const [cmd, specPath, ...rest] = process.argv.slice(2);
-  const outIdx = rest.indexOf('--out');
-  const write = (out) => { if (outIdx >= 0 && rest[outIdx + 1]) { fs.writeFileSync(rest[outIdx + 1], out); process.stderr.write(`wrote ${out.length} chars to ${rest[outIdx + 1]}\n`); } else process.stdout.write(out); };
-  if (cmd === 'compile' && specPath) { write(compile(JSON.parse(fs.readFileSync(specPath, 'utf8')))); }
-  else if (cmd === 'compile-canvas' && specPath) { write(compilePopupCanvas(JSON.parse(fs.readFileSync(specPath, 'utf8')))); }
-  else { process.stderr.write('usage: node divi.js compile|compile-canvas <spec.json> [--out F]\n'); process.exit(1); }
+  const flagVal = (n) => { const i = rest.indexOf('--' + n); return i >= 0 && rest[i + 1] && !rest[i + 1].startsWith('--') ? rest[i + 1] : null; };
+  const strict = rest.includes('--strict'); const site = flagVal('site'); const outFile = flagVal('out');
+  if (!['compile', 'compile-canvas'].includes(cmd) || !specPath) { process.stderr.write('usage: node divi.js compile|compile-canvas <spec.json> [--out F] [--strict] [--site <name>] [--no-lint]\n'); process.exit(1); }
+  const spec = JSON.parse(fs.readFileSync(specPath, 'utf8'));
+  let out;
+  try { out = cmd === 'compile' ? compile(spec, { strict }) : compilePopupCanvas(spec, { strict }); }
+  catch (e) { process.stderr.write('ERROR: ' + e.message + '\n'); process.exit(1); }
+  if (outFile) { fs.writeFileSync(outFile, out); process.stderr.write(`wrote ${out.length} chars to ${outFile}\n`); } else process.stdout.write(out);
+  let fail = false;
+  if (site) {
+    const problems = checkAgainstSite(out, site);
+    for (const p of problems) process.stderr.write('ERROR: ' + p + '\n');
+    if (problems.length) fail = true; else process.stderr.write(`site check: every colour, variable and preset exists on ${site}\n`);
+  }
+  const catalogFile = path.join(__dirname, '..', 'catalog', 'catalog.json');
+  if (!rest.includes('--no-lint') && fs.existsSync(catalogFile)) {
+    const { spawnSync } = require('child_process');
+    const f = outFile || path.join(require('os').tmpdir(), `d5b-compiled-${process.pid}.html`); if (!outFile) fs.writeFileSync(f, out);
+    const r = spawnSync(process.execPath, [path.join(__dirname, 'catalog.js'), 'lint', f], { encoding: 'utf8' });
+    if (!outFile) try { fs.unlinkSync(f); } catch (e) {}
+    const lines = String(r.stdout || '').split(/\r?\n/).filter((l) => /^\s+(ERROR|warn)\s/.test(l) || /error\(s\)|no errors/.test(l));
+    process.stderr.write('lint: ' + (lines.length ? lines.map((l) => l.trim()).join('\n  ') : 'no output') + '\n');
+    if (r.status !== 0) { if (strict) fail = true; else process.stderr.write('lint found errors (use --strict to fail on them)\n'); }
+  }
+  if (fail) process.exit(1);
 }
 
 // buildModule: compile ONE module spec (see buildModule's switch for `type`s) to its block-markup
 // lines, for splicing into an existing page's content — e.g. replacing a single stale block
 // (a leftover shortcode) without regenerating the section/row/column around it and losing
 // responsive values a spec can't express (buildSection only takes one padding, not per-breakpoint).
-module.exports = { compile, compilePopupCanvas, dc, buildModule };
+module.exports = { compile, compilePopupCanvas, dc, buildModule, checkSpec, knownKeys };

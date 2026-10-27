@@ -38,7 +38,7 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
         if (!suNew) { status = 404; out = { code: 'rest_no_route', message: 'No route was found' }; }
         else { st.su.refreshes = (st.su.refreshes || 0) + 1; out = suStatus(); fs.writeFileSync(STATE, JSON.stringify(st)); }
       }
-      else if (p === '/wp-json/divi5-builder/v1/design-system') out = { colors: st.colors || {}, presets: { module: [], group: [] } };
+      else if (p === '/wp-json/divi5-builder/v1/design-system') out = { colors: st.colors || {}, presets: st.presets || { module: [], group: [] }, variables: st.variables || [] };
       else if (!m) { status = 404; out = { code: 'rest_no_route' }; }
       else {
         const [, kind, id] = m; st[kind] = st[kind] || {};
@@ -209,6 +209,38 @@ console.log('--- site-updates.js: reading the status is a GET, refreshing it is 
   check('status --no-refresh only reads (a GET), nothing refreshed', r.code === 0 && r.su.gets === 1 && !r.su.refreshes && !r.su.getRefresh, [r.code, r.su]);
   r = su('1.0.1', 'status', 'fake', '--dir', path.join(tmp, 'su'));
   check('a site with the old plugin (1.0.1) is told to upload 1.0.2, and nothing is refreshed', r.code !== 0 && /upload 1\.0\.2/.test(r.out) && !r.su.refreshes, [r.code, r.su, r.out.slice(-300)]);
+}
+
+console.log('--- divi.js compile: --site checks colours and presets exist, the lint runs, --strict fails (issue #17)');
+{
+  const DIVI = path.join(path.dirname(WPJS), 'divi.js');
+  const dv = (spec, ...a) => {
+    const f = file('spec17.json', JSON.stringify(spec)); const o = path.join(tmp, 'out17.html');
+    try { fs.unlinkSync(o); } catch (e) {}
+    const r = spawnSync(process.execPath, [DIVI, 'compile', f, '--out', o, ...a], { encoding: 'utf8',
+      env: Object.assign({}, process.env, { FAKE_WP_STATE: STATE, WEB_CREDS_PATH: CREDS, NODE_OPTIONS: `--require ${__filename.replace(/\\/g, '/')}` }) });
+    return { code: r.status, err: r.stderr || '', written: fs.existsSync(o) };
+  };
+  fs.writeFileSync(STATE, JSON.stringify({ pages: {}, colors: { 'gcid-red': { label: 'Red', status: 'active' }, 'gcid-old': { label: 'Old', status: 'archived' } },
+    presets: { module: [{ id: 'btnyellow', name: 'Yellow', for: 'divi/button' }], group: [] } }));
+  const page = (mods) => ({ sections: [{ rows: [{ columns: [{ modules: mods }] }] }] });
+  let r = dv(page([{ type: 'button', text: 'b', bg: 'gcid-red', modulePreset: 'btnyellow' }, { type: 'text', html: '<p>x</p>', color: 'gcid-primary-color' }]), '--site', 'fake');
+  check('--site: everything exists (incl. a built-in gcid) -> exit 0 and says so', r.code === 0 && /site check: every colour, variable and preset exists on fake/.test(r.err), r.err);
+  r = dv(page([{ type: 'button', text: 'b', bg: 'gcid-nope', modulePreset: 'missingpreset' }, { type: 'text', html: '<p>x</p>', color: 'gcid-old' }]), '--site', 'fake');
+  check('--site: a missing colour, a missing preset and an archived colour are each reported; exit 1', r.code === 1 && /gcid-nope does not exist/.test(r.err) && /preset missingpreset does not exist/.test(r.err) && /gcid-old \("Old"\) is archived/.test(r.err), r.err);
+  r = dv(page([{ type: 'text', html: '<p>x</p>' }]));
+  check('the catalogue lint runs after compile and reports', r.code === 0 && /^lint: /m.test(r.err), r.err);
+  r = dv(page([{ type: 'text', html: '<p>x</p>' }]), '--no-lint');
+  check('--no-lint skips it', r.code === 0 && !/^lint: /m.test(r.err), r.err);
+  const badOption = page([{ type: 'raw', block: 'divi/button', attrs: { button: { innerContent: { desktop: { value: { text: 'x' } } } }, module: { advanced: { alignment: { desktop: { value: 'middle' } } } } } }]);
+  r = dv(badOption);
+  check('a lint error without --strict: reported, exit 0', r.code === 0 && /"middle" is not an option/.test(r.err) && /use --strict to fail/.test(r.err), r.err);
+  r = dv(badOption, '--strict');
+  check('a lint error with --strict: exit 1', r.code === 1 && /"middle" is not an option/.test(r.err), r.err);
+  r = dv(page([{ type: 'button', text: 'b', colour: '#fff' }]));
+  check('an unknown spec key: a WARNING, still compiled (exit 0)', r.code === 0 && /WARNING: unknown key "colour".*did you mean "color"/.test(r.err), r.err);
+  r = dv(page([{ type: 'button', text: 'b', colour: '#fff' }]), '--strict');
+  check('an unknown spec key with --strict: exit 1, nothing written', r.code === 1 && /spec check failed/.test(r.err) && !r.written, [r.code, r.written, r.err]);
 }
 
 console.log('--- the creds file: warn when other users can read it (issue #22)');

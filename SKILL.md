@@ -250,8 +250,15 @@ with `url`/`user`/`pass`; `pass` is a WordPress **Application Password**).
 
 5. **Compile and preview locally:**
    ```bash
-   node scripts/divi.js compile <spec.json> --out content.html
+   node scripts/divi.js compile <spec.json> --out content.html --site <site>
    ```
+   Read what it prints, it is part of the result:
+   - `WARNING: unknown key "colour" on the button module … (did you mean "color"?)`: a key no builder reads,
+     so it did NOTHING. Fix the spec. `--strict` makes it an error.
+   - `--site <site>` checks that every global colour, design variable and preset the page uses exists (and is
+     active) on that site: a missing id renders nothing, silently. Use it whenever the spec references ids.
+   - `lint:` the catalogue lint runs on the result when `catalog/catalog.json` exists (block names, option
+     values, nesting, and image groups in the wrong element). `--no-lint` skips it.
 
 6. **Write to the site.** Default to a **draft** first when building something new,
    so you can verify before it's public:
