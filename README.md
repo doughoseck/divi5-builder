@@ -121,7 +121,7 @@ fussy: it needs `edit_theme_options` + `unfiltered_html`, the md5 of the content
 last read (an edit made in the Visual Builder meanwhile is never overwritten), balanced
 blocks, and it reads the save back and reverts automatically if the block tree changed.
 `node scripts/wp.js <site> plugin-version` tells you what a site is running; upgrading
-is re-uploading the file.
+is uploading the newer zip (there is no update checker).
 
 ## Quickstart
 

@@ -61,24 +61,3 @@ copy is still live while its switch is off. After 2027-01-31 the old files get n
   and up) read `wp_options` values; `POST /link-canvas` did not check the target page;
   `/postinfo` returned protected post meta; `/custom-css` did not require `edit_css`.
   All fixed in 1.8.3, covered by `scripts/permissions-test.php`. **Update to 1.8.3.**
-## Supported versions
-
-Only the latest version on `main` is supported. Always run the newest `divi5-builder`
-plugin (the version is in its header and in `GET /wp-json/divi5-builder/v1/version`).
-
-| Plugin | Latest | Notes |
-|---|---|---|
-| `divi5-builder` (`divi5-builder.zip`) | 2.0.0 | One plugin: page building (always on), plus Media audit, Media clean-up and Updates, each a switch in Settings > Divi 5 Builder, **off by default**. Only an administrator in wp-admin can flip a switch. |
-| `divi5-builder-rest.php` | 1.8.5 | Replaced by `divi5-builder` 2.0.0. Security fixes only until 2027-01-31. In `assets/legacy/`. |
-| `wp-media-audit.php` | 1.1.2 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
-| `wp-media-quarantine.php` | 1.0.1 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
-| `wp-site-updates.php` | 1.0.2 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
-
-### Moving from the four old plugins
-
-Install `divi5-builder.zip` (Plugins > Add New > Upload Plugin) and activate it. It deactivates
-old normal copies of the four plugins by itself. Old must-use files cannot be deactivated
-from code: the plugin stands aside for that part and shows a notice naming the file to
-delete. Delete what the notice lists. A red warning shows when an old updates or clean-up
-copy is still live while its switch is off. After 2027-01-31 the old files get no more fixes.
-
