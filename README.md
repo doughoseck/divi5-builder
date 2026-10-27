@@ -87,11 +87,14 @@ Install it either way (not both at once):
   **Plugins → Add New → Upload Plugin**, and **Activate**. There is no update checker:
   to update, upload the newer zip and choose **Replace current with uploaded**. Any admin
   can deactivate a normal plugin, and the tool stops working until it is active again.
-- **As a must-use plugin (FTP):** copy the `divi5-builder/` folder from `plugin/` into
-  `wp-content/mu-plugins/` (create the folder if needed) and put
-  `plugin/mu-loader/divi5-builder-loader.php` next to it in the same folder. Must-use
-  plugins are always on and cannot be switched off from the admin, which is why this is
-  the sturdier option.
+- **As a must-use plugin (FTP):** unzip `divi5-builder.zip` and copy its `divi5-builder/`
+  folder into `wp-content/mu-plugins/` (create the folder if needed), and put
+  `divi5-builder-loader.php` next to it in the same folder. Both are in the
+  [latest release](https://github.com/doughoseck/divi5-builder/releases/latest): the loader
+  is a file of its own next to the zip (in the repository it is
+  `plugin/mu-loader/divi5-builder-loader.php`). The folder must be named `divi5-builder`;
+  under any other name the loader does nothing. Must-use plugins are always on and cannot
+  be switched off from the admin, which is why this is the sturdier option.
 
 Page building is always on. The three site-maintenance parts, **Media audit**, **Media
 clean-up** and **Updates**, each have a switch in **Settings > Divi 5 Builder** (on
@@ -99,6 +102,10 @@ multisite: Network Admin > Settings). All three are **off by default**, each sho
 about its risk, and only an administrator in wp-admin can flip one (the scripts cannot).
 While a switch is off its REST routes do not exist. When you finish a job, switch it off
 again. The scripts print "Switch ... on in Settings > Divi 5 Builder" when one is off.
+On multisite, network-activate the plugin (or activate it on the main site): Network Admin
+only loads those, so a plugin activated on one subsite alone cannot show its switches, and
+that subsite tells super admins so. Deleting the plugin (Plugins > Delete) removes the
+options it stored, so a reinstall starts with every switch off.
 
 Coming from the four old single-file plugins (`divi5-builder-rest.php`,
 `wp-media-audit.php`, `wp-media-quarantine.php`, `wp-site-updates.php`)? On activation the
@@ -354,6 +361,11 @@ None of these needs a site, except the last one.
 node scripts/catalog-test.js          # the module catalogue and its lint
 node scripts/preset-spec-test.js      # modulePreset in a page spec
 node scripts/compile-test.js          # link, swiper-posts, buildModule()
+node scripts/stale-guard-test.js      # page/post/canvas writes refuse when the content changed since the read
+node scripts/spec-check-test.js       # unknown spec keys are reported; every documented example checks clean
+node scripts/blocks-test.js           # block-level edits leave the rest of the page byte for byte
+php  scripts/permissions-test.php     # who may call each page-building route
+php  scripts/double-load-test.php     # the plugin loaded twice (must-use + normal, two folders) never fatals
 php  scripts/media-audit-test.php     # media audit: what counts as a reference to a file or an attachment ID
 node scripts/media-audit-test.js      # media audit: the classification, the quarantine plan, the report files
 php  scripts/media-quarantine-test.php   # the quarantine plugin: moves real files in a temp folder and back
@@ -363,8 +375,10 @@ php  scripts/plugin-switches-test.php   # the three switches: off by default, wh
 php  scripts/plugin-takeover-test.php   # old copies of the four plugins: deactivated, or a notice naming the file to delete
 php  scripts/plugin-settings-test.php   # the Settings > Divi 5 Builder page (and Network Admin)
 php  scripts/plugin-anysite-test.php    # the loader on any site, also when loaded twice
+php  scripts/plugin-uninstall-test.php  # deleting the plugin removes its options (every site of a network too)
 node scripts/switch-advice-test.js    # what the scripts say when a switch is off
-node scripts/build-plugin-zips-test.js  # the zip build
+node scripts/plugin-live-check-test.js  # the read-only live check (plugin-live-check.js <site>): GET only, exit 0/1/2
+node scripts/build-plugin-zips-test.js  # the zip build and the must-use loader next to it
 php  scripts/ds-write-test.php "<path to a Divi 5 theme folder>"   # the plugin's design-system writes
 node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts every store back
 ```

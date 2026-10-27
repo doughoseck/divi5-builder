@@ -178,9 +178,11 @@ renders broken, or is in the wrong format entirely.
 2. **The `divi5-builder` plugin (2.0.0 or later) installed & active on that site**
    (source in `plugin/divi5-builder/`; the user uploads `divi5-builder.zip` from the GitHub
    release in Plugins → Add New → Upload Plugin and activates it, or copies the
-   `divi5-builder/` folder plus `plugin/mu-loader/divi5-builder-loader.php` into
-   `wp-content/mu-plugins/` by FTP; never both. Updates are manual: upload the new zip over
-   the old one. `node scripts/build-plugin-zips.js` builds the zip into `dist/`. Old sites
+   `divi5-builder/` folder (from the zip) plus `divi5-builder-loader.php` (a separate file
+   in the same release; `plugin/mu-loader/` in the repo) into `wp-content/mu-plugins/` by
+   FTP; never both. On multisite it must be network-activated (or active on the main site)
+   for the switches to be reachable. Updates are manual: upload the new zip over
+   the old one. `node scripts/build-plugin-zips.js` builds the zip and the loader into `dist/`. Old sites
    still running the four single-file plugins: the old files are in `assets/legacy/`,
    security fixes only until 2027-01-31; installing the new plugin takes over from them.
    Page building is always on; Media audit, Media clean-up and Updates are switches in

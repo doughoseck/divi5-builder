@@ -103,7 +103,7 @@ The old files define `D5B_REST_VERSION`, `WPMA_VERSION`, `WPMQ_VERSION` and `WPS
 2. **Old plugins installed as must-use files** (`wp-content/mu-plugins/`): WordPress loads these first, and nothing can switch them off; only deleting the file stops them.
    - For each such file, **the combined plugin stands aside for that part**: it does not register that part's routes, so nothing is registered twice.
    - The notice says: "The old file `wp-content/mu-plugins/<file>` is still in charge of <part>. Delete it to finish the move."
-3. **Red warning:** while an old *media clean-up* or *updates* plugin is loaded, in either form, the notice says in red that this feature is live **even though its switch here says off**. That is the anti-goal above, made visible.
+3. **Red warning:** while an old *media clean-up* or *updates* copy is serving (the part stood aside), in either form, the notice says in red that this feature is live **even though its switch here says off**. That is the anti-goal above, made visible.
 4. **Where the notice shows:**
    - an admin notice for users who can manage plugins, until the old files are gone
    - the same lines on the settings page
@@ -124,6 +124,7 @@ Builder's call: keep the plugin a **single PHP file** as today, if that stays re
 ## Scripts
 
 - A new route `GET divi5-builder/v1/status` (capability `edit_posts`, read-only) returns the plugin version, whether Divi 5 is active, each switch's state, and any old plugin still loaded. It never changes anything.
+  - Shape (final review, 2026-10-27): `{ version, divi5, switches: { media_audit, media_clean_up, updates }, stood_aside: { <part>: "constant" | "route" }, inactive: [ <part>, ... ] }`. `stood_aside` lists the parts an old copy is serving on this request; `inactive` lists the parts with an old copy installed that serves nothing (its constant is defined, no routes).
 - `wp.js`, `media-audit.js`, `media-quarantine.js` and `site-updates.js`: when a route answers 404 (`rest_no_route`), they ask `status`.
   - If the combined plugin is there and the switch is off, they print "Switch <name> on in Settings > Divi 5 Builder (an administrator must do it in wp-admin)".
   - Otherwise they print the current "install the plugin" advice.

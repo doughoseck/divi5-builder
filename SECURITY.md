@@ -37,7 +37,16 @@ delete. Delete what the notice lists. A red warning shows when an old updates or
 copy is still live while its switch is off. After 2027-01-31 the old files get no more fixes.
 While `divi5-builder` is active, activating one of the four old plugins over the REST API
 (an Application Password or a script) is refused with a 403. An administrator can still
-activate one by hand in wp-admin; the red warning then shows.
+activate one by hand in wp-admin; the red warning then shows. The refusal covers only the
+eight file names the old plugins were released under (`<slug>.php` and `<slug>/<slug>.php`
+for each of the four). An old copy installed under another folder or file name is not
+recognised and can still be activated over REST; the red warning then shows once it is
+serving. Delete old copies rather than leave them installed.
+On a multisite network, the Network Admin > Settings > Divi 5 Builder page (where the
+switches are) also lists every subsite (up to 500) where an old copy was serving a part at
+its last request, in red when that part's switch is off.
+Deleting the plugin (Plugins > Delete) removes its stored options, the switches included,
+so a reinstall starts with every switch off.
 
 ### What the switches protect against
 
