@@ -283,6 +283,21 @@ with `url`/`user`/`pass`; `pass` is a WordPress **Application Password**).
    `~/.divi5-builder/backups/<site>/` (`WP_BACKUP_DIR` to change), and prints the new `hash` for the next
    write. `md5` of `get-page --raw` is the same hash, so a script can compute it from what it read.
 
+   **Changing one part of an existing page: `scripts/blocks.js`.** Never rebuild a hand-tuned page to change
+   one section. Read it, change only the block you mean, write it back with the read's hash; everything
+   else stays byte for byte (the tool proves it and refuses rather than guess):
+   ```bash
+   node scripts/wp.js <site> get-page <id> --out page.html                 # note the "hash"
+   node scripts/blocks.js tree page.html                                   # addresses: 3, 3.2.1.4, labels, #ids
+   node scripts/divi.js compile new-section.json --out new.html            # the new part, from a spec
+   node scripts/blocks.js replace page.html --at "label:Featured Work" --with new.html --out page2.html
+   node scripts/wp.js <site> update-page <id> --content-file page2.html --expect-hash <hash>
+   ```
+   Also `before`, `after`, `append` (as last child), `remove`, `get`. An address is a path counted from 1
+   (`3.2.1.4` = section 3, row 2, column 1, module 4), `label:<admin label>` or `#<css id>`; a label or id
+   that matches two blocks is refused. What goes in must be the same kind as where it goes (a module where
+   a module was); `--from 1.1.1.1` takes one block out of a compiled page.
+
 7. **Flip the page into "Divi mode" (essential — do this for every page you build).**
    Writing Divi blocks into `content` is NOT enough on its own: a page only
    renders as Divi (full-width, no theme sidebar, module CSS enqueued, "Divi"
