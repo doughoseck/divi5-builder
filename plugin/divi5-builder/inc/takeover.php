@@ -23,10 +23,23 @@ if ( ! function_exists( 'd5b_legacy_basenames' ) ) {
 }
 
 if ( ! function_exists( 'd5b_takeover_get' ) ) {
-	/** The stored takeover record, or null when no takeover has run. */
-	function d5b_takeover_get() {
-		$v = is_multisite() ? get_site_option( 'd5b_takeover', null ) : get_option( 'd5b_takeover', null );
-		return is_array( $v ) ? $v : null;
+	/**
+	 * The takeover record(s) that apply to this site, merged, or null when none exists.
+	 * Per site by default (one subsite's activation must not decide for the others); a deactivation that was
+	 * network-wide is stored as a network option and applies to every site. $scope 'network' reads only that one.
+	 */
+	function d5b_takeover_get( string $scope = 'any' ) {
+		$site = 'network' === $scope ? null : get_option( 'd5b_takeover', null );
+		$net  = is_multisite() ? get_site_option( 'd5b_takeover', null ) : null;
+		$site = is_array( $site ) ? $site : null;
+		$net  = is_array( $net ) ? $net : null;
+		if ( null === $site && null === $net ) { return null; }
+		$list = array();
+		foreach ( array( $site, $net ) as $r ) {
+			if ( $r && isset( $r['deactivated'] ) && is_array( $r['deactivated'] ) ) { $list = array_merge( $list, $r['deactivated'] ); }
+		}
+		$first = $site ? $site : $net;
+		return array( 'done_at' => isset( $first['done_at'] ) ? $first['done_at'] : '', 'deactivated' => array_values( array_unique( $list ) ) );
 	}
 }
 
@@ -72,8 +85,8 @@ if ( ! function_exists( 'd5b_takeover_deactivate' ) ) {
 
 		$done  = array_merge( $normal, $sitewide );
 		$value = array( 'done_at' => gmdate( 'Y-m-d\TH:i:s\Z' ), 'deactivated' => $done );
-		if ( is_multisite() ) {
-			update_site_option( 'd5b_takeover', $value );
+		if ( $network && is_multisite() ) {
+			update_site_option( 'd5b_takeover', $value ); // a network-wide deactivation is recorded network-wide
 		} elseif ( null === get_option( 'd5b_takeover', null ) ) {
 			add_option( 'd5b_takeover', $value, '', 'no' );
 		} else {
@@ -110,8 +123,11 @@ if ( ! function_exists( 'd5b_takeover_mu_admin_init' ) ) {
 	function d5b_takeover_mu_admin_init(): void {
 		if ( ! defined( 'D5B_FILE' ) || ! d5b_takeover_is_mu( D5B_FILE ) ) { return; }
 		if ( ! current_user_can( 'activate_plugins' ) ) { return; }
-		if ( null !== d5b_takeover_get() ) { return; }
-		d5b_takeover_deactivate( is_multisite() );
+		// Network-wide deactivation is a network-admin action: a subsite user with only activate_plugins gets
+		// this site's ordinary plugins handled and nothing network-wide.
+		$network = is_multisite() && current_user_can( 'manage_network_plugins' );
+		if ( null !== d5b_takeover_get( $network ? 'network' : 'any' ) ) { return; }
+		d5b_takeover_deactivate( $network );
 	}
 }
 

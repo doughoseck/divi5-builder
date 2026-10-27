@@ -32,7 +32,9 @@ if ( ! function_exists( 'd5b_gate' ) ) {
 if ( ! function_exists( 'd5b_legacy_seen_get' ) ) {
 	/** Parts an old copy was seen providing through a route (a snippet leaves no constant or file to find later). */
 	function d5b_legacy_seen_get(): array {
-		$v = is_multisite() ? get_site_option( 'd5b_legacy_seen', array() ) : get_option( 'd5b_legacy_seen', array() );
+		// Always per site: route detection depends on each site's own active plugins and code snippets,
+		// so one shared network value would flip on almost every request.
+		$v = get_option( 'd5b_legacy_seen', array() );
 		return is_array( $v ) ? array_values( array_filter( $v, 'is_string' ) ) : array();
 	}
 }
@@ -48,9 +50,7 @@ if ( ! function_exists( 'd5b_legacy_seen_sync' ) ) {
 		$was = d5b_legacy_seen_get();
 		sort( $was );
 		if ( $now === $was ) { return; }
-		if ( is_multisite() ) {
-			update_site_option( 'd5b_legacy_seen', $now );
-		} elseif ( null === get_option( 'd5b_legacy_seen', null ) ) {
+		if ( null === get_option( 'd5b_legacy_seen', null ) ) {
 			add_option( 'd5b_legacy_seen', $now, '', 'no' );
 		} else {
 			update_option( 'd5b_legacy_seen', $now, false );

@@ -99,6 +99,37 @@ d5b_takeover_mu_admin_init(); d5b_takeover_mu_admin_init();
 check( 'second call: nothing more happens', 1 === count( $GLOBALS['T_deactivate_calls'] ) && $w === count( $GLOBALS['T_writes'] ) );
 t_set_caps( array() );
 
+echo "multisite: records are per site unless the deactivation was network-wide\n";
+$sub_active = array( 'wp-site-updates/wp-site-updates.php' );
+$net_active = array( 'wp-media-audit/wp-media-audit.php' => 1 );
+fresh(); t_set_multisite( true );
+update_option( 'active_plugins', $sub_active ); update_site_option( 'active_sitewide_plugins', $net_active );
+t_set_caps( array( 'activate_plugins' ) ); // a subsite admin, not a network admin
+d5b_takeover_mu_admin_init();
+check( 'subsite admin in mu mode: only network=false calls, nothing network-wide', array( array( array( 'wp-site-updates/wp-site-updates.php' ), true, false ) ) === $GLOBALS['T_deactivate_calls'], $GLOBALS['T_deactivate_calls'] );
+check( 'subsite admin: the record is per site, no network record', is_array( get_option( 'd5b_takeover', null ) ) && null === get_site_option( 'd5b_takeover', null ) );
+$GLOBALS['T_deactivate_calls'] = array();
+d5b_takeover_mu_admin_init();
+check( 'subsite admin again: once only', array() === $GLOBALS['T_deactivate_calls'] );
+update_option( 'active_plugins', array() ); // what WordPress would have done
+t_set_caps( array( 'activate_plugins', 'manage_network_plugins' ) );
+d5b_takeover_mu_admin_init();
+check( 'network admin on that site: the network part still runs (a per-site record does not block it)', array( array( array( 'wp-media-audit/wp-media-audit.php' ), true, true ) ) === $GLOBALS['T_deactivate_calls'], $GLOBALS['T_deactivate_calls'] );
+check( 'network admin: stored network-wide', is_array( get_site_option( 'd5b_takeover', null ) ) && array( 'wp-media-audit/wp-media-audit.php' ) === get_site_option( 'd5b_takeover' )['deactivated'] );
+$GLOBALS['T_deactivate_calls'] = array();
+d5b_takeover_mu_admin_init();
+check( 'network admin again: once only', array() === $GLOBALS['T_deactivate_calls'] );
+update_option( 'active_plugins', array() ); update_site_option( 'active_sitewide_plugins', array() );
+check( 'this site reads both records for the Replaced line', has_line( 'Replaced by Divi 5 Builder, you can delete them: wp-site-updates/wp-site-updates.php, wp-media-audit/wp-media-audit.php' ), texts( d5b_takeover_lines() ) );
+$site_a_options = $GLOBALS['T_options']; $GLOBALS['T_options'] = array(); // another subsite
+t_set_caps( array( 'activate_plugins' ) );
+check( 'another subsite sees only the network record, not the first site\'s own', has_line( 'Replaced by Divi 5 Builder, you can delete them: wp-media-audit/wp-media-audit.php' ), texts( d5b_takeover_lines() ) );
+$GLOBALS['T_deactivate_calls'] = array(); d5b_takeover_mu_admin_init();
+check( 'another subsite admin: the network record counts as done, nothing runs again', array() === $GLOBALS['T_deactivate_calls'], $GLOBALS['T_deactivate_calls'] );
+$GLOBALS['T_options'] = $site_a_options;
+t_set_multisite( false ); t_set_caps( array() );
+fresh();
+
 echo "no deactivate_plugins and no D5B_FILE: never fatal\n";
 $php = escapeshellarg( PHP_BINARY ); $self = escapeshellarg( __FILE__ );
 $orig_dir = getenv( 'D5B_PLUGIN_DIR' );
@@ -132,7 +163,10 @@ check( 'a fresh site with no old copy writes no d5b_legacy_seen at all', 0 === w
 fresh(); t_set_multisite( true );
 $GLOBALS['T_server_routes'] = array( '/divi5-builder/v1/version' => array() );
 d5b_gate();
-check( 'on multisite it is a site option', array( 'page_building' ) === get_site_option( 'd5b_legacy_seen' ) && null === get_option( 'd5b_legacy_seen', null ) );
+check( 'on multisite it is still per site, never a network option', array( 'page_building' ) === get_option( 'd5b_legacy_seen' ) && null === get_site_option( 'd5b_legacy_seen', null ) );
+$GLOBALS['T_options'] = array(); $GLOBALS['T_server_routes'] = array(); $GLOBALS['T_writes'] = array(); // another subsite, no snippet there
+d5b_gate();
+check( 'another subsite without the copy writes nothing and sees nothing', 0 === writes_of( 'd5b_legacy_seen' ) && array() === d5b_legacy_seen_get() && array() === array_filter( d5b_legacy_report(), function ( $r ) { return 'page_building' === $r['part']; } ), $GLOBALS['T_writes'] );
 t_set_multisite( false );
 
 // ---- a must-use copy (constants from here on are permanent)
