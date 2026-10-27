@@ -1,7 +1,7 @@
 === Divi 5 Builder ===
 Contributors: doughoseck
 Tags: divi, rest api
-Requires at least: 5.6
+Requires at least: 6.0
 Requires PHP: 7.4
 Stable tag: 2.0.0
 License: MIT

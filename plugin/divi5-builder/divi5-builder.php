@@ -3,7 +3,7 @@
  * Plugin Name: Divi 5 Builder
  * Description: Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.
  * Version: 2.0.0
- * Requires at least: 5.6
+ * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: divi5-builder skill
  * Update URI: https://github.com/doughoseck/divi5-builder

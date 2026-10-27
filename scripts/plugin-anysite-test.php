@@ -51,8 +51,8 @@ check( 'the loader lists exactly the .php files under inc/ and parts/ (no glob)'
 check( 'uninstall.php exists and the loader never loads it (WordPress runs it on delete)', is_file( "$src/uninstall.php" ) && false === strpos( $head, "'uninstall.php'" ) && 1 !== preg_match( '/(require|include)(_once)?[^;]*uninstall/', $head ) );
 $top = array(); foreach ( scandir( $src ) as $f ) { if ( preg_match( '/\\.php$/', $f ) ) { $top[] = $f; } }
 check( 'the plugin folder holds exactly two top-level .php files: the loader and uninstall.php', array( 'divi5-builder.php', 'uninstall.php' ) === $top, $top );
-check( 'header: Requires PHP 7.4 and Requires at least 5.6, the same as readme.txt', 1 === preg_match( '/^\s*\*\s*Requires PHP:\s*7\.4\s*$/m', $head ) && 1 === preg_match( '/^\s*\*\s*Requires at least:\s*5\.6\s*$/m', $head )
-	&& 1 === preg_match( '/^Requires PHP:\s*7\.4\s*$/m', file_get_contents( "$src/readme.txt" ) ) && 1 === preg_match( '/^Requires at least:\s*5\.6\s*$/m', file_get_contents( "$src/readme.txt" ) ) );
+check( 'header: Requires PHP 7.4 and Requires at least 6.0, the same as readme.txt', 1 === preg_match( '/^\s*\*\s*Requires PHP:\s*7\.4\s*$/m', $head ) && 1 === preg_match( '/^\s*\*\s*Requires at least:\s*6\.0\s*$/m', $head )
+	&& 1 === preg_match( '/^Requires PHP:\s*7\.4\s*$/m', file_get_contents( "$src/readme.txt" ) ) && 1 === preg_match( '/^Requires at least:\s*6\.0\s*$/m', file_get_contents( "$src/readme.txt" ) ) );
 
 // ---- no Divi
 echo "no Divi: loads, status divi5 false\n";
