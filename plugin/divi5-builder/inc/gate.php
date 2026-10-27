@@ -8,13 +8,16 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 if ( ! function_exists( 'd5b_gate' ) ) {
-	function d5b_gate(): void {
-		// Once per request. A second rest_api_init would find this plugin's own routes already
-		// registered and record a false "an old copy provides it" for every part.
-		if ( ! empty( $GLOBALS['d5b_gate_ran'] ) ) { return; }
-		$GLOBALS['d5b_gate_ran']    = true;
+	/** @param WP_REST_Server|null $server What rest_api_init passes in; falls back to rest_get_server(). */
+	function d5b_gate( $server = null ): void {
+		if ( ! is_object( $server ) ) { $server = rest_get_server(); }
+		// Once per REST server. A second rest_api_init on the SAME server would find this plugin's own routes
+		// already registered and record a false "an old copy provides it" for every part. A different server
+		// object starts with no routes, so the gate must run for it.
+		if ( isset( $GLOBALS['d5b_gate_ran'] ) && $GLOBALS['d5b_gate_ran'] === $server ) { return; }
+		$GLOBALS['d5b_gate_ran']    = $server;
 		$GLOBALS['d5b_stood_aside'] = array();
-		$existing                   = rest_get_server()->get_routes();
+		$existing                   = $server->get_routes();
 		foreach ( d5b_parts() as $key => $part ) {
 			if ( defined( $part['legacy_const'] ) ) {
 				$GLOBALS['d5b_stood_aside'][ $key ] = 'constant';

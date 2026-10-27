@@ -15,7 +15,11 @@ require __DIR__ . '/plugin-test-stubs.php';
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . ( is_string( $detail ) ? $detail : json_encode( $detail ) ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
-function fire( $hook ) { foreach ( $GLOBALS['T_actions'][ $hook ] ?? array() as $cb ) { call_user_func( $cb ); } }
+// rest_api_init passes the WP_REST_Server, as core does.
+function fire( $hook ) { foreach ( $GLOBALS['T_actions'][ $hook ] ?? array() as $cb ) { 'rest_api_init' === $hook ? call_user_func( $cb, rest_get_server() ) : call_user_func( $cb ); } }
+// The files the loader names, and the .php files really under inc/ and parts/ (both sorted).
+function loader_list( $src ) { preg_match_all( "#'((?:inc|parts)/[^']+\\.php)'#", $src, $m ); sort( $m[1] ); return $m[1]; }
+function disk_list( $dir ) { $o = array(); foreach ( array( 'inc', 'parts' ) as $d ) { foreach ( scandir( "$dir/$d" ) as $f ) { if ( preg_match( '/\\.php$/', $f ) ) { $o[] = "$d/$f"; } } } sort( $o ); return $o; }
 function status() { return call_user_func( $GLOBALS['T_routes']['GET divi5-builder/v1/status']['callback'] ); }
 function routes_in( $ns ) { $o = array(); foreach ( $GLOBALS['T_routes'] as $k => $_ ) { if ( 0 === strpos( explode( ' ', $k, 2 )[1], $ns . '/' ) ) { $o[] = $k; } } sort( $o ); return $o; }
 function norm( $p ) { return str_replace( chr( 92 ), '/', $p ); }
@@ -43,6 +47,7 @@ $head = file_get_contents( $loaderA );
 check( 'header: plugin name, slug version, update URI, description', false !== strpos( $head, 'Plugin Name: Divi 5 Builder' ) && 1 === preg_match( '/^\s*\*\s*Version:\s*2\.0\.0\s*$/m', $head ) && false !== strpos( $head, 'Update URI: https://github.com/doughoseck/divi5-builder' ) && false !== strpos( $head, 'Description: Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.' ) );
 check( 'the header Version: equals D5B_VERSION as defined by the loader', 1 === preg_match( "/define\(\s*'D5B_VERSION',\s*'(\d+\.\d+\.\d+)'\s*\)/", $head, $m ) && 1 === preg_match( '/^\s*\*\s*Version:\s*(\S+)/m', $head, $h ) && $m[1] === $h[1], array( $m ?? null, $h ?? null ) );
 check( 'the old constants are never defined by the loader', 1 !== preg_match( "/define\(\s*'(D5B_REST_VERSION|WPMA_VERSION|WPMQ_VERSION|WPSU_VERSION)'/", $head ) );
+check( 'the loader lists exactly the .php files under inc/ and parts/ (no glob)', loader_list( $head ) === disk_list( $src ) && false === strpos( $head, 'glob(' ), array( loader_list( $head ), disk_list( $src ) ) );
 
 // ---- no Divi
 echo "no Divi: loads, status divi5 false\n";
@@ -84,6 +89,17 @@ check( 'a second rest_api_init registers nothing new', $before_routes === $GLOBA
 check( 'a second rest_api_init writes no false stand-aside', array() === $GLOBALS['d5b_stood_aside'] && null === get_option( 'd5b_legacy_seen', null ) && $before_writes === $GLOBALS['T_writes'], array( $GLOBALS['d5b_stood_aside'], $GLOBALS['T_writes'] ) );
 check( 'status after the second run still says nothing stood aside', array() === status()['stood_aside'] );
 $GLOBALS['T_server_routes'] = array();
+// A second WP_REST_Server in the same request (it fires rest_api_init again): it has no routes of its own yet.
+echo "a new REST server gets the routes\n";
+$GLOBALS['T_routes'] = array();
+$s2 = t_new_server();
+fire( 'rest_api_init' );
+check( 'the gate runs again for a new server: page building routes and /status registered', count( routes_in( 'divi5-builder/v1' ) ) > 10 && isset( $GLOBALS['T_routes']['GET divi5-builder/v1/status'] ), array_keys( $GLOBALS['T_routes'] ) );
+check( 'no false stand-aside for the new server', array() === status()['stood_aside'] && null === get_option( 'd5b_legacy_seen', null ), status()['stood_aside'] );
+$GLOBALS['T_routes'] = array();
+fire( 'rest_api_init' );
+check( 're-firing on that same new server registers nothing', array() === $GLOBALS['T_routes'] );
+t_new_request(); fire( 'rest_api_init' ); // back to a full route table for the checks below
 
 // ---- Divi 5 present
 echo "Divi 5 present: status divi5 true\n";

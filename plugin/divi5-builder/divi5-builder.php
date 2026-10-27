@@ -24,12 +24,22 @@ if ( defined( 'D5B_VERSION' ) ) { return; }
 define( 'D5B_VERSION', '2.0.0' );
 define( 'D5B_FILE', __FILE__ );
 
-foreach ( array( 'inc', 'parts' ) as $d5b_dir ) {
-	$d5b_files = glob( __DIR__ . '/' . $d5b_dir . '/*.php' );
-	sort( $d5b_files );
-	foreach ( $d5b_files as $d5b_file ) { require_once $d5b_file; }
+// An explicit list, not a directory scan: a file left behind by an older copy (copying over the folder by FTP does not
+// delete it) is never loaded, and nothing depends on directory functions working on this server.
+foreach ( array(
+	'inc/parts.php',
+	'inc/switches.php',
+	'inc/gate.php',
+	'inc/takeover.php',
+	'inc/settings.php',
+	'parts/page-building.php',
+	'parts/media-audit.php',
+	'parts/media-clean-up.php',
+	'parts/updates.php',
+) as $d5b_file ) {
+	require_once __DIR__ . '/' . $d5b_file;
 }
-unset( $d5b_dir, $d5b_files, $d5b_file );
+unset( $d5b_file );
 
 // Page building. An old stand-alone copy that is loaded as well already does this on init.
 add_action( 'init', function () {

@@ -26,7 +26,7 @@ function t_reset() {
 	$GLOBALS['T_deactivated'] = array(); $GLOBALS['T_deactivate_calls'] = array(); $GLOBALS['T_actions'] = array();
 	$GLOBALS['T_autoload'] = array(); $GLOBALS['T_priorities'] = array(); $GLOBALS['T_activation'] = array(); $GLOBALS['T_post_meta'] = array();
 	$GLOBALS['T_options'] = array(); $GLOBALS['T_site_options'] = array(); $GLOBALS['T_server_routes'] = array();
-	unset( $GLOBALS['d5b_stood_aside'], $GLOBALS['d5b_gate_ran'] );
+	unset( $GLOBALS['d5b_stood_aside'], $GLOBALS['d5b_gate_ran'], $GLOBALS['T_server'] );
 }
 // A new request: WordPress starts a request with the gate not yet run.
 function t_new_request() { unset( $GLOBALS['d5b_gate_ran'] ); }
@@ -38,7 +38,9 @@ if ( ! class_exists( 'WP_Error' ) ) {
 	class WP_Error { public $code; public $message; public $data; function __construct( $c = '', $m = '', $d = null ) { $this->code = $c; $this->message = $m; $this->data = $d; } function get_error_message() { return $this->message; } }
 }
 class T_Request { private $p; function __construct( array $p = array() ) { $this->p = $p; } function get_param( $k ) { return $this->p[ $k ] ?? null; } function get_params() { return $this->p; } function get_json_params() { return $this->p; } }
-class T_Server { function get_routes() { return $GLOBALS['T_server_routes']; } }
+class T_Server { public $routes = null; function get_routes() { return null === $this->routes ? $GLOBALS['T_server_routes'] : $this->routes; } }
+// A second WP_REST_Server in the same request: its own, empty, route table.
+function t_new_server() { $s = new T_Server(); $s->routes = array(); $GLOBALS['T_server'] = $s; return $s; }
 
 function is_wp_error( $x ) { return $x instanceof WP_Error; }
 function is_multisite() { return $GLOBALS['T_multisite']; }
@@ -48,7 +50,7 @@ function register_activation_hook( $file, $cb ) { $GLOBALS['T_activation'][] = a
 function add_filter( $h, $cb = null, $p = 10, $a = 1 ) {}
 function register_post_meta( $type = '', $key = '', $args = array() ) { $GLOBALS['T_post_meta'][] = array( $type, $key ); }
 function register_meta() {}
-function rest_get_server() { return new T_Server(); }
+function rest_get_server() { if ( empty( $GLOBALS['T_server'] ) ) { $GLOBALS['T_server'] = new T_Server(); } return $GLOBALS['T_server']; }
 function register_rest_route( $ns, $path, $args ) {
 	foreach ( ( isset( $args['methods'] ) || isset( $args['callback'] ) ) ? array( $args ) : $args as $a ) {
 		foreach ( (array) ( $a['methods'] ?? 'GET' ) as $m ) {
