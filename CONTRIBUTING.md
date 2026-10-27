@@ -60,7 +60,16 @@ Before opening a PR:
    node scripts/divi.js compile examples/spec.json --out /tmp/out.html
    grep -c 'style=' /tmp/out.html      # expect 0
    ```
-2. **Live round-trip** for anything new — create a draft, flip Divi mode, verify it
+2. **Offline suites** (no site needed), all must pass:
+   ```bash
+   node scripts/compile-test.js && node scripts/preset-spec-test.js && node scripts/catalog-test.js
+   node scripts/stale-guard-test.js   # page/post/canvas writes refuse when the content changed since the read
+   node scripts/media-audit-test.js && node scripts/site-updates-test.js
+   php scripts/permissions-test.php && php scripts/double-load-test.php && php scripts/media-quarantine-test.php && php scripts/media-audit-test.php
+   ```
+   Anything that changes a write path in `wp.js` needs a case in `stale-guard-test.js`, which runs `wp.js`
+   against a fake WordPress (state in a JSON file) so a "save in the builder" can be simulated.
+3. **Live round-trip** for anything new — create a draft, flip Divi mode, verify it
    renders as native modules, then delete:
    ```bash
    node scripts/wp.js <site> create-page --title "PR test" --content-file /tmp/out.html --status draft

@@ -360,6 +360,11 @@ node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts
   requires for that thing — review it before installing.
 - Prefer **draft-first**; treat publish / live-page edits / homepage changes as
   visible actions.
+- Page, post and canvas writes are **stale-guarded**: they need the content hash from your read
+  and refuse (exit 3) if someone saved the page in the Visual Builder since, so a REST write never
+  silently overwrites their work. Each content write first keeps what it replaces in
+  `~/.divi5-builder/backups/<site>/` (or `WP_BACKUP_DIR`). That folder holds real page content:
+  keep it private, and clear it out now and then.
 
 ## License
 

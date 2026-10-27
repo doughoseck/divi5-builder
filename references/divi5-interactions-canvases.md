@@ -149,7 +149,7 @@ target id does not match an `interactionTarget` inside the canvas.
    layout's id (writing meta on a layout was read from the source and from a builder-made example; the skill's
    `link-canvas` against a layout id has not been run yet).
 3. Trigger: any module with an interaction whose target is the popup id.
-4. `wp.js list-canvases | get-canvas <id> [--raw | --out f] | update-canvas <id> --content-file f` to work on it after.
+4. `wp.js list-canvases | get-canvas <id> [--raw | --out f] | update-canvas <id> --content-file f --expect-hash <hash>` to work on it after (the hash comes from `get-canvas`; a write is refused with exit 3 if the canvas was saved since).
 5. Check the front end: the page HTML must now contain `et-interaction-target-<id>`.
 
 A canvas attached to a header is output on every page that header serves. Treat writing to it as a site-wide change.
