@@ -1,0 +1,97 @@
+<?php
+/**
+ * The gate: on rest_api_init (priority 99, late, so an old copy's routes are already there to see)
+ * it registers the routes of each part that is wanted. A part that is switched off, or that an old
+ * stand-alone copy already provides, registers nothing at all: its routes do not exist.
+ * This file only defines functions; the loader adds the hook.
+ */
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+if ( ! function_exists( 'd5b_gate' ) ) {
+	/** @param WP_REST_Server|null $server What rest_api_init passes in; falls back to rest_get_server(). */
+	function d5b_gate( $server = null ): void {
+		// Core passes the WP_REST_Server. Anything else (a plugin firing rest_api_init by hand) gets the real one,
+		// so a wrong argument can never fatal the site.
+		if ( ! ( $server instanceof WP_REST_Server ) ) { $server = rest_get_server(); }
+		// Once per REST server. A second rest_api_init on the SAME server would find this plugin's own routes
+		// already registered and record a false "an old copy provides it" for every part. A different server
+		// object starts with no routes, so the gate must run for it.
+		if ( isset( $GLOBALS['d5b_gate_ran'] ) && $GLOBALS['d5b_gate_ran'] === $server ) { return; }
+		$GLOBALS['d5b_gate_ran']    = $server;
+		$GLOBALS['d5b_stood_aside'] = array();
+		$existing                   = $server->get_routes();
+		foreach ( d5b_parts() as $key => $part ) {
+			// Stand aside only when the old copy's routes really are registered. Its constant alone is not
+			// enough: an old media audit / clean-up file loaded after this plugin defines its constant but
+			// skips its own routes (they sit behind a function_exists guard this plugin already satisfied).
+			// 'constant' or 'route' says how the old copy can be found again outside a REST request.
+			if ( isset( $existing[ $part['probe'] ] ) ) {
+				$GLOBALS['d5b_stood_aside'][ $key ] = defined( $part['legacy_const'] ) ? 'constant' : 'route';
+			} elseif ( d5b_switch_is_on( $key ) && function_exists( $part['routes'] ) ) {
+				call_user_func( $part['routes'] );
+			}
+		}
+		d5b_legacy_seen_sync();
+		register_rest_route( 'divi5-builder/v1', '/status', array(
+			'methods'             => 'GET',
+			'permission_callback' => function () { return current_user_can( 'edit_posts' ); },
+			'callback'            => 'd5b_status',
+		) );
+	}
+}
+
+if ( ! function_exists( 'd5b_legacy_seen_get' ) ) {
+	/**
+	 * Parts an old copy was really serving at the last REST request on this site (the gate stood aside for
+	 * them). wp-admin reads it: the red "LIVE" line follows this record, not a constant.
+	 */
+	function d5b_legacy_seen_get(): array {
+		// Always per site: route detection depends on each site's own active plugins and code snippets,
+		// so one shared network value would flip on almost every request.
+		$v = get_option( 'd5b_legacy_seen', array() );
+		return is_array( $v ) ? array_values( array_filter( $v, 'is_string' ) ) : array();
+	}
+}
+
+if ( ! function_exists( 'd5b_legacy_seen_sync' ) ) {
+	/** Keep d5b_legacy_seen equal to the parts stood aside for (both kinds). Writes only when that set changes. */
+	function d5b_legacy_seen_sync(): void {
+		$now = array();
+		foreach ( isset( $GLOBALS['d5b_stood_aside'] ) ? $GLOBALS['d5b_stood_aside'] : array() as $part => $how ) {
+			if ( is_string( $part ) ) { $now[] = $part; }
+		}
+		sort( $now );
+		$was = d5b_legacy_seen_get();
+		sort( $was );
+		if ( $now === $was ) { return; }
+		if ( null === get_option( 'd5b_legacy_seen', null ) ) {
+			add_option( 'd5b_legacy_seen', $now, '', 'no' );
+		} else {
+			update_option( 'd5b_legacy_seen', $now, false );
+		}
+	}
+}
+
+if ( ! function_exists( 'd5b_status' ) ) {
+	/**
+	 * GET divi5-builder/v1/status. stood_aside: part => 'constant'|'route', an old copy serving it this request.
+	 * inactive: the parts with an old copy installed that serves nothing (its constant is defined, no routes).
+	 */
+	function d5b_status() {
+		$switches = array();
+		foreach ( d5b_switches() as $key => $row ) { $switches[ $key ] = $row['on']; }
+		$inactive = array();
+		if ( function_exists( 'd5b_legacy_report' ) ) {
+			foreach ( d5b_legacy_report() as $row ) {
+				if ( 'inactive' === $row['how'] ) { $inactive[] = $row['part']; }
+			}
+		}
+		return array(
+			'version'     => D5B_VERSION,
+			'divi5'       => defined( 'ET_BUILDER_5_DIR' ),
+			'switches'    => $switches,
+			'stood_aside' => isset( $GLOBALS['d5b_stood_aside'] ) ? $GLOBALS['d5b_stood_aside'] : array(),
+			'inactive'    => $inactive,
+		);
+	}
+}

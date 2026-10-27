@@ -66,10 +66,11 @@ class T_Wpdb { public $options = 'wp_options'; function esc_like( $s ) { return 
 	function get_results( $q ) { return array( (object) array( 'option_name' => 'smtp_pass', 'v' => 'hunter2' ) ); } }
 $GLOBALS['wpdb'] = new T_Wpdb();
 
-$file = $argv[1] ?? __DIR__ . '/../assets/divi5-builder-rest.php';
+$file = $argv[1] ?? __DIR__ . '/../plugin/divi5-builder/parts/page-building.php';
+define( 'D5B_VERSION', '2.0.0' );
 require $file;
-foreach ( $GLOBALS['T_actions']['rest_api_init'] ?? array() as $cb ) { $cb(); }
-echo 'plugin: ' . basename( $file ) . ' ' . ( defined( 'D5B_REST_VERSION' ) ? D5B_REST_VERSION : '?' ) . "\n";
+d5b_routes_page_building();
+echo 'plugin: ' . basename( $file ) . ' ' . ( defined( 'D5B_VERSION' ) ? D5B_VERSION : '?' ) . "\n";
 
 $failed = 0;
 $check  = function ( $name, $ok ) use ( &$failed ) { echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . "\n"; if ( ! $ok ) { $failed++; } };

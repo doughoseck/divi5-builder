@@ -10,7 +10,8 @@
  *   node media-quarantine.js restore <site> --dir D --batch B (--all | --needed | --ids 1,2 | --files-from f.txt) [--write]
  *   node media-quarantine.js status  <site>
  *
- * Needs assets/wp-media-quarantine.php in wp-content/mu-plugins/ (the user uploads it) and a finished
+ * Needs the divi5-builder plugin (divi5-builder.zip from the latest release) with the Media clean-up switch on in
+ * Settings > Divi 5 Builder (an administrator does that in wp-admin; this script never switches anything on) and a finished
  * `media-audit.js scan` + `crawl` in D. Files go to wp-content/media-audit-quarantine-<random>/<batch>/ with a
  * manifest (plugin 1.0.1+; `status` prints the exact folder).
  *
@@ -31,6 +32,7 @@
  * the rows of items that stay gone is a later step (delete them in the Media Library; their files are already gone).
  */
 const fs = require('fs'); const path = require('path'); const { execFileSync } = require('child_process');
+const { adviceForSite } = require('./switch-advice.js');
 const { analyse, crawlSite } = require(process.env.MEDIA_AUDIT_FILE || path.join(__dirname, 'media-audit.js'));
 const WP = path.join(__dirname, 'wp.js');
 const mb = b => (b / 1048576).toFixed(b >= 10485760 ? 0 : 1);
@@ -88,7 +90,7 @@ function main() {
   const batch = flag('batch', null); const WRITE = flag('write', false) === true;
   const load = name => { try { return JSON.parse(fs.readFileSync(path.join(rawDir, name + '.json'), 'utf8')); } catch (e) { return null; } };
   const list = v => String(v === true || !v ? '' : v).split(',').map(s => s.trim()).filter(Boolean);
-  const wp = args => { try { return JSON.parse(execFileSync('node', [WP, site, ...args], { encoding: 'utf8', maxBuffer: 256e6, stdio: ['ignore', 'pipe', 'pipe'] })); } catch (e) { const msg = String(e.stderr || e.message).replace(/\s+/g, ' ').slice(0, 300); console.error(/HTTP 404/.test(msg) ? 'The site has no wp-media-quarantine plugin. Upload assets/wp-media-quarantine.php to wp-content/mu-plugins/.' : 'ERROR: ' + msg); process.exit(1); } };
+  const wp = args => { try { return JSON.parse(execFileSync('node', [WP, site, ...args], { encoding: 'utf8', maxBuffer: 256e6, stdio: ['ignore', 'pipe', 'pipe'] })); } catch (e) { const msg = String(e.stderr || e.message).replace(/\s+/g, ' ').slice(0, 300); console.error(/HTTP 404/.test(msg) ? adviceForSite(site, 'media_clean_up') : 'ERROR: ' + msg); process.exit(1); } };
   const needBatch = () => { if (!batch || batch === true || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(batch)) { console.error('--batch <name>: 1 to 40 of a-z, 0-9 and -'); process.exit(2); } };
   const planFile = () => path.join(qDir, batch + '.plan.json');
   const readPlan = () => { try { return JSON.parse(fs.readFileSync(planFile(), 'utf8')); } catch (e) { console.error('no plan for batch ' + batch + ': run plan first'); process.exit(1); } };

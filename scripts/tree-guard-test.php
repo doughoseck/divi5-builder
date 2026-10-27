@@ -17,7 +17,7 @@ foreach ( array( 'class-wp-block-parser-block.php', 'class-wp-block-parser-frame
 if ( ! class_exists( 'WP_Block_Parser' ) ) { fwrite( STDERR, "STOP: no WP_Block_Parser under $inc\n" ); exit( 2 ); }
 function parse_blocks( $content ) { $p = new WP_Block_Parser(); return $p->parse( $content ); }
 
-$src = file_get_contents( __DIR__ . '/../assets/divi5-builder-rest.php' );
+$src = file_get_contents( __DIR__ . '/../plugin/divi5-builder/parts/page-building.php' );
 if ( ! preg_match( '/\$tb_tree = (function \( \$content \) \{.*?\n\t\};)/s', $src, $m ) ) { fwrite( STDERR, "STOP: \$tb_tree not found in the plugin\n" ); exit( 2 ); }
 $tb_tree = eval( 'return ' . $m[1] );
 

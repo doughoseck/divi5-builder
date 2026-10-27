@@ -26,6 +26,8 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
       const [p, q = ''] = opts.path.split('?');
       const m = p.match(/^\/wp-json\/wp\/v2\/(pages|posts|et_pb_canvas)(?:\/(\d+))?$/);
       let status = 200, out;
+      // st.recordMethods: keep every request's method and path (the live-check test asserts it only ever GETs).
+      if (st.recordMethods) { st.requests = st.requests || []; st.requests.push(opts.method + ' ' + p); fs.writeFileSync(STATE, JSON.stringify(st)); }
       // The site-updates plugin (st.su = { version }), recording what it is asked: GET status, GET with ?refresh, POST refresh.
       const suStatus = () => ({ plugin_version: st.su.version, site: 'https://fake.test', wordpress: { version: '6.8.1' }, php: '8.2', multisite: false, plugins: [], themes: [], translations: 0, last_checked: 'now' });
       const suNew = st.su && st.su.version >= '1.0.2';
@@ -38,6 +40,11 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
         if (!suNew) { status = 404; out = { code: 'rest_no_route', message: 'No route was found' }; }
         else { st.su.refreshes = (st.su.refreshes || 0) + 1; out = suStatus(); fs.writeFileSync(STATE, JSON.stringify(st)); }
       }
+      // The combined plugin's status route (st.d5 = the status answer); no st.d5 = the plugin is not on the site.
+      else if (p === '/wp-json/divi5-builder/v1/status' && opts.method === 'GET') { if (!st.d5) { status = 404; out = { code: 'rest_no_route' }; } else out = st.d5; }
+      // The REST index (st.index = namespaces) and core settings (st.settings = an object, or a number = that HTTP error).
+      else if (p === '/wp-json/' && opts.method === 'GET') out = { name: 'fake', namespaces: st.index || ['oembed/1.0', 'wp/v2'] };
+      else if (p === '/wp-json/wp/v2/settings' && opts.method === 'GET') { if (typeof st.settings === 'number') { status = st.settings; out = { code: 'rest_forbidden' }; } else out = st.settings || { title: 'fake' }; }
       else if (p === '/wp-json/divi5-builder/v1/design-system') out = { colors: st.colors || {}, presets: st.presets || { module: [], group: [] }, variables: st.variables || [] };
       else if (!m) { status = 404; out = { code: 'rest_no_route' }; }
       else {
@@ -208,7 +215,36 @@ console.log('--- site-updates.js: reading the status is a GET, refreshing it is 
   r = su('1.0.2', 'status', 'fake', '--no-refresh', '--dir', path.join(tmp, 'su'));
   check('status --no-refresh only reads (a GET), nothing refreshed', r.code === 0 && r.su.gets === 1 && !r.su.refreshes && !r.su.getRefresh, [r.code, r.su]);
   r = su('1.0.1', 'status', 'fake', '--dir', path.join(tmp, 'su'));
-  check('a site with the old plugin (1.0.1) is told to upload 1.0.2, and nothing is refreshed', r.code !== 0 && /upload 1\.0\.2/.test(r.out) && !r.su.refreshes, [r.code, r.su, r.out.slice(-300)]);
+  check('a site with the old plugin (1.0.1) is told to install divi5-builder.zip, and nothing is refreshed', r.code !== 0 && /divi5-builder\.zip/.test(r.out) && !r.su.refreshes, [r.code, r.su, r.out.slice(-300)]);
+}
+
+console.log('--- the scripts say which switch to flip, and never flip one (issue #37)');
+{
+  const d5 = on => ({ version: '2.0.0', divi5: true, switches: Object.assign({ media_audit: false, media_clean_up: false, updates: false }, on), stood_aside: {} });
+  const run = (script, state, ...a) => {
+    fs.writeFileSync(STATE, JSON.stringify(Object.assign({ pages: {}, posts: {}, et_pb_canvas: {} }, state)));
+    const r = spawnSync(process.execPath, [path.join(path.dirname(WPJS), script), ...a], { encoding: 'utf8', env: Object.assign({}, process.env, { FAKE_WP_STATE: STATE, WEB_CREDS_PATH: CREDS, NODE_OPTIONS: `--require ${__filename.replace(/\\/g, '/')}` }) });
+    return { code: r.status, out: r.stdout + r.stderr };
+  };
+  const sentence = l => new RegExp('Switch ' + l + ' on in Settings > Divi 5 Builder \\(an administrator must do it in wp-admin\\)\\.');
+  const old = /mu-plugins|assets\//;
+  let r = run('site-updates.js', { d5: d5({}) }, 'status', 'fake', '--dir', path.join(tmp, 'su6'));
+  check('site-updates.js, Updates switch off: prints the Updates switch sentence, exit 1', r.code === 1 && sentence('Updates').test(r.out) && !old.test(r.out), [r.code, r.out.slice(-300)]);
+  r = run('site-updates.js', {}, 'status', 'fake', '--dir', path.join(tmp, 'su6'));
+  check('site-updates.js, no plugin at all: prints the install-the-zip sentence', r.code === 1 && r.out.includes('Install divi5-builder.zip from the latest release (Plugins > Add New > Upload Plugin), then switch Updates on in Settings > Divi 5 Builder.'), [r.code, r.out.slice(-300)]);
+  r = run('media-audit.js', { d5: d5({ updates: true }) }, 'scan', 'fake', '--dir', path.join(tmp, 'ma6'));
+  check('media-audit.js scan, Media audit switch off: prints the Media audit switch sentence', r.code === 1 && sentence('Media audit').test(r.out) && !old.test(r.out), [r.code, r.out.slice(-300)]);
+  r = run('media-audit.js', { d5: d5({}) }, 'db', 'fake', '--dir', path.join(tmp, 'ma6'));
+  check('media-audit.js db, Media audit switch off: prints the Media audit switch sentence', r.code === 1 && sentence('Media audit').test(r.out) && !old.test(r.out), [r.code, r.out.slice(-300)]);
+  r = run('media-quarantine.js', { d5: d5({}) }, 'status', 'fake', '--dir', path.join(tmp, 'mq6'));
+  check('media-quarantine.js status, Media clean-up switch off: prints the Media clean-up switch sentence', r.code === 1 && sentence('Media clean-up').test(r.out) && !old.test(r.out), [r.code, r.out.slice(-300)]);
+  r = run('media-quarantine.js', {}, 'status', 'fake', '--dir', path.join(tmp, 'mq6'));
+  check('media-quarantine.js status, no plugin: install-the-zip sentence', r.out.includes('Install divi5-builder.zip') && r.out.includes('switch Media clean-up on'), r.out.slice(-300));
+  fs.writeFileSync(STATE, JSON.stringify({ d5: d5({ updates: true }) }));
+  r = wp('status');
+  check('wp.js status prints the status route as JSON', r.code === 0 && r.json && r.json.switches && r.json.switches.updates === true && r.json.version === '2.0.0', [r.code, r.out, r.err]);
+  run('site-updates.js', { d5: d5({}) }, 'status', 'fake', '--dir', path.join(tmp, 'su6'));
+  check("a run with the switch off flips nothing (the fake site's switches and writes unchanged)", st().d5 && st().d5.switches.updates === false && !st().writes, st());
 }
 
 console.log('--- divi.js compile: --site checks colours and presets exist, the lint runs, --strict fails (issue #17)');

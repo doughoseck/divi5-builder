@@ -13,7 +13,8 @@ function add_action( $h, $cb = null ) { $GLOBALS['T_actions'][ $h ][] = $cb; }
 function register_rest_route( $ns, $path, $def ) { $GLOBALS['T_routes'][ $path ] = $def; }
 function current_user_can( $cap ) { return in_array( $cap, $GLOBALS['T_caps'], true ); }
 function is_multisite() { return $GLOBALS['T_multisite']; }
-require getenv( 'WPMA_PLUGIN_FILE' ) ?: __DIR__ . '/../assets/wp-media-audit.php';
+define( 'D5B_VERSION', '2.0.0' );
+require getenv( 'WPMA_PLUGIN_FILE' ) ?: __DIR__ . '/../plugin/divi5-builder/parts/media-audit.php';
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) {
@@ -127,7 +128,7 @@ $h = array_values( $hits );
 check( 'a meta value goes through the meta rules and keeps its class', same( $h, array( array( 'i', 21, 's', 'trash', 1, array( 'postmeta|9|_thumbnail_id|page|trash' ) ) ) ), j( $h ) );
 
 echo "--- who may (routes)\n";
-foreach ( $GLOBALS['T_actions']['rest_api_init'] ?? array() as $cb ) { $cb(); }
+d5b_routes_media_audit();
 $allowed = function () { return array_map( function ( $r ) { return true === call_user_func( $r['permission_callback'] ); }, $GLOBALS['T_routes'] ); };
 check( 'the seven routes are registered', 7 === count( $GLOBALS['T_routes'] ), j( array_keys( $GLOBALS['T_routes'] ) ) );
 $GLOBALS['T_caps'] = array( 'edit_posts', 'edit_others_posts' );
@@ -139,7 +140,7 @@ check( 'multisite: a subsite admin (manage_options only) is refused on every rou
 $GLOBALS['T_caps'] = array( 'manage_options', 'manage_network_options' );
 check( 'multisite: a network admin is allowed', ! in_array( false, $allowed(), true ) );
 $GLOBALS['T_multisite'] = false;
-check( 'the version constant matches the header', (bool) preg_match( '/\* Version: ' . preg_quote( WPMA_VERSION, '/' ) . '\b/', file_get_contents( getenv( 'WPMA_PLUGIN_FILE' ) ?: __DIR__ . '/../assets/wp-media-audit.php' ) ) );
+check( 'the part defines no old version constant (the loader owns the version)', ! preg_match( '/define\(\s*.WPMA_VERSION/', file_get_contents( getenv( 'WPMA_PLUGIN_FILE' ) ?: __DIR__ . '/../plugin/divi5-builder/parts/media-audit.php' ) ) );
 
 echo "\n" . ( $failed ? "FAILED: $failed of $n" : "ALL $n CHECKS PASSED" ) . "\n";
 exit( $failed ? 1 : 0 );

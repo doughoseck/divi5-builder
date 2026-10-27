@@ -1,6 +1,6 @@
 # Security policy
 
-This project ships PHP must-use plugins that run on live WordPress sites, and Node
+This project ships a WordPress plugin that runs on live WordPress sites, and Node
 scripts that hold WordPress Application Passwords. Security reports are very welcome.
 
 ## Reporting a vulnerability
@@ -17,23 +17,52 @@ out, and reporters are credited unless they prefer not to be.
 
 ## Supported versions
 
-Only the latest version on `main` is supported. Always run the newest
-`assets/divi5-builder-rest.php` (the version is in its header and in
-`GET /wp-json/divi5-builder/v1/version`).
+Only the latest version on `main` is supported. Always run the newest `divi5-builder`
+plugin (the version is in its header and in `GET /wp-json/divi5-builder/v1/version`).
 
 | Plugin | Latest | Notes |
 |---|---|---|
-| `divi5-builder-rest.php` | 1.8.5 | Page building bridge. Meant to stay installed. |
-| `wp-media-audit.php` | 1.1.2 | Read-only. Install for the audit, **remove after use**. |
-| `wp-media-quarantine.php` | 1.0.1 | Moves files. Install for the clean-up, **remove after use**. |
-| `wp-site-updates.php` | 1.0.2 | Runs updates. Install when needed, remove after use. (1.0.2: refreshing the status is a POST.) |
+| `divi5-builder` (`divi5-builder.zip`) | 2.0.0 | One plugin: page building (always on), plus Media audit, Media clean-up and Updates, each a switch in Settings > Divi 5 Builder, **off by default**. Only an administrator in wp-admin can flip a switch. |
+| `divi5-builder-rest.php` | 1.8.5 | Replaced by `divi5-builder` 2.0.0. Security fixes only until 2027-01-31. In `assets/legacy/`. |
+| `wp-media-audit.php` | 1.1.2 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
+| `wp-media-quarantine.php` | 1.0.1 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
+| `wp-site-updates.php` | 1.0.2 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
+
+### Moving from the four old plugins
+
+Install `divi5-builder.zip` (Plugins > Add New > Upload Plugin) and activate it. It deactivates
+old normal copies of the four plugins by itself. Old must-use files cannot be deactivated
+from code: the plugin stands aside for that part and shows a notice naming the file to
+delete. Delete what the notice lists. A red warning shows when an old updates or clean-up
+copy is still live while its switch is off. After 2027-01-31 the old files get no more fixes.
+While `divi5-builder` is active, activating one of the four old plugins over the REST API
+(an Application Password or a script) is refused with a 403. An administrator can still
+activate one by hand in wp-admin; the red warning then shows. The refusal covers only the
+eight file names the old plugins were released under (`<slug>.php` and `<slug>/<slug>.php`
+for each of the four). An old copy installed under another folder or file name is not
+recognised and can still be activated over REST; the red warning then shows once it is
+serving. Delete old copies rather than leave them installed.
+On a multisite network, the Network Admin > Settings > Divi 5 Builder page (where the
+switches are) also lists every subsite (up to 500) where an old copy was serving a part at
+its last request, in red when that part's switch is off.
+Deleting the plugin (Plugins > Delete) removes its stored options, the switches included,
+so a reinstall starts with every switch off.
+
+### What the switches protect against
+
+The switches guard against mistakes and scripts: an AI agent, a script or an Application
+Password cannot turn a feature on. They do not protect against a stolen administrator
+login or administrator Application Password. That credential can install and activate any
+plugin, and so run any code on the site. On sites that never install or update plugins
+remotely, add `define( 'DISALLOW_FILE_MODS', true );` to `wp-config.php`, and only hand
+out administrator Application Passwords when a job needs one.
 
 ## Hardening advice for users
 
 - Use the **lowest role that does the job**: page building needs an **Editor**
   Application Password; only design-system writes, options, Theme Builder, Custom CSS
   and the site-maintenance tools need an Administrator.
-- Only install the plugins you use, and remove the maintenance plugins when done.
+- Leave the Media audit, Media clean-up and Updates switches off, and turn one on only for the job.
 - Keep `~/.web-creds.txt` readable by your user only (`chmod 600` on macOS/Linux;
   on Windows keep it in your user profile). Never commit it.
 - Revoke an Application Password (Users -> Profile) as soon as you stop using it.

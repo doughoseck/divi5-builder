@@ -8,7 +8,7 @@
  * the plugin's split of a preset's attrs into styleAttrs / renderAttrs reproduces what the Visual Builder stored.
  * The expected values are real presets read from a live site.
  * Part 2 runs the plugin's upsert / backup / restore logic against fake Divi stores and breaks it on purpose.
- * The functions under test are the ones in assets/divi5-builder-rest.php itself. Exits non-zero on failure.
+ * The functions under test are the ones in plugin/divi5-builder/parts/page-building.php itself. Exits non-zero on failure.
  */
 if ( $argc < 2 ) { fwrite( STDERR, "usage: php ds-write-test.php <Divi theme folder>\n" ); exit( 2 ); }
 $divi = rtrim( $argv[1], '/\\' );
@@ -56,7 +56,7 @@ class WP_Block_Type { public $name; function __construct( $name, $args = array()
 class WP_Block_Type_Registry { static function get_instance() { return new self(); } function get_registered( $n ) { return null; } }
 
 require "$divi/includes/builder-5/server/vendor/autoload.php";
-require getenv( 'D5B_PLUGIN_FILE' ) ?: __DIR__ . '/../assets/divi5-builder-rest.php'; // the env override is for mutation runs
+require getenv( 'D5B_PLUGIN_FILE' ) ?: __DIR__ . '/../plugin/divi5-builder/parts/page-building.php'; // the env override is for mutation runs
 
 $failed = 0;
 $check  = function ( $name, $ok, $detail = '' ) use ( &$failed ) { echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ( ! $ok && $detail ) ? "\n          $detail" : '' ) . "\n"; if ( ! $ok ) { $failed++; } };

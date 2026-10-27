@@ -33,7 +33,8 @@
  *   node wp.js <site> update-canvas <id> --content-file F (--expect-hash H | --force) [--title T]
  *   node wp.js <site> link-canvas <canvas_id> <parent_id>   # parent = page, or a Theme Builder layout
  *   --- Theme Builder (needs divi5-builder-rest.php >= 1.5; see SKILL.md) ---
- *   node wp.js <site> plugin-version               # which mu-plugin version is installed
+ *   node wp.js <site> plugin-version               # which divi5-builder plugin version is installed
+ *   node wp.js <site> status                       # the plugin's status route: version, which switches are on (read-only)
  *   node wp.js <site> tb-list [--json]             # templates + layouts, each layout's format and hash
  *   node wp.js <site> tb-get <id> [--out F]        # raw layout content + the hash tb-set needs
  *   node wp.js <site> tb-set <id> --content-file F --expect-hash H [--dry-run] [--mark-divi5]
@@ -66,6 +67,7 @@ const os = require('os');
 const https = require('https');
 const crypto = require('crypto');
 const { URL } = require('url');
+const { adviceFor } = require('./switch-advice.js');
 
 // Default: .web-creds.txt in the user's home folder. Node does not expand "~", so it is done here
 // (also for a WEB_CREDS_PATH that starts with "~").
@@ -510,7 +512,7 @@ function flags(argv) {
       console.log(JSON.stringify({ ok, id: p.id, wrote: meta, readback: {
         _et_pb_use_builder: got._et_pb_use_builder, _et_pb_use_divi_5: got._et_pb_use_divi_5,
         _et_pb_page_layout: got._et_pb_page_layout, _et_builder_version: got._et_builder_version } }));
-      if (!ok) die('meta did NOT stick — is the divi5-builder-rest.php mu-plugin installed? (see assets/)');
+      if (!ok) die('meta did NOT stick. ' + adviceFor('page_building', null));
       break;
     }
     case 'check-plugin': {
@@ -519,7 +521,7 @@ function flags(argv) {
       const r = await request('OPTIONS', `${api}/pages`, { Authorization: authHeader(c) });
       let ok = false;
       try { ok = !!(((JSON.parse(r.body.toString('utf8')).schema || {}).properties || {}).meta || {}).properties?._et_pb_use_builder; } catch (e) { /* */ }
-      console.log(JSON.stringify({ pluginActive: ok, hint: ok ? 'ready — set-builder will work' : 'install assets/divi5-builder-rest.php in wp-content/mu-plugins/' }));
+      console.log(JSON.stringify({ pluginActive: ok, hint: ok ? 'ready — set-builder will work' : adviceFor('page_building', null) }));
       break;
     }
     case 'create-canvas': {
@@ -659,8 +661,9 @@ function flags(argv) {
     case 'rest-get': {
       // Read any REST route of the site with the stored credentials. GET only, so it cannot change anything.
       const p = String(f._[0] || '').replace(/^\/+/, '');
-      if (!p || /^https?:/i.test(p)) die('rest-get needs the path after /wp-json/, e.g. wp-media-audit/v1/info');
-      const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/${p}`, c);
+      // rest-get --index reads the REST index itself (/wp-json/, which lists the namespaces); still a GET.
+      if (!f.index && (!p || /^https?:/i.test(p))) die('rest-get needs the path after /wp-json/, e.g. wp-media-audit/v1/info (or --index for the REST index)');
+      const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/${f.index ? '' : p}`, c);
       const out = typeof r === 'string' ? r : JSON.stringify(r);
       if (f.out) { fs.writeFileSync(f.out, out); console.log(JSON.stringify({ ok: true, out: f.out, bytes: out.length })); }
       else console.log(out);
@@ -681,7 +684,7 @@ function flags(argv) {
       break;
     }
     case 'quarantine': {
-      // POST to the media quarantine plugin only (assets/wp-media-quarantine.php): quarantine move|restore --data-file f.json
+      // POST to the media quarantine plugin only (the Media clean-up part of divi5-builder): quarantine move|restore --data-file f.json
       const act = f._[0];
       if (!['move', 'restore'].includes(act) || !f['data-file']) die('quarantine needs move|restore and --data-file <json>');
       const r = await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/wp-media-quarantine/v1/${act}`, c, JSON.parse(fs.readFileSync(f['data-file'], 'utf8')));
@@ -689,7 +692,7 @@ function flags(argv) {
       break;
     }
     case 'updates': {
-      // POST to the site updates plugin only (assets/wp-site-updates.php): updates update|clear-caches|refresh [--data-file f.json]
+      // POST to the site updates plugin only (the Updates part of divi5-builder): updates update|clear-caches|refresh [--data-file f.json]
       // Prints the JSON answer even when the site answers with an error, so the caller can report why.
       const act = f._[0];
       if (!['update', 'clear-caches', 'refresh'].includes(act)) die('updates needs update (with --data-file <json>), clear-caches or refresh');
@@ -700,9 +703,17 @@ function flags(argv) {
       break;
     }
     // ---- Theme Builder (requires divi5-builder-rest.php >= 1.5) ----------------
+    case 'status': {
+      // GET divi5-builder/v1/status: version, divi5, which switches are on, which parts stood aside, and which have an
+      // old copy installed but inactive. Read-only.
+      // The scripts use it to say which switch to flip; nothing here (or anywhere in the scripts) switches anything on.
+      const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/status`, c);
+      console.log(typeof r === 'string' ? r : JSON.stringify(r));
+      break;
+    }
     case 'plugin-version': {
       const r = await request('GET', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/version`, { Authorization: authHeader(c) });
-      if (r.status === 404) { console.log(JSON.stringify({ version: '<1.5', note: 'no /version route: re-upload assets/divi5-builder-rest.php' })); break; }
+      if (r.status === 404) { console.log(JSON.stringify({ version: '<1.5', note: 'no /version route. ' + adviceFor('page_building', null) })); break; }
       console.log(r.body.toString('utf8'));
       break;
     }
