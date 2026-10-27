@@ -253,9 +253,13 @@ with `url`/`user`/`pass`; `pass` is a WordPress **Application Password**).
 
    **Content writes are stale-guarded** (`update-page`, `update-post`, `update-canvas`, like `tb-set`):
    they need the hash of the read the change was based on, and refuse with **exit 3 "STALE"** when the
-   page was saved since (someone in the Visual Builder). Then read it again and redo the change on top of
-   theirs. Never reach for `--force` to get past STALE: that overwrites their work. `--force` is for a
-   deliberate replace the user asked for. Every content write first keeps what it replaces in
+   page was saved since. **On STALE: STOP and ask the user.** Tell them which page, and when it was last
+   saved (the message says), and ask whether someone has it open in the Visual Builder. Do not retry, do
+   not loop, do not move on to other writes on that page: the builder keeps the page in the browser and
+   its next save writes the WHOLE page, wiping any REST change made meanwhile, even one that went through.
+   Only when the user confirms it is saved and closed: read it again and redo the change on top of
+   theirs, once. Never reach for `--force` to get past STALE: that overwrites their work. `--force` is
+   for a replace the user explicitly asked for. Every content write first keeps what it replaces in
    `~/.divi5-builder/backups/<site>/` (`WP_BACKUP_DIR` to change), and prints the new `hash` for the next
    write. `md5` of `get-page --raw` is the same hash, so a script can compute it from what it read.
 

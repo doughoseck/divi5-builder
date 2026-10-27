@@ -124,6 +124,8 @@ w0 = st().writes || 0;
 const v3 = file('v3.html', 'MY CHANGE');
 r = wp('update-page', '10', '--content-file', v3, '--expect-hash', hRead);
 check('the write is refused with exit 3 and a STALE message', r.code === 3 && /STALE/.test(r.err) && /current hash/.test(r.err), [r.code, r.err]);
+check('... which tells the agent to STOP and ask the user (someone may be in the Visual Builder), not to retry', /STOP and ask the user/.test(r.err) && /Visual Builder/.test(r.err) && /Do not retry/.test(r.err) && /--force/.test(r.err), r.err);
+check('... and says how long ago it was saved (here: just now, so "saved very recently")', /last saved (less than a minute ago|\d+ minutes ago)/.test(r.err) && /saved very recently/.test(r.err), r.err);
 check('... and the builder\'s save is untouched', st().pages[10].content === 'BUILDER SAVE' && (st().writes || 0) === w0, st().pages[10].content);
 const nb = backups().length;
 r = wp('update-page', '10', '--content-file', v3, '--force');

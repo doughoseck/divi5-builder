@@ -142,9 +142,15 @@ async function guardContentWrite({ c, api, site, kind, id, f }) {
   if (!f.force) {
     if (!expect) die(`${kind} ${id}: a content write needs --expect-hash <hash> (printed by the get command you read it with), or --force to overwrite whatever is stored now`);
     if (expect !== now) {
-      process.stderr.write(`STALE: ${kind} ${id} changed since you read it (saved in the Visual Builder?).\n` +
-        `  expected hash ${expect}\n  current hash  ${now}  (modified ${cur.modified_gmt} UTC)\n` +
-        `Nothing was written. Read it again and redo the change, or pass --force to overwrite it anyway.\n`);
+      const ago = cur.modified_gmt ? Math.round((Date.now() - Date.parse(cur.modified_gmt + 'Z')) / 60000) : NaN;
+      const when = Number.isFinite(ago) ? (ago < 1 ? 'less than a minute ago' : ago < 120 ? `${ago} minutes ago` : `${Math.round(ago / 60)} hours ago`) : 'at an unknown time';
+      process.stderr.write(`STALE: ${kind} ${id} changed since you read it. It was last saved ${when} (${cur.modified_gmt} UTC).\n` +
+        `  expected hash ${expect}\n  current hash  ${now}\n` +
+        `Nothing was written. STOP and ask the user before doing anything else with this ${kind === 'et_pb_canvas' ? 'canvas' : kind.slice(0, -1)}:\n` +
+        `someone may have it open in the Visual Builder right now${Number.isFinite(ago) && ago < 30 ? ' (it was saved very recently)' : ''}, and the builder's\n` +
+        `next save writes the whole page from the browser, which would wipe your change. Wait until they confirm\n` +
+        `it is saved and closed, then read it again and redo the change on top of theirs. Do not retry in a loop,\n` +
+        `and do not use --force to get past this unless the user explicitly says to overwrite their version.\n`);
       process.exit(STALE_EXIT);
     }
   }
