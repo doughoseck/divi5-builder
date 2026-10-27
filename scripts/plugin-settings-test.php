@@ -169,7 +169,8 @@ check( 'Divi 5 detected shows when it is', false !== strpos( $out, 'Divi 5 detec
 echo "admin notice\n";
 fresh();
 define( 'WPSU_VERSION', '1.0.0' );
-$GLOBALS['T_server_routes'] = array( '/divi5-builder/v1/version' => array() );
+// The old updates copy is really serving (its constant AND its routes), so the gate stands aside and the line is red.
+$GLOBALS['T_server_routes'] = array( '/divi5-builder/v1/version' => array(), '/wp-site-updates/v1/info' => array() );
 d5b_gate();
 check( 'premise: the takeover has a red and a plain line', 1 === count( array_filter( d5b_takeover_lines(), function ( $l ) { return $l['red']; } ) ) && count( d5b_takeover_lines() ) >= 2, d5b_takeover_lines() );
 $red   = array_values( array_filter( d5b_takeover_lines(), function ( $l ) { return $l['red']; } ) )[0]['text'];

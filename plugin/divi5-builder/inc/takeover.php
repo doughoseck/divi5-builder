@@ -5,10 +5,13 @@
  *  - on activation (and once, in must-use mode) the old plugins that are active are deactivated;
  *  - a copy that cannot be deactivated (a must-use file, a code snippet, a plugin switched on again later)
  *    is detected by the gate, which stands aside for it; the report and lines below tell the owner;
- *  - a part whose switch is off but whose old copy is still live is called out in red.
+ *  - a part whose switch is off but whose old copy is still live is called out in red;
+ *  - activating an old plugin over REST (core's /wp/v2/plugins, an Application Password or a script) is refused,
+ *    so a switch that is off cannot be bypassed that way. A person activating it in wp-admin is not stopped.
  *
  * This file only defines functions; it registers no hooks. The loader hooks
- * d5b_takeover_on_activation (register_activation_hook) and d5b_takeover_mu_admin_init (admin_init).
+ * d5b_takeover_on_activation (register_activation_hook), d5b_takeover_mu_admin_init (admin_init) and
+ * d5b_refuse_legacy_rest_activation (rest_pre_dispatch).
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
@@ -133,17 +136,23 @@ if ( ! function_exists( 'd5b_takeover_mu_admin_init' ) ) {
 
 if ( ! function_exists( 'd5b_legacy_report' ) ) {
 	/**
-	 * Old copies still providing a part. Works outside REST requests (uses constants, files and options).
-	 * @return array<int, array{part:string,how:string,file:?string,live_while_off:bool}>
+	 * Old copies of a part on this site. Works outside REST requests (uses constants, files and options).
+	 * A part counts as served by the old copy only when the gate stood aside for it (d5b_legacy_seen, written
+	 * at each REST request). An old copy whose constant is defined but which registered no routes is
+	 * 'inactive': it is not serving anything and can never be "LIVE".
+	 * @return array<int, array{part:string,how:string,file:?string,live_while_off:bool}> how: mu|plugin|other|inactive
 	 */
 	function d5b_legacy_report(): array {
 		$seen   = function_exists( 'd5b_legacy_seen_get' ) ? d5b_legacy_seen_get() : array();
 		$active = d5b_takeover_active_basenames( true );
 		$rows   = array();
 		foreach ( d5b_parts() as $key => $part ) {
-			$how  = null;
-			$file = null;
-			if ( defined( $part['legacy_const'] ) ) {
+			$how     = null;
+			$file    = null;
+			$serving = in_array( $key, $seen, true );
+			if ( defined( $part['legacy_const'] ) && ! $serving ) {
+				$how = 'inactive';
+			} elseif ( defined( $part['legacy_const'] ) ) {
 				$mu = $part['legacy_slug'] . '.php';
 				if ( defined( 'WPMU_PLUGIN_DIR' ) && file_exists( rtrim( WPMU_PLUGIN_DIR, '/\\' ) . '/' . $mu ) ) {
 					$how = 'mu'; $file = $mu;
@@ -153,7 +162,7 @@ if ( ! function_exists( 'd5b_legacy_report' ) ) {
 					}
 					if ( null === $how ) { $how = 'other'; }
 				}
-			} elseif ( in_array( $key, $seen, true ) ) {
+			} elseif ( $serving ) {
 				$how = 'other';
 			}
 			if ( null === $how ) { continue; }
@@ -161,7 +170,7 @@ if ( ! function_exists( 'd5b_legacy_report' ) ) {
 				'part'           => $key,
 				'how'            => $how,
 				'file'           => $file,
-				'live_while_off' => $part['has_switch'] && ! d5b_switch_is_on( $key ),
+				'live_while_off' => $serving && $part['has_switch'] && ! d5b_switch_is_on( $key ),
 			);
 		}
 		return $rows;
@@ -183,7 +192,9 @@ if ( ! function_exists( 'd5b_takeover_lines' ) ) {
 		$parts = d5b_parts();
 		foreach ( d5b_legacy_report() as $row ) {
 			$label = $parts[ $row['part'] ]['label'];
-			if ( 'mu' === $row['how'] ) {
+			if ( 'inactive' === $row['how'] ) {
+				$text = 'An old copy of ' . $label . ' is installed but inactive. Delete it to finish the move.';
+			} elseif ( 'mu' === $row['how'] ) {
 				$text = 'The old file wp-content/mu-plugins/' . $row['file'] . ' is still in charge of ' . $label . '. Delete it to finish the move.';
 			} elseif ( 'plugin' === $row['how'] ) {
 				$text = 'The old plugin ' . $row['file'] . ' is active again and is in charge of ' . $label . '. Deactivate and delete it.';
@@ -196,5 +207,62 @@ if ( ! function_exists( 'd5b_takeover_lines' ) ) {
 			}
 		}
 		return $lines;
+	}
+}
+
+if ( ! function_exists( 'd5b_legacy_rest_ids' ) ) {
+	/**
+	 * The ids core's /wp/v2/plugins uses for the old plugins: the basename without ".php"
+	 * ("wp-site-updates" and "wp-site-updates/wp-site-updates"), lower case.
+	 * @return string[]
+	 */
+	function d5b_legacy_rest_ids(): array {
+		$ids = array();
+		foreach ( array_keys( d5b_parts() ) as $part ) {
+			foreach ( d5b_legacy_basenames( $part ) as $b ) { $ids[] = strtolower( substr( $b, 0, -4 ) ); }
+		}
+		return $ids;
+	}
+}
+
+if ( ! function_exists( 'd5b_refuse_legacy_rest_activation' ) ) {
+	/**
+	 * For rest_pre_dispatch. Refuses (403) a REST request that would activate one of the old plugins:
+	 *  - POST/PUT/PATCH /wp/v2/plugins/<old plugin> with status active or network-active;
+	 *  - POST /wp/v2/plugins (install) with the slug of an old plugin and status active or network-active.
+	 * Every other request passes through untouched, as does an earlier filter's answer.
+	 *
+	 * @param mixed $result  null, or what an earlier filter decided
+	 * @param mixed $server  the WP_REST_Server (unused)
+	 * @param mixed $request the WP_REST_Request
+	 * @return mixed $result unchanged, or a WP_Error with status 403
+	 */
+	function d5b_refuse_legacy_rest_activation( $result, $server = null, $request = null ) {
+		if ( null !== $result || ! is_object( $request ) || ! method_exists( $request, 'get_route' ) || ! method_exists( $request, 'get_method' ) ) {
+			return $result;
+		}
+		if ( ! in_array( strtoupper( (string) $request->get_method() ), array( 'POST', 'PUT', 'PATCH' ), true ) ) { return $result; }
+		$status = $request->get_param( 'status' );
+		if ( ! is_string( $status ) || ! in_array( strtolower( trim( $status ) ), array( 'active', 'network-active' ), true ) ) {
+			return $result;
+		}
+		// Core matches routes case-insensitively, and a client may percent-encode the "/" in the id.
+		$route = strtolower( rawurldecode( (string) $request->get_route() ) );
+		$route = rtrim( preg_replace( '#/+#', '/', $route ), '/' );
+		$ids   = d5b_legacy_rest_ids();
+		$hit   = false;
+		if ( preg_match( '#^/wp/v2/plugins/(.+)$#', $route, $m ) ) {
+			$id  = preg_replace( '#\.php$#', '', $m[1] );
+			$hit = in_array( $id, $ids, true );
+		} elseif ( '/wp/v2/plugins' === $route ) {
+			$slug = $request->get_param( 'slug' );
+			$hit  = is_string( $slug ) && in_array( strtolower( trim( $slug ) ), $ids, true );
+		}
+		if ( ! $hit ) { return $result; }
+		return new WP_Error(
+			'd5b_old_plugin_refused',
+			'This old plugin is replaced by Divi 5 Builder and cannot be activated over the REST API. Turn the feature on in Settings > Divi 5 Builder instead.',
+			array( 'status' => 403 )
+		);
 	}
 }

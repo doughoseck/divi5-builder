@@ -10,7 +10,9 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 if ( ! function_exists( 'd5b_gate' ) ) {
 	/** @param WP_REST_Server|null $server What rest_api_init passes in; falls back to rest_get_server(). */
 	function d5b_gate( $server = null ): void {
-		if ( ! is_object( $server ) ) { $server = rest_get_server(); }
+		// Core passes the WP_REST_Server. Anything else (a plugin firing rest_api_init by hand) gets the real one,
+		// so a wrong argument can never fatal the site.
+		if ( ! ( $server instanceof WP_REST_Server ) ) { $server = rest_get_server(); }
 		// Once per REST server. A second rest_api_init on the SAME server would find this plugin's own routes
 		// already registered and record a false "an old copy provides it" for every part. A different server
 		// object starts with no routes, so the gate must run for it.
@@ -19,10 +21,12 @@ if ( ! function_exists( 'd5b_gate' ) ) {
 		$GLOBALS['d5b_stood_aside'] = array();
 		$existing                   = $server->get_routes();
 		foreach ( d5b_parts() as $key => $part ) {
-			if ( defined( $part['legacy_const'] ) ) {
-				$GLOBALS['d5b_stood_aside'][ $key ] = 'constant';
-			} elseif ( isset( $existing[ $part['probe'] ] ) ) {
-				$GLOBALS['d5b_stood_aside'][ $key ] = 'route';
+			// Stand aside only when the old copy's routes really are registered. Its constant alone is not
+			// enough: an old media audit / clean-up file loaded after this plugin defines its constant but
+			// skips its own routes (they sit behind a function_exists guard this plugin already satisfied).
+			// 'constant' or 'route' says how the old copy can be found again outside a REST request.
+			if ( isset( $existing[ $part['probe'] ] ) ) {
+				$GLOBALS['d5b_stood_aside'][ $key ] = defined( $part['legacy_const'] ) ? 'constant' : 'route';
 			} elseif ( d5b_switch_is_on( $key ) && function_exists( $part['routes'] ) ) {
 				call_user_func( $part['routes'] );
 			}
@@ -37,7 +41,10 @@ if ( ! function_exists( 'd5b_gate' ) ) {
 }
 
 if ( ! function_exists( 'd5b_legacy_seen_get' ) ) {
-	/** Parts an old copy was seen providing through a route (a snippet leaves no constant or file to find later). */
+	/**
+	 * Parts an old copy was really serving at the last REST request on this site (the gate stood aside for
+	 * them). wp-admin reads it: the red "LIVE" line follows this record, not a constant.
+	 */
 	function d5b_legacy_seen_get(): array {
 		// Always per site: route detection depends on each site's own active plugins and code snippets,
 		// so one shared network value would flip on almost every request.
@@ -47,11 +54,11 @@ if ( ! function_exists( 'd5b_legacy_seen_get' ) ) {
 }
 
 if ( ! function_exists( 'd5b_legacy_seen_sync' ) ) {
-	/** Keep d5b_legacy_seen equal to the parts detected by route. Writes only when that set changes. */
+	/** Keep d5b_legacy_seen equal to the parts stood aside for (both kinds). Writes only when that set changes. */
 	function d5b_legacy_seen_sync(): void {
 		$now = array();
 		foreach ( isset( $GLOBALS['d5b_stood_aside'] ) ? $GLOBALS['d5b_stood_aside'] : array() as $part => $how ) {
-			if ( 'route' === $how ) { $now[] = $part; }
+			if ( is_string( $part ) ) { $now[] = $part; }
 		}
 		sort( $now );
 		$was = d5b_legacy_seen_get();

@@ -52,6 +52,8 @@ add_action( 'rest_api_init', 'd5b_gate', 99 );
 // Taking over from the old plugins. A must-use plugin is never "activated", so it runs on admin_init instead.
 register_activation_hook( D5B_FILE, 'd5b_takeover_on_activation' );
 add_action( 'admin_init', 'd5b_takeover_mu_admin_init' );
+// An old plugin activated again over REST would bring a switched-off feature back; refuse that (wp-admin is not touched).
+add_filter( 'rest_pre_dispatch', 'd5b_refuse_legacy_rest_activation', 10, 3 );
 
 // The settings page. Only people in wp-admin: no admin_post_nopriv_* hook, on purpose.
 add_action( 'admin_menu', 'd5b_settings_menu' );

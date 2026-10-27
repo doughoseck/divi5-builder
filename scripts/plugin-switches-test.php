@@ -175,12 +175,28 @@ check( 'old route present: updates not registered, noted as route', array() === 
 check( 'old route present: page building not registered, noted as route', array() === routes_in( 'divi5-builder/v1/version' ) && 'route' === $GLOBALS['d5b_stood_aside']['page_building'] );
 check( 'the other switched-on parts still register', count( routes_in( 'wp-media-audit/v1' ) ) > 0 && count( routes_in( 'wp-media-quarantine/v1' ) ) > 0 );
 check( '/status still registers and reports the stand-aside', 'route' === call_user_func( $GLOBALS['T_routes']['GET divi5-builder/v1/status']['callback'], new T_Request() )['stood_aside']['updates'] );
+// ---- a plugin that fires rest_api_init with something that is not a WP_REST_Server
+echo "gate with a wrong argument\n";
+foreach ( array( 'an object without get_routes' => new stdClass(), 'an object with its own get_routes' => new class { function get_routes() { return array( '/wp-site-updates/v1/info' => array() ); } }, 'a string' => 'x', 'an int' => 7, 'an array' => array() ) as $what => $arg ) {
+	fresh(); switch_on( SWITCHED );
+	$err = '';
+	try { d5b_gate( $arg ); } catch ( Throwable $e ) { $err = get_class( $e ) . ': ' . $e->getMessage(); }
+	check( "gate( $what ): no fatal, falls back to the real server", '' === $err && count( routes_in( 'wp-site-updates/v1' ) ) > 0 && array() === $GLOBALS['d5b_stood_aside'] && rest_get_server() === $GLOBALS['d5b_gate_ran'], $err ?: $GLOBALS['d5b_stood_aside'] );
+}
+
 // Constants are permanent, so this goes last.
+// An old media audit file loaded AFTER this plugin (WordPress sorts active_plugins, so that is the usual order)
+// defines its constant but skips its own routes: they sit behind a function_exists guard this plugin already
+// satisfied. The constant alone must not make the gate stand aside, or nobody serves the part.
 fresh(); switch_on( SWITCHED );
 define( 'WPMA_VERSION', '1.1.2' ); define( 'ET_BUILDER_5_DIR', '/x/' );
 d5b_gate();
-check( 'old constant defined: media audit not registered, noted as constant', array() === routes_in( 'wp-media-audit/v1' ) && 'constant' === $GLOBALS['d5b_stood_aside']['media_audit'] );
+check( 'old constant but no old routes: media audit registers itself, nothing stood aside', count( routes_in( 'wp-media-audit/v1' ) ) > 0 && ! isset( $GLOBALS['d5b_stood_aside']['media_audit'] ), $GLOBALS['d5b_stood_aside'] );
 check( 'an unrelated part is unaffected by that constant', count( routes_in( 'wp-site-updates/v1' ) ) > 0 && ! isset( $GLOBALS['d5b_stood_aside']['updates'] ) );
+fresh(); switch_on( SWITCHED );
+$GLOBALS['T_server_routes'] = array( '/wp-media-audit/v1/info' => array() );
+d5b_gate();
+check( 'old constant and its routes: media audit not registered, noted as constant', array() === routes_in( 'wp-media-audit/v1' ) && 'constant' === $GLOBALS['d5b_stood_aside']['media_audit'] );
 check( 'status reports divi5 when Divi 5 is there', true === call_user_func( $GLOBALS['T_routes']['GET divi5-builder/v1/status']['callback'], new T_Request() )['divi5'] );
 
 echo "\n" . ( $failed ? "$failed FAILED of $n" : "all $n passed" ) . "\n";

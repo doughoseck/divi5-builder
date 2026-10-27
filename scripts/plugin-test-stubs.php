@@ -11,6 +11,7 @@
  *   T_deactivated    list of deactivate_plugins calls
  *   T_deactivate_calls  list of array( plugins, silent, network ) for each deactivate_plugins call
  *   T_actions        hook => list of callbacks (add_action, never run)
+ *   T_filters        hook => list of callbacks (add_filter, never run)
  *   T_priorities     hook => list of priorities, parallel to T_actions
  *   T_activation     list of array( file, callback ) from register_activation_hook
  *   T_post_meta      list of array( post type, meta key ) from register_post_meta
@@ -24,7 +25,7 @@ if ( ! defined( 'ABSPATH' ) ) { define( 'ABSPATH', sys_get_temp_dir() . '/d5b-st
 function t_reset() {
 	$GLOBALS['T_routes'] = array(); $GLOBALS['T_writes'] = array(); $GLOBALS['T_settings'] = array();
 	$GLOBALS['T_deactivated'] = array(); $GLOBALS['T_deactivate_calls'] = array(); $GLOBALS['T_actions'] = array();
-	$GLOBALS['T_autoload'] = array(); $GLOBALS['T_priorities'] = array(); $GLOBALS['T_activation'] = array(); $GLOBALS['T_post_meta'] = array();
+	$GLOBALS['T_autoload'] = array(); $GLOBALS['T_priorities'] = array(); $GLOBALS['T_activation'] = array(); $GLOBALS['T_post_meta'] = array(); $GLOBALS['T_filters'] = array();
 	$GLOBALS['T_options'] = array(); $GLOBALS['T_site_options'] = array(); $GLOBALS['T_server_routes'] = array();
 	unset( $GLOBALS['d5b_stood_aside'], $GLOBALS['d5b_gate_ran'], $GLOBALS['T_server'] );
 }
@@ -37,8 +38,11 @@ t_reset(); t_set_caps( array() ); t_set_multisite( false );
 if ( ! class_exists( 'WP_Error' ) ) {
 	class WP_Error { public $code; public $message; public $data; function __construct( $c = '', $m = '', $d = null ) { $this->code = $c; $this->message = $m; $this->data = $d; } function get_error_message() { return $this->message; } }
 }
-class T_Request { private $p; function __construct( array $p = array() ) { $this->p = $p; } function get_param( $k ) { return $this->p[ $k ] ?? null; } function get_params() { return $this->p; } function get_json_params() { return $this->p; } }
-class T_Server { public $routes = null; function get_routes() { return null === $this->routes ? $GLOBALS['T_server_routes'] : $this->routes; } }
+// $method and $route as WP_REST_Request::get_method() / get_route() give them (only rest_pre_dispatch tests need them).
+class T_Request { private $p; private $m; private $r; function __construct( array $p = array(), $method = 'GET', $route = '' ) { $this->p = $p; $this->m = $method; $this->r = $route; } function get_param( $k ) { return $this->p[ $k ] ?? null; } function get_params() { return $this->p; } function get_json_params() { return $this->p; } function get_method() { return $this->m; } function get_route() { return $this->r; } }
+// The gate checks for core's class, so the stand-in server is one.
+if ( ! class_exists( 'WP_REST_Server' ) ) { class WP_REST_Server {} }
+class T_Server extends WP_REST_Server { public $routes = null; function get_routes() { return null === $this->routes ? $GLOBALS['T_server_routes'] : $this->routes; } }
 // A second WP_REST_Server in the same request: its own, empty, route table.
 function t_new_server() { $s = new T_Server(); $s->routes = array(); $GLOBALS['T_server'] = $s; return $s; }
 
@@ -47,7 +51,7 @@ function is_multisite() { return $GLOBALS['T_multisite']; }
 function current_user_can( $cap, $id = null ) { return in_array( $cap, $GLOBALS['T_caps'], true ); }
 function add_action( $h, $cb = null, $p = 10, $a = 1 ) { $GLOBALS['T_actions'][ $h ][] = $cb; $GLOBALS['T_priorities'][ $h ][] = $p; }
 function register_activation_hook( $file, $cb ) { $GLOBALS['T_activation'][] = array( $file, $cb ); }
-function add_filter( $h, $cb = null, $p = 10, $a = 1 ) {}
+function add_filter( $h, $cb = null, $p = 10, $a = 1 ) { $GLOBALS['T_filters'][ $h ][] = $cb; }
 function register_post_meta( $type = '', $key = '', $args = array() ) { $GLOBALS['T_post_meta'][] = array( $type, $key ); }
 function register_meta() {}
 function rest_get_server() { if ( empty( $GLOBALS['T_server'] ) ) { $GLOBALS['T_server'] = new T_Server(); } return $GLOBALS['T_server']; }

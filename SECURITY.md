@@ -35,6 +35,18 @@ old normal copies of the four plugins by itself. Old must-use files cannot be de
 from code: the plugin stands aside for that part and shows a notice naming the file to
 delete. Delete what the notice lists. A red warning shows when an old updates or clean-up
 copy is still live while its switch is off. After 2027-01-31 the old files get no more fixes.
+While `divi5-builder` is active, activating one of the four old plugins over the REST API
+(an Application Password or a script) is refused with a 403. An administrator can still
+activate one by hand in wp-admin; the red warning then shows.
+
+### What the switches protect against
+
+The switches guard against mistakes and scripts: an AI agent, a script or an Application
+Password cannot turn a feature on. They do not protect against a stolen administrator
+login or administrator Application Password. That credential can install and activate any
+plugin, and so run any code on the site. On sites that never install or update plugins
+remotely, add `define( 'DISALLOW_FILE_MODS', true );` to `wp-config.php`, and only hand
+out administrator Application Passwords when a job needs one.
 
 ## Hardening advice for users
 

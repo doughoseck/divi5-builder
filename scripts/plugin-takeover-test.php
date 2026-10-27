@@ -169,6 +169,48 @@ t_new_request(); d5b_gate();
 check( 'another subsite without the copy writes nothing and sees nothing', 0 === writes_of( 'd5b_legacy_seen' ) && array() === d5b_legacy_seen_get() && array() === array_filter( d5b_legacy_report(), function ( $r ) { return 'page_building' === $r['part']; } ), $GLOBALS['T_writes'] );
 t_set_multisite( false );
 
+// ---- an old plugin activated again over REST (an Application Password or a script) is refused
+// Core's POST /wp/v2/plugins/<plugin> {status: active} would add it to active_plugins, and on the next request
+// its routes would be live while the switch here says off. rest_pre_dispatch refuses it before core runs.
+echo "REST activation of an old plugin is refused\n";
+fresh();
+function pre( $method, $route, array $params, $result = null ) { return d5b_refuse_legacy_rest_activation( $result, rest_get_server(), new T_Request( $params, $method, $route ) ); }
+function refused( $r ) { return $r instanceof WP_Error && 'd5b_old_plugin_refused' === $r->code && array( 'status' => 403 ) === $r->data; }
+$old_ids = array( 'divi5-builder-rest', 'divi5-builder-rest/divi5-builder-rest', 'wp-media-audit', 'wp-media-audit/wp-media-audit',
+	'wp-media-quarantine', 'wp-media-quarantine/wp-media-quarantine', 'wp-site-updates', 'wp-site-updates/wp-site-updates' );
+$bad = array();
+foreach ( $old_ids as $id ) {
+	foreach ( array( 'POST', 'PUT', 'PATCH' ) as $m ) {
+		foreach ( array( 'active', 'network-active' ) as $s ) {
+			if ( ! refused( pre( $m, '/wp/v2/plugins/' . $id, array( 'status' => $s ) ) ) ) { $bad[] = "$m $id $s"; }
+		}
+	}
+}
+check( 'all 8 old plugins x POST/PUT/PATCH x active/network-active: 403', array() === $bad, $bad );
+check( 'the refusal is in plain words and names the settings page', false !== strpos( pre( 'POST', '/wp/v2/plugins/wp-site-updates', array( 'status' => 'active' ) )->message, 'Settings > Divi 5 Builder' ) );
+check( 'percent-encoded slash, upper case, trailing slash, .php: still refused', refused( pre( 'POST', '/wp/v2/plugins/wp-site-updates%2Fwp-site-updates', array( 'status' => 'active' ) ) )
+	&& refused( pre( 'POST', '/wp/v2/plugins/WP-Site-Updates/WP-Site-Updates', array( 'status' => 'active' ) ) )
+	&& refused( pre( 'POST', '/wp/v2/plugins/wp-site-updates/', array( 'status' => 'active' ) ) )
+	&& refused( pre( 'post', '/wp/v2/plugins/wp-site-updates.php', array( 'status' => 'Active' ) ) ) );
+check( 'install + activate through the collection with an old slug: 403', refused( pre( 'POST', '/wp/v2/plugins', array( 'slug' => 'wp-media-quarantine', 'status' => 'active' ) ) ) );
+check( 'deactivating an old plugin over REST is allowed', null === pre( 'POST', '/wp/v2/plugins/wp-site-updates/wp-site-updates', array( 'status' => 'inactive' ) ) );
+check( 'reading an old plugin over REST is allowed', null === pre( 'GET', '/wp/v2/plugins/wp-site-updates/wp-site-updates', array() ) );
+check( 'deleting an old plugin over REST is allowed', null === pre( 'DELETE', '/wp/v2/plugins/wp-site-updates/wp-site-updates', array() ) );
+check( 'an update with no status is allowed', null === pre( 'POST', '/wp/v2/plugins/wp-site-updates', array( 'context' => 'edit' ) ) );
+check( 'install with an old slug but no status (installs inactive) is allowed', null === pre( 'POST', '/wp/v2/plugins', array( 'slug' => 'wp-media-quarantine' ) ) );
+check( 'activating any other plugin is allowed, including look-alike names', null === pre( 'POST', '/wp/v2/plugins/akismet/akismet', array( 'status' => 'active' ) )
+	&& null === pre( 'POST', '/wp/v2/plugins/wp-site-updates-pro/wp-site-updates-pro', array( 'status' => 'active' ) )
+	&& null === pre( 'POST', '/wp/v2/plugins/my-wp-site-updates', array( 'status' => 'active' ) )
+	&& null === pre( 'POST', '/wp/v2/plugins/wp-site-updates/other-file', array( 'status' => 'active' ) )
+	&& null === pre( 'POST', '/wp/v2/plugins/divi5-builder/divi5-builder', array( 'status' => 'active' ) )
+	&& null === pre( 'POST', '/wp/v2/plugins', array( 'slug' => 'akismet', 'status' => 'active' ) ) );
+check( 'other routes with a status are untouched', null === pre( 'POST', '/wp/v2/posts/5', array( 'status' => 'active' ) ) && null === pre( 'POST', '/wp/v2/themes/wp-site-updates', array( 'status' => 'active' ) ) );
+$earlier = new WP_Error( 'other', 'x' );
+check( 'an earlier filter\'s answer passes through', $earlier === pre( 'POST', '/wp/v2/plugins/wp-site-updates', array( 'status' => 'active' ), $earlier ) );
+check( 'a non-request argument passes through, no fatal', null === d5b_refuse_legacy_rest_activation( null, null, 'x' ) && null === d5b_refuse_legacy_rest_activation( null ) && null === d5b_refuse_legacy_rest_activation( null, null, new stdClass() ) );
+check( 'a status that is not a string is ignored, no notice', null === pre( 'POST', '/wp/v2/plugins/wp-site-updates', array( 'status' => array( 'active' ) ) ) );
+check( 'nothing is written while refusing', array() === $GLOBALS['T_writes'], $GLOBALS['T_writes'] );
+
 // ---- a must-use copy (constants from here on are permanent)
 echo "legacy mu file present: part stands aside, routes once, notice names file\n";
 fresh();
@@ -187,11 +229,18 @@ check( 'switch off with the mu file still live: red line', has_line( 'Media clea
 unlink( $mu . '/wp-media-quarantine.php' );
 $rep = array_values( array_filter( d5b_legacy_report(), function ( $r ) { return 'media_clean_up' === $r['part']; } ) );
 check( 'mu file deleted but constant still defined: other', 'other' === $rep[0]['how'] && null === $rep[0]['file'], $rep );
+// Next request: the old copy's routes are gone, only its constant is left. It serves nothing, so it is not LIVE.
+$GLOBALS['T_server_routes'] = array();
+t_new_request(); d5b_gate();
+check( 'constant without routes: not stood aside, no longer recorded', ! isset( $GLOBALS['d5b_stood_aside']['media_clean_up'] ) && ! in_array( 'media_clean_up', d5b_legacy_seen_get(), true ), array( $GLOBALS['d5b_stood_aside'], d5b_legacy_seen_get() ) );
+check( 'the plain "installed but inactive" line, and no red line', has_line( 'An old copy of Media clean-up is installed but inactive. Delete it to finish the move.' ) && array() === red_lines(), d5b_takeover_lines() );
 
 echo "old updates plugin loaded: red line says live although switch off\n";
 fresh();
 define( 'WPSU_VERSION', '1.0.0' );
+$GLOBALS['T_server_routes'] = array( '/wp-site-updates/v1/info' => array() ); // the old copy's routes are registered
 t_new_request(); d5b_gate();
+check( 'stood aside for a constant + route copy, and recorded', 'constant' === $GLOBALS['d5b_stood_aside']['updates'] && array( 'updates' ) === get_option( 'd5b_legacy_seen' ), array( $GLOBALS['d5b_stood_aside'], get_option( 'd5b_legacy_seen', null ) ) );
 $red = array_column( red_lines(), 'text' );
 check( 'a red line contains Updates is LIVE', in_array( 'Updates is LIVE on this site through the old copy, even though its switch here is off.', $red, true ), $red );
 check( 'the red line is flagged red, the plain notice is not', ! in_array( 'An older copy (perhaps a code snippet) is already providing Updates. Remove it to finish the move.', $red, true ) && has_line( 'An older copy (perhaps a code snippet) is already providing Updates. Remove it to finish the move.' ) );
@@ -200,11 +249,31 @@ d5b_switch_set( 'updates', true, 'admin' );
 check( 'switch turned on: the red line goes', ! in_array( 'Updates is LIVE on this site through the old copy, even though its switch here is off.', array_column( red_lines(), 'text' ), true ) );
 d5b_switch_set( 'updates', false, 'admin' );
 
+// The real old media audit file, loaded AFTER this plugin's parts (WordPress sorts active_plugins, so
+// divi5-builder/divi5-builder.php comes before wp-media-audit.php). It defines WPMA_VERSION, but its routes sit
+// behind a function_exists guard that parts/media-audit.php already satisfied, so it registers nothing.
+echo "old media audit file loaded after the new plugin\n";
+fresh();
+update_option( 'active_plugins', array( 'divi5-builder/divi5-builder.php', 'wp-media-audit.php' ) );
+$hooks_before = count( $GLOBALS['T_actions']['rest_api_init'] ?? array() );
+require __DIR__ . '/../assets/legacy/wp-media-audit.php';
+check( 'premise: the old file defines its constant but adds no rest_api_init of its own', defined( 'WPMA_VERSION' ) && $hooks_before === count( $GLOBALS['T_actions']['rest_api_init'] ?? array() ) );
+t_new_request(); d5b_gate();
+check( 'switch off: nothing stood aside, nothing recorded, no audit routes', array() === $GLOBALS['d5b_stood_aside'] && null === get_option( 'd5b_legacy_seen', null ) && array() === routes_in( 'wp-media-audit/v1' ), $GLOBALS['d5b_stood_aside'] );
+check( 'switch off: no red LIVE line (nothing is live)', array() === red_lines(), d5b_takeover_lines() );
+check( 'switch off: the plain inactive line names the part', has_line( 'An old copy of Media audit is installed but inactive. Delete it to finish the move.' ), texts( d5b_takeover_lines() ) );
+d5b_switch_set( 'media_audit', true, 'admin' );
+$GLOBALS['T_routes'] = array();
+t_new_request(); d5b_gate();
+check( 'switch on: the new plugin serves media audit (the feature does not vanish)', count( routes_in( 'wp-media-audit/v1' ) ) > 0 && ! isset( $GLOBALS['d5b_stood_aside']['media_audit'] ), routes_in( 'wp-media-audit/v1' ) );
+d5b_switch_set( 'media_audit', false, 'admin' );
+
 echo "old plugin reactivated later\n";
 fresh();
 update_option( 'd5b_takeover', array( 'done_at' => '2026-10-27T00:00:00Z', 'deactivated' => array( 'wp-media-audit/wp-media-audit.php' ) ) );
 update_option( 'active_plugins', array( 'wp-media-audit/wp-media-audit.php' ) );
-define( 'WPMA_VERSION', '1.1.2' );
+// Loaded on its own (or before this plugin) the old copy registers its routes, so it really serves the part.
+$GLOBALS['T_server_routes'] = array( '/wp-media-audit/v1/info' => array() );
 t_new_request(); d5b_gate();
 check( 'media audit stands aside, noted as constant', 'constant' === $GLOBALS['d5b_stood_aside']['media_audit'] );
 check( 'nothing is deactivated again', array() === $GLOBALS['T_deactivated'] && array() === $GLOBALS['T_deactivate_calls'] );

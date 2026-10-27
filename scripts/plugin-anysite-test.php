@@ -75,6 +75,7 @@ check( 'rest_api_init runs the gate at priority 99', array( 'd5b_gate' ) === $GL
 check( 'admin_menu and network_admin_menu run d5b_settings_menu', array( 'd5b_settings_menu' ) === $GLOBALS['T_actions']['admin_menu'] && array( 'd5b_settings_menu' ) === $GLOBALS['T_actions']['network_admin_menu'] );
 check( 'both save hooks run d5b_settings_save', array( 'd5b_settings_save' ) === $GLOBALS['T_actions']['admin_post_d5b_save_switches'] && array( 'd5b_settings_save' ) === $GLOBALS['T_actions']['network_admin_edit_d5b_save_switches'] );
 check( 'both notice hooks run d5b_admin_notice, admin_init runs the must-use takeover', array( 'd5b_admin_notice' ) === $GLOBALS['T_actions']['admin_notices'] && array( 'd5b_admin_notice' ) === $GLOBALS['T_actions']['network_admin_notices'] && array( 'd5b_takeover_mu_admin_init' ) === $GLOBALS['T_actions']['admin_init'] );
+check( 'exactly one filter: rest_pre_dispatch refuses REST activation of an old plugin', array( 'rest_pre_dispatch' => array( 'd5b_refuse_legacy_rest_activation' ) ) === $GLOBALS['T_filters'] && function_exists( 'd5b_refuse_legacy_rest_activation' ), $GLOBALS['T_filters'] );
 check( 'activation hook: this file, d5b_takeover_on_activation', 1 === count( $GLOBALS['T_activation'] ) && norm( $GLOBALS['T_activation'][0][0] ) === norm( $loaderA ) && 'd5b_takeover_on_activation' === $GLOBALS['T_activation'][0][1], $GLOBALS['T_activation'] );
 $nopriv = array_values( array_filter( $hooks, function ( $h ) { return false !== strpos( $h, 'nopriv' ); } ) );
 check( 'no *_nopriv_* hook: a logged-out visitor can reach nothing', array() === $nopriv, $nopriv );
@@ -120,10 +121,10 @@ t_set_multisite( false );
 
 // ---- loaded twice
 echo "loaded twice: second copy returns early\n";
-$hooks_before = $GLOBALS['T_actions']; $act_before = $GLOBALS['T_activation']; $PHP_WARNINGS = array();
+$hooks_before = $GLOBALS['T_actions']; $act_before = $GLOBALS['T_activation']; $filters_before = $GLOBALS['T_filters']; $PHP_WARNINGS = array();
 require $loaderB;
 check( 'D5B_FILE stays the first copy\'s path', norm( D5B_FILE ) === norm( $loaderA ) && norm( D5B_FILE ) !== norm( $loaderB ), D5B_FILE );
-check( 'the second copy registered no hook and no activation hook', $hooks_before === $GLOBALS['T_actions'] && $act_before === $GLOBALS['T_activation'] );
+check( 'the second copy registered no hook and no activation hook', $hooks_before === $GLOBALS['T_actions'] && $act_before === $GLOBALS['T_activation'] && $filters_before === $GLOBALS['T_filters'] );
 check( 'the second copy raised no warning (no constant defined twice)', array() === $PHP_WARNINGS, $PHP_WARNINGS );
 
 // ---- init is skipped when the old copy is loaded

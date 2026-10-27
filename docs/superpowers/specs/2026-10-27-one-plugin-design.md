@@ -108,10 +108,11 @@ The old files define `D5B_REST_VERSION`, `WPMA_VERSION`, `WPMQ_VERSION` and `WPS
    - an admin notice for users who can manage plugins, until the old files are gone
    - the same lines on the settings page
 5. **When the combined plugin is a must-use file** (my call; must-use files never fire an activation hook): it runs the same deactivation once, on the first wp-admin load by a user who can activate plugins, and records that it did.
-6. **An old plugin reactivated later** (my call): the combined plugin does not fight it. It stands aside for that part, as for a must-use file, and the red warning returns.
-7. **Detection** (my call): standing aside is decided per part at `rest_api_init`, at a late priority. The part stands aside if the old constant is defined, **or** if any of that part's routes are already registered.
-   - The second check catches an old copy pasted as a Code Snippets or WPCode snippet, which skips the constant line. The notice then says "an older copy (perhaps a code snippet) is already providing <part>".
-   - The old files' `add_action` calls are not guarded, so detection must never assume load order.
+6. **An old plugin reactivated later** (my call): the combined plugin does not fight a person who does it in wp-admin. It stands aside for that part, as for a must-use file, and the red warning returns. Activation of an old plugin over the REST API (`/wp/v2/plugins`, an Application Password or a script) is refused with a 403 while the combined plugin is loaded (adversarial ruling, 2026-10-27).
+7. **Detection** (my call, amended by the adversarial ruling of 2026-10-27): standing aside is decided per part at `rest_api_init`, at a late priority. The part stands aside only if its probe route is already registered, which is the fact that the old copy is really serving it. The old constant alone does not stand it aside.
+   - This catches an old copy pasted as a Code Snippets or WPCode snippet, which skips the constant line. The notice then says "an older copy (perhaps a code snippet) is already providing <part>".
+   - Every stand-aside is recorded per site (`d5b_legacy_seen`), and the red warning follows that record. A constant defined while the part was not stood aside gives a plain line: "An old copy of <part> is installed but inactive. Delete it to finish the move."
+   - Load order matters: the old media audit and media clean-up files guard their routes with `function_exists`, so loaded after the combined plugin they define their constant but register nothing. That is why the constant alone cannot decide.
 8. **Combined plugin installed twice** (a must-use copy and a normal copy): it must survive being loaded twice, the `double-load-test.php` standard. The first copy wins, and the second does nothing.
 
 ## Must-use install
