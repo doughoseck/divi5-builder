@@ -1,19 +1,21 @@
 #!/usr/bin/env node
 /**
- * build-plugin-zips.js: package each plugin in assets/ as a normal WordPress plugin zip, so it can
- * be installed from the admin (Plugins > Add New > Upload Plugin) instead of by FTP to mu-plugins.
+ * build-plugin-zips.js: package the divi5-builder plugin (plugin/divi5-builder/) as a normal WordPress
+ * plugin zip, so it can be installed from the admin (Plugins > Add New > Upload Plugin).
  *
  *   node scripts/build-plugin-zips.js [--out dist]
  *
- * Each zip holds <slug>/<slug>.php plus LICENSE, which is the layout WordPress expects. Node built-ins
- * only (zlib + a small zip writer below), so it runs anywhere the rest of the skill runs.
- * Prints each zip with the plugin version read from its header.
+ * The zip holds every file of plugin/divi5-builder/ under divi5-builder/ (so divi5-builder/divi5-builder.php,
+ * inc/, parts/, readme.txt) plus LICENSE: the layout WordPress expects. Reproducible: sorted names, fixed
+ * timestamps, LF line endings. Node built-ins only (zlib + a small zip writer below).
+ * The single-file plugins in assets/legacy/ are no longer packaged.
+ * Prints the zip with the plugin version read from its header.
  */
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 
-const ROOT = path.join(__dirname, '..');
+const ROOT = process.env.D5B_REPO_ROOT || path.join(__dirname, '..'); // the override is for the mutation test
 const outArg = process.argv.indexOf('--out');
 const OUT = path.resolve(outArg > -1 ? process.argv[outArg + 1] : path.join(ROOT, 'dist'));
 
@@ -57,27 +59,42 @@ function zip(entries) { // entries: [{ name, data: Buffer }]; folders are implie
   return Buffer.concat([...locals, cd, end]);
 }
 
-// --- build ---------------------------------------------------------------------------------------
-fs.mkdirSync(OUT, { recursive: true });
+// --- license -------------------------------------------------------------------------------------
 const licenseFile = path.join(ROOT, 'LICENSE');
 const license = fs.existsSync(licenseFile) ? fs.readFileSync(licenseFile) : null;
-if (!license) console.error('note: no LICENSE next to assets/, the zips will hold the plugin file only');
-const plugins = fs.readdirSync(path.join(ROOT, 'assets')).filter(f => f.endsWith('.php')).sort();
-let built = 0;
-for (const file of plugins) {
-  const src = fs.readFileSync(path.join(ROOT, 'assets', file));
-  const head = src.toString('utf8', 0, 8192);
-  if (!/Plugin Name:/.test(head)) continue; // not a plugin
-  const version = (head.match(/^\s*\*\s*Version:\s*(\S+)/m) || [])[1];
-  if (!version) { console.error(`STOP: ${file} has no Version: header`); process.exit(1); }
-  const slug = file.replace(/\.php$/, '');
-  // Normalise line endings to LF so the zip is the same whatever the checkout's core.autocrlf.
-  const php = Buffer.from(src.toString('utf8').replace(/\r\n/g, '\n'), 'utf8');
-  const out = path.join(OUT, `${slug}.zip`);
-  const files = [{ name: `${slug}/${slug}.php`, data: php }];
-  if (license) files.push({ name: `${slug}/LICENSE`, data: license });
-  fs.writeFileSync(out, zip(files));
-  console.log(`${path.relative(ROOT, out).replace(/\\/g, '/')}  ${slug} ${version}  (${fs.statSync(out).size} bytes)`);
-  built++;
+if (!license) console.error('note: no LICENSE in the repository root, the zip will not hold one');
+
+// --- build ---------------------------------------------------------------------------------------
+// One zip, divi5-builder.zip, from plugin/divi5-builder/ (every file, sorted, under divi5-builder/) plus LICENSE.
+// The old single-file plugins in assets/legacy/ are no longer packaged.
+const SLUG = 'divi5-builder';
+const PLUGIN_DIR = path.join(ROOT, 'plugin', SLUG);
+const MAIN = path.join(PLUGIN_DIR, `${SLUG}.php`);
+if (!fs.existsSync(MAIN)) { console.error(`STOP: ${path.relative(ROOT, MAIN)} not found`); process.exit(1); }
+const mainHead = fs.readFileSync(MAIN, 'utf8').slice(0, 8192);
+if (!/Plugin Name:/.test(mainHead)) { console.error(`STOP: ${SLUG}.php has no Plugin Name: header`); process.exit(1); }
+const version = (mainHead.match(/^\s*\*\s*Version:\s*(\S+)/m) || [])[1];
+if (!version) { console.error(`STOP: ${SLUG}.php has no Version: header`); process.exit(1); }
+
+function walk(dir, rel) { // every file under dir, as forward-slash paths relative to the plugin folder
+  let out = [];
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const r = rel ? `${rel}/${e.name}` : e.name;
+    if (e.isDirectory()) out = out.concat(walk(path.join(dir, e.name), r));
+    else if (e.isFile()) out.push(r);
+  }
+  return out;
 }
-if (!built) { console.error('no plugins found in assets/'); process.exit(1); }
+const TEXT = /\.(php|txt|md|json|js|css|html)$/i;
+const names = walk(PLUGIN_DIR, '').sort();
+const files = names.map(rel => {
+  let data = fs.readFileSync(path.join(PLUGIN_DIR, rel));
+  // Normalise line endings to LF in text files so the zip is the same whatever the checkout's core.autocrlf.
+  if (TEXT.test(rel)) data = Buffer.from(data.toString('utf8').replace(/\r\n/g, '\n'), 'utf8');
+  return { name: `${SLUG}/${rel}`, data };
+});
+if (license) files.push({ name: `${SLUG}/LICENSE`, data: license });
+fs.mkdirSync(OUT, { recursive: true });
+const out = path.join(OUT, `${SLUG}.zip`);
+fs.writeFileSync(out, zip(files));
+console.log(`${path.relative(ROOT, out).replace(/\\/g, '/')}  ${SLUG} ${version}  (${fs.statSync(out).size} bytes, ${files.length} files)`);

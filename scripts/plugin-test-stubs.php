@@ -11,6 +11,9 @@
  *   T_deactivated    list of deactivate_plugins calls
  *   T_deactivate_calls  list of array( plugins, silent, network ) for each deactivate_plugins call
  *   T_actions        hook => list of callbacks (add_action, never run)
+ *   T_priorities     hook => list of priorities, parallel to T_actions
+ *   T_activation     list of array( file, callback ) from register_activation_hook
+ *   T_post_meta      list of array( post type, meta key ) from register_post_meta
  *   T_autoload       option name => the autoload argument last given to add_option / update_option
  *   T_options        option name => value (site options too, in T_site_options)
  *   T_server_routes  path => anything: what rest_get_server()->get_routes() reports as already registered
@@ -21,10 +24,12 @@ if ( ! defined( 'ABSPATH' ) ) { define( 'ABSPATH', sys_get_temp_dir() . '/d5b-st
 function t_reset() {
 	$GLOBALS['T_routes'] = array(); $GLOBALS['T_writes'] = array(); $GLOBALS['T_settings'] = array();
 	$GLOBALS['T_deactivated'] = array(); $GLOBALS['T_deactivate_calls'] = array(); $GLOBALS['T_actions'] = array();
-	$GLOBALS['T_autoload'] = array();
+	$GLOBALS['T_autoload'] = array(); $GLOBALS['T_priorities'] = array(); $GLOBALS['T_activation'] = array(); $GLOBALS['T_post_meta'] = array();
 	$GLOBALS['T_options'] = array(); $GLOBALS['T_site_options'] = array(); $GLOBALS['T_server_routes'] = array();
-	unset( $GLOBALS['d5b_stood_aside'] );
+	unset( $GLOBALS['d5b_stood_aside'], $GLOBALS['d5b_gate_ran'] );
 }
+// A new request: WordPress starts a request with the gate not yet run.
+function t_new_request() { unset( $GLOBALS['d5b_gate_ran'] ); }
 function t_set_caps( array $caps ) { $GLOBALS['T_caps'] = $caps; }
 function t_set_multisite( $on ) { $GLOBALS['T_multisite'] = (bool) $on; }
 t_reset(); t_set_caps( array() ); t_set_multisite( false );
@@ -38,9 +43,10 @@ class T_Server { function get_routes() { return $GLOBALS['T_server_routes']; } }
 function is_wp_error( $x ) { return $x instanceof WP_Error; }
 function is_multisite() { return $GLOBALS['T_multisite']; }
 function current_user_can( $cap, $id = null ) { return in_array( $cap, $GLOBALS['T_caps'], true ); }
-function add_action( $h, $cb = null, $p = 10, $a = 1 ) { $GLOBALS['T_actions'][ $h ][] = $cb; }
+function add_action( $h, $cb = null, $p = 10, $a = 1 ) { $GLOBALS['T_actions'][ $h ][] = $cb; $GLOBALS['T_priorities'][ $h ][] = $p; }
+function register_activation_hook( $file, $cb ) { $GLOBALS['T_activation'][] = array( $file, $cb ); }
 function add_filter( $h, $cb = null, $p = 10, $a = 1 ) {}
-function register_post_meta() {}
+function register_post_meta( $type = '', $key = '', $args = array() ) { $GLOBALS['T_post_meta'][] = array( $type, $key ); }
 function register_meta() {}
 function rest_get_server() { return new T_Server(); }
 function register_rest_route( $ns, $path, $args ) {

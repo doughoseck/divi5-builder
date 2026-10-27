@@ -9,6 +9,10 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 if ( ! function_exists( 'd5b_gate' ) ) {
 	function d5b_gate(): void {
+		// Once per request. A second rest_api_init would find this plugin's own routes already
+		// registered and record a false "an old copy provides it" for every part.
+		if ( ! empty( $GLOBALS['d5b_gate_ran'] ) ) { return; }
+		$GLOBALS['d5b_gate_ran']    = true;
 		$GLOBALS['d5b_stood_aside'] = array();
 		$existing                   = rest_get_server()->get_routes();
 		foreach ( d5b_parts() as $key => $part ) {
