@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Divi 5 Builder — REST meta bridge
- * Description: Registers Divi's builder/layout post-meta for the WordPress REST API so a page built via REST (e.g. by the divi5-builder skill) can be flipped into "Divi mode" without opening the Visual Builder. v1.2 makes link-canvas attach an et_pb_canvas popup to a page via the real Divi meta (_divi_canvas_parent_post_id + _divi_off_canvas_data), so REST-created Divi 5 popups render. v1.3 adds read/write of Divi's GLOBAL COLOUR palette, which lives in a wp_option rather than in page content and could not be created over REST at all before — so a site can now be themed before its first page is built. v1.5 adds Theme Builder access: list every template and layout, read a header/body/footer layout's raw content, and write one back (hash-checked against concurrent edits, previous content kept for restore), because core REST does not expose those post types. v1.7 adds read/write of the site-wide Custom CSS field (Divi's Theme Options ▸ General ▸ Custom CSS) — this isn't a Divi option at all, it's WordPress core's own Additional CSS system (a `custom_css` post per active theme), and both Divi's own save route and the Theme Options screen reject Application Password auth the same way Theme Builder does, so it was previously only editable from a live wp-admin session. v1.8 adds WRITES to the design system: create or update one global colour, one design variable or one preset at a time, through Divi's own save functions (so Divi's CSS cache is cleared), add-only (nothing is ever deleted), with the previous store kept for restore. Writes are gated by the normal edit-post capability (manage_options for the palette, edit_theme_options for Custom CSS), so only authenticated editors/admins (incl. Application Passwords) can use them. v1.8.4 follows Divi 5.15's variable rules: a refused save (Divi now returns a WP_Error, or writes nothing when the user lacks the Variables Manager permission) is reported as an error, a restore keeps newer variables ARCHIVED instead of dropping them, and one variable can be deleted (archived) on purpose.
- * Version: 1.8.4
+ * Description: Lets the divi5-builder skill build and edit Divi 5 pages over the REST API: Divi mode, popups, Theme Builder, Custom CSS and the design system. Signed-in editors and administrators only.
+ * Version: 1.8.5
  * Author: divi5-builder skill
  *
  * INSTALL (pick one):
@@ -20,10 +20,28 @@
  * (a plain core-REST meta write) will turn the page into a rendered, no-sidebar
  * Divi page. Nothing here touches Divi's own code — it only exposes existing
  * meta keys to REST behind a capability check.
+ *
+ * WHAT IT ADDS, BY VERSION
+ *   1.0   Registers Divi's builder/layout post meta for REST, so a page built over REST can be flipped into
+ *         "Divi mode" without opening the Visual Builder.
+ *   1.2   link-canvas attaches an et_pb_canvas popup to a page via Divi's own meta (_divi_canvas_parent_post_id +
+ *         _divi_off_canvas_data), so REST-created Divi 5 popups render.
+ *   1.3   Read/write of Divi's global colour palette (a wp_option, not page content), so a site can be themed
+ *         before its first page is built.
+ *   1.5   Theme Builder: list templates and layouts, read a header/body/footer layout's raw content, write one back
+ *         (hash-checked against concurrent edits, previous content kept for restore). Core REST does not expose them.
+ *   1.7   Read/write of the site-wide Custom CSS (Theme Options > General > Custom CSS, which is WordPress core's
+ *         Additional CSS: a custom_css post per theme). Divi's save route rejects Application Passwords.
+ *   1.8   Design system WRITES: create or update one global colour, design variable or preset at a time, through
+ *         Divi's own save functions (so its CSS cache is cleared), add-only, previous store kept for restore.
+ *         Every route checks the capability WordPress uses for the same screen (see each permission_callback).
+ *   1.8.4 Divi 5.15 variable rules: a refused save is reported as an error, a restore keeps newer variables
+ *         archived instead of dropping them, and one variable can be deleted (archived) on purpose.
+ *   1.8.5 Short plugin description (this history moved here from it). No code change.
  */
 
 if ( ! defined( 'ABSPATH' ) ) { exit; }
-if ( ! defined( 'D5B_REST_VERSION' ) ) { define( 'D5B_REST_VERSION', '1.8.4' ); }
+if ( ! defined( 'D5B_REST_VERSION' ) ) { define( 'D5B_REST_VERSION', '1.8.5' ); }
 
 add_action( 'init', function () {
 	$auth = function ( $allowed, $meta_key, $post_id ) {
