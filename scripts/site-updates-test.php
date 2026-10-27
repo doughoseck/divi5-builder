@@ -74,7 +74,9 @@ function wp_strip_all_tags( $s ) { return strip_tags( $s ); }
 function wp_clean_plugins_cache( $x ) {} function wp_clean_themes_cache( $x ) {}
 function wp_cache_flush() { $GLOBALS['W']['flushed']++; }
 $GLOBALS['routes'] = array();
-require getenv( 'WPSU_PLUGIN_FILE' ) ?: __DIR__ . '/../assets/wp-site-updates.php';
+define( 'D5B_VERSION', '2.0.0' );
+require getenv( 'WPSU_PLUGIN_FILE' ) ?: __DIR__ . '/../plugin/divi5-builder/parts/updates.php';
+d5b_routes_updates();
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . ( is_string( $detail ) ? $detail : json_encode( $detail ) ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }

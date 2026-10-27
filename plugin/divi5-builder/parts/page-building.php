@@ -1,0 +1,1271 @@
+<?php
+/* Part: page building (REST routes, post meta). Defines functions only; the loader registers the hooks. */
+
+if ( ! function_exists( 'd5b_init_page_building' ) ) {
+
+function d5b_init_page_building(): void {
+	$auth = function ( $allowed, $meta_key, $post_id ) {
+		return current_user_can( 'edit_post', $post_id );
+	};
+	// Post types that can host a Divi layout. Add custom types here if needed.
+	$post_types = array( 'page', 'post' );
+	// The meta Divi uses to mark + lay out a builder page.
+	$keys = array(
+		'_et_pb_use_builder',       // 'on' = this is a Divi Builder page (the "Divi" badge)
+		'_et_pb_use_divi_5',        // 'on' = built with the Divi 5 engine
+		'_et_pb_page_layout',       // 'et_no_sidebar' | 'et_full_width_page' | 'et_right_sidebar' ...
+		'_et_pb_side_nav',          // 'on' | 'off'
+		'_et_builder_version',      // version stamp, e.g. 'VB|Divi|5.9.0'
+		'_et_pb_built_for_post_type', // 'page'
+	);
+	foreach ( $post_types as $pt ) {
+		foreach ( $keys as $key ) {
+			register_post_meta( $pt, $key, array(
+				'show_in_rest'  => true,
+				'single'        => true,
+				'type'          => 'string',
+				'auth_callback' => $auth,
+			) );
+		}
+	}
+}
+
+}
+
+/*
+ * ---------------------------------------------------------------------
+ * Design system WRITES (v1.8): global colours, design variables, presets
+ *
+ * Divi's own routes for these want a cookie nonce (an Application Password
+ * cannot supply one) and REPLACE THE WHOLE STORE with whatever is posted.
+ * This code runs inside WordPress, so it calls the same Divi functions the
+ * Visual Builder ends up in, which also clear Divi's static CSS cache:
+ *   GlobalPreset::save_data(), GlobalData::set_global_colors(),
+ *   GlobalData::set_global_variables()
+ *
+ * Rules every write follows:
+ *   1. ONE item per call, read-modify-write of the complete store. Nothing is
+ *      ever deleted and no other item is touched. (The one exception, asked
+ *      for by name: /design-system/variable/archive, which deletes one
+ *      variable the builder's way. Divi 5.15+ keeps a deleted variable in the
+ *      store with status "archived" and refuses a store that drops an id.)
+ *   2. Same id, or same name/label, UPDATES. So a script can be run twice.
+ *   3. The store as it was is kept first (last 10 per store) and can be put
+ *      back with /design-system/restore.
+ *   4. dry_run returns exactly what would be stored and writes nothing.
+ *   5. After the write the store is read back. A write Divi ignored is an
+ *      error here, never a silent success.
+ *   6. A preset's styleAttrs / renderAttrs are NOT worked out here: Divi's own
+ *      Conversion class splits the attrs by each field's `features.preset`
+ *      tag in the module's definition. /design-system/selftest re-splits
+ *      every preset already on the site and compares, which proves the split
+ *      against presets the Visual Builder wrote, without writing anything.
+ *
+ * The functions are global (not closures) so scripts/ds-write-test.php can
+ * test the file that ships.
+ * ---------------------------------------------------------------------
+ */
+if ( ! function_exists( 'd5b_ds_can' ) ) {
+
+	function d5b_ds_can() {
+		return current_user_can( 'manage_options' ) && current_user_can( 'edit_theme_options' );
+	}
+
+	// Divi's own classes by short name. '' when this site has no Divi 5.
+	function d5b_ds_class( $short ) {
+		$map   = array(
+			'preset'     => 'ET\\Builder\\Packages\\GlobalData\\GlobalPreset',
+			'data'       => 'ET\\Builder\\Packages\\GlobalData\\GlobalData',
+			'conversion' => 'ET\\Builder\\Packages\\Conversion\\Conversion',
+		);
+		$class = apply_filters( 'd5b_ds_class', isset( $map[ $short ] ) ? $map[ $short ] : '', $short );
+		return ( is_string( $class ) && '' !== $class && class_exists( $class ) ) ? $class : '';
+	}
+
+	function d5b_ds_err( $code, $message, $status = 400 ) {
+		return new WP_Error( $code, $message, array( 'status' => $status ) );
+	}
+
+	// Key-sorted copy, so two structures can be compared whatever order their keys were written in.
+	function d5b_ds_ksort( $v ) {
+		if ( ! is_array( $v ) ) { return $v; }
+		foreach ( $v as $k => $vv ) { $v[ $k ] = d5b_ds_ksort( $vv ); }
+		ksort( $v );
+		return $v;
+	}
+
+	// $a without every leaf that exists in $b. Branches left empty are removed.
+	function d5b_ds_subtract( $a, $b ) {
+		if ( ! is_array( $a ) || ! is_array( $b ) ) { return $a; }
+		foreach ( $b as $k => $bv ) {
+			if ( ! array_key_exists( $k, $a ) ) { continue; }
+			if ( is_array( $bv ) && is_array( $a[ $k ] ) ) {
+				$a[ $k ] = d5b_ds_subtract( $a[ $k ], $bv );
+				if ( array() === $a[ $k ] ) { unset( $a[ $k ] ); }
+			} else {
+				unset( $a[ $k ] );
+			}
+		}
+		return $a;
+	}
+
+	// Dotted paths of every leaf, for reports.
+	function d5b_ds_paths( $v, $prefix = '' ) {
+		if ( ! is_array( $v ) || array() === $v ) { return '' === $prefix ? array() : array( $prefix ); }
+		$out = array();
+		foreach ( $v as $k => $vv ) { $out = array_merge( $out, d5b_ds_paths( $vv, '' === $prefix ? (string) $k : $prefix . '.' . $k ) ); }
+		return $out;
+	}
+
+	// Divi's split of a module's attrs into what makes CSS, what changes markup/script, and what is content.
+	function d5b_ds_split( $module_name, $attrs ) {
+		$conv = d5b_ds_class( 'conversion' );
+		if ( ! $conv ) { return d5b_ds_err( 'no_divi5', 'Divi 5 (its Conversion class) is not available on this site', 501 ); }
+		$map = $conv::get_preset_attrs_mapping( $module_name );
+		if ( empty( $map ) || ! is_array( $map ) ) { return d5b_ds_err( 'unknown_module', 'Divi has no definition for module "' . $module_name . '"' ); }
+		return array(
+			'styleAttrs'   => $conv::get_preset_attrs( $attrs, array( 'style' ), $map ),
+			'renderAttrs'  => $conv::get_preset_attrs( $attrs, array( 'html', 'script' ), $map ),
+			'contentAttrs' => $conv::get_preset_attrs( $attrs, array( 'content' ), $map ),
+		);
+	}
+
+	// What in a module's attrs is CONTENT, which no preset may carry: what Divi's map tags as content, every
+	// element's innerContent (button text and url, text body, image src...) and the module's admin label.
+	// Divi's map alone is not enough: for divi/button it lists the text under another path than blocks store it.
+	function d5b_ds_content( $attrs, $mapped ) {
+		$content = is_array( $mapped ) ? $mapped : array();
+		foreach ( (array) $attrs as $element => $parts ) {
+			if ( is_array( $parts ) && array_key_exists( 'innerContent', $parts ) ) { $content[ $element ]['innerContent'] = $parts['innerContent']; }
+		}
+		if ( isset( $attrs['module']['meta'] ) ) { $content['module']['meta'] = $attrs['module']['meta']; }
+		return $content;
+	}
+
+	function d5b_ds_read( $store ) {
+		if ( 'presets' === $store ) {
+			$p = d5b_ds_class( 'preset' );
+			if ( ! $p ) { return d5b_ds_err( 'no_divi5', 'Divi 5 is not available on this site', 501 ); }
+			$d = $p::get_data();
+			return is_array( $d ) ? $d : array();
+		}
+		if ( ! function_exists( 'et_get_option' ) ) { return d5b_ds_err( 'no_divi5', 'Divi is not available on this site', 501 ); }
+		if ( 'variables' === $store ) {
+			$v = maybe_unserialize( et_get_option( 'global_variables', array(), '', true, false, '', '', true ) );
+			return is_array( $v ) ? $v : array();
+		}
+		if ( 'colors' === $store ) {
+			$g = maybe_unserialize( et_get_option( 'et_global_data' ) );
+			return ( is_array( $g ) && isset( $g['global_colors'] ) && is_array( $g['global_colors'] ) ) ? $g['global_colors'] : array();
+		}
+		return d5b_ds_err( 'bad_store', 'store must be one of: presets, variables, colors' );
+	}
+
+	// Replace a whole store, through Divi. Only restore uses this with anything but "what was read, plus one item".
+	// true, or a WP_Error: an error Divi returns is passed on, never turned into a success.
+	function d5b_ds_write( $store, $value, $expected = null ) {
+		$cls = d5b_ds_class( 'presets' === $store ? 'preset' : 'data' );
+		if ( ! $cls ) { return d5b_ds_err( 'no_divi5', 'Divi 5 is not available on this site', 501 ); }
+		if ( 'variables' === $store ) { return d5b_ds_set_variables( $cls, $value, $expected ); }
+		if ( 'presets' === $store ) { $r = $cls::save_data( $value ); }
+		elseif ( 'colors' === $store ) { $r = $cls::set_global_colors( $value ); }
+		else { return d5b_ds_err( 'bad_store', 'store must be one of: presets, variables, colors' ); }
+		return is_wp_error( $r ) ? d5b_ds_divi_err( $r ) : true;
+	}
+
+	// A WP_Error from Divi, with Divi's code and details kept and an HTTP status (400 when Divi gives none).
+	function d5b_ds_divi_err( $e ) {
+		$data = method_exists( $e, 'get_error_data' ) ? $e->get_error_data() : null;
+		$data = is_array( $data ) ? $data : array();
+		if ( empty( $data['status'] ) ) { $data['status'] = 400; }
+		return new WP_Error( $e->get_error_code(), 'Divi refused the save, nothing was written: ' . $e->get_error_message(), $data );
+	}
+
+	// Divi 5.15+ refuses a variables save that leaves out an id the store has ("Global variable IDs are missing during
+	// sync"): a variable is deleted by setting its status to "archived", never by dropping it. Older Divi has no such check.
+	function d5b_ds_variables_archive_only() {
+		$cls = d5b_ds_class( 'data' );
+		return $cls && method_exists( $cls, 'validate_global_variable_ids' );
+	}
+
+	// Replace the whole variable store and prove it took. Divi 5.15+ returns a WP_Error when it refuses the data, and
+	// returns null WITHOUT writing when the user lacks edit_theme_options or Divi's "Variables Manager" permission
+	// (5.13 did the same silently, returning nothing at all). So the store is read back and compared, every time.
+	function d5b_ds_set_variables( $cls, $value, $expected = null ) {
+		// $expected = the store this write was based on: Divi 5.15+ refuses (409 global_variables_stale) when the store
+		// changed in between, e.g. someone saving in the builder. Older Divi takes one argument and ignores the second.
+		$r = null === $expected ? $cls::set_global_variables( $value ) : $cls::set_global_variables( $value, $expected );
+		if ( is_wp_error( $r ) ) { return d5b_ds_divi_err( $r ); }
+		$after = d5b_ds_read( 'variables' );
+		if ( is_wp_error( $after ) ) { return $after; }
+		$norm = function ( $v ) use ( $cls ) {
+			$v = (array) $v;
+			if ( method_exists( $cls, 'sanitize_global_variables_data' ) ) { $v = $cls::sanitize_global_variables_data( $v ); }
+			return d5b_ds_ksort( $v );
+		};
+		if ( $norm( $after ) !== $norm( $value ) ) {
+			return d5b_ds_err( 'not_saved', 'Divi did not store the variables (no error from Divi). This user needs edit_theme_options and the "Variables Manager" permission in Divi > Role Editor', 500 );
+		}
+		return true;
+	}
+
+	// The variable store a restore must write: the backup, plus (on Divi 5.15+) every variable the store has now and the
+	// backup does not, ARCHIVED, which is how the builder deletes one. Returns array( store, archived ids ).
+	function d5b_ds_variables_restore_target( $current, $target ) {
+		$target   = is_array( $target ) ? $target : array();
+		$archived = array();
+		if ( ! d5b_ds_variables_archive_only() ) { return array( $target, $archived ); }
+		foreach ( (array) $current as $type => $items ) {
+			if ( ! is_array( $items ) ) { continue; }
+			foreach ( $items as $id => $item ) {
+				if ( 0 !== strpos( (string) $id, 'gvid-' ) || ! is_array( $item ) ) { continue; }
+				if ( isset( $target[ $type ] ) && is_array( $target[ $type ] ) && array_key_exists( $id, $target[ $type ] ) ) { continue; }
+				if ( 'archived' !== ( $item['status'] ?? '' ) ) {
+					$item['status']      = 'archived';
+					$item['order']       = ''; // as the builder does (seen 2026-10-12, Divi 5.15.1 Variable Manager)
+					$item['lastUpdated'] = d5b_ds_now();
+					$archived[]          = (string) $id;
+				}
+				unset( $item['allowedActions'] );
+				$target[ $type ][ $id ] = $item;
+			}
+		}
+		return array( $target, $archived );
+	}
+
+	function d5b_ds_backup( $store, $value ) {
+		$all = get_option( 'd5b_ds_backups', array() );
+		if ( ! is_array( $all ) ) { $all = array(); }
+		$list  = ( isset( $all[ $store ] ) && is_array( $all[ $store ] ) ) ? $all[ $store ] : array();
+		$entry = array( 'time' => gmdate( 'c' ), 'user' => get_current_user_id(), 'value' => $value );
+		// Kept: the newest 10, plus the store as it was before the FIRST write of each day (last 5 days). A script
+		// that creates 22 presets in a row would otherwise push the real "before" out of a plain newest-10 list.
+		$day    = gmdate( 'Y-m-d' );
+		$pinned = false;
+		foreach ( $list as $b ) { if ( ! empty( $b['pinned'] ) && 0 === strpos( (string) ( $b['time'] ?? '' ), $day ) ) { $pinned = true; } }
+		if ( ! $pinned ) { $entry['pinned'] = true; }
+		array_unshift( $list, $entry );
+		$kept = array();
+		$roll = 0;
+		$pins = 0;
+		foreach ( $list as $b ) {
+			if ( ! empty( $b['pinned'] ) ) { if ( $pins < 5 ) { $kept[] = $b; $pins++; } continue; }
+			if ( $roll < 10 ) { $kept[] = $b; $roll++; }
+		}
+		$all[ $store ] = $kept;
+		update_option( 'd5b_ds_backups', $all, false );
+	}
+
+	function d5b_ds_restore( $store, $index ) {
+		if ( ! in_array( $store, array( 'presets', 'variables', 'colors' ), true ) ) { return d5b_ds_err( 'bad_store', 'store must be one of: presets, variables, colors' ); }
+		$all   = get_option( 'd5b_ds_backups', array() );
+		$index = (int) $index;
+		if ( ! isset( $all[ $store ][ $index ] ) || ! is_array( $all[ $store ][ $index ]['value'] ) ) { return d5b_ds_err( 'no_backup', "no backup $index for $store", 404 ); }
+		$target  = $all[ $store ][ $index ];
+		$current = d5b_ds_read( $store );
+		if ( is_wp_error( $current ) ) { return $current; }
+		$value    = $target['value'];
+		$archived = array();
+		if ( 'variables' === $store ) { list( $value, $archived ) = d5b_ds_variables_restore_target( $current, $value ); }
+		d5b_ds_backup( $store, $current );
+		$w = d5b_ds_write( $store, $value, $current );
+		if ( is_wp_error( $w ) ) { return $w; }
+		$out = array( 'ok' => true, 'store' => $store, 'restoredFrom' => $target['time'], 'note' => 'the store as it was a moment ago is now backup 0' );
+		if ( 'variables' === $store && d5b_ds_variables_archive_only() ) {
+			$out['archived'] = $archived;
+			$out['note']    .= '; Divi 5.15+ never drops a variable, so variables made since that backup are kept, archived (deleted, as the builder does it)';
+		}
+		return $out;
+	}
+
+	// Now, in UTC, in the form the builder writes: 2026-09-29T11:46:45.168Z. (wp_date() gives the SITE's time, which
+	// labelled with Z was two hours off on a UTC+2 site.)
+	function d5b_ds_now() {
+		$t = microtime( true );
+		return gmdate( 'Y-m-d\TH:i:s', (int) $t ) . '.' . sprintf( '%03d', (int) floor( ( $t - floor( $t ) ) * 1000 ) ) . 'Z';
+	}
+
+	function d5b_ds_new_id( $prefix, $taken, $length = 10 ) {
+		$chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+		do {
+			$id = '';
+			for ( $i = 0; $i < $length; $i++ ) { $id .= $chars[ random_int( 0, 35 ) ]; }
+			$id = $prefix . $id;
+		} while ( isset( $taken[ $id ] ) );
+		return $id;
+	}
+
+	function d5b_ds_next_order( $items ) {
+		$max = 0;
+		foreach ( (array) $items as $it ) { if ( is_array( $it ) && isset( $it['order'] ) && (int) $it['order'] > $max ) { $max = (int) $it['order']; } }
+		return $max + 1;
+	}
+
+	function d5b_ds_find( $items, $id, $label_key, $label ) {
+		if ( '' !== $id ) { return isset( $items[ $id ] ) ? $id : ''; }
+		foreach ( (array) $items as $k => $it ) { if ( is_array( $it ) && isset( $it[ $label_key ] ) && (string) $it[ $label_key ] === $label ) { return (string) $k; } }
+		return '';
+	}
+
+	// A colour value Divi can use: hex, rgb()/hsl() with or without alpha, or a token pointing at another global colour.
+	function d5b_ds_is_color( $c ) {
+		if ( ! is_string( $c ) || '' === $c ) { return false; }
+		if ( preg_match( '/^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i', $c ) ) { return true; }
+		if ( preg_match( '/^(rgb|hsl)a?\(\s*[0-9.]+%?(\s*[, \/]\s*[0-9.]+%?){2,3}\s*\)$/i', $c ) ) { return true; }
+		if ( 0 === strpos( $c, '$variable(' ) && ')$' === substr( $c, -2 ) ) {
+			$j = json_decode( substr( $c, 10, -2 ), true );
+			return is_array( $j ) && isset( $j['type'], $j['value']['name'] ) && 'color' === $j['type'] && 0 === strpos( (string) $j['value']['name'], 'gcid-' );
+		}
+		return false;
+	}
+
+	// { label, color, id?, status? }
+	function d5b_ds_color_upsert( $in, $dry ) {
+		$d = d5b_ds_class( 'data' );
+		if ( ! $d ) { return d5b_ds_err( 'no_divi5', 'Divi 5 is not available on this site', 501 ); }
+		$label = isset( $in['label'] ) ? trim( (string) $in['label'] ) : '';
+		$color = isset( $in['color'] ) ? trim( (string) $in['color'] ) : '';
+		$id    = isset( $in['id'] ) ? (string) $in['id'] : '';
+		if ( '' === $label ) { return d5b_ds_err( 'no_label', 'label is required' ); }
+		if ( ! d5b_ds_is_color( $color ) ) { return d5b_ds_err( 'bad_color', 'color must be a hex, rgb()/rgba(), hsl()/hsla() or a $variable(...)$ colour token' ); }
+		if ( '' !== $id && ! preg_match( '/^gcid-[0-9a-z-]{3,40}$/', $id ) ) { return d5b_ds_err( 'bad_id', 'a colour id is gcid- followed by lowercase letters, digits or hyphens' ); }
+		$customizer = in_array( $id, array( 'gcid-primary-color', 'gcid-secondary-color', 'gcid-heading-color', 'gcid-body-color', 'gcid-link-color' ), true );
+		$store      = d5b_ds_read( 'colors' );
+		if ( is_wp_error( $store ) ) { return $store; }
+		$found  = $customizer ? '' : d5b_ds_find( $store, $id, 'label', $label );
+		$action = ( '' !== $found || $customizer ) ? 'updated' : 'created';
+		if ( '' === $found ) { $found = '' !== $id ? $id : d5b_ds_new_id( 'gcid-', $store ); }
+		$old  = isset( $store[ $found ] ) && is_array( $store[ $found ] ) ? $store[ $found ] : array();
+		$item = array_merge(
+			array( 'order' => (string) d5b_ds_next_order( $store ), 'folder' => '', 'usedInPosts' => array() ),
+			$old,
+			array(
+				'id'          => $found,
+				'label'       => $label,
+				'color'       => $color,
+				'status'      => ( isset( $in['status'] ) && 'inactive' === $in['status'] ) ? 'inactive' : 'active',
+				'lastUpdated' => d5b_ds_now(),
+			)
+		);
+		$clean = $d::sanitize_global_colors_data( array( $found => $item ) );
+		if ( empty( $clean[ $found ] ) || $clean[ $found ]['color'] !== $color ) { return d5b_ds_err( 'rejected', 'Divi\'s sanitiser changed or dropped this colour; nothing was written' ); }
+		$out = array( 'ok' => true, 'action' => $action, 'id' => $found, 'item' => $clean[ $found ], 'dryRun' => (bool) $dry );
+		if ( $customizer ) { $out['note'] = 'this id is a Customizer colour: Divi writes it to the theme options, not to the colour store'; }
+		if ( $dry ) { return $out; }
+		d5b_ds_backup( 'colors', $store );
+		$d::set_global_colors( $clean, true ); // true = merge into what is there
+		if ( ! $customizer ) {
+			$after = d5b_ds_read( 'colors' );
+			if ( is_wp_error( $after ) || ! isset( $after[ $found ]['color'] ) || $after[ $found ]['color'] !== $color ) { return d5b_ds_err( 'not_saved', 'the colour is not in the store after the write', 500 ); }
+			if ( count( $after ) < count( $store ) ) { return d5b_ds_err( 'store_shrank', 'the colour store has fewer colours than before the write; restore backup 0', 500 ); }
+		}
+		return $out;
+	}
+
+	// { type: numbers|strings|images|links|fonts|gradients, label, value, id? }
+	function d5b_ds_variable_upsert( $in, $dry ) {
+		$d = d5b_ds_class( 'data' );
+		if ( ! $d ) { return d5b_ds_err( 'no_divi5', 'Divi 5 is not available on this site', 501 ); }
+		$type  = isset( $in['type'] ) ? (string) $in['type'] : '';
+		$label = isset( $in['label'] ) ? trim( (string) $in['label'] ) : '';
+		$value = isset( $in['value'] ) && is_scalar( $in['value'] ) ? (string) $in['value'] : '';
+		$id    = isset( $in['id'] ) ? (string) $in['id'] : '';
+		if ( ! in_array( $type, array( 'numbers', 'strings', 'images', 'links', 'fonts', 'gradients' ), true ) ) { return d5b_ds_err( 'bad_type', 'type must be one of: numbers, strings, images, links, fonts, gradients (colours have their own route)' ); }
+		if ( '' === $label ) { return d5b_ds_err( 'no_label', 'label is required' ); }
+		if ( '' === trim( $value ) ) { return d5b_ds_err( 'no_value', 'value is required' ); }
+		if ( '' !== $id && ! preg_match( '/^gvid-[0-9a-z-]{3,40}$/', $id ) ) { return d5b_ds_err( 'bad_id', 'a variable id is gvid- followed by lowercase letters, digits or hyphens' ); }
+		$store = d5b_ds_read( 'variables' );
+		if ( is_wp_error( $store ) ) { return $store; }
+		$items = ( isset( $store[ $type ] ) && is_array( $store[ $type ] ) ) ? $store[ $type ] : array();
+		$taken = array();
+		foreach ( $store as $list ) { if ( is_array( $list ) ) { $taken += $list; } }
+		// By label, only ACTIVE variables count: an archived one is deleted (Divi 5.15+ keeps it in the store), and a new
+		// variable with its label is a new variable, as in the builder. By id, an archived variable is brought back.
+		$active = array_filter( $items, function ( $it ) { return ! is_array( $it ) || 'archived' !== ( $it['status'] ?? '' ); } );
+		$found  = '' !== $id ? d5b_ds_find( $items, $id, 'label', $label ) : d5b_ds_find( $active, '', 'label', $label );
+		$action = '' !== $found ? 'updated' : 'created';
+		if ( '' === $found ) { $found = '' !== $id ? $id : d5b_ds_new_id( 'gvid-', $taken ); }
+		if ( 'created' === $action && isset( $taken[ $found ] ) ) { return d5b_ds_err( 'id_taken', 'that id belongs to a variable of another type' ); }
+		$old  = isset( $items[ $found ] ) && is_array( $items[ $found ] ) ? $items[ $found ] : array();
+		if ( '' === ( $old['order'] ?? null ) ) { unset( $old['order'] ); } // archived: the builder empties its order, a revived one goes last
+		// Same fields, in the same order, as a variable made in the builder (compared 2026-09-29, Divi 5.13):
+		// id, label, value, order (a string), status, lastUpdated (UTC), variableType.
+		$item = array_merge(
+			array( 'id' => $found, 'label' => $label, 'value' => $value, 'order' => (string) d5b_ds_next_order( $items ) ),
+			$old, // a variable that exists keeps its own order and any field this code does not know
+			array( 'id' => $found, 'label' => $label, 'value' => $value, 'status' => 'active', 'lastUpdated' => d5b_ds_now(), 'variableType' => $type )
+		);
+		unset( $item['allowedActions'] );
+		$out = array( 'ok' => true, 'action' => $action, 'id' => $found, 'type' => $type, 'item' => $item, 'dryRun' => (bool) $dry );
+		if ( $dry ) { return $out; }
+		$next                    = $store;
+		$next[ $type ]           = $items;
+		$next[ $type ][ $found ] = $item;
+		if ( isset( $old['status'] ) && 'archived' === $old['status'] ) { $out['unarchived'] = true; }
+		d5b_ds_backup( 'variables', $store );
+		$w = d5b_ds_set_variables( $d, $next, $store ); // replaces the whole store; Divi's refusals (WP_Error or silent) come back as errors
+		if ( is_wp_error( $w ) ) { return $w; }
+		$after = d5b_ds_read( 'variables' );
+		if ( is_wp_error( $after ) || ! isset( $after[ $type ][ $found ]['value'] ) ) { return d5b_ds_err( 'not_saved', 'Divi ignored the write. This user needs edit_theme_options and the "Variables Manager" permission in Divi > Role Editor', 500 ); }
+		$count = function ( $s ) { $n = 0; foreach ( (array) $s as $l ) { $n += is_array( $l ) ? count( $l ) : 0; } return $n; };
+		if ( $count( $after ) < $count( $store ) ) { return d5b_ds_err( 'store_shrank', 'the variable store has fewer variables than before the write; restore backup 0', 500 ); }
+		$out['item'] = $after[ $type ][ $found ];
+		return $out;
+	}
+
+	// { id } Delete one variable the way the builder does: on Divi 5.15+ its status becomes "archived" (Divi refuses a
+	// store that leaves the id out); on older Divi it is removed. Modules that use it fall back to no value.
+	function d5b_ds_variable_archive( $in, $dry ) {
+		$d = d5b_ds_class( 'data' );
+		if ( ! $d ) { return d5b_ds_err( 'no_divi5', 'Divi 5 is not available on this site', 501 ); }
+		$id = isset( $in['id'] ) ? (string) $in['id'] : '';
+		if ( ! preg_match( '/^gvid-[0-9a-z-]{3,40}$/', $id ) ) { return d5b_ds_err( 'bad_id', 'id is required: gvid- followed by lowercase letters, digits or hyphens (see design-system)' ); }
+		$store = d5b_ds_read( 'variables' );
+		if ( is_wp_error( $store ) ) { return $store; }
+		$type = '';
+		foreach ( $store as $t => $items ) { if ( is_array( $items ) && isset( $items[ $id ] ) ) { $type = (string) $t; break; } }
+		if ( '' === $type ) { return d5b_ds_err( 'not_found', "no variable $id on this site", 404 ); }
+		$archive = d5b_ds_variables_archive_only();
+		$item    = (array) $store[ $type ][ $id ];
+		$out     = array( 'ok' => true, 'id' => $id, 'type' => $type, 'label' => (string) ( $item['label'] ?? '' ), 'dryRun' => (bool) $dry );
+		if ( $archive && 'archived' === ( $item['status'] ?? '' ) ) { return $out + array( 'action' => 'unchanged', 'note' => 'already archived' ); }
+		$out['action'] = $archive ? 'archived' : 'removed';
+		if ( $dry ) { return $out; }
+		$next = $store;
+		if ( $archive ) {
+			$item['status']      = 'archived';
+			$item['order']       = ''; // as the builder does (seen 2026-10-12, Divi 5.15.1 Variable Manager)
+			$item['lastUpdated'] = d5b_ds_now();
+			unset( $item['allowedActions'] );
+			$next[ $type ][ $id ] = $item;
+		} else {
+			unset( $next[ $type ][ $id ] );
+			if ( ! $next[ $type ] ) { unset( $next[ $type ] ); }
+		}
+		d5b_ds_backup( 'variables', $store );
+		$w = d5b_ds_set_variables( $d, $next, $store );
+		return is_wp_error( $w ) ? $w : $out;
+	}
+
+	// { moduleName, name, attrs, kind?: module|group, id?, groupName?, groupId?, primaryAttrName?, groupPresets?, priority?, setDefault? }
+	function d5b_ds_preset_upsert( $in, $dry ) {
+		$p = d5b_ds_class( 'preset' );
+		if ( ! $p ) { return d5b_ds_err( 'no_divi5', 'Divi 5 is not available on this site', 501 ); }
+		$kind   = isset( $in['kind'] ) ? (string) $in['kind'] : 'module';
+		$module = isset( $in['moduleName'] ) ? (string) $in['moduleName'] : '';
+		$name   = isset( $in['name'] ) ? trim( sanitize_text_field( (string) $in['name'] ) ) : '';
+		$attrs  = ( isset( $in['attrs'] ) && is_array( $in['attrs'] ) ) ? $in['attrs'] : array();
+		$id     = isset( $in['id'] ) ? (string) $in['id'] : '';
+		if ( ! in_array( $kind, array( 'module', 'group' ), true ) ) { return d5b_ds_err( 'bad_kind', 'kind must be module or group' ); }
+		if ( ! preg_match( '/^[a-z0-9-]+\/[a-z0-9-]+$/', $module ) ) { return d5b_ds_err( 'bad_module', 'moduleName looks like divi/button' ); }
+		if ( '' === $name ) { return d5b_ds_err( 'no_name', 'name is required' ); }
+		if ( '' !== $id && ! preg_match( '/^[a-z0-9]{6,32}$/', $id ) ) { return d5b_ds_err( 'bad_id', 'a preset id is 6 to 32 lowercase letters or digits (it becomes part of a CSS class)' ); }
+		$group_name = isset( $in['groupName'] ) ? (string) $in['groupName'] : '';
+		$group_id   = isset( $in['groupId'] ) ? (string) $in['groupId'] : '';
+		if ( 'group' === $kind ) {
+			if ( ! preg_match( '/^[a-z0-9-]+\/[a-z0-9-]+$/', $group_name ) ) { return d5b_ds_err( 'bad_group', 'a group preset needs groupName, e.g. divi/font' ); }
+			if ( ! preg_match( '/^[A-Za-z0-9.\-]+$/', $group_id ) ) { return d5b_ds_err( 'bad_group', 'a group preset needs groupId, e.g. title.decoration.font' ); }
+		}
+		foreach ( array( 'builderVersion', 'modulePreset', 'groupPreset' ) as $k ) { unset( $attrs[ $k ] ); }
+
+		// An option group preset holds ITS GROUP's settings only. The builder's "new preset from current styles" on a
+		// group stores the whole module's design in the group preset and empties the module, but Divi applies only the
+		// group's own settings from it: the module loses everything else (seen 2026-09-29: a Border preset cost a text
+		// block its padding, max-width and centring). So what lies outside the group is left out here, and reported.
+		$outside      = array();
+		$group_unsure = false;
+		if ( 'group' === $kind ) {
+			$keys = explode( '.', $group_id );
+			$node = $attrs;
+			foreach ( $keys as $k ) { if ( is_array( $node ) && array_key_exists( $k, $node ) ) { $node = $node[ $k ]; } else { $node = null; break; } }
+			if ( count( $keys ) > 1 && is_array( $node ) && $node ) {
+				$only = array();
+				$ref  = &$only;
+				foreach ( $keys as $k ) { $ref[ $k ] = array(); $ref = &$ref[ $k ]; }
+				$ref = $node;
+				unset( $ref );
+				$outside = d5b_ds_paths( d5b_ds_subtract( $attrs, $only ) );
+				$attrs   = $only;
+			} elseif ( count( $keys ) > 1 ) {
+				return d5b_ds_err( 'no_attrs', 'attrs holds nothing under "' . $group_id . '", the group this preset is for' );
+			} else {
+				$group_unsure = true; // a composite group id (e.g. designTitleText) is not a path into attrs
+			}
+		}
+
+		$split = d5b_ds_split( $module, $attrs );
+		if ( is_wp_error( $split ) ) { return $split; }
+		$content  = d5b_ds_content( $attrs, $split['contentAttrs'] );
+		$stripped = d5b_ds_paths( $content );
+		$attrs    = d5b_ds_subtract( $attrs, $content );
+		if ( empty( $attrs ) ) { return d5b_ds_err( 'no_attrs', 'attrs is empty once content is removed: a preset holds design settings' ); }
+		$split['contentAttrs'] = $content;
+		$instance              = array();
+		foreach ( array( 'interactions', 'interactionTarget', 'interactionTrigger', 'conditions' ) as $k ) { if ( isset( $attrs['module']['decoration'][ $k ] ) ) { $instance[] = "module.decoration.$k"; } }
+		foreach ( array( 'loop', 'link' ) as $k ) { if ( isset( $attrs['module']['advanced'][ $k ] ) ) { $instance[] = "module.advanced.$k"; } }
+		if ( isset( $attrs['module']['advanced']['htmlAttributes'] ) ) { $instance[] = 'module.advanced.htmlAttributes'; }
+
+		$sub  = 'module' === $kind ? $module : $group_name;
+		$data = d5b_ds_read( 'presets' );
+		if ( is_wp_error( $data ) ) { return $data; }
+		$record = ( isset( $data[ $kind ][ $sub ] ) && is_array( $data[ $kind ][ $sub ] ) ) ? $data[ $kind ][ $sub ] : array( 'default' => '', 'items' => array() );
+		$items  = ( isset( $record['items'] ) && is_array( $record['items'] ) ) ? $record['items'] : array();
+		$taken  = array();
+		foreach ( array( 'module', 'group' ) as $k ) { foreach ( (array) ( $data[ $k ] ?? array() ) as $rec ) { if ( isset( $rec['items'] ) && is_array( $rec['items'] ) ) { $taken += $rec['items']; } } }
+
+		$found  = d5b_ds_find( $items, $id, 'name', $name );
+		$action = '' !== $found ? 'updated' : 'created';
+		if ( '' === $found ) { $found = '' !== $id ? $id : d5b_ds_new_id( '', $taken, 13 ); }
+		if ( 'created' === $action && isset( $taken[ $found ] ) ) { return d5b_ds_err( 'id_taken', 'that id belongs to a preset of another module or group' ); }
+		$old = isset( $items[ $found ] ) && is_array( $items[ $found ] ) ? $items[ $found ] : array();
+		$now = (int) round( microtime( true ) * 1000 );
+
+		$item = $old;
+		unset( $item['attrs'], $item['styleAttrs'], $item['renderAttrs'] );
+		$item = array_merge(
+			$item,
+			array(
+				'type'       => $kind,
+				'id'         => $found,
+				'name'       => $name,
+				'moduleName' => $module,
+				'version'    => defined( 'ET_BUILDER_VERSION' ) ? ET_BUILDER_VERSION : ( isset( $old['version'] ) ? $old['version'] : '' ),
+				'created'    => isset( $old['created'] ) ? $old['created'] : $now,
+				'updated'    => $now,
+				'attrs'      => $attrs,
+			)
+		);
+		$style  = d5b_ds_subtract( $split['styleAttrs'], $split['contentAttrs'] );
+		$render = d5b_ds_subtract( $split['renderAttrs'], $split['contentAttrs'] );
+		if ( ! empty( $style ) ) { $item['styleAttrs'] = $style; }
+		if ( ! empty( $render ) ) { $item['renderAttrs'] = $render; }
+		if ( 'group' === $kind ) {
+			$item['groupName'] = $group_name;
+			$item['groupId']   = $group_id;
+			if ( ! empty( $in['primaryAttrName'] ) ) { $item['primaryAttrName'] = sanitize_text_field( (string) $in['primaryAttrName'] ); }
+		}
+		if ( isset( $in['priority'] ) ) { $item['priority'] = (int) $in['priority']; }
+		if ( 'module' === $kind && isset( $in['groupPresets'] ) && is_array( $in['groupPresets'] ) ) { $item['groupPresets'] = $in['groupPresets']; }
+
+		// Divi's own clean-up and sanitising of a preset on its way into the store.
+		$prepared = $p::prepare_data( array( $kind => array( array( 'default' => (string) ( $record['default'] ?? '' ), 'items' => array( $item ) ) ) ) );
+		if ( empty( $prepared[ $kind ][ $sub ]['items'][ $found ] ) ) { return d5b_ds_err( 'rejected', 'Divi\'s own preparation dropped this preset; nothing was written' ); }
+		$item = $prepared[ $kind ][ $sub ]['items'][ $found ];
+		if ( empty( $item['attrs'] ) ) { return d5b_ds_err( 'no_attrs', 'nothing is left of attrs after Divi sanitised them' ); }
+
+		$warnings = array();
+		if ( $instance ) { $warnings[] = 'these belong to one module, not to a design, and every module given this preset would get them: ' . implode( ', ', $instance ); }
+		if ( 'module' === $kind && empty( $item['styleAttrs'] ) ) { $warnings[] = 'this preset has no styleAttrs: Divi gives such a preset no CSS class'; }
+		if ( $outside ) { $warnings[] = count( $outside ) . ' setting(s) outside the group "' . $group_id . '" were left out of this group preset (Divi would not apply them)'; }
+		if ( $group_unsure ) { $warnings[] = '"' . $group_id . '" is not a path into attrs, so nothing could be left out: make sure attrs holds this group\'s settings only'; }
+		$neither = d5b_ds_paths( d5b_ds_subtract( d5b_ds_subtract( $item['attrs'], $item['styleAttrs'] ?? array() ), $item['renderAttrs'] ?? array() ) );
+		$out     = array( 'ok' => true, 'action' => $action, 'id' => $found, 'kind' => $kind, 'for' => $sub, 'item' => $item, 'strippedContent' => $stripped, 'leftOutOfGroup' => $outside, 'inAttrsOnly' => $neither, 'warnings' => $warnings, 'dryRun' => (bool) $dry );
+		if ( $dry ) { return $out; }
+
+		$items[ $found ]  = $item;
+		$record['items']  = $items;
+		if ( ! empty( $in['setDefault'] ) ) { $record['default'] = $found; }
+		$has_default = ! empty( $record['default'] ) && isset( $items[ $record['default'] ] );
+		if ( ! $has_default ) {
+			// Divi's own rule for a module with presets but no default: it adds an empty "<Module> Preset N" as default.
+			$fixed = $p::maybe_create_default_presets_after_import( array( $kind => array( $sub => $record ) ) );
+			if ( isset( $fixed[ $kind ][ $sub ]['items'][ $found ] ) ) { $record = $fixed[ $kind ][ $sub ]; $out['defaultCreated'] = (string) $record['default']; }
+		}
+		$next = $data;
+		if ( ! isset( $next[ $kind ] ) || ! is_array( $next[ $kind ] ) ) { $next[ $kind ] = array(); }
+		$next[ $kind ][ $sub ] = $record;
+
+		d5b_ds_backup( 'presets', $data );
+		$p::save_data( $next );
+		$after = d5b_ds_read( 'presets' );
+		if ( is_wp_error( $after ) || ! isset( $after[ $kind ][ $sub ]['items'][ $found ] ) ) { return d5b_ds_err( 'not_saved', 'the preset is not in the store after the write', 500 ); }
+		$count = function ( $s ) { $n = 0; foreach ( array( 'module', 'group' ) as $k ) { foreach ( (array) ( $s[ $k ] ?? array() ) as $rec ) { $n += isset( $rec['items'] ) && is_array( $rec['items'] ) ? count( $rec['items'] ) : 0; } } return $n; };
+		if ( $count( $after ) < $count( $data ) ) { return d5b_ds_err( 'store_shrank', 'the preset store has fewer presets than before the write; restore backup 0', 500 ); }
+		$out['item']      = $after[ $kind ][ $sub ]['items'][ $found ];
+		$out['isDefault'] = ( (string) ( $after[ $kind ][ $sub ]['default'] ?? '' ) === $found );
+		$out['use']       = 'module' === $kind ? '"modulePreset":["' . $found . '"]' : '"groupPreset":{"<slot>":{"presetId":["' . $found . '"],"groupName":"' . $group_name . '"}}';
+		return $out;
+	}
+
+	// Re-split every preset on the site (module presets and option group presets) and compare with what is stored.
+	// Writes nothing. A group preset is split with the definition of the module it was made in.
+	function d5b_ds_selftest() {
+		$data = d5b_ds_read( 'presets' );
+		if ( is_wp_error( $data ) ) { return $data; }
+		$rows = array();
+		$bad  = 0;
+		foreach ( array( 'module', 'group' ) as $kind ) {
+			foreach ( (array) ( $data[ $kind ] ?? array() ) as $owner => $rec ) {
+			foreach ( (array) ( $rec['items'] ?? array() ) as $pid => $it ) {
+				$module = 'module' === $kind ? (string) $owner : (string) ( $it['moduleName'] ?? '' );
+				$row    = array( 'id' => (string) $pid, 'name' => (string) ( $it['name'] ?? '' ), 'kind' => $kind, 'for' => (string) $owner, 'version' => (string) ( $it['version'] ?? '' ) );
+				if ( empty( $it['attrs'] ) && empty( $it['styleAttrs'] ) && empty( $it['renderAttrs'] ) ) { $row['styleAttrs'] = 'identical'; $row['renderAttrs'] = 'identical'; $row['match'] = true; $row['note'] = 'empty preset'; $rows[] = $row; continue; }
+				$split = d5b_ds_split( $module, (array) ( $it['attrs'] ?? array() ) );
+				if ( is_wp_error( $split ) ) { $row['match'] = false; $row['error'] = $split->get_error_message(); $bad++; $rows[] = $row; continue; }
+				foreach ( array( 'styleAttrs', 'renderAttrs' ) as $k ) {
+					$stored = d5b_ds_ksort( (array) ( $it[ $k ] ?? array() ) );
+					$mine   = d5b_ds_ksort( (array) $split[ $k ] );
+					$same   = wp_json_encode( $stored ) === wp_json_encode( $mine );
+					$row[ $k ] = $same ? 'identical' : 'DIFFERENT';
+					if ( ! $same ) {
+						$row[ $k . 'OnlyStored' ]   = d5b_ds_paths( d5b_ds_subtract( $stored, $mine ) );
+						$row[ $k . 'OnlyComputed' ] = d5b_ds_paths( d5b_ds_subtract( $mine, $stored ) );
+					}
+				}
+				$row['match'] = ( 'identical' === $row['styleAttrs'] && 'identical' === $row['renderAttrs'] );
+				if ( ! $row['match'] ) { $bad++; }
+				$rows[] = $row;
+			}
+			}
+		}
+		return array( 'ok' => true, 'checked' => count( $rows ), 'different' => $bad, 'presets' => $rows );
+	}
+}
+
+if ( ! function_exists( 'd5b_routes_page_building' ) ) {
+
+/*
+ * Custom REST routes for the divi5-builder skill.
+ *
+ * Divi 5 popups = an et_pb_canvas post whose overlay section is linked to a
+ * page, triggered by a button Interaction. Divi appends the canvas to the page
+ * at render time based on the page↔canvas link, which the Visual Builder stores
+ * as the canvas's post_parent — a field the et_pb_canvas REST controller does
+ * NOT accept. These routes let the skill (a) inspect a post's parent/meta to
+ * confirm the mechanism, and (b) set the canvas post_parent so a REST-created
+ * popup actually renders. Both are gated by edit_post capability.
+ */
+function d5b_routes_page_building(): void {
+	$perm = function ( $req ) {
+		$id = (int) $req->get_param( 'id' );
+		if ( ! $id ) { $id = (int) $req->get_param( 'canvas_id' ); }
+		return current_user_can( $id ? 'edit_post' : 'edit_posts', $id ?: null );
+	};
+
+	// GET /divi5-builder/v1/postinfo?id=123[&scan=canvas]
+	// Returns post_parent, post_type, meta, and (with scan) matching wp_options.
+	// 1.8.3 SECURITY: `scan` reads wp_options values (which can hold API keys,
+	// SMTP passwords, salts), so it needs manage_options, not just edit_post on
+	// some post a Contributor can create. Non-admins also only see public meta
+	// plus Divi's own _et_* / _divi_* keys, not every protected _* key.
+	register_rest_route( 'divi5-builder/v1', '/postinfo', array(
+		'methods'             => 'GET',
+		'permission_callback' => function ( $req ) use ( $perm ) {
+			if ( $req->get_param( 'scan' ) && ! current_user_can( 'manage_options' ) ) { return false; }
+			return (int) $req->get_param( 'id' ) && $perm( $req );
+		},
+		'callback'            => function ( $req ) {
+			global $wpdb;
+			$id = (int) $req->get_param( 'id' );
+			$p  = get_post( $id );
+			if ( ! $p ) { return new WP_Error( 'not_found', 'no such post', array( 'status' => 404 ) ); }
+			$meta = get_post_meta( $id );
+			if ( ! current_user_can( 'manage_options' ) ) {
+				foreach ( array_keys( $meta ) as $k ) {
+					if ( is_protected_meta( $k, 'post' ) && ! preg_match( '/^_(et_|divi_)/', $k ) ) { unset( $meta[ $k ] ); }
+				}
+			}
+			$out = array(
+				'id'          => $id,
+				'post_type'   => $p->post_type,
+				'post_parent' => (int) $p->post_parent,
+				'post_status' => $p->post_status,
+				'meta'        => $meta,
+			);
+			if ( $req->get_param( 'scan' ) ) {
+				$like = '%' . $wpdb->esc_like( sanitize_text_field( $req->get_param( 'scan' ) ) ) . '%';
+				$rows = $wpdb->get_results( $wpdb->prepare(
+					"SELECT option_name, LEFT(option_value, 800) AS v FROM {$wpdb->options} WHERE option_name LIKE %s LIMIT 40", $like ) );
+				$out['options'] = $rows;
+			}
+			return $out;
+		},
+	) );
+
+	// GET /divi5-builder/v1/version  → lets the skill check which routes exist.
+	register_rest_route( 'divi5-builder/v1', '/version', array(
+		'methods'             => 'GET',
+		'permission_callback' => function () { return current_user_can( 'edit_posts' ); },
+		'callback'            => function () { return array( 'version' => D5B_VERSION ); },
+	) );
+
+	/*
+	 * ---- Theme Builder layouts (v1.5) ----------------------------------------
+	 * Divi's Theme Builder post types are not exposed by core REST, so headers,
+	 * footers and body layouts could be neither inspected nor edited remotely.
+	 * A header/footer is SITE-WIDE, so the write route is deliberately fussy:
+	 *   - layout types only (pages/posts already have core REST);
+	 *   - caller must send the md5 of the content it last read (expect_hash), so
+	 *     an edit made in the Visual Builder in the meantime is never overwritten;
+	 *   - block comments must balance, and the content must look like Divi;
+	 *   - the previous content is kept in _d5b_prev_content for tb-layout-restore;
+	 *   - the write is read back and auto-reverted if it did not round-trip.
+	 * All four routes need edit_theme_options (what Divi's own Theme Builder needs).
+	 */
+	$tb_layout_types = array( 'et_header_layout', 'et_body_layout', 'et_footer_layout' );
+	$tb_all_types    = array_merge( $tb_layout_types, array( 'et_template', 'et_theme_builder' ) );
+	$tb_perm         = function () { return current_user_can( 'edit_theme_options' ); };
+
+	$tb_format = function ( $content ) {
+		if ( '' === trim( (string) $content ) ) { return 'empty'; }
+		$d5 = false !== strpos( $content, '<!-- wp:divi/' );
+		$d4 = false !== strpos( $content, '[et_pb_' );
+		if ( $d5 && $d4 ) { return 'divi5+legacy-shortcodes'; }
+		if ( $d5 ) { return 'divi5'; }
+		if ( $d4 ) { return 'divi4'; }
+		return 'other';
+	};
+
+	// Content reduced to what it MEANS: block names, decoded attributes, nesting, and the text between blocks
+	// with whitespace runs removed. Two contents with equal trees render the same.
+	$tb_tree = function ( $content ) {
+		$walk = function ( $blocks ) use ( &$walk ) {
+			$out = array();
+			foreach ( $blocks as $b ) {
+				$html = preg_replace( '/\s+/', '', (string) $b['innerHTML'] );
+				if ( null === $b['blockName'] && '' === $html ) { continue; }
+				$out[] = array( $b['blockName'], $b['attrs'], $html, $walk( $b['innerBlocks'] ) );
+			}
+			return $out;
+		};
+		return serialize( $walk( parse_blocks( (string) $content ) ) );
+	};
+
+	// Shared low-level writer. Returns array on success, WP_Error on failure.
+	$tb_write = function ( $id, $content ) use ( &$tb_tree ) {
+		$p   = get_post( $id );
+		$old = (string) $p->post_content;
+		// update_post_meta() and wp_update_post() both UNSLASH their input. Divi 5
+		// block JSON is full of < style escapes, so unslashed writes corrupt it.
+		update_post_meta( $id, '_d5b_prev_content', wp_slash( $old ) );
+		update_post_meta( $id, '_d5b_prev_saved_at', gmdate( 'c' ) );
+		$r = wp_update_post( wp_slash( array( 'ID' => $id, 'post_content' => $content ) ), true );
+		if ( is_wp_error( $r ) ) { return $r; }
+		clean_post_cache( $id );
+		$back = (string) get_post( $id )->post_content;
+		// A save re-serialises every block (\" -> ", \\ -> \, -- -> --, wrapper closer
+		// appended), so different bytes are not by themselves damage. What must survive is the block tree:
+		// same blocks, same order, same nesting, same decoded attributes, same text between them.
+		$rewritten = md5( $back ) !== md5( $content );
+		if ( $rewritten && $tb_tree( $back ) !== $tb_tree( $content ) ) {
+			wp_update_post( wp_slash( array( 'ID' => $id, 'post_content' => $old ) ), true );
+			clean_post_cache( $id );
+			return new WP_Error( 'roundtrip_failed', 'content did not survive the save unchanged; previous content was put back', array(
+				'status' => 500, 'sent_bytes' => strlen( $content ), 'stored_bytes' => strlen( $back ) ) );
+		}
+		$cleared = false;
+		if ( class_exists( 'ET_Core_PageResource' ) && method_exists( 'ET_Core_PageResource', 'remove_static_resources' ) ) {
+			ET_Core_PageResource::remove_static_resources( 'all', 'all' );
+			$cleared = true;
+		}
+		// new_hash is the hash of what is STORED: that is what the next expect_hash has to match.
+		return array( 'ok' => true, 'id' => $id, 'old_hash' => md5( $old ), 'new_hash' => md5( $back ),
+			'old_bytes' => strlen( $old ), 'new_bytes' => strlen( $back ), 'sent_bytes' => strlen( $content ),
+			'reserialised_on_save' => $rewritten, 'static_css_cache_cleared' => $cleared );
+	};
+
+	// GET /divi5-builder/v1/tb-list  → every template + layout, with format and links. No content.
+	register_rest_route( 'divi5-builder/v1', '/tb-list', array(
+		'methods'             => 'GET',
+		'permission_callback' => $tb_perm,
+		'callback'            => function () use ( $tb_all_types, $tb_format ) {
+			$posts = get_posts( array(
+				'post_type'        => $tb_all_types,
+				'post_status'      => array( 'publish', 'draft', 'private', 'pending', 'future' ),
+				'numberposts'      => -1,
+				'orderby'          => 'ID',
+				'order'            => 'ASC',
+				'suppress_filters' => true,
+			) );
+			$out = array();
+			foreach ( $posts as $p ) {
+				$meta = array();
+				foreach ( get_post_meta( $p->ID ) as $k => $vals ) {
+					if ( 0 !== strpos( $k, '_et_' ) && 0 !== strpos( $k, '_d5b_' ) ) { continue; }
+					$meta[ $k ] = array_map( function ( $v ) {
+						return strlen( (string) $v ) > 300 ? '[' . strlen( (string) $v ) . ' bytes]' : $v;
+					}, $vals );
+				}
+				$out[] = array(
+					'id'       => $p->ID,
+					'type'     => $p->post_type,
+					'status'   => $p->post_status,
+					'title'    => $p->post_title,
+					'modified' => $p->post_modified_gmt,
+					'format'   => $tb_format( $p->post_content ),
+					'bytes'    => strlen( $p->post_content ),
+					'hash'     => md5( $p->post_content ),
+					'meta'     => $meta,
+				);
+			}
+			return array( 'count' => count( $out ), 'items' => $out );
+		},
+	) );
+
+	// GET /divi5-builder/v1/tb-layout?id=123  → raw, UNRENDERED post_content of one layout.
+	register_rest_route( 'divi5-builder/v1', '/tb-layout', array(
+		'methods'             => 'GET',
+		'permission_callback' => $tb_perm,
+		'callback'            => function ( $req ) use ( $tb_all_types, $tb_format ) {
+			$id = (int) $req->get_param( 'id' );
+			$p  = get_post( $id );
+			if ( ! $p || ! in_array( $p->post_type, $tb_all_types, true ) ) {
+				return new WP_Error( 'not_a_tb_post', 'id is not a Theme Builder template or layout', array( 'status' => 404 ) );
+			}
+			return array(
+				'id'              => $id,
+				'type'            => $p->post_type,
+				'status'          => $p->post_status,
+				'title'           => $p->post_title,
+				'modified'        => $p->post_modified_gmt,
+				'format'          => $tb_format( $p->post_content ),
+				'bytes'           => strlen( $p->post_content ),
+				'hash'            => md5( $p->post_content ),
+				'has_backup'      => metadata_exists( 'post', $id, '_d5b_prev_content' ),
+				'backup_saved_at' => get_post_meta( $id, '_d5b_prev_saved_at', true ),
+				'content'         => $p->post_content,
+			);
+		},
+	) );
+
+	// POST /divi5-builder/v1/tb-layout { id, content, expect_hash, mark_divi5?, dry_run? }
+	register_rest_route( 'divi5-builder/v1', '/tb-layout', array(
+		'methods'             => 'POST',
+		'permission_callback' => $tb_perm,
+		'callback'            => function ( $req ) use ( $tb_layout_types, $tb_format, $tb_write ) {
+			$id      = (int) $req->get_param( 'id' );
+			$content = $req->get_param( 'content' );
+			$expect  = (string) $req->get_param( 'expect_hash' );
+			$p       = get_post( $id );
+			if ( ! $p || ! in_array( $p->post_type, $tb_layout_types, true ) ) {
+				return new WP_Error( 'not_a_layout', 'id is not a header, body or footer layout', array( 'status' => 404 ) );
+			}
+			if ( ! current_user_can( 'edit_post', $id ) ) {
+				return new WP_Error( 'forbidden', 'cannot edit this layout', array( 'status' => 403 ) );
+			}
+			// Without unfiltered_html, WordPress runs kses over post_content and mangles block JSON.
+			if ( ! current_user_can( 'unfiltered_html' ) ) {
+				return new WP_Error( 'needs_unfiltered_html', 'this user lacks unfiltered_html; WordPress would sanitise and corrupt the layout', array( 'status' => 403 ) );
+			}
+			if ( ! is_string( $content ) || '' === trim( $content ) ) {
+				return new WP_Error( 'empty_content', 'refusing to write empty content to a site-wide layout', array( 'status' => 400 ) );
+			}
+			if ( '' === $expect ) {
+				return new WP_Error( 'expect_hash_required', 'send expect_hash = the hash returned by GET tb-layout', array( 'status' => 400 ) );
+			}
+			$current = md5( (string) $p->post_content );
+			if ( ! hash_equals( $current, $expect ) ) {
+				return new WP_Error( 'stale', 'layout changed since it was read (edited in the Visual Builder?). Read it again.', array(
+					'status' => 409, 'current_hash' => $current, 'modified' => $p->post_modified_gmt ) );
+			}
+			$fmt = $tb_format( $content );
+			if ( 'other' === $fmt ) {
+				return new WP_Error( 'not_divi', 'content has neither Divi 5 blocks nor Divi shortcodes', array( 'status' => 400 ) );
+			}
+			$open  = preg_match_all( '/<!--\s+wp:/', $content );
+			$self  = preg_match_all( '/<!--\s+wp:(?:(?!-->).)*?\/-->/s', $content );
+			$close = preg_match_all( '/<!--\s+\/wp:/', $content );
+			if ( ( $open - $self ) !== $close ) {
+				return new WP_Error( 'unbalanced_blocks', 'block comments do not balance', array(
+					'status' => 400, 'openers' => $open, 'self_closing' => $self, 'closers' => $close ) );
+			}
+			if ( $req->get_param( 'dry_run' ) ) {
+				return array( 'ok' => true, 'dry_run' => true, 'id' => $id, 'would_write_bytes' => strlen( $content ), 'format' => $fmt, 'current_hash' => $current );
+			}
+			$r = $tb_write( $id, $content );
+			if ( is_wp_error( $r ) ) { return $r; }
+			if ( $req->get_param( 'mark_divi5' ) ) {
+				update_post_meta( $id, '_et_pb_use_builder', 'on' );
+				update_post_meta( $id, '_et_pb_use_divi_5', 'on' );
+				$r['marked_divi5'] = true;
+			}
+			$r['format'] = $fmt;
+			return $r;
+		},
+	) );
+
+	// POST /divi5-builder/v1/tb-layout-restore { id }  → swap content with the kept backup (itself undoable).
+	register_rest_route( 'divi5-builder/v1', '/tb-layout-restore', array(
+		'methods'             => 'POST',
+		'permission_callback' => $tb_perm,
+		'callback'            => function ( $req ) use ( $tb_layout_types, $tb_write ) {
+			$id = (int) $req->get_param( 'id' );
+			$p  = get_post( $id );
+			if ( ! $p || ! in_array( $p->post_type, $tb_layout_types, true ) ) {
+				return new WP_Error( 'not_a_layout', 'id is not a header, body or footer layout', array( 'status' => 404 ) );
+			}
+			if ( ! current_user_can( 'edit_post', $id ) || ! current_user_can( 'unfiltered_html' ) ) {
+				return new WP_Error( 'forbidden', 'cannot edit this layout', array( 'status' => 403 ) );
+			}
+			if ( ! metadata_exists( 'post', $id, '_d5b_prev_content' ) ) {
+				return new WP_Error( 'no_backup', 'no previous content stored for this layout', array( 'status' => 404 ) );
+			}
+			$prev = (string) get_post_meta( $id, '_d5b_prev_content', true );
+			if ( '' === trim( $prev ) ) {
+				return new WP_Error( 'empty_backup', 'stored backup is empty; refusing to restore it', array( 'status' => 409 ) );
+			}
+			$r = $tb_write( $id, $prev );
+			if ( is_wp_error( $r ) ) { return $r; }
+			$r['restored'] = true;
+			return $r;
+		},
+	) );
+
+	// POST /divi5-builder/v1/link-canvas { canvas_id, page_id }
+	// Attaches an et_pb_canvas (popup/off-canvas) to a page exactly the way the
+	// Visual Builder does, so Divi appends it on the front end: it writes the
+	// canvas-side identity/parent meta and the page-side off-canvas pointer.
+	// 1.8.3 SECURITY: this writes meta on BOTH posts, so the user must be able
+	// to edit both. (Before, the generic $perm checked `id` or the canvas only,
+	// so a Contributor could flip builder meta on any page, incl. the homepage.)
+	register_rest_route( 'divi5-builder/v1', '/link-canvas', array(
+		'methods'             => 'POST',
+		'permission_callback' => function ( $req ) {
+			$canvas_id = (int) $req->get_param( 'canvas_id' );
+			$page_id   = (int) $req->get_param( 'page_id' );
+			return $canvas_id && $page_id
+				&& current_user_can( 'edit_post', $canvas_id )
+				&& current_user_can( 'edit_post', $page_id );
+		},
+		'callback'            => function ( $req ) {
+			$canvas_id = (int) $req->get_param( 'canvas_id' );
+			$page_id   = (int) $req->get_param( 'page_id' );
+			$c = get_post( $canvas_id );
+			if ( ! $c || $c->post_type !== 'et_pb_canvas' ) {
+				return new WP_Error( 'bad_canvas', 'canvas_id is not an et_pb_canvas', array( 'status' => 400 ) );
+			}
+			if ( ! get_post( $page_id ) ) {
+				return new WP_Error( 'bad_page', 'page_id not found', array( 'status' => 400 ) );
+			}
+			// Reuse an existing canvas UUID if this canvas already has one.
+			$uuid = get_post_meta( $canvas_id, '_divi_canvas_id', true );
+			if ( ! $uuid ) { $uuid = wp_generate_uuid4(); }
+			// Canvas-side meta (identity + which page it belongs to).
+			update_post_meta( $canvas_id, '_divi_canvas_id', $uuid );
+			update_post_meta( $canvas_id, '_divi_canvas_parent_post_id', (string) $page_id );
+			if ( ! get_post_meta( $canvas_id, '_divi_canvas_created_at', true ) ) {
+				update_post_meta( $canvas_id, '_divi_canvas_created_at', gmdate( 'Y-m-d\TH:i:s' ) . '.000Z' );
+			}
+			// Page-side pointer (builder state) + Divi 5 engine flags.
+			$name = $req->get_param( 'canvas_name' ) ? sanitize_text_field( $req->get_param( 'canvas_name' ) ) : 'Main Canvas';
+			update_post_meta( $page_id, '_divi_off_canvas_data', array( 'activeCanvasId' => $uuid, 'mainCanvasName' => $name ) );
+			update_post_meta( $page_id, '_et_pb_use_divi_5', 'on' );
+			update_post_meta( $page_id, '_et_pb_use_builder', 'on' );
+			return array( 'ok' => true, 'canvas_id' => $canvas_id, 'page_id' => $page_id, 'canvas_uuid' => $uuid );
+		},
+	) );
+
+	// ---------------------------------------------------------------------
+	// Global colours (v1.3)
+	//
+	// Divi keeps the site's global palette in a wp_option, NOT in page content
+	// — so the skill's `global-colors` command, which scrapes gcid- strings out
+	// of existing pages, can only report colours some page already uses. On a
+	// fresh site it returns [] whether or not a palette exists, and there was
+	// no way to CREATE one over REST at all.
+	//
+	// These two routes close that gap so a site can be themed BEFORE its first
+	// page is built, which is the only order that makes sense: pages should
+	// reference gcids from the start rather than be written with literal hex
+	// and retro-fitted afterwards.
+	//
+	// Deliberately restricted to Divi's own palette options — a generic
+	// option-writing route behind an application password would be a far
+	// larger key than this job needs.
+	// ---------------------------------------------------------------------
+	// et_global_colors is Divi 4's palette and is IGNORED by Divi 5 — proven on
+	// one site, 2026-08-11, where a section bound to gcid-primary-color
+	// rendered Divi's factory #2ea3f2 while that option said #2B5C7A. Divi 5's
+	// real store is et_divi_global_variables. Both are listed so a site on
+	// either generation can be themed, and so the difference stays visible.
+	$palette_options = array( 'et_global_colors', 'divi_global_colors', 'et_divi_global_variables' );
+	$palette_perm    = function () { return current_user_can( 'manage_options' ); };
+
+	// Recursively sanitise an arbitrary decoded-JSON structure before it is
+	// written to an option. Divi 5's global-variable format is a nested
+	// structure rather than a flat colour map, so the palette route's hex-only
+	// cleaning cannot express it — but writing decoded JSON straight into an
+	// option unfiltered is not something to do behind an application password.
+	$deep_clean = function ( $v ) use ( &$deep_clean ) {
+		if ( is_array( $v ) ) {
+			$out = array();
+			foreach ( $v as $k => $vv ) {
+				$key         = is_int( $k ) ? $k : sanitize_text_field( (string) $k );
+				$out[ $key ] = $deep_clean( $vv );
+			}
+			return $out;
+		}
+		if ( is_string( $v ) ) { return sanitize_text_field( $v ); }
+		if ( is_bool( $v ) || is_int( $v ) || is_float( $v ) || null === $v ) { return $v; }
+		return null;
+	};
+
+	// GET /divi5-builder/v1/option?name=et_divi_global_variables
+	// POST /divi5-builder/v1/option { name, value }
+	//
+	// Deliberately whitelisted to the same palette options. This exists because
+	// Divi 5's global-variable format had to be LEARNED from a site where the
+	// Visual Builder had defined one — there is no documentation for it — and
+	// once learned it must be writable in whatever shape Divi actually uses.
+	register_rest_route( 'divi5-builder/v1', '/option', array(
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => $palette_perm,
+			'callback'            => function ( $req ) use ( $palette_options ) {
+				$name = sanitize_key( (string) $req->get_param( 'name' ) );
+				if ( ! in_array( $name, $palette_options, true ) ) {
+					return new WP_Error( 'bad_option', 'not a permitted option', array( 'status' => 400 ) );
+				}
+				return array( 'ok' => true, 'name' => $name, 'value' => get_option( $name, null ) );
+			},
+		),
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => $palette_perm,
+			'callback'            => function ( $req ) use ( $palette_options, $deep_clean ) {
+				$name = sanitize_key( (string) $req->get_param( 'name' ) );
+				if ( ! in_array( $name, $palette_options, true ) ) {
+					return new WP_Error( 'bad_option', 'not a permitted option', array( 'status' => 400 ) );
+				}
+				$value = $req->get_param( 'value' );
+				if ( null === $value ) {
+					return new WP_Error( 'no_value', 'value is required', array( 'status' => 400 ) );
+				}
+				update_option( $name, $deep_clean( $value ) );
+				return array( 'ok' => true, 'name' => $name, 'value' => get_option( $name, null ) );
+			},
+		),
+	) );
+
+	// GET /divi5-builder/v1/global-colors
+	// Returns every known palette option so the caller can see which one this
+	// Divi version actually uses, rather than guessing.
+	register_rest_route( 'divi5-builder/v1', '/global-colors', array(
+		'methods'             => 'GET',
+		'permission_callback' => $palette_perm,
+		'callback'            => function () use ( $palette_options ) {
+			$out = array();
+			foreach ( $palette_options as $opt ) {
+				$val = get_option( $opt, null );
+				$out[ $opt ] = ( null === $val ) ? null : $val;
+			}
+			return array( 'ok' => true, 'options' => $out );
+		},
+	) );
+
+	// GET /divi5-builder/v1/design-system[?full=1]   (v1.6, READ-ONLY)
+	// Divi has no GET route for presets or variables (its own routes are POST-only and want a cookie nonce), so a
+	// page built over REST could not discover which presets and variables exist to reference. This lists them.
+	// Default: one line per preset (id, name, which module or option group, whether it is the default) and every
+	// variable. ?full=1 also returns each preset's attrs. Nothing is written: Divi's own save routes REPLACE the
+	// whole store, which is not something to do blind from outside the builder.
+	register_rest_route( 'divi5-builder/v1', '/design-system', array(
+		'methods'             => 'GET',
+		'permission_callback' => $palette_perm,
+		'callback'            => function ( $req ) {
+			$full    = (bool) $req->get_param( 'full' );
+			$presets = get_option( 'et_divi_builder_global_presets_d5', array() );
+			if ( is_string( $presets ) ) { $presets = maybe_unserialize( $presets ); }
+			$out = array( 'module' => array(), 'group' => array() );
+			foreach ( array( 'module', 'group' ) as $kind ) {
+				foreach ( (array) ( $presets[ $kind ] ?? array() ) as $owner => $set ) {
+					$default = (string) ( $set['default'] ?? '' );
+					foreach ( (array) ( $set['items'] ?? array() ) as $pid => $item ) {
+						$row = array(
+							'id'        => (string) $pid,
+							'name'      => (string) ( $item['name'] ?? '' ),
+							'for'       => (string) $owner,
+							'isDefault' => ( (string) $pid === $default ),
+							'version'   => (string) ( $item['version'] ?? '' ),
+						);
+						if ( 'group' === $kind ) { $row['groupId'] = (string) ( $item['groupId'] ?? '' ); }
+						if ( $full ) { foreach ( array( 'attrs', 'renderAttrs', 'styleAttrs' ) as $k ) { if ( isset( $item[ $k ] ) ) { $row[ $k ] = $item[ $k ]; } } }
+						$out[ $kind ][] = $row;
+					}
+				}
+			}
+			$et_divi = get_option( 'et_divi', array() );
+			$colors  = is_array( $et_divi ) ? ( $et_divi['et_global_data']['global_colors'] ?? null ) : null;
+			return array(
+				'ok'        => true,
+				'presets'   => $out,
+				'variables' => get_option( 'et_divi_global_variables', null ),
+				'colors'    => $colors,
+				'sources'   => array(
+					'presets'   => 'option et_divi_builder_global_presets_d5',
+					'variables' => 'option et_divi_global_variables',
+					'colors'    => 'option et_divi > et_global_data > global_colors',
+				),
+			);
+		},
+	) );
+
+	// POST /divi5-builder/v1/global-colors { colors: {...}, option?, replace? }
+	// Merges by default, so a palette written here cannot silently drop colours
+	// added by hand in the Visual Builder. Pass replace=1 to overwrite.
+	register_rest_route( 'divi5-builder/v1', '/global-colors', array(
+		'methods'             => 'POST',
+		'permission_callback' => $palette_perm,
+		'callback'            => function ( $req ) use ( $palette_options ) {
+			$colors = $req->get_param( 'colors' );
+			if ( ! is_array( $colors ) || ! $colors ) {
+				return new WP_Error( 'bad_colors', 'colors must be a non-empty object', array( 'status' => 400 ) );
+			}
+			$opt = $req->get_param( 'option' ) ? sanitize_key( $req->get_param( 'option' ) ) : 'et_global_colors';
+			if ( ! in_array( $opt, $palette_options, true ) ) {
+				return new WP_Error( 'bad_option', 'option must be one of: ' . implode( ', ', $palette_options ), array( 'status' => 400 ) );
+			}
+
+			$clean = array();
+			foreach ( $colors as $gcid => $spec ) {
+				$gcid = preg_replace( '/[^a-z0-9\-]/', '', strtolower( (string) $gcid ) );
+				if ( '' === $gcid ) { continue; }
+				$hex = is_array( $spec ) ? ( isset( $spec['color'] ) ? $spec['color'] : '' ) : $spec;
+				$hex = sanitize_hex_color( (string) $hex );
+				if ( ! $hex ) { continue; }  // drop anything that is not a real colour
+				$clean[ $gcid ] = array(
+					'color'  => $hex,
+					'active' => ( is_array( $spec ) && isset( $spec['active'] ) && 'no' === $spec['active'] ) ? 'no' : 'yes',
+				);
+			}
+			if ( ! $clean ) {
+				return new WP_Error( 'no_valid_colors', 'no valid hex colours supplied', array( 'status' => 400 ) );
+			}
+
+			$existing = get_option( $opt, array() );
+			if ( ! is_array( $existing ) ) { $existing = array(); }
+			$final = $req->get_param( 'replace' ) ? $clean : array_merge( $existing, $clean );
+			update_option( $opt, $final );
+
+			return array( 'ok' => true, 'option' => $opt, 'written' => array_keys( $clean ), 'total' => count( $final ) );
+		},
+	) );
+
+	// ---------------------------------------------------------------------
+	// Site-wide Custom CSS (v1.7)
+	//
+	// Divi's Theme Options ▸ General ▸ Custom CSS field is not a Divi option
+	// at all. Since WP 4.7, Divi redirects it straight into WordPress CORE's
+	// own Additional CSS system: a `custom_css` post per active theme, read
+	// via wp_get_custom_css() and written via wp_update_custom_css_post().
+	// (Confirmed against the Divi 5 source: epanel/core_functions.php reads
+	// and writes through those two functions whenever they exist, falling
+	// back to the legacy et_divi option array only on pre-4.7 WordPress.)
+	//
+	// Divi 5's own new theme-options REST route (/divi/v1/outside-vb/...)
+	// doesn't even cover this field — custom_css isn't in its allowlist —
+	// and would reject Application Password auth anyway, same invalid_nonce
+	// gate as Theme Builder. These two routes close the gap with the same
+	// core WP functions the Customizer itself uses, so front-end output
+	// (WordPress core's own wp_head hook) picks up the change immediately —
+	// no cache to clear, unlike Divi's own builder-CSS static file cache.
+	//
+	// Deliberately its own dedicated route, not folded into the generic
+	// /option endpoint above: Custom CSS isn't a flat option value to
+	// overwrite wholesale, it's a single string read and written through
+	// core's own accessor functions, not get_option()/update_option().
+	// ---------------------------------------------------------------------
+	// 1.8.3: core's own Additional CSS screen requires edit_css (denied on
+	// multisite / DISALLOW_UNFILTERED_HTML), so require it here too.
+	$css_perm = function () { return current_user_can( 'edit_theme_options' ) && current_user_can( 'edit_css' ); };
+
+	// GET /divi5-builder/v1/custom-css              → { css }
+	// POST /divi5-builder/v1/custom-css { css, mode?: "replace"|"append" }
+	// append adds to whatever's already there (blank-line separated) instead
+	// of overwriting it — the safer default for a shared site-wide field is
+	// still "replace" (matches how the Customizer field itself behaves), but
+	// append is there for adding one more rule without needing to fetch,
+	// concatenate and resend the whole sheet by hand every time.
+	register_rest_route( 'divi5-builder/v1', '/custom-css', array(
+		array(
+			'methods'             => 'GET',
+			'permission_callback' => $css_perm,
+			'callback'            => function () {
+				if ( ! function_exists( 'wp_get_custom_css' ) ) {
+					return new WP_Error( 'unsupported', 'this WordPress version has no Additional CSS support (needs 4.7+)', array( 'status' => 501 ) );
+				}
+				return array( 'ok' => true, 'css' => wp_get_custom_css( get_stylesheet() ) );
+			},
+		),
+		array(
+			'methods'             => 'POST',
+			'permission_callback' => $css_perm,
+			'callback'            => function ( $req ) {
+				if ( ! function_exists( 'wp_update_custom_css_post' ) ) {
+					return new WP_Error( 'unsupported', 'this WordPress version has no Additional CSS support (needs 4.7+)', array( 'status' => 501 ) );
+				}
+				$css = $req->get_param( 'css' );
+				if ( ! is_string( $css ) || '' === trim( $css ) ) {
+					return new WP_Error( 'no_css', 'css (non-empty string) is required', array( 'status' => 400 ) );
+				}
+				$previous = wp_get_custom_css( get_stylesheet() );
+				$final    = ( 'append' === $req->get_param( 'mode' ) && '' !== trim( (string) $previous ) )
+					? rtrim( (string) $previous ) . "\n\n" . $css
+					: $css;
+				$result = wp_update_custom_css_post( $final );
+				if ( is_wp_error( $result ) ) { return $result; }
+				return array( 'ok' => true, 'previous_css' => $previous, 'css' => wp_get_custom_css( get_stylesheet() ) );
+			},
+		),
+	) );
+
+	$body = function ( $req ) {
+		$j = $req->get_json_params();
+		return is_array( $j ) ? $j : array();
+	};
+	$dry  = function ( $in ) { return ! empty( $in['dry_run'] ) || ! empty( $in['dryRun'] ); };
+	$post = function ( $path, $fn ) use ( $body, $dry ) {
+		register_rest_route( 'divi5-builder/v1', $path, array(
+			'methods'             => 'POST',
+			'permission_callback' => 'd5b_ds_can',
+			'callback'            => function ( $req ) use ( $fn, $body, $dry ) {
+				$in = $body( $req );
+				if ( ! $in ) { return d5b_ds_err( 'no_body', 'send a JSON body' ); }
+				return $fn( $in, $dry( $in ) );
+			},
+		) );
+	};
+	$post( '/design-system/color', 'd5b_ds_color_upsert' );
+	$post( '/design-system/variable', 'd5b_ds_variable_upsert' );
+	$post( '/design-system/variable/archive', 'd5b_ds_variable_archive' );
+	$post( '/design-system/preset', 'd5b_ds_preset_upsert' );
+
+	register_rest_route( 'divi5-builder/v1', '/design-system/selftest', array(
+		'methods'             => 'GET',
+		'permission_callback' => 'd5b_ds_can',
+		'callback'            => 'd5b_ds_selftest',
+	) );
+
+	// GET /design-system/backups            → what is kept (time, size), newest first
+	// GET /design-system/backups?store=presets&index=0 → that backup's content
+	register_rest_route( 'divi5-builder/v1', '/design-system/backups', array(
+		'methods'             => 'GET',
+		'permission_callback' => 'd5b_ds_can',
+		'callback'            => function ( $req ) {
+			$all   = get_option( 'd5b_ds_backups', array() );
+			$store = (string) $req->get_param( 'store' );
+			if ( '' !== $store ) {
+				$i = (int) $req->get_param( 'index' );
+				if ( ! isset( $all[ $store ][ $i ] ) ) { return d5b_ds_err( 'no_backup', "no backup $i for $store", 404 ); }
+				return array( 'ok' => true, 'store' => $store, 'index' => $i, 'time' => $all[ $store ][ $i ]['time'], 'value' => $all[ $store ][ $i ]['value'] );
+			}
+			$out = array();
+			foreach ( (array) $all as $s => $list ) {
+				foreach ( (array) $list as $i => $b ) { $out[] = array( 'store' => $s, 'index' => $i, 'time' => $b['time'] ?? '', 'firstOfDay' => ! empty( $b['pinned'] ), 'bytes' => strlen( (string) wp_json_encode( $b['value'] ?? null ) ) ); }
+			}
+			return array( 'ok' => true, 'backups' => $out );
+		},
+	) );
+
+	// POST /design-system/restore { store, index }
+	register_rest_route( 'divi5-builder/v1', '/design-system/restore', array(
+		'methods'             => 'POST',
+		'permission_callback' => 'd5b_ds_can',
+		'callback'            => function ( $req ) use ( $body ) {
+			$in = $body( $req );
+			return d5b_ds_restore( (string) ( $in['store'] ?? '' ), (int) ( $in['index'] ?? 0 ) );
+		},
+	) );
+}
+
+}

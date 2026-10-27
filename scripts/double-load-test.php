@@ -25,7 +25,7 @@ if ( isset( $argv[1] ) && '--child' === $argv[1] ) {
 }
 
 $plugins = array_slice( $argv, 1 );
-if ( ! $plugins ) { $plugins = glob( __DIR__ . '/../assets/*.php' ); }
+if ( ! $plugins ) { $plugins = glob( __DIR__ . '/../assets/legacy/*.php' ); }
 $failed = 0;
 foreach ( $plugins as $p ) {
 	$src = file_get_contents( $p );

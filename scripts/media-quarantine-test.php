@@ -31,7 +31,9 @@ function add_action( $hook, $fn ) { $fn(); }
 function register_rest_route( $ns, $path, $def ) { $GLOBALS['routes'][ $path ] = $def; }
 function current_user_can( $cap ) { return $GLOBALS['can'] && in_array( $cap, $GLOBALS['caps'], true ); }
 function wp_upload_dir() { return array( 'basedir' => WP_CONTENT_DIR . '/uploads', 'baseurl' => 'https://x.example/wp-content/uploads' ); }
-require getenv( 'WPMQ_PLUGIN_FILE' ) ?: __DIR__ . '/../assets/wp-media-quarantine.php';
+define( 'D5B_VERSION', '2.0.0' );
+require getenv( 'WPMQ_PLUGIN_FILE' ) ?: __DIR__ . '/../plugin/divi5-builder/parts/media-clean-up.php';
+d5b_routes_media_clean_up();
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . ( is_string( $detail ) ? $detail : json_encode( $detail ) ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
@@ -167,7 +169,7 @@ check( 'multisite: a network admin is allowed', ! in_array( false, $perm(), true
 $GLOBALS['multisite'] = false; $GLOBALS['caps'] = array( 'manage_options' );
 
 echo "--- the plugin has no way to delete\n";
-$src = file_get_contents( getenv( 'WPMQ_PLUGIN_FILE' ) ?: __DIR__ . '/../assets/wp-media-quarantine.php' );
+$src = file_get_contents( getenv( 'WPMQ_PLUGIN_FILE' ) ?: __DIR__ . '/../plugin/divi5-builder/parts/media-clean-up.php' );
 check( 'no unlink, rmdir, wp_delete or DELETE in the code', ! preg_match( '/\b(unlink|rmdir|wp_delete_\w+|wp_trash_\w+)\s*\(|\$wpdb|DELETE/', $src ) );
 
 // clean up the temp folder
