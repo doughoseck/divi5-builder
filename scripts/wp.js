@@ -400,7 +400,8 @@ function flags(argv) {
       const data = fs.readFileSync(fp);
       const name = path.basename(fp);
       const ext = path.extname(fp).slice(1).toLowerCase();
-      const mime = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }[ext] || 'application/octet-stream';
+      const mime = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml',
+        mp4: 'video/mp4', webm: 'video/webm', pdf: 'application/pdf' }[ext] || 'application/octet-stream';
       const headers = { Authorization: authHeader(c), 'Content-Type': mime,
         'Content-Disposition': `attachment; filename="${name}"`, 'Content-Length': data.length };
       const r = await request('POST', `${api}/media`, headers, data);

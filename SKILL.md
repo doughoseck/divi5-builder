@@ -706,6 +706,15 @@ node scripts/media-audit.js report --dir <work-folder>          # REPORT.md + CS
   checks every public page for newly missing files, `restore` puts back what is needed. Order: `verify` (baseline),
   `plan`, `move` (dry run, then `--write`), `verify`, the user lives with it for some days, then the USER deletes the
   quarantine folder and the library rows. One batch per decision.
+- **MAYBE never moves by default.** On a shop, image IDs collide with ordinary numbers (customer ids on orders, quote
+  numbers, prices), and the scan keeps only 3 places per reference. To move MAYBE items the owner chose, check EVERY
+  hit on the full database (a local copy of a dump: exact values and `id="N"` patterns per table and key), write the
+  ids that only sit in fields that cannot hold an image to a file, then `plan --csv <reviewed list> --maybe-cleared
+  <file>`: an item moves only when it is on both. First used on a WooCommerce site 2026-10-14: 59 of 59 cleared.
+- **Crawls come from the user's own IP** (scripts run on their PC): two full crawls in a row got the site owner
+  locked out by Wordfence's rate limiting (and the "unlock" e-mail cannot arrive on a dev site that blocks mail).
+  Ask for the IP to be allowlisted in Wordfence BEFORE crawling a site with Wordfence; without it product pages also
+  answer 503 and the crawl silently covers fewer pages.
 - Tests: `php scripts/media-audit-test.php`, `node scripts/media-audit-test.js`, `php scripts/media-quarantine-test.php`.
 
 ## Updating plugins, themes and WordPress: any WordPress site (read `references/wp-site-updates.md`)

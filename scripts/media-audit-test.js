@@ -134,6 +134,19 @@ P = buildPlan(R2, { status: ['UNUSED', 'BACKGROUND'], ids: [3] });
 check('BACKGROUND moves only when asked for', names(P).join() === '2020/06/c.png' && buildPlan(R2, { status: ['UNUSED'], ids: [3] }).files.length === 0);
 P = buildPlan(R2, { status: [], orphanFolders: ['2019'] });
 check('orphan folder: the unreferenced file moves, the referenced one is held back, other folders are left', names(P).join() === '2019/01/old.zip' && P.heldBack.length === 1 && P.heldBack[0][0] === '2019/01/ref.pdf' && P.items === 0, [names(P), P.heldBack]);
+
+// --maybe-cleared: a MAYBE item (only a bare number matched) moves ONLY when it is on the owner's reviewed list AND
+// on the cleared list; nothing else changes.
+const mid = (R2.attachments.find(a => a.status === 'MAYBE') || {}).id;
+check('the test data has a MAYBE item to try', mid !== undefined, R2.attachments.map(a => [a.id, a.status]));
+P = buildPlan(R2, { status: ['UNUSED'], ids: [mid] });
+check('MAYBE on the reviewed list alone: held back', P.items === 0 && P.heldBack.some(h => h.join(' ').includes(`item ${mid} `) && /MAYBE/.test(h.join(' '))), P.heldBack);
+P = buildPlan(R2, { status: ['UNUSED'], ids: [mid], maybeCleared: [mid] });
+check('MAYBE on the reviewed list AND cleared: it moves', P.items === 1 && P.files.length > 0 && P.heldBack.length === 0, [P.items, P.heldBack]);
+P = buildPlan(R2, { status: ['UNUSED'], maybeCleared: [mid] });
+check('MAYBE cleared but no reviewed list: it does not move', !P.files.some(f => { const d = R2.disk.get(f[0]); return d && (d.owner === mid || d.strayOf === mid); }), names(P));
+P = buildPlan(R2, { status: ['UNUSED'], ids: [1], maybeCleared: [1] });
+check('the cleared list only frees MAYBE items: a USED item on both lists is still held', P.items === 0 && P.heldBack.some(h => /item 1 .*USED/.test(h.join(' '))), P.heldBack);
 check('... unless asked to include referenced files', names(buildPlan(R2, { status: [], orphanFolders: ['2019/'], includeReferenced: true })).join() === '2019/01/old.zip,2019/01/ref.pdf');
 check('folder 201 does not match 2019', buildPlan(R2, { status: [], orphanFolders: ['201'] }).files.length === 0);
 const twin = analyse({ info: raw.info, attachments: [att(1, 'x/a.jpg'), att(2, 'x/a.jpg'), att(3, 'x/m.jpg'), att(4, 'x/m.png')], files: [['x/a.jpg', 10, 1], ['x/m.jpg', 10, 1], ['x/m.png', 10, 1], ['x/m-9x9.gif', 5, 1]], refs: {}, crawl: { pages: 1, tokens: {} } });
