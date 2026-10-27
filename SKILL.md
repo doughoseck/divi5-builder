@@ -451,6 +451,10 @@ The compiler emits these module `type`s (all verified from live builds; keys in
 - **Content:** heading, text, button, image, blurb, icon, iconlist, code, video, divider.
 - **Native compound:** accordion, tabs, toggle, cta, testimonial, pricing (pricing-tables),
   counters (bar), circle-counter, number-counter, countdown, heading-module.
+  **Pricing: always state `"currency"`** (on each tier, or once on the pricing module), taken from the
+  SITE: its WooCommerce currency, or the client's country. Not from where the user is: a South African
+  developer builds UK sites too. If it is unclear, ask. Left out, the compiler uses this computer's
+  region and prints a WARNING; treat that warning as a missing setting, not as an answer.
 - **Batch 2:** hero (`fullwidth-header`, `fullHeight:true` = fullscreen), slider (+slides),
   person (`team-member`; image uses `url`), map (+pins), tooltip, timeline (+items),
   post-carousel (`fullwidth-portfolio`), group + group-carousel.

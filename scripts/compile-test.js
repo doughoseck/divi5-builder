@@ -22,4 +22,28 @@ check('buildModule honours modulePreset', (() => { const l = divi.buildModule({ 
 let threw = false; try { divi.compile({ sections: [{ rows: [{ columns: [{ modules: [{ type: 'no-such-module' }] }] }] }] }); } catch (e) { threw = /unknown module type/.test(e.message); } check('an unknown module type is still refused', threw);
 const tmp = path.join(os.tmpdir(), 'd5b-newmods.html'); fs.writeFileSync(tmp, out); const r = spawnSync('node', [path.join(__dirname, 'catalog.js'), 'lint', tmp], { encoding: 'utf8' }); const lint = (r.stdout || '') + (r.stderr || '');
 console.log('  catalog lint says: ' + lint.trim().split('\n').slice(-4).join(' | ').slice(0, 400)); check('catalog lint finds no error in the divi/link block', !/divi\/link[^\n]*(ERROR|not an option|unknown)/i.test(lint));
+// Pricing currency: the spec states it; otherwise this computer's region decides, ALWAYS with a warning.
+// Each case runs in its own process so the region (DIVI_LOCALE) can differ per case. DIVI_JS tests another copy.
+const DIVI_FILE = path.join(__dirname, process.env.DIVI_JS || 'divi.js');
+const priced = (tiers, mod, locale) => {
+  const code = `const d=require(${JSON.stringify(DIVI_FILE)});` +
+    `const o=d.compile({sections:[{rows:[{columns:[{modules:[Object.assign({type:'pricing',tiers:${JSON.stringify(tiers)}},${JSON.stringify(mod || {})})]}]}]}]});` +
+    `process.stdout.write(JSON.stringify([...o.matchAll(/"currency":"([^"]*)"/g)].map(m=>m[1])));`;
+  const r = spawnSync(process.execPath, ['-e', code], { encoding: 'utf8', env: Object.assign({}, process.env, { DIVI_LOCALE: locale || '' }) });
+  let cur = null; try { cur = JSON.parse(r.stdout); } catch (e) {}
+  return { cur, warn: r.stderr || '' };
+};
+let p = priced([{ title: 'A', price: '9', currency: '£' }, { title: 'B', price: '19', currency: '€' }], null, 'en-ZA');
+check('pricing: the currency each tier states is used, with no warning', JSON.stringify(p.cur) === '["£","€"]' && !/WARNING/.test(p.warn), [p.cur, p.warn]);
+p = priced([{ title: 'A', price: '9' }, { title: 'B', price: '19', currency: '€' }], { currency: 'US$' }, 'en-ZA');
+check('pricing: a currency on the module covers every tier that states none', JSON.stringify(p.cur) === '["US$","€"]' && !/WARNING/.test(p.warn), [p.cur, p.warn]);
+p = priced([{ title: 'A', price: '9' }], null, 'en-ZA');
+check('pricing: none stated, South African computer -> "R", with a warning', JSON.stringify(p.cur) === '["R"]' && /WARNING: pricing table 1 \("A"\) has no "currency"/.test(p.warn) && /en-ZA -> ZAR/.test(p.warn), [p.cur, p.warn]);
+p = priced([{ title: 'A', price: '9' }], null, 'en-GB');
+check('pricing: none stated, UK computer -> "£", with a warning', JSON.stringify(p.cur) === '["£"]' && /WARNING/.test(p.warn), [p.cur, p.warn]);
+p = priced([{ title: 'A', price: '9' }], null, 'de-DE');
+check('pricing: none stated, German computer -> "€"', JSON.stringify(p.cur) === '["€"]' && /WARNING/.test(p.warn), [p.cur, p.warn]);
+p = priced([{ title: 'A', price: '9' }], null, 'en-AQ');
+check('pricing: a region not in the table -> Divi\'s "$", and the warning says why', JSON.stringify(p.cur) === '["$"]' && /not in the table/.test(p.warn), [p.cur, p.warn]);
+
 console.log(failed ? failed + ' FAILED' : 'all passed'); process.exit(failed ? 1 : 0);

@@ -524,13 +524,45 @@ function mTestimonial(m) {
   if (m.portrait) { const p = typeof m.portrait === 'string' ? { src: m.portrait } : m.portrait; attrs.portrait = { innerContent: { desktop: { value: { src: p.src || '', id: p.id || '', alt: p.alt || '' } } } }; }
   return [open('divi/testimonial', attrs), close('divi/testimonial')];
 }
-// Native pricing tables. tiers:[{title,subtitle,price,currency,per,url,buttonText,featured,features:[{text,excluded}|"str"]}]
+// Native pricing tables. tiers:[{title,subtitle,price,currency,per,url,buttonText,featured,features:[{text,excluded}|"str"]}],
+// plus an optional module-level "currency" for every tier that states none.
+// Pricing currency: the SPEC should state it ("currency" on a tier, or on the pricing module for every tier),
+// taken from the site (its WooCommerce currency, the client's country), not from where the builder sits.
+// Fallback: this computer's region (Intl locale; DIVI_LOCALE overrides it), always with a warning on stderr,
+// because the site's customers may be elsewhere. A region missing from the table falls back to Divi's "$".
+const REGION_CURRENCY = { ZA: 'ZAR', NA: 'NAD', BW: 'BWP', LS: 'LSL', SZ: 'SZL', ZW: 'USD', MZ: 'MZN', ZM: 'ZMW', KE: 'KES', NG: 'NGN', GH: 'GHS',
+  EG: 'EGP', MA: 'MAD', US: 'USD', CA: 'CAD', MX: 'MXN', BR: 'BRL', AR: 'ARS', CL: 'CLP', CO: 'COP', GB: 'GBP', IE: 'EUR', DE: 'EUR',
+  FR: 'EUR', NL: 'EUR', BE: 'EUR', LU: 'EUR', ES: 'EUR', PT: 'EUR', IT: 'EUR', AT: 'EUR', FI: 'EUR', GR: 'EUR', CY: 'EUR', MT: 'EUR',
+  SK: 'EUR', SI: 'EUR', EE: 'EUR', LV: 'EUR', LT: 'EUR', HR: 'EUR', CH: 'CHF', SE: 'SEK', NO: 'NOK', DK: 'DKK', PL: 'PLN', CZ: 'CZK',
+  HU: 'HUF', RO: 'RON', TR: 'TRY', IL: 'ILS', AE: 'AED', SA: 'SAR', IN: 'INR', PK: 'PKR', CN: 'CNY', HK: 'HKD', JP: 'JPY', KR: 'KRW',
+  SG: 'SGD', MY: 'MYR', TH: 'THB', ID: 'IDR', PH: 'PHP', VN: 'VND', AU: 'AUD', NZ: 'NZD' };
+let localCurrencyMemo = null;
+function localCurrency() {
+  if (localCurrencyMemo) return localCurrencyMemo;
+  let sym = null, why;
+  try {
+    const loc = process.env.DIVI_LOCALE || Intl.DateTimeFormat().resolvedOptions().locale;
+    const region = new Intl.Locale(loc).maximize().region || '';
+    const code = REGION_CURRENCY[region];
+    if (code) { sym = new Intl.NumberFormat(loc, { style: 'currency', currency: code, currencyDisplay: 'narrowSymbol' }).formatToParts(1).find((p) => p.type === 'currency').value; why = `this computer's region, ${loc} -> ${code}`; }
+    else why = `region "${region || '?'}" of ${loc} is not in the table, so Divi's default`;
+  } catch (e) { why = 'no usable locale, so Divi\'s default'; }
+  return (localCurrencyMemo = { sym, why });
+}
+function pricingCurrency(m, t, i) {
+  const given = t.currency || m.currency;
+  if (given) return given;
+  const lc = localCurrency(); const use = lc.sym || '$';
+  process.stderr.write(`WARNING: pricing table ${i + 1}${t.title ? ` ("${t.title}")` : ''} has no "currency": used "${use}" (${lc.why}). ` +
+    'State "currency" in the spec, from the site (its shop currency or the client\'s country): its customers may not be where you are.\n');
+  return use;
+}
 function mPricingTables(m) {
   const lines = [open('divi/pricing-tables', { builderVersion: BV })];
-  (m.tiers || []).forEach((t) => {
+  (m.tiers || []).forEach((t, i) => {
     const feats = (t.features || []).map((f) => (typeof f === 'string' ? '+ ' + f : (f.excluded ? '- ' : '+ ') + f.text)).join('\n');
     const a = {
-      currencyFrequency: { innerContent: { desktop: { value: { currency: t.currency || 'R', per: t.per || 'month' } } } },
+      currencyFrequency: { innerContent: { desktop: { value: { currency: pricingCurrency(m, t, i), per: t.per || 'month' } } } },
       subtitle: { innerContent: { desktop: { value: t.subtitle || '' } } },
       title: { innerContent: { desktop: { value: t.title || '' } } },
       price: { innerContent: { desktop: { value: String(t.price != null ? t.price : '') } } },
