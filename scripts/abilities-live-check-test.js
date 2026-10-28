@@ -20,9 +20,9 @@ let failed = 0, n = 0;
 const check = (name, ok, detail) => { n++; console.log((ok ? '  PASS  ' : '  FAIL  ') + name + (ok || detail === undefined ? '' : '\n          ' + String(typeof detail === 'string' ? detail : JSON.stringify(detail)).slice(0, 600))); if (!ok) failed++; };
 
 const ab = (short, extra) => Object.assign({ name: 'divi5-builder/' + short, label: short, meta: { annotations: { readonly: true, destructive: false, idempotent: true }, show_in_rest: true }, input_schema: { type: 'object' } }, extra || {});
-const run = state => {
+const run = (state, args) => {
   fs.writeFileSync(STATE, JSON.stringify(Object.assign({ pages: {}, posts: {}, et_pb_canvas: {}, recordMethods: true }, state)));
-  const r = spawnSync(process.execPath, [SCRIPT, 'fake'], { encoding: 'utf8',
+  const r = spawnSync(process.execPath, [SCRIPT, 'fake'].concat(args || []), { encoding: 'utf8',
     env: Object.assign({}, process.env, { FAKE_WP_STATE: STATE, WEB_CREDS_PATH: CREDS, NODE_OPTIONS: `--require ${FAKE.replace(/\\/g, '/')}` }) });
   return { code: r.status, out: r.stdout + r.stderr, st: JSON.parse(fs.readFileSync(STATE, 'utf8')) };
 };
@@ -72,7 +72,8 @@ for (const [label, rep, want] of [
 
 console.log('--- abilities that need an id');
 const withGet = [ab('posts-list'), ab('posts-get', { input_schema: { type: 'object', required: ['id'] } }), ab('cpt-get', { input_schema: { type: 'object', required: ['type', 'id'] } }), ab('users-get', { input_schema: { type: 'object', required: ['id'] } })];
-r = run({ abilities: withGet, abilityReplies: { 'divi5-builder/posts-list': { status: 200, body: { items: [{ id: 42, title: 'T' }] } } } });
+// cpt-get answers 403 here: the fixed et_pb_layout check (below) asks it, and a refusal is what a real site gives.
+r = run({ abilities: withGet, abilityReplies: { 'divi5-builder/posts-list': { status: 200, body: { items: [{ id: 42, title: 'T' }] } }, 'divi5-builder/cpt-get': { status: 403, body: { code: 'not_allowed' } } } });
 const getRun = (r.st.abilityRuns || []).find(x => x.name === 'divi5-builder/posts-get');
 check('posts-get gets the first id of posts-list as input[id]=42, through GET query', getRun && decodeURIComponent(getRun.query) === 'input[id]=42' && onlyGet(r.st), r.st.abilityRuns);
 check('... users-get has no users-list: "skipped: needs id", and is not run', /users-get  skipped: needs id/.test(r.out) && !(r.st.abilityRuns || []).some(x => /users-get/.test(x.name)), r.out);
@@ -83,6 +84,72 @@ console.log('--- paging');
 const many = []; for (let i = 0; i < 5; i++) many.push(ab('thing' + i + '-list'));
 r = run({ abilities: [ab('core-version')].concat(many), abilitiesPerPage: 2 });
 check('follows pages until a short page: every ability run (page size 2, 6 abilities)', (r.st.abilityRuns || []).length === 6, r.st.abilityRuns);
+
+const listGets = st => st.requests.filter(x => /^GET \/wp-json\/wp-abilities\/v1\/abilities\/?$/.test(x)).length;
+r = run({ abilities: [ab('core-version')].concat(many.slice(0, 4)), abilitiesPerPage: 2 });
+check('stops after a short page: 5 abilities, 2 a page -> pages of 2, 2, 1 and no fourth request', (r.st.abilityRuns || []).length === 5 && listGets(r.st) === 3, [listGets(r.st), (r.st.abilityRuns || []).length]);
+r = run({ abilities: [ab('core-version')].concat(many.slice(0, 3)), abilitiesPerPage: 2, pastEnd400: true });
+check('a 400 rest_invalid_page past the last page (4 abilities, 2 a page): the run completes, exit 0, all 4 run', r.code === 0 && (r.st.abilityRuns || []).length === 4 && listGets(r.st) === 3 && /RESULT: every ability answered ok/.test(r.out), [r.code, r.out]);
+
+console.log('--- input encoding (runRoute)');
+const mod = require(SCRIPT);
+const dq = s => decodeURIComponent(s.split('?')[1] || '');
+const nested = { a: ['x', 'y'], b: { c: true, d: false, e: { f: 2 } }, g: null, h: 'a&b=c' };
+check('nested arrays and objects in brackets, booleans as 1/0, null left out', dq(mod.runRoute('divi5-builder/x', nested)) === 'input[a][0]=x&input[a][1]=y&input[b][c]=1&input[b][d]=0&input[b][e][f]=2&input[h]=a&b=c', dq(mod.runRoute('divi5-builder/x', nested)));
+check('a value with & and = is escaped in the raw query (one input, not two)', /input%5Bh%5D=a%26b%3Dc$/.test(mod.runRoute('divi5-builder/x', { h: 'a&b=c' })), mod.runRoute('divi5-builder/x', { h: 'a&b=c' }));
+check('no input: no query at all', mod.runRoute('divi5-builder/x', {}) === 'wp-abilities/v1/abilities/divi5-builder/x/run');
+
+console.log('--- printed fields are strings of at most 100 characters');
+const longs = 'L'.repeat(500);
+r = run({ abilities: three, abilityReplies: {
+  'divi5-builder/history-audit-list': { status: 200, body: { items: [{ id: { nested: longs }, time_utc: longs, ability: ['a', 'b'], status: 'ok\nINJECTED LINE', duration_ms: 12345 }] } },
+  'divi5-builder/posts-list': { status: 418, body: { code: 'c'.repeat(300), message: 'x' } },
+} });
+const auditLine = r.out.split('\n').find(x => /^  \[object Object\]/.test(x)) || '';
+check('audit row fields are coerced to strings and cut to 100 characters; a line break in a field does not start a new line', auditLine.length > 0 && !/L{101}/.test(r.out) && !/^INJECTED LINE/m.test(r.out) && /12345/.test(auditLine), r.out);
+check('an error code token is cut to 100 characters', /posts-list  refused:c{100}  HTTP 418/.test(r.out) && !/c{101}/.test(r.out), r.out);
+
+console.log('--- fixed checks: cpt-get et_pb_layout 403, divi-design-system full=true 200');
+const fixed = [ab('posts-list'), ab('cpt-get', { input_schema: { type: 'object', required: ['type', 'id'] } }), ab('divi-design-system')];
+r = run({ abilities: fixed, abilityReplies: { 'divi5-builder/cpt-get': { status: 403, body: { code: 'not_allowed', message: 'x' } } } });
+const cptRun = (r.st.abilityRuns || []).find(x => x.name === 'divi5-builder/cpt-get');
+const dsRuns = (r.st.abilityRuns || []).filter(x => x.name === 'divi5-builder/divi-design-system');
+check('cpt-get is asked with input[type]=et_pb_layout and an id; 403 -> "ok"', cptRun && /^input\[type\]=et_pb_layout&input\[id\]=1$/.test(decodeURIComponent(cptRun.query)) && /check cpt-get type=et_pb_layout  ok  HTTP 403 not_allowed/.test(r.out), [cptRun, r.out]);
+check('divi-design-system is asked with input[full]=true (the text, as a query string sends it); 200 -> "ok"; exit 0', dsRuns.some(x => decodeURIComponent(x.query) === 'input[full]=true') && /check divi-design-system input\[full\]=true  ok  HTTP 200/.test(r.out) && r.code === 0, [dsRuns, r.code, r.out]);
+r = run({ abilities: fixed, abilityReplies: { 'divi5-builder/cpt-get': { status: 500, body: { code: 'not_allowed', message: 'x' } } } });
+check('cpt-get answering 500 (a refusal without a status) -> FAILED, exit 1', r.code === 1 && /check cpt-get type=et_pb_layout  FAILED  HTTP 500/.test(r.out), [r.code, r.out]);
+r = run({ abilities: fixed, abilityReplies: { 'divi5-builder/cpt-get': { status: 403, body: { code: 'not_allowed' } }, 'divi5-builder/divi-design-system': { status: 400, body: { code: 'invalid_input', message: 'full must be true or false.' } } } });
+check('divi-design-system answering 400 to full=true -> FAILED, exit 1', r.code === 1 && /check divi-design-system input\[full\]=true  FAILED  HTTP 400 invalid_input/.test(r.out), [r.code, r.out]);
+r = run({ abilities: [ab('posts-list')] });
+check('neither ability exposed: both checks say skipped, exit 0', r.code === 0 && /cpt-get type=et_pb_layout  skipped/.test(r.out) && /divi-design-system input\[full\]=true  skipped/.test(r.out), r.out);
+
+console.log('--- --anonymous: one GET with no credentials');
+const anonSet = [ab('core-version'), ab('posts-get', { input_schema: { type: 'object', required: ['id'] } }), ab('history-audit-list')];
+r = run({ abilities: anonSet, auditRows: [] }, ['--anonymous']);
+const anonRuns = (r.st.abilityRuns || []).filter(x => !x.auth);
+check('exactly one run without credentials, to an ability that needs no input, and every other run carried them', anonRuns.length === 1 && anonRuns[0].name === 'divi5-builder/core-version' && anonRuns[0].query === '' && (r.st.abilityRuns || []).filter(x => x.auth).length === (r.st.abilityRuns || []).length - 1, r.st.abilityRuns);
+check('... refused with 401 -> "refused", one forbidden_anonymous row -> "ok", exit 0', r.code === 0 && /check anonymous GET divi5-builder\/core-version  refused  HTTP 401 rest_ability_cannot_execute/.test(r.out) && /check anonymous audit rows  ok  1 new forbidden_anonymous row/.test(r.out), [r.code, r.out]);
+check('... only GETs; the home address came from the REST index', onlyGet(r.st) && r.st.requests.includes('GET /wp-json/'), r.st.requests);
+check('... before and after were read through history-audit-list, filtered to that ability, as the logged-in user', (r.st.abilityRuns || []).filter(x => x.name === 'divi5-builder/history-audit-list' && x.auth && /input%5Bability%5D=divi5-builder%2Fcore-version/.test(x.query)).length === 2, r.st.abilityRuns);
+r = run({ abilities: anonSet, auditRows: [], anonReply: { status: 403, body: { code: 'forbidden' } } }, ['--anonymous']);
+check('a 403 is a refusal too', r.code === 0 && /anonymous GET divi5-builder\/core-version  refused  HTTP 403 forbidden/.test(r.out), [r.code, r.out]);
+r = run({ abilities: anonSet, auditRows: [], anonLast: Date.now() }, ['--anonymous']);
+check('within the 10 minutes: 0 new rows is fine (at most one)', r.code === 0 && /audit rows  ok  0 new/.test(r.out), r.out);
+r = run({ abilities: anonSet, auditRows: [], anonRowsPerCall: 3 }, ['--anonymous']);
+check('3 rows from one anonymous call (a broken limit) -> FAILED, exit 1', r.code === 1 && /audit rows  FAILED  3 new/.test(r.out), [r.code, r.out]);
+r = run({ abilities: anonSet, auditRows: [], anonReply: { status: 200, body: { items: [] } } }, ['--anonymous']);
+check('an anonymous call that is answered 200 -> FAILED, exit 1', r.code === 1 && /anonymous GET divi5-builder\/core-version  FAILED  HTTP 200/.test(r.out), [r.code, r.out]);
+r = run({ abilities: anonSet, auditRows: [], home: 'http://fake.test' }, ['--anonymous']);
+check('no https home address: FAILED without sending anything anonymous', r.code === 1 && /check anonymous  FAILED: no https home address/.test(r.out) && !(r.st.abilityRuns || []).some(x => !x.auth), [r.code, r.out]);
+r = run({ abilities: [ab('core-version')] }, ['--anonymous']);
+check('without history-audit-list: the refusal is checked, the rows are reported unverified', r.code === 0 && /anonymous GET divi5-builder\/core-version  refused/.test(r.out) && /audit rows  unverified/.test(r.out), [r.code, r.out]);
+r = run({ abilities: anonSet, auditRows: [] });
+check('without --anonymous nothing is sent without credentials', !(r.st.abilityRuns || []).some(x => !x.auth) && !/check anonymous/.test(r.out), r.st.abilityRuns);
+r = run({ abilities: anonSet }, ['--bogus']);
+check('an unknown option is a usage error (exit 2), nothing sent', r.code === 2 && /usage/.test(r.out) && !(r.st.requests || []).length, [r.code, r.out]);
+const anonSrc = fs.readFileSync(SCRIPT, 'utf8');
+const anonFn = (anonSrc.match(/function anonymousGet[\s\S]*?\n}\n/) || [''])[0];
+check('the anonymous GET is built by hand with https.request, method GET, and no Authorization or Cookie header', /https\.request\(/.test(anonFn) && /method: 'GET'/.test(anonFn) && !/Authorization|Cookie|authHeader|wp\.js|web-creds/i.test(anonFn), anonFn.slice(0, 300));
 
 console.log('--- the API is not there');
 r = run({});

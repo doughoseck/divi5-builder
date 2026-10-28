@@ -43,7 +43,7 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
       // The combined plugin's status route (st.d5 = the status answer); no st.d5 = the plugin is not on the site.
       else if (p === '/wp-json/divi5-builder/v1/status' && opts.method === 'GET') { if (!st.d5) { status = 404; out = { code: 'rest_no_route' }; } else out = st.d5; }
       // The REST index (st.index = namespaces) and core settings (st.settings = an object, or a number = that HTTP error).
-      else if (p === '/wp-json/' && opts.method === 'GET') out = { name: 'fake', namespaces: st.index || ['oembed/1.0', 'wp/v2'] };
+      else if (p === '/wp-json/' && opts.method === 'GET') out = { name: 'fake', url: 'https://fake.test', home: st.home === undefined ? 'https://fake.test' : st.home, namespaces: st.index || ['oembed/1.0', 'wp/v2'] };
       else if (p === '/wp-json/wp/v2/settings' && opts.method === 'GET') { if (typeof st.settings === 'number') { status = st.settings; out = { code: 'rest_forbidden' }; } else out = st.settings || { title: 'fake' }; }
       else if (p === '/wp-json/divi5-builder/v1/design-system') out = { colors: st.colors || {}, presets: st.presets || { module: [], group: [] }, variables: st.variables || [] };
       // Design-system writes (issue #45): the body is recorded; st.dsReply = { status, body } is the plugin's answer.
@@ -53,21 +53,39 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
       }
       // The Abilities API (WordPress 6.9+, issue #32). st.abilities = the list (none = the route is absent, i.e. WordPress < 6.9),
       // st.abilitiesPerPage = a page size smaller than the request's, st.abilityReplies = { name: { status, body } },
-      // st.abilityRuns = every run asked for (name and raw query). Core refuses anything but GET on a readonly ability (405).
+      // st.abilityRuns = every run asked for (name, raw query, and whether it carried credentials). Core refuses anything but GET
+      // on a readonly ability (405). st.pastEnd400: a page past the last one answers 400 rest_invalid_page (as core's list does).
+      // A run with no Authorization header is anonymous: st.anonReply = { status, body } (default 401 rest_ability_cannot_execute,
+      // the answer core gives a logged-out caller), and when st.auditRows is a list the plugin's refusal row is added to it, one per
+      // 10 minutes (st.anonRowsPerCall = n adds n instead, to play a broken limit). history-audit-list answers from st.auditRows.
       else if (/^\/wp-json\/wp-abilities\/v1\/abilities\/?$/.test(p) && opts.method === 'GET') {
         if (!st.abilities) { status = 404; out = { code: 'rest_no_route' }; }
         else {
           const qp = new URLSearchParams(q), per = Math.min(st.abilitiesPerPage || 100, +qp.get('per_page') || 100), pg = +qp.get('page') || 1;
           out = st.abilities.slice((pg - 1) * per, pg * per);
+          if (st.pastEnd400 && pg > 1 && !out.length) { status = 400; out = { code: 'rest_invalid_page', message: 'The page number requested is larger than the number of pages available.' }; }
         }
       }
       else if (/^\/wp-json\/wp-abilities\/v1\/abilities\/(.+)\/run$/.test(p)) {
         const name = p.match(/\/v1\/abilities\/(.+)\/run$/)[1];
+        const auth = !!(opts.headers && (opts.headers.Authorization || opts.headers.authorization || opts.headers.Cookie || opts.headers.cookie));
         if (opts.method !== 'GET') { status = 405; out = { code: 'rest_ability_invalid_method' }; }
         else {
-          st.abilityRuns = st.abilityRuns || []; st.abilityRuns.push({ name, query: q }); fs.writeFileSync(STATE, JSON.stringify(st));
+          st.abilityRuns = st.abilityRuns || []; st.abilityRuns.push({ name, query: q, auth });
           const rep = (st.abilityReplies || {})[name];
-          if (rep) { status = rep.status; out = rep.body; } else out = { items: [], note: 'SECRET-RESULT-VALUE' };
+          if (!auth) {
+            const a = st.anonReply || { status: 401, body: { code: 'rest_ability_cannot_execute', message: 'Sorry, you are not allowed to execute this ability.' } };
+            status = a.status; out = a.body;
+            if (Array.isArray(st.auditRows)) {
+              const now = Date.now(); const n = st.anonRowsPerCall || ((!st.anonLast || now - st.anonLast > 600000) ? 1 : 0);
+              for (let i = 0; i < n; i++) st.auditRows.unshift({ id: 9000 + st.auditRows.length, time_utc: 'now', user_id: 0, ability: name, args: '{}', status: 'forbidden_anonymous', duration_ms: 1, ip: '203.0.113.50' });
+              if (n) st.anonLast = now;
+            }
+          } else if (name === 'divi5-builder/history-audit-list' && Array.isArray(st.auditRows) && !rep) {
+            const want = new URLSearchParams(q).get('input[ability]');
+            out = { items: st.auditRows.filter(x => !want || x.ability === want).slice(0, 100), page: 1, per_page: 100, has_more: false };
+          } else if (rep) { status = rep.status; out = rep.body; } else out = { items: [], note: 'SECRET-RESULT-VALUE' };
+          fs.writeFileSync(STATE, JSON.stringify(st));
         }
       }
       else if (!m) { status = 404; out = { code: 'rest_no_route' }; }
