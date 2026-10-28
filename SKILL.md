@@ -765,6 +765,16 @@ selectors that would leak onto the rest of the site.
   `references/divi5-interactions-canvases.md`.
 - **Headings that break on a phone:** `assets/phone-headings-scan.js` (paste into the browser console at 375px).
 
+## Abilities (plugin >= 2.1.0, WordPress 6.9+)
+
+The plugin can offer read-only "abilities" (named, permission-checked actions such as `divi5-builder/posts-list` or `divi5-builder/core-version`) through the WordPress Abilities API. They are separate from the page-building routes.
+
+- **Master switch, off by default.** While it is off no ability exists, and the call below returns an empty list. Only an administrator turns it on in Settings > Divi 5 Builder (each category has its own switch). The USER does that, never a script. Nothing is exposed over REST that flips a switch.
+- **Read only in 2.1.0.** Nothing an ability does changes the site. Every call is logged (30 days) and results have secrets filtered on a best-effort basis, so never treat a result as safe to paste anywhere.
+- **List them:** `node scripts/wp.js <site> rest-get "wp-abilities/v1/abilities?per_page=100&page=1"` (follow `page=2`, and so on, until the list comes back empty). Keep the names that start with `divi5-builder/`.
+- **Run one:** WordPress core accepts only a GET for a read-only ability, so use `rest-get`, not `rest-post` (which is for `wp/v2` content routes and cannot reach this route): `node scripts/wp.js <site> rest-get "wp-abilities/v1/abilities/divi5-builder/posts-list/run"`. Input goes in the query string as `input[key]=value`, URL-encoded: `...posts-list/run?input%5Bper_page%5D=5`. An ability the signed-in user may not use answers 403.
+- **Check a site:** `node scripts/abilities-live-check.js <site>` runs each read-only ability once, GET only, and prints per ability its name, ok or refused or error, the HTTP status and the result's key names and size (never the values), then the newest audit rows. It says `master off: no abilities exposed` when the switch is off.
+
 ## Site care (any WordPress site): media audit and clean-up, updates, go-live, performance
 
 Maintenance tools, not page building. **Read `references/site-care/README.md` before using any of them.**

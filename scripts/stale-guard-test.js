@@ -51,6 +51,25 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
         st.dsPosts = st.dsPosts || []; st.dsPosts.push({ path: p, body: JSON.parse(body || '{}') }); fs.writeFileSync(STATE, JSON.stringify(st));
         if (st.dsReply) { status = st.dsReply.status; out = st.dsReply.body; } else out = { ok: true };
       }
+      // The Abilities API (WordPress 6.9+, issue #32). st.abilities = the list (none = the route is absent, i.e. WordPress < 6.9),
+      // st.abilitiesPerPage = a page size smaller than the request's, st.abilityReplies = { name: { status, body } },
+      // st.abilityRuns = every run asked for (name and raw query). Core refuses anything but GET on a readonly ability (405).
+      else if (/^\/wp-json\/wp-abilities\/v1\/abilities\/?$/.test(p) && opts.method === 'GET') {
+        if (!st.abilities) { status = 404; out = { code: 'rest_no_route' }; }
+        else {
+          const qp = new URLSearchParams(q), per = Math.min(st.abilitiesPerPage || 100, +qp.get('per_page') || 100), pg = +qp.get('page') || 1;
+          out = st.abilities.slice((pg - 1) * per, pg * per);
+        }
+      }
+      else if (/^\/wp-json\/wp-abilities\/v1\/abilities\/(.+)\/run$/.test(p)) {
+        const name = p.match(/\/v1\/abilities\/(.+)\/run$/)[1];
+        if (opts.method !== 'GET') { status = 405; out = { code: 'rest_ability_invalid_method' }; }
+        else {
+          st.abilityRuns = st.abilityRuns || []; st.abilityRuns.push({ name, query: q }); fs.writeFileSync(STATE, JSON.stringify(st));
+          const rep = (st.abilityReplies || {})[name];
+          if (rep) { status = rep.status; out = rep.body; } else out = { items: [], note: 'SECRET-RESULT-VALUE' };
+        }
+      }
       else if (!m) { status = 404; out = { code: 'rest_no_route' }; }
       else {
         const [, kind, id] = m; st[kind] = st[kind] || {};
