@@ -20,7 +20,7 @@ if ( isset( $argv[1] ) && '--bare' === $argv[1] ) {
 	require __DIR__ . '/plugin-test-stubs.php';
 	require $dir . '/inc/parts.php'; require $dir . '/inc/switches.php'; require $dir . '/inc/abilities/categories.php'; require $dir . '/inc/abilities/register.php';
 	if ( function_exists( 'd5b_audit_write' ) || function_exists( 'd5b_ability_scrub' ) ) { echo "BARE_NOT_BARE\n"; exit( 1 ); }
-	d5b_abilities_set_master( true, 't' );
+	d5b_abilities_set_master( true, 't' ); $GLOBALS['T_user_id'] = 1;
 	// No audit writer: the handler must not run unaudited (fail closed), and nothing is fatal.
 	$GLOBALS['T_ran'] = 0;
 	d5b_ability_add( array( 'name' => 'divi5-builder/posts-a', 'category' => 'posts', 'label' => 'a', 'description' => 'x', 'handler' => function ( array $i ) { $GLOBALS['T_ran']++; return array( 'user_pass' => 'kept-without-scrubber' ); }, 'permission' => function ( array $i ) { return true; } ) );
@@ -101,7 +101,8 @@ function load_test_defs() {
 	d5b_ability_add( mk( 'divi5-builder/pages-list', 'pages' ) );
 }
 function fresh( $master, array $cats_off = array() ) {
-	t_reset(); t_set_caps( array() ); t_set_multisite( false );
+	// A logged-in caller (user 1): a caller who is not logged in is refused before any of the gates under test here.
+	t_reset(); t_set_caps( array() ); t_set_multisite( false ); $GLOBALS['T_user_id'] = 1;
 	load_test_defs();
 	if ( $master ) { d5b_abilities_set_master( true, 'tester' ); }
 	foreach ( $cats_off as $c ) { d5b_abilities_set_category( $c, false, false, 'tester' ); }
@@ -317,6 +318,59 @@ $uses = array();
 $it = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir, FilesystemIterator::SKIP_DOTS ) );
 foreach ( $it as $f ) { if ( 'php' === $f->getExtension() && preg_match( '/->(code|message|data)\b(?!\s*\()/', (string) file_get_contents( (string) $f ) ) ) { $uses[] = basename( (string) $f ); } }
 check( 'no plugin file reads ->code, ->message or ->data (only the WP_Error methods, which core has)', array() === $uses, $uses );
+
+// ---- every WP_Error leaving the wrapper carries an HTTP status (core returns the execute callback's error as it is; no status = 500)
+echo "HTTP status of every error\n";
+function status_of( $r ) { return is_wp_error( $r ) ? ( $r->get_error_data( $r->get_error_code() )['status'] ?? null ) : 'not an error'; }
+$want = array( 'invalid_input' => 400, 'page_too_deep' => 400, 'forbidden' => 403, 'not_allowed' => 403, 'not_found' => 404, 'unavailable' => 503, 'internal_error' => 500, 'something_else' => 500 );
+foreach ( $want as $code => $status ) {
+	fresh( true );
+	d5b_ability_add( mk( 'divi5-builder/core-err', 'core', array( 'handler' => function ( array $in ) use ( $code ) { return new WP_Error( $code, 'Message for ' . $code . '.' ); } ) ) );
+	$r = d5b_ability_run( 'divi5-builder/core-err', array() );
+	check( "a handler's $code answers HTTP $status, code and message kept", $status === status_of( $r ) && $code === $r->get_error_code() && 'Message for ' . $code . '.' === $r->get_error_message(), array( status_of( $r ), $r ) );
+}
+fresh( true );
+d5b_ability_add( mk( 'divi5-builder/core-err', 'core', array( 'handler' => function ( array $in ) { return new WP_Error( 'not_a_tb_post', 'Route error.', array( 'status' => 404, 'id' => 5 ) ); } ) ) );
+$r = d5b_ability_run( 'divi5-builder/core-err', array() );
+check( 'a status already in the data is kept, and the rest of the data with it', 404 === status_of( $r ) && 5 === ( $r->get_error_data()['id'] ?? null ), $r );
+d5b_ability_add( mk( 'divi5-builder/core-err2', 'core', array( 'handler' => function ( array $in ) { return new WP_Error( 'invalid_input', 'Bad.', array( 'field' => 'id' ) ); } ) ) );
+$r = d5b_ability_run( 'divi5-builder/core-err2', array() );
+check( 'data without a status gets one added, the rest kept', 400 === status_of( $r ) && 'id' === ( $r->get_error_data()['field'] ?? null ), $r );
+d5b_ability_add( mk( 'divi5-builder/core-boom', 'core', array( 'handler' => function ( array $in ) { throw new RuntimeException( 'x' ); } ) ) );
+check( 'a thrown handler: internal_error, HTTP 500', 500 === status_of( d5b_ability_run( 'divi5-builder/core-boom', array() ) ) );
+check( 'an unknown ability: not_found (unified from ability_not_found), HTTP 404', 'not_found' === d5b_ability_run( 'divi5-builder/no-such', array() )->get_error_code() && 404 === status_of( d5b_ability_run( 'divi5-builder/no-such', array() ) ) );
+fresh( false );
+check( 'the gate refuses (master off): forbidden, HTTP 403', 403 === status_of( $r = d5b_ability_run( 'divi5-builder/posts-list', array() ) ) && 'forbidden' === $r->get_error_code() );
+fresh( true );
+d5b_ability_add( mk( 'divi5-builder/plugins-list', 'plugins', array( 'permission' => function ( array $in ) { return new WP_Error( 'rest_forbidden', 'No.' ); } ) ) );
+check( 'a definition\'s own WP_Error refusal: kept, HTTP 403 on the run path and the permission path', 403 === status_of( $r = d5b_ability_run( 'divi5-builder/plugins-list', array() ) ) && 'rest_forbidden' === $r->get_error_code() && 403 === status_of( d5b_ability_permit( 'divi5-builder/plugins-list', array() ) ) );
+fresh( true ); $GLOBALS['T_audit_fail'] = true;
+$r = d5b_ability_run( 'divi5-builder/posts-list', array() );
+$GLOBALS['T_audit_fail'] = false;
+check( 'the audit row cannot be written: audit_unavailable, HTTP 503', 'audit_unavailable' === $r->get_error_code() && 503 === status_of( $r ), $r );
+fresh( true ); $GLOBALS['T_user_id'] = 0;
+check( 'an anonymous caller: forbidden, HTTP 403 (run and permission paths)', 403 === status_of( $r = d5b_ability_run( 'divi5-builder/posts-list', array() ) ) && 'forbidden' === $r->get_error_code() && 403 === status_of( d5b_ability_permit( 'divi5-builder/posts-list', array() ) ) );
+check( 'forbidden_anonymous, should it ever be a code, maps to 403 too', 403 === d5b_ability_http_status( 'forbidden_anonymous' ) );
+// The codes the shipped handlers return: every one is in the table (not the 500 fallback), so no refusal answers 500.
+$codes = array();
+foreach ( new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir . '/inc/abilities', FilesystemIterator::SKIP_DOTS ) ) as $f ) {
+	if ( preg_match_all( "/new WP_Error\(\s*'([a-z_]+)'/", (string) file_get_contents( (string) $f ), $mm ) ) { foreach ( $mm[1] as $c ) { $codes[ $c ] = true; } }
+}
+$unmapped = array_values( array_filter( array_keys( $codes ), function ( $c ) { return 500 === d5b_ability_http_status( $c ) && 'internal_error' !== $c; } ) );
+check( 'every WP_Error code in inc/abilities has its own status (no odd codes left: invalid_type, invalid_taxonomy, forbidden_status are gone)', array() === $unmapped && ! isset( $codes['invalid_type'] ) && ! isset( $codes['invalid_taxonomy'] ) && ! isset( $codes['forbidden_status'] ) && ! isset( $codes['ability_not_found'] ), array( $unmapped, array_keys( $codes ) ) );
+
+echo "posts-revisions needs the Revisions switch too (strictest switch wins)\n";
+real_site( true, array( 'revisions' ) );
+add_action( 'wp_abilities_api_categories_init', 'd5b_abilities_register_categories' ); add_action( 'wp_abilities_api_init', 'd5b_abilities_register' ); fire_both();
+check( 'revisions off: posts-revisions is not registered, the other posts abilities are', ! isset( $GLOBALS['T_abilities']['divi5-builder/posts-revisions'] ) && isset( $GLOBALS['T_abilities']['divi5-builder/posts-get'] ), array_keys( $GLOBALS['T_abilities'] ) );
+$pid = t_add_post( array( 'post_author' => 1 ) ); t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $pid ) );
+t_set_caps( array( 'read', 'edit_posts', 'edit_published_posts', 'edit_others_posts' ) );
+check( 'revisions off: a direct run of posts-revisions is refused (forbidden) and audited', 'forbidden' === d5b_ability_run( 'divi5-builder/posts-revisions', array( 'id' => $pid ) )->get_error_code() && 'forbidden' === end( $GLOBALS['T_audit'] )['status'] && false === d5b_ability_permit( 'divi5-builder/posts-revisions', array( 'id' => $pid ) ) );
+real_site( true ); t_set_caps( array( 'read', 'edit_posts', 'edit_published_posts', 'edit_others_posts' ) );
+$pid = t_add_post( array( 'post_author' => 1 ) ); t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $pid ) );
+check( 'control: both on, posts-revisions runs and lists the revision', 1 === count( ( $r = d5b_ability_run( 'divi5-builder/posts-revisions', array( 'id' => $pid ) ) )['items'] ?? array() ), $r );
+real_site( true, array( 'posts' ) ); t_set_caps( array( 'read', 'edit_posts', 'edit_published_posts', 'edit_others_posts' ) );
+check( 'posts off (revisions on): still refused', is_wp_error( d5b_ability_run( 'divi5-builder/posts-revisions', array( 'id' => $pid ) ) ) );
 
 // ---- audit and scrub absent: the wrapper still works
 echo "wrapper without the audit writer and scrubber\n";

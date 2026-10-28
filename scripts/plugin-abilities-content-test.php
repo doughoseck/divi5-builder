@@ -167,7 +167,7 @@ check( 'cpt-types leaves out types that have their own category (post, page, att
 $r = call( 'cpt-get', array( 'type' => 'book', 'id' => $book ) );
 check( 'cpt-get returns a custom item with content and hash', is_array( $r ) && 'Chapter one' === $r['content'] && md5( 'Chapter one' ) === $r['hash'], $r );
 check( 'cpt-get: an id of another type is refused; so are post and page here', 'FORBIDDEN' === call( 'cpt-get', array( 'type' => 'book', 'id' => t_add_post() ) ) && 'not_allowed' === code( call( 'cpt-get', array( 'type' => 'post', 'id' => t_add_post() ) ) ) );
-check( 'cpt: a non-public type is not_allowed, an unknown one is invalid_type, a bad name is invalid_input', 'not_allowed' === code( call( 'cpt-list', array( 'type' => 'secret_thing' ) ) ) && 'invalid_type' === code( call( 'cpt-list', array( 'type' => 'nope' ) ) ) && 'invalid_input' === code( call( 'cpt-list', array( 'type' => '../etc' ) ) ) && 'invalid_input' === code( call( 'cpt-list' ) ) );
+check( 'cpt: a non-public type is not_allowed, an unknown one is invalid_input (unified from invalid_type), a bad name is invalid_input', 'not_allowed' === code( call( 'cpt-list', array( 'type' => 'secret_thing' ) ) ) && 'invalid_input' === code( call( 'cpt-list', array( 'type' => 'nope' ) ) ) && 'invalid_input' === code( call( 'cpt-list', array( 'type' => '../etc' ) ) ) && 'invalid_input' === code( call( 'cpt-list' ) ) );
 check( 'cpt-list lists the item', array( $book ) === ids( call( 'cpt-list', array( 'type' => 'book' ) ) ) );
 site( READER, 3 );
 t_add_type( 'book', true, true );
@@ -204,7 +204,7 @@ $c1 = t_add_term( 'category', 'News' ); $c2 = t_add_term( 'category', 'Sport', $
 $r = call( 'taxonomy-list' );
 check( 'taxonomy-list defaults to categories, with parent and totals', array( $c1, $c2 ) === ids( $r ) && 2 === $r['total'] && $c1 === $r['items'][1]['parent'], $r );
 check( 'taxonomy-get returns the term; a term of another taxonomy is not found', 'Sport' === call( 'taxonomy-get', array( 'taxonomy' => 'category', 'id' => $c2 ) )['name'] && 'not_found' === code( call( 'taxonomy-get', array( 'taxonomy' => 'post_tag', 'id' => $c2 ) ) ) );
-check( 'internal and non-public taxonomies are refused; an unknown one is invalid_taxonomy', 'not_allowed' === code( call( 'taxonomy-list', array( 'taxonomy' => 'nav_menu' ) ) ) && 'not_allowed' === code( call( 'taxonomy-get', array( 'taxonomy' => 'wp_theme', 'id' => $th ) ) ) && 'invalid_taxonomy' === code( call( 'taxonomy-list', array( 'taxonomy' => 'nope' ) ) ) );
+check( 'internal and non-public taxonomies are refused; an unknown one is invalid_input (unified from invalid_taxonomy)', 'not_allowed' === code( call( 'taxonomy-list', array( 'taxonomy' => 'nav_menu' ) ) ) && 'not_allowed' === code( call( 'taxonomy-get', array( 'taxonomy' => 'wp_theme', 'id' => $th ) ) ) && 'invalid_input' === code( call( 'taxonomy-list', array( 'taxonomy' => 'nope' ) ) ) );
 
 // ---- comments
 echo "comments\n";
@@ -216,7 +216,7 @@ $onpriv = t_add_comment( array( 'comment_post_ID' => $privp ) );
 $r = call( 'comments-list' );
 check( 'comments-list: a reader sees approved comments on readable posts only', array( $ok ) === ids( $r ), ids( $r ) );
 check( 'comments never carry the IP address, and a reader gets no email address', false === strpos( json_encode( $r ), '203.0.113.9' ) && ! isset( $r['items'][0]['author_email'] ) );
-check( 'a reader may not ask for held, spam or all comments', 'FORBIDDEN' === call( 'comments-list', array( 'status' => 'hold' ) ) && 'FORBIDDEN' === call( 'comments-list', array( 'status' => 'all' ) ) && 'forbidden_status' === code( handler( 'comments-list', array( 'status' => 'hold' ) ) ) );
+check( 'a reader may not ask for held, spam or all comments', 'FORBIDDEN' === call( 'comments-list', array( 'status' => 'hold' ) ) && 'FORBIDDEN' === call( 'comments-list', array( 'status' => 'all' ) ) && 'not_allowed' === code( handler( 'comments-list', array( 'status' => 'hold' ) ) ) );
 check( 'comments-get: approved is returned; held and the one on a private post are refused', 'Good read' === call( 'comments-get', array( 'id' => $ok ) )['content'] && 'FORBIDDEN' === call( 'comments-get', array( 'id' => $hold ) ) && 'FORBIDDEN' === call( 'comments-get', array( 'id' => $onpriv ) ) && 'not_found' === code( handler( 'comments-get', array( 'id' => $hold ) ) ) );
 check( 'comments-list for a post the caller cannot read is refused', 'FORBIDDEN' === call( 'comments-list', array( 'post' => $privp ) ) );
 check( 'comments-list with a post gives totals; without one it gives none (a site-wide total would count unreadable posts)', 1 === call( 'comments-list', array( 'post' => $cp ) )['total'] && ! array_key_exists( 'total', call( 'comments-list' ) ) );
@@ -357,7 +357,10 @@ $r = call( 'posts-list', array( 'status' => 'draft', 'search' => 'K7Q' ) );
 check( 'a contributor lists only their own drafts, and the total counts only those', array( $mine ) === ids( $r ) && 1 === $r['total'], $r );
 site( EDITOR, 1 );
 t_add_post( array( 'post_status' => 'private', 'post_author' => 2, 'post_content' => 'the code is K7Q9' ) ); t_add_post( array( 'post_status' => 'draft', 'post_author' => 2, 'post_content' => 'ACME deal' ) ); t_add_post( array( 'post_password' => 'pw', 'post_author' => 2, 'post_content' => 'PIN 4412' ) );
-check( 'an editor (edit_others_posts, read_private_posts) does see them, with totals', 1 === call( 'posts-list', array( 'status' => 'any', 'search' => 'K7Q' ) )['total'] && 1 === call( 'posts-list', array( 'status' => 'draft', 'search' => 'ACME' ) )['total'] && 1 === call( 'search', array( 'query' => '4412' ) )['total'] && 1 === call( 'search', array( 'query' => 'K7Q' ) )['total'] );
+check( 'an editor (edit_others_posts, read_private_posts) does see them, with totals', 1 === call( 'posts-list', array( 'status' => 'any', 'search' => 'K7Q' ) )['total'] && 1 === call( 'posts-list', array( 'status' => 'draft', 'search' => 'ACME' ) )['total'] && 1 === call( 'search', array( 'query' => '4412' ) )['total'] && 1 === call( 'search', array( 'query' => 'K7Q', 'types' => array( 'post' ) ) )['total'] );
+// As core: a query over more than one post type asks for read_private_multiple_post_types, which no role has, so even an editor
+// gets only their own private items from a search over several types (the total counts only those too).
+check( 'search over several types: another author\'s private post is not found even by an editor (core narrows it), and the total says 0', array() === ids( $r = call( 'search', array( 'query' => 'K7Q' ) ) ) && 0 === $r['total'], $r );
 site( READER, 3 );
 $pp = t_add_post( array( 'post_status' => 'private', 'post_author' => 2 ) );
 t_add_post( array( 'post_type' => 'attachment', 'post_status' => 'inherit', 'post_parent' => $pp, 'post_title' => 'M9Zsecret', 'post_mime_type' => 'image/png' ) );
@@ -464,6 +467,42 @@ $ping = t_add_comment( array( 'comment_post_ID' => $cp, 'comment_type' => 'pingb
 $r = call( 'comments-list' );
 check( 'comments: only comment, pingback, trackback and the legacy empty type; block notes and order notes are excluded from list and get', 3 === count( ids( $r ) ) && array() === array_diff( ids( $r ), array( $norm, $legacy, $ping ) ), ids( $r ) );
 check( 'comments-get refuses a note and an order note', 'FORBIDDEN' === call( 'comments-get', array( 'id' => $note ) ) && 'FORBIDDEN' === call( 'comments-get', array( 'id' => $ord ) ) && is_array( call( 'comments-get', array( 'id' => $ping ) ) ) );
+
+echo "final fix wave\n";
+site( EDITOR, 1 );
+$lay = t_add_post( array( 'post_type' => 'et_pb_layout', 'post_author' => 1 ) );
+$p   = d5b_ability_permit( 'divi5-builder/cpt-get', array( 'type' => 'et_pb_layout', 'id' => $lay ) );
+$r   = d5b_ability_run( 'divi5-builder/cpt-get', array( 'type' => 'et_pb_layout', 'id' => $lay ) );
+check( 'cpt-get with type et_pb_layout: core\'s permission step lets it through to the handler, which answers not_allowed with HTTP 403 (not 500)', true === $p && is_wp_error( $r ) && 'not_allowed' === $r->get_error_code() && 403 === ( $r->get_error_data()['status'] ?? null ), $r );
+check( 'cpt-get with an unknown type: invalid_input, HTTP 400', 400 === ( d5b_ability_run( 'divi5-builder/cpt-get', array( 'type' => 'nope', 'id' => $lay ) )->get_error_data()['status'] ?? null ) );
+t_set_caps( array( 'read' ) );
+check( 'comments-list status=hold for a non-moderator: not_allowed from the handler (unified from forbidden_status), HTTP 403 when it leaves the wrapper', 'not_allowed' === code( handler( 'comments-list', array( 'status' => 'hold' ) ) ) && 403 === d5b_ability_with_status( handler( 'comments-list', array( 'status' => 'hold' ) ) )->get_error_data()['status'] );
+
+// comments-list loads the page's posts in one query (_prime_post_caches), not one per comment
+site( READER, 3 );
+$pa = t_add_post(); $pb = t_add_post();
+foreach ( array( $pa, $pb, $pa, $pb, $pa ) as $pp ) { t_add_comment( array( 'comment_post_ID' => $pp ) ); }
+$GLOBALS['T_primes'] = array();
+$r = call( 'comments-list' );
+check( 'comments-list primes the posts of the page once, with each post id once', 5 === count( ids( $r ) ) && 1 === count( $GLOBALS['T_primes'] ) && array( $pa, $pb ) === ( function ( $x ) { sort( $x ); return $x; } )( $GLOBALS['T_primes'][0] ), $GLOBALS['T_primes'] );
+$GLOBALS['T_primes'] = array();
+call( 'comments-list', array( 'post' => 999999 ) );
+check( 'no comments: no priming call', array() === $GLOBALS['T_primes'], $GLOBALS['T_primes'] );
+
+// meta-get's 512 KB total is measured as JSON (what the caller receives), not as serialized bytes
+site( array( 'read', 'edit_posts', 'edit_others_posts', 'edit_published_posts' ), 1 );
+$mp = t_add_post( array( 'post_author' => 1 ) );
+// 12 values of 10,000 control characters: 10 KB each serialized (120 KB in all, far under the cap as serialized bytes measured it),
+// 60 KB each as JSON (\u0001 is 6 bytes): 720 KB in all, over the 512 KB the caller may receive.
+for ( $i = 0; $i < 12; $i++ ) { t_add_meta( $mp, 'ctl_' . $i, str_repeat( "\x01", 10000 ) ); }
+$r = call( 'meta-get', array( 'post_id' => $mp ) );
+$json = strlen( json_encode( $r['meta'] ?? null ) );
+check( 'meta-get: values full of control characters stop at the 512 KB JSON cap (8 of 12 values, truncated)', is_array( $r ) && true === $r['truncated'] && $json <= 524288 && 8 === count( $r['meta'] ), array( $r['truncated'] ?? null, $json, count( $r['meta'] ?? array() ) ) );
+$mq = t_add_post( array( 'post_author' => 1 ) );
+t_add_meta( $mq, 'big', str_repeat( "\x01", 12000 ) ); // 12 KB serialized, 72 KB as JSON
+$r = call( 'meta-get', array( 'post_id' => $mq ) );
+check( 'meta-get: one value of 12,000 control characters is over the 64 KB per-value cap as JSON (72 KB), so it is replaced by the placeholder', array( '_truncated' => true, 'bytes' => 72002 ) === ( $r['meta']['big'] ?? null ), $r['meta']['big'] ?? null );
+check( 'the JSON size helper: plain text is its length plus quotes, a control character counts 6', 7 === d5b_rc_json_bytes( 'hello' ) && 8 === d5b_rc_json_bytes( "\x01" ) );
 
 echo "\n" . ( $n - $failed ) . " / $n passed\n";
 exit( $failed ? 1 : 0 );

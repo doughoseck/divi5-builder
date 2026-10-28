@@ -70,7 +70,8 @@ add_action( 'wp_abilities_api_categories_init', 'd5b_abilities_register_categori
 add_action( 'wp_abilities_api_init', 'd5b_abilities_register' );
 
 // The audit log: the table is made on activation or, for a must-use copy that is never activated, on the next admin page;
-// a daily event deletes rows older than 30 days (cleared on deactivation; uninstall.php drops the table).
+// a daily event deletes rows older than 30 days (cleared on deactivation, on every site for a network deactivation;
+// uninstall.php drops the table). Before WordPress 6.9 no ability is registered, but the empty table and the event still exist.
 register_activation_hook( D5B_FILE, 'd5b_audit_activate' );
 register_deactivation_hook( D5B_FILE, 'd5b_audit_deactivate' );
 add_action( 'admin_init', 'd5b_audit_maybe_install' );

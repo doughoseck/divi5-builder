@@ -203,7 +203,21 @@ mt_srand( 20261028 ); $chars = 'abcdefghijklmnopqrstuvwxyz0123456789'; $lost = 0
 for ( $i = 0; $i < 100000; $i++ ) { $s = ''; for ( $j = 0; $j < 10; $j++ ) { $s .= $chars[ mt_rand( 0, 35 ) ]; } if ( d5b_is_secret_key( 'gvid-' . $s ) || d5b_is_secret_key( 'gcid-' . $s ) ) { $lost++; $ex[] = $s; } }
 check( '100,000 random 10-character ids with both prefixes (the shape Divi makes) lose none; the same sample lost about 1 in 560 before the exemption', 0 === $lost, array_slice( $ex, 0, 5 ) );
 site( ADMIN ); ds_fixture();
-check( 'design system input: full must be a real boolean; unknown input is refused', 'invalid_input' === code( handler( 'divi-design-system', array( 'full' => 'yes' ) ) ) && 'invalid_input' === code( handler( 'divi-design-system', array( 'full' => 1 ) ) ) && 'invalid_input' === code( handler( 'divi-design-system', array( 'plus' => true ) ) ) && is_array( handler( 'divi-design-system', array( 'full' => false ) ) ) && is_array( handler( 'divi-design-system', array( 'full' => null ) ) ) );
+// full takes what core's schema check takes for a boolean (rest_is_boolean): a GET query string sends "true" or "1".
+check( 'design system input: full must be a boolean (core\'s forms); other values and unknown input are refused', 'invalid_input' === code( handler( 'divi-design-system', array( 'full' => 'yes' ) ) ) && 'invalid_input' === code( handler( 'divi-design-system', array( 'full' => 2 ) ) ) && 'invalid_input' === code( handler( 'divi-design-system', array( 'full' => array( '1' ) ) ) ) && 'invalid_input' === code( handler( 'divi-design-system', array( 'plus' => true ) ) ) && is_array( handler( 'divi-design-system', array( 'full' => false ) ) ) && is_array( handler( 'divi-design-system', array( 'full' => null ) ) ) );
+$ds_true = handler( 'divi-design-system', array( 'full' => true ) ); $ds_false = handler( 'divi-design-system', array( 'full' => false ) );
+$same = true; $why = array();
+foreach ( array( 'true' => $ds_true, 'TRUE' => $ds_true, '1' => $ds_true, 'false' => $ds_false, 'False' => $ds_false, '0' => $ds_false ) as $s => $want ) {
+	if ( handler( 'divi-design-system', array( 'full' => (string) $s ) ) !== $want ) { $same = false; $why[] = $s; }
+}
+foreach ( array( 1 => $ds_true, 0 => $ds_false ) as $i => $want ) { if ( handler( 'divi-design-system', array( 'full' => $i ) ) !== $want ) { $same = false; $why[] = "int $i"; } }
+check( 'design system full: the strings "true"/"1"/"false"/"0" (any case) and 1/0 answer exactly as true/false do, and full=true really differs', $same && $ds_true !== $ds_false, $why );
+$r = call( 'divi-design-system', array( 'full' => 'true' ) );
+check( 'design system full="true" through the wrapper: an answer, not an error', is_array( $r ) && $r === d5b_ability_scrub_result( d5b_ability_defs()['divi5-builder/divi-design-system'], $ds_true ), is_wp_error( $r ) ? $r->get_error_code() : '' );
+// Every other boolean input across the abilities goes through the same rule: there is none today, so this fails when one is added without it.
+$bools = array();
+foreach ( d5b_ability_defs() as $nm => $d ) { foreach ( (array) ( $d['input_schema']['properties'] ?? array() ) as $k => $p ) { if ( in_array( 'boolean', (array) ( $p['type'] ?? '' ), true ) ) { $bools[] = "$nm.$k"; } } }
+check( 'the only boolean input in the shipped abilities is divi-design-system.full (handled above)', array( 'divi5-builder/divi-design-system.full' ) === $bools, $bools );
 site( array_merge( EDITOR, array( 'edit_theme_options' ) ), 1 );
 check( 'the design system needs manage_options: an editor with edit_theme_options is refused, as the route refuses them', 'FORBIDDEN' === call( 'divi-design-system' ) && 'DENIED' === route( 'GET divi5-builder/v1/design-system' ) && 'forbidden' === code( handler( 'divi-design-system' ) ) );
 site( array( 'read', 'manage_options' ), 1 );
@@ -326,6 +340,15 @@ site( ADMIN, 1 );
 check( 'with no table (never installed) the list is empty, not an error', ( function () { global $wpdb; $wpdb->tables = array(); return is_array( handler( 'history-audit-list' ) ) && array() === handler( 'history-audit-list' )['items']; } )() );
 $src = file_get_contents( $dir . '/inc/abilities/read-history.php' );
 check( 'multisite: the description says it reads the current site\'s log only', false !== stripos( d5b_ability_defs()['divi5-builder/history-audit-list']['description'], 'current site' ) && 1 === preg_match( '/d5b_audit_list\(/', $src ) );
+// user_login: the login, "anonymous" for user 0, "deleted user" for an id with no user
+site( ADMIN, 1 );
+$GLOBALS['T_users'] = array( 1 => (object) array( 'ID' => 1, 'user_login' => 'site-admin' ) );
+seed_audit( 'divi5-builder/who', 1, 300 ); seed_audit( 'divi5-builder/who', 0, 200, 'forbidden_anonymous' ); seed_audit( 'divi5-builder/who', 77, 100 );
+$wl = call( 'history-audit-list', array( 'ability' => 'divi5-builder/who' ) );
+$GLOBALS['T_users'] = array();
+check( 'history-audit-list returns user_login: the login, "anonymous" (user 0) and "deleted user" (no such user)', is_array( $wl ) && array( 'deleted user', 'anonymous', 'site-admin' ) === array_column( $wl['items'], 'user_login' ), $wl );
+$hd = d5b_ability_defs()['divi5-builder/history-audit-list']['description'];
+check( 'the description says the caller\'s own call appears as started, and that has_more stands in for a total', false !== strpos( $hd, 'started' ) && false !== stripos( $hd, 'this call itself' ) && false !== strpos( $hd, 'has_more' ), $hd );
 
 echo "\n" . ( $failed ? "$failed of $n checks FAILED\n" : "all $n checks passed\n" );
 exit( $failed ? 1 : 0 );

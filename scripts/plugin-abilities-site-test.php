@@ -52,7 +52,7 @@ function wp_update_themes() { $GLOBALS['T_traps'][] = 'wp_update_themes'; }
 function wp_version_check() { $GLOBALS['T_traps'][] = 'wp_version_check'; }
 function wp_remote_get() { $GLOBALS['T_traps'][] = 'wp_remote_get'; return array(); }
 function wp_remote_post() { $GLOBALS['T_traps'][] = 'wp_remote_post'; return array(); }
-function get_userdata( $id ) { return $GLOBALS['T_users'][ (int) $id ] ?? false; }
+if ( ! function_exists( 'get_userdata' ) ) { function get_userdata( $id ) { return $GLOBALS['T_users'][ (int) $id ] ?? false; } }
 function get_plugins() { return $GLOBALS['T_plugins']; }
 function get_site_transient( $n ) { return $GLOBALS['T_site_transients'][ $n ] ?? false; }
 function wp_get_theme() { return $GLOBALS['T_theme']; }
@@ -623,7 +623,25 @@ foreach ( array( 'plugins-list' => 'manage_network_plugins', 'themes-list' => 'm
 	$c = call( $ab );
 	check( "multisite: $ab needs $netcap as well as manage_options (a single site does not)", 'FORBIDDEN' === $a && is_array( $b ) && is_array( $c ), array( $a, code( $b ), code( $c ) ) );
 }
+// The debug log is one file for the whole network: on a network the whole health category needs manage_network (final review).
+file_put_contents( LOGFILE, "[28-Oct-2026 10:00:00 UTC] PHP Notice: network-wide line\n" );
+$GLOBALS['T_cron_array'] = array( time() + 60 => array( 'some_hook' => array( 'k' => array( 'schedule' => 'daily', 'args' => array() ) ) ) );
+foreach ( array( 'health-status', 'cron-list', 'error-log' ) as $ab ) {
+	site( ADMIN ); t_set_multisite( true ); d5b_abilities_set_master( true, 'tester' );
+	file_put_contents( LOGFILE, "[28-Oct-2026 10:00:00 UTC] PHP Notice: network-wide line\n" );
+	$a = call( $ab ); $h = handler( $ab );
+	t_set_caps( array_merge( ADMIN, array( 'manage_network' ) ) );
+	$b = call( $ab );
+	site( ADMIN ); t_set_multisite( false );
+	file_put_contents( LOGFILE, "[28-Oct-2026 10:00:00 UTC] PHP Notice: network-wide line\n" );
+	$c = call( $ab );
+	check( "multisite: $ab refuses a sub-site administrator (manage_options without manage_network), the handler alone too; a super admin and a single-site admin are allowed", 'FORBIDDEN' === $a && 'forbidden' === code( $h ) && is_array( $b ) && is_array( $c ), array( $a, code( $h ), code( $b ), code( $c ) ) );
+}
 site( ADMIN ); t_set_multisite( true ); d5b_abilities_set_master( true, 'tester' );
+file_put_contents( LOGFILE, "[28-Oct-2026 10:00:00 UTC] PHP Notice: network-wide line\n" );
+check( 'multisite: the sub-site administrator gets nothing of the network debug log', false === strpos( json_encode( call( 'error-log' ) ), 'network-wide' ) );
+$d = function ( $x ) { return d5b_ability_defs()[ 'divi5-builder/' . $x ]['description']; };
+check( 'multisite: the three health descriptions name manage_network', false !== strpos( $d( 'health-status' ), 'manage_network' ) && false !== strpos( $d( 'cron-list' ), 'manage_network' ) && false !== strpos( $d( 'error-log' ), 'manage_network' ) );
 check( 'multisite: the site-level abilities (settings-get) still need only manage_options', is_array( call( 'settings-get' ) ) );
 t_set_caps( array_merge( ADMIN, array( 'update_core' ) ) );
 check( 'multisite: core-version with update_core but without manage_network is refused (update_core is no longer the test)', 'FORBIDDEN' === call( 'core-version' ) );
@@ -668,7 +686,14 @@ $GLOBALS['T_block_templates'] = array(
 );
 $r = call( 'templates-list' );
 check( 'templates-list: templates only by default, no content in the rows', is_array( $r ) && 1 === $r['total'] && 'theme//home' === $r['items'][0]['id'] && ! array_key_exists( 'content', $r['items'][0] ), $r );
-check( 'templates-list type=wp_template_part lists parts', 'theme//header' === call( 'templates-list', array( 'type' => 'wp_template_part' ) )['items'][0]['id'] && 'invalid_input' === code( call( 'templates-list', array( 'type' => 'post' ) ) ) );
+check( 'templates-list returns total_pages like the other lists (1 template, 20 a page: 1 page)', 1 === ( $r['total_pages'] ?? null ), $r );
+$GLOBALS['T_block_templates'] = array_merge( $GLOBALS['T_block_templates'], array_map( function ( $i ) { return (object) array( 'id' => 'theme//t' . $i, 'slug' => 't' . $i, 'theme' => 'theme', 'type' => 'wp_template', 'title' => 'T', 'source' => 'theme', 'status' => 'publish', 'content' => '' ); }, range( 1, 4 ) ) );
+$r5 = call( 'templates-list', array( 'per_page' => 2, 'page' => 3 ) );
+check( 'templates-list: 5 templates, 2 a page: total 5, total_pages 3, page 3 holds 1', 5 === $r5['total'] && 3 === $r5['total_pages'] && 1 === count( $r5['items'] ), $r5 );
+$GLOBALS['T_block_theme'] = false;
+check( 'templates-list on a classic theme: total_pages 1', 1 === ( call( 'templates-list' )['total_pages'] ?? null ) );
+$GLOBALS['T_block_theme'] = true; $GLOBALS['T_block_templates'] = array_slice( $GLOBALS['T_block_templates'], 0, 2 );
+check( 'templates-list type=wp_template_part lists parts','theme//header' === call( 'templates-list', array( 'type' => 'wp_template_part' ) )['items'][0]['id'] && 'invalid_input' === code( call( 'templates-list', array( 'type' => 'post' ) ) ) );
 $t = call( 'templates-get', array( 'id' => 'theme//home' ) );
 check( 'templates-get: raw content and its hash', is_array( $t ) && '<p>Home</p>' === $t['content'] && md5( '<p>Home</p>' ) === $t['hash'] && false === $t['truncated'], $t );
 $t = call( 'templates-get', array( 'id' => 'theme//header', 'type' => 'wp_template_part' ) );

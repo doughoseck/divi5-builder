@@ -40,7 +40,8 @@ if ( isset( $argv[1] ) && in_array( $argv[1], array( '--fatal', '--exit' ), true
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . ( is_string( $detail ) ? $detail : json_encode( $detail ) ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
 
-function fresh() { t_reset(); d5b_audit_install_state( 'reset' ); t_admin_reset(); t_set_caps( array() ); t_set_multisite( false ); $_GET = array(); $_SERVER['REMOTE_ADDR'] = '203.0.113.9'; unset( $_SERVER['HTTP_X_FORWARDED_FOR'] ); d5b_ability_registry( array() ); }
+// A logged-in caller (user 1) by default: a caller who is not logged in is refused before any permission callback runs.
+function fresh() { t_reset(); d5b_audit_install_state( 'reset' ); t_admin_reset(); t_set_caps( array() ); t_set_multisite( false ); $GLOBALS['T_user_id'] = 1; $_GET = array(); $_SERVER['REMOTE_ADDR'] = '203.0.113.9'; unset( $_SERVER['HTTP_X_FORWARDED_FOR'] ); d5b_ability_registry( array() ); }
 function installed() { fresh(); d5b_audit_maybe_install(); }
 function rows() { global $wpdb; return $wpdb->tables[ d5b_audit_table() ] ?? array(); }
 function last_args() { $r = rows(); return json_decode( $r[ count( $r ) - 1 ]['args'], true ); }
@@ -318,7 +319,15 @@ $out = html( 'd5b_settings_render_audit' );
 check( 'with the capability the list is shown', false !== strpos( $out, 'Audit log' ) && false !== strpos( $out, '<table' ) );
 check( 'escapes every field: no raw tag from a stored value is in the output', false === strpos( $out, '<script>' ) && false === strpos( $out, '<img' ) && false === strpos( $out, '<b>ok' ) && false !== strpos( $out, '&lt;script&gt;alert(1)&lt;/script&gt;' ) && false !== strpos( $out, '&lt;b&gt;ok&lt;/b&gt;' ), $out );
 check( 'stored quotes in args are escaped', false === strpos( $out, '"quoted"' ) && false !== strpos( $out, '&quot;quoted' ), $out );
-check( 'read-only: no delete, clear or purge control, and no POST form', 1 !== preg_match( '/delete|clear|purge|remove/i', $out ) && false === stripos( $out, 'method="post"' ), $out );
+// The login column names a missing user "deleted user": that text is not a control, so it is left out of the scan.
+check( 'read-only: no delete, clear or purge control, and no POST form', 1 !== preg_match( '/delete|clear|purge|remove/i', str_replace( '<td>deleted user</td>', '', $out ) ) && false === stripos( $out, 'method="post"' ), $out );
+check( 'the login column: user 4 does not exist, so "deleted user"', false !== strpos( $out, '<th>Login</th>' ) && false !== strpos( $out, '<td>4</td><td>deleted user</td>' ), $out );
+check( 'the legend under the list, word for word', false !== strpos( $out, esc_html( 'started = the call began and did not finish (or is the current one); forbidden = refused; error:<code> = the ability answered with an error' ) ), $out );
+$GLOBALS['T_users'][4] = (object) array( 'ID' => 4, 'user_login' => 'ed<i>' );
+$GLOBALS['T_user_id'] = 0; d5b_audit_write( 'anon/x', array(), 'forbidden_anonymous', 1 ); $GLOBALS['T_user_id'] = 4;
+$out = html( 'd5b_settings_render_audit' );
+unset( $GLOBALS['T_users'][4] );
+check( 'the login column: a real user shows the login (escaped), user 0 shows "anonymous"', false !== strpos( $out, '<td>4</td><td>ed&lt;i&gt;</td>' ) && false !== strpos( $out, '<td>0</td><td>anonymous</td>' ), $out );
 $_GET = array( 'd5b_audit_ability' => '"><script>alert(3)</script>', 'd5b_audit_user' => '4abc' );
 $out = html( 'd5b_settings_render_audit' );
 check( 'the filter values come back escaped in the inputs (no injected tag or broken attribute)', false === strpos( $out, '<script>' ) && false === strpos( $out, 'value=""><' ), $out );
@@ -507,6 +516,70 @@ check( 'a long quoted value is masked to its closing quote', "x 'password' => [r
 $big = str_repeat( 'lorem ipsum ', 30000 ) . 'password=hunter2';
 $o = d5b_audit_mask_secrets( $big );
 check( 'over 256 KB: the first 256 KB are masked, the rest is cut and marked, never passed through', 262144 + strlen( '…[truncated]' ) === strlen( $o ) && '…[truncated]' === substr( $o, -strlen( '…[truncated]' ) ) && false === strpos( $o, 'hunter2' ), strlen( $o ) );
+
+echo "anonymous callers: refused before any handler, at most one row per IP per 10 minutes\n";
+function anon_site() {
+	installed(); d5b_abilities_set_master( true, 'tester' );
+	$GLOBALS['T_ran'] = 0; $GLOBALS['T_perm_ran'] = 0;
+	// A permission callback that says yes to anyone and a handler that counts: neither may run for an anonymous caller.
+	d5b_ability_add( array( 'name' => 'divi5-builder/health-open', 'category' => 'health', 'label' => 'a', 'description' => 'x', 'handler' => function ( array $i ) { $GLOBALS['T_ran']++; return array( 'v' => 1 ); }, 'permission' => function ( array $i ) { $GLOBALS['T_perm_ran']++; return true; } ) );
+	d5b_ability_add( array( 'name' => 'divi5-builder/health-shut', 'category' => 'health', 'label' => 'a', 'description' => 'x', 'handler' => function ( array $i ) { return 1; }, 'permission' => function ( array $i ) { return false; } ) );
+	$GLOBALS['T_user_id'] = 0; $_SERVER['REMOTE_ADDR'] = '198.51.100.7';
+}
+anon_site();
+$codes = array(); $statuses = array();
+for ( $i = 0; $i < 1000; $i++ ) {
+	$p = d5b_ability_permit( 'divi5-builder/health-open', array( 'i' => $i ) );
+	$r = d5b_ability_run( 'divi5-builder/health-open', array( 'i' => $i ) );
+	$codes[ ( is_wp_error( $p ) ? $p->get_error_code() : 'p:' . var_export( $p, true ) ) . '/' . ( is_wp_error( $r ) ? $r->get_error_code() : 'r:ran' ) ] = true;
+	if ( is_wp_error( $r ) ) { $statuses[ (string) ( $r->get_error_data()['status'] ?? 'none' ) ] = true; }
+}
+check( '1000 anonymous permit + run pairs from one IP: every one refused with forbidden (403), and neither the permission callback nor the handler ever ran', array( 'forbidden/forbidden' => true ) === $codes && array( '403' => true ) === $statuses && 0 === $GLOBALS['T_ran'] && 0 === $GLOBALS['T_perm_ran'], array( $codes, $statuses, $GLOBALS['T_ran'], $GLOBALS['T_perm_ran'] ) );
+check( '...and they wrote exactly 1 row, status forbidden_anonymous, user 0, with the IP', 1 === count( rows() ) && 'forbidden_anonymous' === rows()[0]['status'] && 0 === rows()[0]['user_id'] && '198.51.100.7' === rows()[0]['ip'], rows() );
+$_SERVER['REMOTE_ADDR'] = '198.51.100.8';
+for ( $i = 0; $i < 20; $i++ ) { d5b_ability_run( 'divi5-builder/health-open', array() ); }
+check( 'a second IP gives exactly one more row (2 in all)', 2 === count( rows() ) && '198.51.100.8' === rows()[1]['ip'], array_column( rows(), 'ip' ) );
+$key = 'd5b_anon_' . md5( '198.51.100.7' );
+check( 'the limit is a 10-minute transient keyed on a hash of the address (the address itself is not in the key)', isset( $GLOBALS['T_transients'][ $key ] ) && 600 === $GLOBALS['T_transients'][ $key ][2] && false === strpos( $key, '198.51' ), array_keys( $GLOBALS['T_transients'] ) );
+$GLOBALS['T_transients'][ $key ][1] = time() - 1; // ten minutes later
+$_SERVER['REMOTE_ADDR'] = '198.51.100.7';
+d5b_ability_run( 'divi5-builder/health-open', array() ); d5b_ability_run( 'divi5-builder/health-open', array() );
+check( 'after the 10 minutes the first IP gets one more row, then is quiet again', 3 === count( rows() ) && 'forbidden_anonymous' === rows()[2]['status'], count( rows() ) );
+$GLOBALS['T_user_id'] = 5;
+for ( $i = 0; $i < 30; $i++ ) { d5b_ability_permit( 'divi5-builder/health-shut', array() ); }
+check( 'a logged-in refusal is still logged every time (30 refusals, 30 forbidden rows)', 33 === count( rows() ) && 30 === count( array_filter( rows(), function ( $r ) { return 'forbidden' === $r['status'] && 5 === $r['user_id']; } ) ), count( rows() ) );
+$r = d5b_ability_run( 'divi5-builder/health-open', array() );
+check( 'a logged-in caller is not affected: the handler runs', array( 'v' => 1 ) === $r && 1 === $GLOBALS['T_ran'], $r );
+anon_site(); d5b_abilities_set_master( false, 'tester' );
+check( 'master off: an anonymous call is still refused (forbidden), never run', is_wp_error( $r = d5b_ability_run( 'divi5-builder/health-open', array() ) ) && 'forbidden' === $r->get_error_code() && 0 === $GLOBALS['T_ran'] );
+check( 'an anonymous refusal stores at most 1 KB of arguments', ( function () { anon_site(); d5b_ability_run( 'divi5-builder/health-open', array( 'big' => str_repeat( 'x', 7000 ) ) ); return strlen( rows()[0]['args'] ) <= 1024; } )() );
+
+echo "the audit table notice\n";
+$notice = 'The audit log table could not be created, so every AI call is refused. Ask your host to allow CREATE TABLE for the WordPress database user.';
+function abilities_html() { ob_start(); d5b_settings_render_abilities(); return ob_get_clean(); }
+installed(); t_set_caps( array( 'manage_options' ) ); d5b_abilities_set_master( true, 'tester' );
+check( 'table present, master on: no notice', false === strpos( abilities_html(), esc_html( $notice ) ) );
+set_transient( 'd5b_audit_install_failed', 1, 3600 );
+check( 'the install-failed transient is set: the notice, word for word, in an error box', false !== strpos( $h = abilities_html(), '<div class="notice notice-error inline"><p>' . esc_html( $notice ) . '</p></div>' ), $h );
+fresh(); t_set_caps( array( 'manage_options' ) ); d5b_abilities_set_master( true, 'tester' ); // no table, no transient
+check( 'master on and the table missing (no transient): the notice', false !== strpos( abilities_html(), esc_html( $notice ) ) );
+fresh(); t_set_caps( array( 'manage_options' ) );
+check( 'master off and the table missing (nothing tried yet): no notice', false === strpos( abilities_html(), esc_html( $notice ) ) );
+
+echo "activation, deactivation and uninstall of the back-off transient and the event\n";
+fresh(); $GLOBALS['T_dbdelta_fail'] = false;
+set_transient( 'd5b_audit_install_failed', 1, 3600 );
+d5b_audit_activate();
+check( 'activation deletes the one-hour back-off first, so it really tries: the table is made', d5b_audit_table_exists() && 1 === count( $GLOBALS['T_dbdelta'] ) && false === get_transient( 'd5b_audit_install_failed' ), $GLOBALS['T_dbdelta'] );
+t_set_multisite( true );
+$GLOBALS['T_blogs'] = array( 1 => array(), 2 => array(), 3 => array() ); $GLOBALS['T_get_sites'] = array(); $GLOBALS['T_cleared_on'] = array();
+d5b_audit_deactivate( true );
+check( 'network deactivation clears the prune event on every site (switching to each one and back)', array( 1, 2, 3 ) === $GLOBALS['T_cleared_on'] && 1 === get_current_blog_id(), array( $GLOBALS['T_cleared_on'], get_current_blog_id() ) );
+check( 'network deactivation asks for at most 1000 site ids', 1000 === ( $GLOBALS['T_get_sites'][0]['number'] ?? null ) && 'ids' === ( $GLOBALS['T_get_sites'][0]['fields'] ?? null ), $GLOBALS['T_get_sites'] );
+$GLOBALS['T_cleared_on'] = array();
+d5b_audit_deactivate( false );
+check( 'deactivation on one site of a network clears only that site', array( 1 ) === $GLOBALS['T_cleared_on'], $GLOBALS['T_cleared_on'] );
+t_set_multisite( false );
 
 echo "source checks\n";
 $src = file_get_contents( $dir . '/inc/abilities/audit.php' );

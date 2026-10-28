@@ -80,14 +80,18 @@ if ( ! function_exists( 'd5b_settings_render' ) ) {
 if ( ! function_exists( 'd5b_settings_render_abilities' ) ) {
 	/**
 	 * The "AI abilities" section, inside the page's form: the master box, and one box per category.
-	 * The category boxes are disabled while the master is off (and so are not posted; the marker field
-	 * d5b_abilities_cat_form is printed only while they are enabled, so the save handler can tell "unticked" from "not shown").
+	 * The category boxes are always enabled, so an admin can untick categories in the same save that switches the master
+	 * on. The marker field d5b_abilities_cat_form is printed with them, so the save handler can tell "unticked" from
+	 * "not on the form" (a form without the category boxes changes no category).
 	 */
 	function d5b_settings_render_abilities(): void {
 		$a      = d5b_abilities_switches();
 		$master = $a['master'];
 		$cats   = function_exists( 'd5b_ability_categories' ) ? d5b_ability_categories() : array();
 		echo '<h2>AI abilities</h2>';
+		if ( function_exists( 'd5b_audit_table_broken' ) && d5b_audit_table_broken() ) {
+			echo '<div class="notice notice-error inline"><p>' . esc_html( 'The audit log table could not be created, so every AI call is refused. Ask your host to allow CREATE TABLE for the WordPress database user.' ) . '</p></div>';
+		}
 		echo '<table class="form-table" role="presentation"><tr><th scope="row"><label for="d5b-abilities-master">AI abilities</label></th><td>';
 		echo '<label><input type="checkbox" id="d5b-abilities-master" name="d5b_abilities_master" value="1"' . ( $master['on'] ? ' checked="checked"' : '' ) . ' /> Switched on</label>';
 		echo '<p class="description">' . esc_html( 'Lets AI clients connected to this site (over the REST API) read site content and settings through this plugin. Nothing is shared until you switch this on. Every call is logged for 30 days. Secrets are filtered out by name and shape; the filter is careful but not perfect, so switch on only what you need.' ) . '</p>';
@@ -97,11 +101,11 @@ if ( ! function_exists( 'd5b_settings_render_abilities' ) ) {
 		echo '</td></tr>';
 		if ( array() !== $cats ) {
 			echo '<tr><th scope="row">Categories</th><td>';
-			if ( $master['on'] ) { echo '<input type="hidden" name="d5b_abilities_cat_form" value="1" />'; }
+			echo '<input type="hidden" name="d5b_abilities_cat_form" value="1" />';
 			foreach ( $cats as $slug => $cat ) {
 				$id = 'd5b-abilities-cat-' . $slug;
 				echo '<p><label for="' . esc_attr( $id ) . '"><input type="checkbox" id="' . esc_attr( $id ) . '" name="d5b_abilities_cat[' . esc_attr( $slug ) . ']" value="1"'
-					. ( $a['categories'][ $slug ]['on'] ? ' checked="checked"' : '' ) . ( $master['on'] ? '' : ' disabled="disabled"' ) . ' /> ' . esc_html( $cat['label'] ) . '</label>'
+					. ( $a['categories'][ $slug ]['on'] ? ' checked="checked"' : '' ) . ' /> ' . esc_html( $cat['label'] ) . '</label>'
 					. ' <span class="description">' . esc_html( $cat['description'] ) . '</span></p>';
 			}
 			echo '</td></tr>';
@@ -133,26 +137,28 @@ if ( ! function_exists( 'd5b_settings_render_audit' ) ) {
 		echo '<label>Since (UTC) <input type="date" name="d5b_audit_since" value="' . esc_attr( $day ) . '" /></label> ';
 		echo '<input type="submit" class="button" value="Filter" />';
 		echo '</form>';
-		echo '<table class="widefat striped"><thead><tr><th>Time (UTC)</th><th>User</th><th>Ability</th><th>Status</th><th>Ms</th><th>IP</th><th>Arguments</th></tr></thead><tbody>';
+		echo '<table class="widefat striped"><thead><tr><th>Time (UTC)</th><th>User</th><th>Login</th><th>Ability</th><th>Status</th><th>Ms</th><th>IP</th><th>Arguments</th></tr></thead><tbody>';
 		if ( array() === $rows ) {
-			echo '<tr><td colspan="7">' . esc_html( 'No calls recorded.' ) . '</td></tr>';
+			echo '<tr><td colspan="8">' . esc_html( 'No calls recorded.' ) . '</td></tr>';
 		}
 		foreach ( $rows as $r ) {
-			$args = (string) $r['args'];
+			$args  = (string) $r['args'];
 			if ( strlen( $args ) > 300 ) { $args = d5b_audit_str_cut( $args, 300 ) . '…'; }
-			echo '<tr><td>' . esc_html( $r['created_at'] ) . '</td><td>' . esc_html( (string) $r['user_id'] ) . '</td><td>' . esc_html( $r['ability'] ) . '</td><td>' . esc_html( $r['status'] )
+			$login = function_exists( 'd5b_audit_user_login' ) ? d5b_audit_user_login( (int) $r['user_id'] ) : '';
+			echo '<tr><td>' . esc_html( $r['created_at'] ) . '</td><td>' . esc_html( (string) $r['user_id'] ) . '</td><td>' . esc_html( $login ) . '</td><td>' . esc_html( $r['ability'] ) . '</td><td>' . esc_html( $r['status'] )
 				. '</td><td>' . esc_html( (string) $r['duration_ms'] ) . '</td><td>' . esc_html( $r['ip'] ) . '</td><td><code>' . esc_html( $args ) . '</code></td></tr>';
 		}
 		echo '</tbody></table>';
+		echo '<p class="description">' . esc_html( 'started = the call began and did not finish (or is the current one); forbidden = refused; error:<code> = the ability answered with an error' ) . '</p>';
 	}
 }
 
 if ( ! function_exists( 'd5b_settings_save_abilities' ) ) {
 	/**
 	 * Called by d5b_settings_save() after its nonce and capability checks, never on its own.
-	 * Flips only what changed. Category fields are read only when the form marker says the boxes were enabled
-	 * (a disabled box is not posted, and must not be taken for an unticked one). Unknown slugs are never looked at:
-	 * the walk is over the known categories.
+	 * Flips only what changed. Category fields are read only when the form marker says the boxes were on the form
+	 * (the page always prints them with the marker, master on or off, so categories can be unticked in the same save that
+	 * switches the master on). Unknown slugs are never looked at: the walk is over the known categories.
 	 */
 	function d5b_settings_save_abilities( string $login ): void {
 		$now = d5b_abilities_switches();

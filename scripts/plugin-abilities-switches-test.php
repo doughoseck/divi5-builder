@@ -186,9 +186,9 @@ run_save();
 check( 'unticking the master switches it off and logs it', false === d5b_abilities_master_on() && 1 === count( $GLOBALS['T_writes'] ), $GLOBALS['T_writes'] );
 check( 'with the master off no category is on, whatever the stored rows say', false === d5b_abilities_category_on( 'posts' ) );
 
-echo "disabled boxes are not posted, and must not switch categories off\n";
+echo "a form without the category boxes (no marker) must not switch categories off\n";
 fresh(); t_set_caps( array( 'manage_options' ) );
-post_abilities( array( 'd5b_abilities_master' => '1' ) ); // master off at render: category boxes were disabled, no cat fields posted
+post_abilities( array( 'd5b_abilities_master' => '1' ) ); // a post without the marker (an older page, or a hand-made request): no cat fields
 run_save();
 check( 'master on without any category fields: every category stays on, no category rows written', true === d5b_abilities_master_on() && true === d5b_abilities_category_on( 'posts' ) && true === d5b_abilities_category_on( 'comments' ) && ! isset( stored()['abilities']['categories'] ) || array() === ( stored()['abilities']['categories'] ?? array() ), stored() );
 fresh(); t_set_caps( array( 'manage_options' ) );
@@ -212,8 +212,25 @@ $risk = 'Lets AI clients connected to this site (over the REST API) read site co
 check( 'has an "AI abilities" section and the master checkbox', false !== strpos( $h, 'AI abilities' ) && false !== strpos( $h, 'name="d5b_abilities_master"' ) );
 check( 'the risk note is printed verbatim', false !== strpos( $h, esc_html( $risk ) ) );
 check( 'one checkbox per category, named d5b_abilities_cat[<slug>]', 23 === substr_count( $h, 'name="d5b_abilities_cat[' ), substr_count( $h, 'name="d5b_abilities_cat[' ) );
-check( 'master off: every category checkbox is disabled and no form marker is printed', 23 === preg_match_all( '/name="d5b_abilities_cat\[[a-z]+\]"[^>]*disabled/', $h ) && false === strpos( $h, 'd5b_abilities_cat_form' ), preg_match_all( '/name="d5b_abilities_cat\[[a-z]+\]"[^>]*disabled/', $h ) );
+check( 'master off: every category checkbox is enabled (none disabled) and the form marker is printed', 0 === preg_match( '/name="d5b_abilities_cat\[[a-z]+\]"[^>]*disabled/', $h ) && false === strpos( $h, 'disabled' ) && 1 === substr_count( $h, 'name="d5b_abilities_cat_form"' ), $h );
 check( 'master off: the master box is not checked', 1 === preg_match( '/name="d5b_abilities_master"(?![^>]*checked)/', $h ) );
+// The spec (Defaults): "When it is switched on, the read and normal-write categories are already ticked."
+check( 'master off on a fresh site: every category box is already ticked (the spec default), so switching on gives them all unless unticked', 23 === preg_match_all( '/name="d5b_abilities_cat\[[a-z]+\]"[^>]*checked/', $h ), preg_match_all( '/name="d5b_abilities_cat\[[a-z]+\]"[^>]*checked/', $h ) );
+foreach ( array( 'health' => 'Includes the debug log and scheduled tasks.', 'users' => 'Includes users\' names, roles and email addresses.', 'settings' => 'Includes the admin email.' ) as $slug => $note ) {
+	check( "the $slug category description carries its risk note", false !== strpos( d5b_ability_categories()[ $slug ]['description'], $note ) && false !== strpos( $h, esc_html( $note ) ), d5b_ability_categories()[ $slug ]['description'] );
+}
+
+echo "categories can be unticked in the same save that switches the master on\n";
+fresh(); t_set_caps( array( 'manage_options' ) ); $GLOBALS['T_user_login'] = 'doug';
+// What the browser posts from the page above with the master ticked and users and health unticked.
+$cat_all = array_fill_keys( array_keys( d5b_ability_categories() ), '1' ); unset( $cat_all['users'], $cat_all['health'] );
+post_abilities( array( 'd5b_abilities_master' => '1', 'd5b_abilities_cat_form' => '1', 'd5b_abilities_cat' => $cat_all ) );
+run_save();
+check( 'one save: master on, users and health off, the rest on, each change logged by doug', true === d5b_abilities_master_on() && false === d5b_abilities_category_on( 'users' ) && false === d5b_abilities_category_on( 'health' ) && true === d5b_abilities_category_on( 'posts' ) && 'doug' === stored()['abilities']['categories']['users']['changed_by'] && ! isset( stored()['abilities']['categories']['posts'] ), stored() );
+fresh(); t_set_caps( array( 'manage_options' ) );
+post_abilities( array( 'd5b_abilities_cat_form' => '1', 'd5b_abilities_cat' => $cat_all ) ); // master stays off, two unticked
+run_save();
+check( 'with the master left off, unticked categories are still stored off (ready for when it is switched on)', false === d5b_abilities_master_on() && false === d5b_abilities_category_on( 'users' ) && false === d5b_abilities_switches()['categories']['users']['on'] && true === d5b_abilities_switches()['categories']['posts']['on'], stored() );
 d5b_abilities_set_master( true, 'doug' );
 d5b_abilities_set_category( 'users', false, false, 'doug' );
 $h = html( 'd5b_settings_render' );

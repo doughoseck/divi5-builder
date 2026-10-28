@@ -36,6 +36,7 @@ if ( ! function_exists( 'd5b_hs_h_audit_list' ) ) {
 				'id'          => (int) $r['id'],
 				'time_utc'    => (string) $r['created_at'],
 				'user_id'     => (int) $r['user_id'],
+				'user_login'  => function_exists( 'd5b_audit_user_login' ) ? d5b_audit_user_login( (int) $r['user_id'] ) : '',
 				'ability'     => (string) $r['ability'],
 				'args'        => (string) $r['args'],
 				'status'      => (string) $r['status'],
@@ -47,7 +48,7 @@ if ( ! function_exists( 'd5b_hs_h_audit_list' ) ) {
 	}
 
 	d5b_rc_def( 'history-audit-list', 'history', 'List the activity log',
-		'Returns one page of this plugin\'s activity log, newest first: when, which user, which ability, the arguments it was given (secrets already removed), the outcome and how long it took. On a network it reads the current site\'s log only. Refuses a caller who is not an administrator (manage_options).',
+		'Returns one page of this plugin\'s activity log, newest first: when, which user (id and login, "anonymous" or "deleted user"), which ability, the arguments it was given (secrets already removed), the outcome and how long it took. The status is ok, started (the call began and did not finish, which is how this call itself appears), forbidden, forbidden_anonymous or error:<code>. There is no total: has_more says whether another page follows. On a network it reads the current site\'s log only. Refuses a caller who is not an administrator (manage_options).',
 		array(
 			'ability' => array( 'type' => 'string', 'maxLength' => 191, 'description' => 'Only rows of this ability, by its full name, for example divi5-builder/posts-get.' ),
 			'user'    => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'Only rows of this user id.' ),

@@ -26,9 +26,9 @@ One plugin for the divi5-builder skill.
 == Changelog ==
 
 = 2.1.0 =
-* New: abilities for AI tools, through the WordPress Abilities API (WordPress 6.9 or newer; on older versions nothing happens). All of them are off until an administrator turns on the master switch in Settings > Divi 5 Builder. Each category (posts, pages, media, users, settings, Divi and so on) has its own switch as well.
-* This release has read-only abilities only: they read content, the site settings that are safe to show, Divi data and the plugin's own activity log. Nothing can be changed through them.
-* Every call is written to an audit log before it runs and kept for 30 days. Deleting the plugin removes the log.
+* New: abilities for AI tools, through the WordPress Abilities API (WordPress 6.9 or newer). On older versions no ability is registered, but the (empty) audit log table and its daily clean-up are still created. Every ability is off until an administrator turns on the master switch in Settings > Divi 5 Builder. Each category (posts, pages, media, users, settings, Divi and so on) has its own switch as well, and can be unticked in the same save that turns the master on.
+* This release has read-only abilities only: they read content, the site settings that are safe to show, Divi data and the plugin's own activity log. Nothing can be changed through them. Callers who are not logged in are refused, and on a multisite network the debug log and scheduled tasks need a network administrator.
+* Every call is written to an audit log before it runs and kept for 30 days. Deleting the plugin removes the log. If the log table cannot be created, every call is refused and the settings page says so.
 * A secret filter hides passwords, keys and tokens from results and from the log. It works on a best-effort basis and cannot catch everything, so leave the master switch off on a site where you do not trust the account that calls the abilities.
 
 = 2.0.1 =

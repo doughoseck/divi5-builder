@@ -11,7 +11,7 @@
  *  - Nothing here changes anything, and nothing here makes the site fetch anything: no update check, no Site Health test,
  *    no HTTP request. Update information is read from the transients WordPress already keeps.
  *  - The handler checks its own capability (d5b_rs_guard), not only the permission callback. On a multisite network the
- *    plugins, themes and core abilities also need the network capability, because they describe the whole network.
+ *    plugins, themes, core and health abilities also need the network capability, because they describe the whole network.
  *  - A user is described by id, login, display name, roles and registration date. Never a password hash, an activation key,
  *    a session or an application password: those fields are not read at all.
  *  - Large text (Custom CSS, template content, global styles) is held to 256 KB with a truncated flag.
@@ -24,7 +24,10 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 	function d5b_rs_cap_map(): array {
 		$admin = array( 'manage_options', '' );
 		return array(
-			'settings' => $admin, 'templates' => $admin, 'appearance' => $admin, 'cache' => $admin, 'health' => $admin,
+			'settings' => $admin, 'templates' => $admin, 'appearance' => $admin, 'cache' => $admin,
+			// The debug log is one file for the whole network, so on a network the whole health category needs the network
+			// capability: a sub-site administrator does not get it.
+			'health'   => array( 'manage_options', 'manage_network' ),
 			'widgets'  => array( 'edit_theme_options', '' ),
 			'users'    => array( 'list_users', '' ),
 			'plugins'  => array( 'manage_options', 'manage_network_plugins' ),
@@ -117,11 +120,11 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$e = d5b_rs_guard( 'templates' ); if ( $e ) { return $e; }
 		$a = d5b_rc_args( $in, array( 'type' => 'enum:wp_template|wp_template_part', 'per_page' => 'int', 'page' => 'int' ) ); if ( is_wp_error( $a ) ) { return $a; }
 		list( $per, $page ) = d5b_rc_paging( $a );
-		if ( ! d5b_rs_block_theme() || ! function_exists( 'get_block_templates' ) ) { return d5b_rs_classic_note() + array( 'items' => array(), 'total' => 0, 'page' => $page, 'per_page' => $per ); }
+		if ( ! d5b_rs_block_theme() || ! function_exists( 'get_block_templates' ) ) { return d5b_rs_classic_note() + array( 'items' => array(), 'total' => 0, 'page' => $page, 'per_page' => $per, 'total_pages' => 1 ); }
 		$all = (array) get_block_templates( array(), $a['type'] ?? 'wp_template' );
 		$out = array();
 		foreach ( array_slice( array_values( $all ), ( $page - 1 ) * $per, $per ) as $t ) { $out[] = d5b_rs_template_row( $t ); }
-		return array( 'is_block_theme' => true, 'items' => $out, 'total' => count( $all ), 'page' => $page, 'per_page' => $per );
+		return array( 'is_block_theme' => true, 'items' => $out, 'total' => count( $all ), 'page' => $page, 'per_page' => $per, 'total_pages' => max( 1, (int) ceil( count( $all ) / $per ) ) );
 	}
 
 	function d5b_rs_h_templates_get( array $in ) {
@@ -388,7 +391,7 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$d5b_rs_none, array(), 'd5b_rs_h_settings_get', d5b_rs_perm( 'settings' ) );
 
 	d5b_rc_def( 'templates-list', 'templates', 'List block templates',
-		'Returns one page of the block templates or template parts of the active theme: id, slug, title, source and status. Refuses callers without manage_options. A classic theme returns an empty list with a note.',
+		'Returns one page of the block templates or template parts of the active theme: id, slug, title, source and status, with total and total_pages. Refuses callers without manage_options. A classic theme returns an empty list with a note.',
 		array( 'type' => array( 'type' => 'string', 'enum' => array( 'wp_template', 'wp_template_part' ), 'default' => 'wp_template', 'description' => 'Templates (wp_template) or template parts (wp_template_part).' ) ) + d5b_rc_paging_props(),
 		array(), 'd5b_rs_h_templates_list', d5b_rs_perm( 'templates' ) );
 	d5b_rc_def( 'templates-get', 'templates', 'Get a block template',
@@ -413,13 +416,13 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$d5b_rs_none, array(), 'd5b_rs_h_cache_status', d5b_rs_perm( 'cache' ) );
 
 	d5b_rc_def( 'health-status', 'health', 'Get Site Health summary',
-		'Returns the counts from the last Site Health run that WordPress stored (good, recommended, critical). Does not run the tests. Refuses callers without manage_options. Answers no_cached_result when Site Health has never been opened.',
+		'Returns the counts from the last Site Health run that WordPress stored (good, recommended, critical). Does not run the tests. Refuses callers without manage_options, and on a network without manage_network. Answers no_cached_result when Site Health has never been opened.',
 		$d5b_rs_none, array(), 'd5b_rs_h_health_status', d5b_rs_perm( 'health' ) );
 	d5b_rc_def( 'cron-list', 'health', 'List scheduled events',
-		'Returns the scheduled events (WP-Cron): hook, schedule name, next run in UTC and the number of arguments, never the argument values; at most 500 events. Refuses callers without manage_options.',
+		'Returns the scheduled events (WP-Cron): hook, schedule name, next run in UTC and the number of arguments, never the argument values; at most 500 events. Refuses callers without manage_options, and on a network without manage_network.',
 		$d5b_rs_none, array(), 'd5b_rs_h_cron_list', d5b_rs_perm( 'health' ) );
 	d5b_rc_def( 'error-log', 'health', 'Read the debug log',
-		'Returns the end of the WordPress debug log: the last 200 lines within the last 64 KB, with passwords, tokens and keys masked. Takes no path. Refuses callers without manage_options. Answers no_debug_log when there is no log.',
+		'Returns the end of the WordPress debug log: the last 200 lines within the last 64 KB, with passwords, tokens and keys masked. Takes no path. Refuses callers without manage_options, and on a network without manage_network (the log is shared by every site). Answers no_debug_log when there is no log.',
 		$d5b_rs_none, array(), 'd5b_rs_h_error_log', d5b_rs_perm( 'health' ) );
 
 	d5b_rc_def( 'users-list', 'users', 'List users',

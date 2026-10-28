@@ -254,12 +254,14 @@ class T_Wpdb {
 		return array_values( array_slice( array_values( $rows ), (int) $m[4], (int) $m[3] ) );
 	}
 }
-function t_wpdb_reset() { $GLOBALS['wpdb'] = new T_Wpdb(); $GLOBALS['T_dbdelta'] = array(); $GLOBALS['T_cron'] = array(); $GLOBALS['T_user_id'] = 0; $GLOBALS['T_dbdelta_fail'] = false; $GLOBALS['T_transients'] = array(); }
+// T_cleared_on: the blog id current at each wp_clear_scheduled_hook call; T_transient_deletes: array( name, blog id ) per delete_transient
+// (cron events and transients are per site in WordPress; here they are one store, so these record which site each call was made on).
+function t_wpdb_reset() { $GLOBALS['wpdb'] = new T_Wpdb(); $GLOBALS['T_dbdelta'] = array(); $GLOBALS['T_cron'] = array(); $GLOBALS['T_user_id'] = 0; $GLOBALS['T_dbdelta_fail'] = false; $GLOBALS['T_transients'] = array(); $GLOBALS['T_cleared_on'] = array(); $GLOBALS['T_transient_deletes'] = array(); }
 t_wpdb_reset();
 function dbDelta( $sql ) { $GLOBALS['T_dbdelta'][] = $sql; if ( ! empty( $GLOBALS['T_dbdelta_throw'] ) ) { throw new RuntimeException( 'dbDelta exploded' ); } if ( preg_match( '/CREATE TABLE (\S+)/', $sql, $m ) && empty( $GLOBALS['T_dbdelta_fail'] ) && ! isset( $GLOBALS['wpdb']->tables[ $m[1] ] ) ) { $GLOBALS['wpdb']->tables[ $m[1] ] = array(); } return array(); }
 function wp_next_scheduled( $hook ) { return $GLOBALS['T_cron'][ $hook ] ?? false; }
 function wp_schedule_event( $ts, $recurrence, $hook ) { $GLOBALS['T_cron'][ $hook ] = $ts; return true; }
-function wp_clear_scheduled_hook( $hook ) { unset( $GLOBALS['T_cron'][ $hook ] ); return 1; }
+function wp_clear_scheduled_hook( $hook ) { $GLOBALS['T_cleared_on'][] = $GLOBALS['T_blog_id'] ?? 1; unset( $GLOBALS['T_cron'][ $hook ] ); return 1; }
 function register_deactivation_hook( $file, $cb ) { $GLOBALS['T_deactivation'][] = array( $file, $cb ); }
 function get_current_user_id() { return $GLOBALS['T_user_id']; }
 // As core's formatting.php has it (up to 6.8 at least; 6.9 may differ, not checked): strip=true calls iconv('utf-8', 'utf-8')
@@ -268,7 +270,7 @@ function wp_check_invalid_utf8( $s, $strip = false ) { $s = (string) $s; if ( ''
 // T_transients: name => array( value, expires at, ttl ); a test expires one by lowering its expires-at.
 function set_transient( $n, $v, $ttl = 0 ) { $GLOBALS['T_transients'][ $n ] = array( $v, time() + $ttl, $ttl ); return true; }
 function get_transient( $n ) { $t = $GLOBALS['T_transients'][ $n ] ?? null; return ( null === $t || $t[1] < time() ) ? false : $t[0]; }
-function delete_transient( $n ) { unset( $GLOBALS['T_transients'][ $n ] ); return true; }
+function delete_transient( $n ) { $GLOBALS['T_transient_deletes'][] = array( $n, $GLOBALS['T_blog_id'] ?? 1 ); unset( $GLOBALS['T_transients'][ $n ] ); return true; }
 function absint( $n ) { return abs( (int) $n ); }
 function switch_to_blog( $id ) { $GLOBALS['T_blog_stack'][] = $GLOBALS['T_blog_id']; $GLOBALS['T_blog_id'] = (int) $id; return true; }
 function restore_current_blog() { $GLOBALS['T_blog_id'] = array_pop( $GLOBALS['T_blog_stack'] ); return true; }
@@ -351,6 +353,13 @@ function t_add_comment( array $f = array() ) {
 }
 t_content_reset();
 
+// Users by id (T_users: id => object with user_login ...), as get_userdata returns them; false for an unknown id.
+if ( ! isset( $GLOBALS['T_users'] ) ) { $GLOBALS['T_users'] = array(); }
+function get_userdata( $id ) { return $GLOBALS['T_users'][ (int) $id ] ?? false; }
+// Core's _prime_post_caches( ids, update_term_cache, update_meta_cache ) loads posts in one query; T_primes records each call.
+$GLOBALS['T_primes'] = array();
+function _prime_post_caches( $ids, $terms = true, $meta = true ) { $GLOBALS['T_primes'][] = array_values( $ids ); }
+
 function t_has_cap( $c ) { return in_array( $c, $GLOBALS['T_caps'], true ); }
 function t_post_cap( $cap, $id ) {
 	$p = $GLOBALS['T_posts'][ $id ] ?? null;
@@ -430,10 +439,13 @@ class WP_Query {
 	function __construct( $a = array() ) {
 		$GLOBALS['T_queries'][] = $a; $this->query_args = $a;
 		$types = (array) ( $a['post_type'] ?? 'post' ); $st = $a['post_status'] ?? 'publish'; $rows = array();
+		// As core: more than one post type asks for read_private_multiple_post_types, a capability no role has (map_meta_cap
+		// does not map it), so a query over several types narrows private rows to the caller's own, even for an administrator.
+		$private_cap = count( $types ) > 1 ? 'read_private_multiple_post_types' : 'read_private_posts';
 		foreach ( $GLOBALS['T_posts'] as $p ) {
 			if ( ! in_array( $p->post_type, $types, true ) || 'auto-draft' === $p->post_status ) { continue; }
 			if ( 'any' === $st ? 'trash' === $p->post_status : ! in_array( $p->post_status, (array) $st, true ) ) { continue; }
-			if ( 'any' !== $st && 'readable' === ( $a['perm'] ?? '' ) && 'private' === $p->post_status && ! t_has_cap( 'read_private_posts' ) && (int) $p->post_author !== (int) $GLOBALS['T_user_id'] ) { continue; }
+			if ( 'any' !== $st && 'readable' === ( $a['perm'] ?? '' ) && 'private' === $p->post_status && ! t_has_cap( $private_cap ) && (int) $p->post_author !== (int) $GLOBALS['T_user_id'] ) { continue; }
 			if ( array_key_exists( 'has_password', $a ) && false === $a['has_password'] && '' !== (string) $p->post_password ) { continue; }
 			if ( isset( $a['s'] ) && '' !== $a['s'] && false === stripos( $p->post_title . ' ' . $p->post_content, $a['s'] ) ) { continue; }
 			if ( ! empty( $a['author'] ) && (int) $p->post_author !== (int) $a['author'] ) { continue; }

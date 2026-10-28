@@ -53,19 +53,11 @@ if ( ! function_exists( 'd5b_dv_h_design_system' ) ) {
 
 	function d5b_dv_h_design_system( array $in ) {
 		if ( ! current_user_can( 'manage_options' ) ) { return d5b_dv_forbidden(); }
-		$full = false;
-		if ( array_key_exists( 'full', $in ) ) {
-			$v = $in['full'];
-			if ( null !== $v && '' !== $v ) {
-				if ( ! is_bool( $v ) ) { return new WP_Error( 'invalid_input', 'full must be true or false.' ); }
-				$full = $v;
-			}
-			unset( $in['full'] );
-		}
-		$a = d5b_rc_args( $in, array( 'full' => 'key' ) );
+		// full arrives as a string ("true", "1") in a GET query string: d5b_rc_bool takes what core's schema check takes.
+		$a = d5b_rc_args( $in, array( 'full' => 'bool' ) );
 		if ( is_wp_error( $a ) ) { return $a; }
 		$need = d5b_dv_need( array( 'd5b_ds_overview' ) );
-		return null !== $need ? $need : d5b_ds_overview( $full );
+		return null !== $need ? $need : d5b_ds_overview( $a['full'] ?? false );
 	}
 
 	// ---- Theme Builder
@@ -194,7 +186,7 @@ if ( ! function_exists( 'd5b_dv_h_design_system' ) ) {
 
 	d5b_rc_def( 'divi-design-system', 'divi', 'Get the Divi design system',
 		'Returns the site\'s Divi 5 design system: the presets (id, name, module or option group, which one is the default), the design variables and the global colours. Refuses a caller who is not an administrator (manage_options). Reads only, changes nothing.',
-		array( 'full' => array( 'type' => 'boolean', 'default' => false, 'description' => 'true also returns the settings of every preset. The result can be very large: leave it out unless you need the settings.' ) ),
+		array( 'full' => array( 'type' => 'boolean', 'default' => false, 'description' => 'true also returns the settings of every preset (the text "true", "false", "1" or "0" is taken too, as a query string sends it). The result can be very large: leave it out unless you need the settings.' ) ),
 		array(), 'd5b_dv_h_design_system', function ( array $in ) { return current_user_can( 'manage_options' ); } );
 	d5b_rc_def( 'divi-tb-list', 'divi', 'List Theme Builder templates',
 		'Returns every Theme Builder template and header, body and footer layout: id, type, status, title, format, size and a hash of the content, without the content itself. Refuses a caller who may not edit theme options.',

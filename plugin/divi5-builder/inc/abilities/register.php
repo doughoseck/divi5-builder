@@ -52,6 +52,36 @@ if ( ! function_exists( 'd5b_ability_defs' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_ability_set_extra_categories' ) ) {
+	/**
+	 * Strictest switch wins across categories: these definitions (by short name) also need every listed category on, as
+	 * well as their own (posts-revisions needs Revisions as well as Posts). Unknown names and categories are ignored.
+	 *
+	 * @param array<string, string[]> $extra short name => category short slugs
+	 */
+	function d5b_ability_set_extra_categories( array $extra ): void {
+		$defs = d5b_ability_registry();
+		$cats = d5b_ability_categories();
+		foreach ( $extra as $short => $list ) {
+			$name = 'divi5-builder/' . $short;
+			if ( ! isset( $defs[ $name ] ) ) { continue; }
+			$defs[ $name ]['extra_categories'] = array_values( array_filter( array_map( 'strval', (array) $list ), function ( $c ) use ( $cats ) { return isset( $cats[ $c ] ); } ) );
+		}
+		d5b_ability_registry( $defs );
+	}
+}
+
+if ( ! function_exists( 'd5b_ability_categories_on' ) ) {
+	/** True when the master, the definition's own category and every one of its extra categories are on. */
+	function d5b_ability_categories_on( array $def ): bool {
+		if ( ! d5b_abilities_category_on( (string) ( $def['category'] ?? '' ) ) ) { return false; }
+		foreach ( (array) ( $def['extra_categories'] ?? array() ) as $c ) {
+			if ( ! d5b_abilities_category_on( (string) $c ) ) { return false; }
+		}
+		return true;
+	}
+}
+
 if ( ! function_exists( 'd5b_abilities_register_categories' ) ) {
 	/** Runs on wp_abilities_api_categories_init. Only categories that are on and hold at least one definition. */
 	function d5b_abilities_register_categories(): void {
@@ -74,7 +104,7 @@ if ( ! function_exists( 'd5b_abilities_register' ) ) {
 		if ( function_exists( 'd5b_audit_maybe_install' ) ) { d5b_audit_maybe_install(); }
 		$cats = d5b_ability_categories();
 		foreach ( d5b_ability_defs() as $name => $def ) {
-			if ( ! d5b_abilities_category_on( $def['category'] ) ) { continue; }
+			if ( ! d5b_ability_categories_on( $def ) ) { continue; }
 			if ( function_exists( 'wp_has_ability' ) && wp_has_ability( $name ) ) { continue; }
 			$annotations = array( 'readonly' => true, 'destructive' => false, 'idempotent' => true );
 			if ( isset( $def['annotations'] ) && is_array( $def['annotations'] ) ) { $annotations = array_merge( $annotations, $def['annotations'] ); }
@@ -115,7 +145,7 @@ if ( ! function_exists( 'd5b_ability_check' ) ) {
 	 */
 	function d5b_ability_check( string $name, array $args ) {
 		$defs = d5b_ability_defs();
-		if ( ! isset( $defs[ $name ] ) || ! d5b_abilities_master_on() || ! d5b_abilities_category_on( (string) ( $defs[ $name ]['category'] ?? '' ) ) ) { return false; }
+		if ( ! isset( $defs[ $name ] ) || ! d5b_abilities_master_on() || ! d5b_ability_categories_on( $defs[ $name ] ) ) { return false; }
 		if ( ! is_callable( $defs[ $name ]['permission'] ?? null ) ) { return false; }
 		try {
 			$out = call_user_func( $defs[ $name ]['permission'], $args );
@@ -134,15 +164,68 @@ if ( ! function_exists( 'd5b_ability_clean_error' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_ability_http_status' ) ) {
+	/** The HTTP status for an error code: bad input 400, refusals 403, missing 404, not available 503, else $default. */
+	function d5b_ability_http_status( string $code, int $default = 500 ): int {
+		$map = array(
+			'invalid_input' => 400, 'page_too_deep' => 400,
+			'forbidden' => 403, 'forbidden_anonymous' => 403, 'not_allowed' => 403,
+			'not_found' => 404,
+			'unavailable' => 503, 'audit_unavailable' => 503,
+			'internal_error' => 500,
+		);
+		return $map[ $code ] ?? $default;
+	}
+}
+
+if ( ! function_exists( 'd5b_ability_with_status' ) ) {
+	/**
+	 * Gives an outgoing WP_Error an HTTP status when its data has none. Core's REST controller returns the execute
+	 * callback's WP_Error as it is, and an error without a status becomes a 500. A status already there is kept.
+	 */
+	function d5b_ability_with_status( WP_Error $e, int $default = 500 ): WP_Error {
+		$code = (string) $e->get_error_code();
+		if ( '' === $code ) { return $e; }
+		$data = $e->get_error_data( $code );
+		if ( is_array( $data ) && isset( $data['status'] ) ) { return $e; }
+		$status = d5b_ability_http_status( $code, $default );
+		$e->add_data( is_array( $data ) ? array_merge( $data, array( 'status' => $status ) ) : array( 'status' => $status ), $code );
+		return $e;
+	}
+}
+
+if ( ! function_exists( 'd5b_ability_anonymous_refusal' ) ) {
+	/**
+	 * Core lets anyone call an ability's permission callback over REST, logged in or not. A caller who is not logged in is
+	 * refused here, before any permission callback or handler runs. At most one audit row (status forbidden_anonymous) per
+	 * IP address per 10 minutes, so a loop of anonymous requests cannot fill the log.
+	 *
+	 * @return WP_Error|null the refusal, or null for a logged-in caller
+	 */
+	function d5b_ability_anonymous_refusal( string $name, array $args, float $start ): ?WP_Error {
+		if ( ! function_exists( 'get_current_user_id' ) || 0 !== (int) get_current_user_id() ) { return null; }
+		$ip  = isset( $_SERVER['REMOTE_ADDR'] ) && is_string( $_SERVER['REMOTE_ADDR'] ) ? $_SERVER['REMOTE_ADDR'] : '';
+		$key = 'd5b_anon_' . md5( $ip );
+		if ( function_exists( 'get_transient' ) && false === get_transient( $key ) ) {
+			if ( function_exists( 'set_transient' ) ) { set_transient( $key, 1, 600 ); }
+			d5b_ability_audit( $name, $args, 'forbidden_anonymous', d5b_ability_ms_since( $start ) );
+		}
+		return d5b_ability_with_status( new WP_Error( 'forbidden', 'You must be logged in to use this ability.' ) );
+	}
+}
+
 if ( ! function_exists( 'd5b_ability_permit' ) ) {
 	/** @return bool|WP_Error true to let the call run; a refusal is logged with status 'forbidden' (one row). */
 	function d5b_ability_permit( string $name, $input ) {
 		$start = microtime( true );
 		$args  = is_array( $input ) ? $input : array();
+		$anon  = d5b_ability_anonymous_refusal( $name, $args, $start );
+		if ( null !== $anon ) { return $anon; }
 		$out   = d5b_ability_check( $name, $args );
 		if ( true === $out ) { return true; }
 		d5b_ability_audit( $name, $args, 'forbidden', d5b_ability_ms_since( $start ) );
-		return is_wp_error( $out ) ? d5b_ability_clean_error( $out ) : false;
+		// A refusal: an error the definition gave without a status is a 403 (core sets its own on this path anyway).
+		return is_wp_error( $out ) ? d5b_ability_with_status( d5b_ability_clean_error( $out ), 403 ) : false;
 	}
 }
 
@@ -244,19 +327,21 @@ if ( ! function_exists( 'd5b_ability_run' ) ) {
 	function d5b_ability_run( string $name, $input ) {
 		$start = microtime( true );
 		$args  = is_array( $input ) ? $input : array();
+		$anon  = d5b_ability_anonymous_refusal( $name, $args, $start );
+		if ( null !== $anon ) { return $anon; }
 		$defs  = d5b_ability_defs();
 		if ( ! isset( $defs[ $name ] ) || ! is_callable( $defs[ $name ]['handler'] ?? null ) ) {
 			d5b_ability_audit( $name, $args, 'not_found', 0 );
-			return new WP_Error( 'ability_not_found', 'This ability is not available.' );
+			return d5b_ability_with_status( new WP_Error( 'not_found', 'This ability is not available.' ) );
 		}
 		$gate = d5b_ability_check( $name, $args );
 		if ( true !== $gate ) {
 			d5b_ability_audit( $name, $args, 'forbidden', d5b_ability_ms_since( $start ) );
-			return d5b_ability_clean_error( is_wp_error( $gate ) ? $gate : new WP_Error( 'forbidden', 'You do not have permission to use this ability, or it is switched off.' ) );
+			return d5b_ability_with_status( d5b_ability_clean_error( is_wp_error( $gate ) ? $gate : new WP_Error( 'forbidden', 'You do not have permission to use this ability, or it is switched off.' ) ), 403 );
 		}
 		$id = d5b_ability_audit_start( $name, $args );
 		if ( $id < 1 ) {
-			return new WP_Error( 'audit_unavailable', 'The activity log cannot be written on this site, so the ability was not run.' );
+			return d5b_ability_with_status( new WP_Error( 'audit_unavailable', 'The activity log cannot be written on this site, so the ability was not run.' ) );
 		}
 		$audit_args = $args;
 		try {
@@ -272,6 +357,6 @@ if ( ! function_exists( 'd5b_ability_run' ) ) {
 		}
 		// The stored args are written again only when they change (_exception) or a refusal caps them smaller.
 		d5b_ability_audit_finish( $id, $status, d5b_ability_ms_since( $start ), 'ok' === $status ? null : $audit_args );
-		return $result;
+		return is_wp_error( $result ) ? d5b_ability_with_status( $result ) : $result;
 	}
 }

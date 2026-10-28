@@ -22,7 +22,7 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 	function d5b_rc_taxonomy_check( $tax ) {
 		if ( ! is_string( $tax ) || '' === $tax ) { return new WP_Error( 'invalid_input', 'taxonomy is required.' ); }
 		$obj = get_taxonomy( $tax );
-		if ( ! is_object( $obj ) ) { return new WP_Error( 'invalid_taxonomy', 'There is no taxonomy "' . $tax . '".' ); }
+		if ( ! is_object( $obj ) ) { return new WP_Error( 'invalid_input', 'There is no taxonomy "' . $tax . '".' ); }
 		if ( in_array( $tax, d5b_rc_internal_taxonomies(), true ) || ( empty( $obj->public ) && empty( $obj->show_in_rest ) ) ) {
 			return new WP_Error( 'not_allowed', 'The taxonomy "' . $tax . '" is not public, so it is not available here.' );
 		}
@@ -90,14 +90,20 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 		if ( is_wp_error( $a ) ) { return $a; }
 		$status = $a['status'] ?? 'approve';
 		$mod    = current_user_can( 'moderate_comments' );
-		if ( 'approve' !== $status && ! $mod ) { return new WP_Error( 'forbidden_status', 'Only a moderator may list comments that are not approved.' ); }
+		if ( 'approve' !== $status && ! $mod ) { return new WP_Error( 'not_allowed', 'Only a moderator may list comments that are not approved.' ); }
 		if ( isset( $a['post'] ) && null === d5b_rc_post( $a['post'], null ) ) { return d5b_rc_deny( $a['post'], null ); }
 		list( $per, $page ) = d5b_rc_paging( $a );
 		$args = array( 'status' => $status, 'type__in' => array( 'comment', 'pingback', 'trackback' ), 'orderby' => 'comment_date_gmt', 'order' => 'DESC' );
 		if ( isset( $a['post'] ) ) { $args['post_id'] = $a['post']; }
 		$rows  = get_comments( $args + array( 'number' => $per, 'offset' => ( $page - 1 ) * $per ) );
+		$rows  = is_array( $rows ) ? $rows : array();
+		// The readability check below loads each comment's post: load the page's posts in one query first, not one per comment.
+		if ( function_exists( '_prime_post_caches' ) && array() !== $rows ) {
+			$ids = array_values( array_unique( array_filter( array_map( function ( $c ) { return (int) $c->comment_post_ID; }, $rows ) ) ) );
+			if ( array() !== $ids ) { _prime_post_caches( $ids, false, false ); }
+		}
 		$items = array();
-		foreach ( is_array( $rows ) ? $rows : array() as $c ) {
+		foreach ( $rows as $c ) {
 			if ( null !== d5b_rc_comment( $c->comment_ID ) ) { $items[] = d5b_rc_comment_row( $c, $mod ); }
 		}
 		$out = array( 'items' => $items, 'page' => $page, 'per_page' => $per );
@@ -283,7 +289,7 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 		array(), array(), 'd5b_rc_h_menus_locations', 'd5b_rc_can_menus' );
 
 	d5b_rc_def( 'posts-revisions', 'posts', 'List revisions of a post',
-		'Returns the saved revisions of one blog post, newest first (id, date, author, title). Refuses a post the caller may not edit, because revisions can hold text that was never published.',
+		'Returns the saved revisions of one blog post, newest first (id, date, author, title). Refuses a post the caller may not edit, because revisions can hold text that was never published. Needs the Revisions category switched on as well as Posts.',
 		array( 'id' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The id of the post.' ) ) + d5b_rc_paging_props(),
 		array( 'id' ), 'd5b_rc_h_posts_revisions', function ( array $in ) { return current_user_can( 'read' ) && null !== d5b_rc_editable( $in['id'] ?? 0, array( 'post' ) ); } );
 	d5b_rc_def( 'revisions-list', 'revisions', 'List revisions',
@@ -301,4 +307,7 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 
 	// Revisions hold post content: value-shape masking only.
 	d5b_ability_set_content_keys( array( 'posts-revisions', 'revisions-list', 'revisions-get', 'revisions-compare' ) );
+
+	// Strictest switch wins: the revisions of a post are revisions, so the Revisions switch governs them too.
+	d5b_ability_set_extra_categories( array( 'posts-revisions' => array( 'revisions' ) ) );
 }

@@ -98,12 +98,48 @@ if ( ! function_exists( 'd5b_audit_maybe_install' ) ) {
 }
 
 if ( ! function_exists( 'd5b_audit_activate' ) ) {
-	function d5b_audit_activate(): void { d5b_audit_maybe_install(); }
+	/** Activation is a person asking again: an earlier failed attempt (the one-hour back-off) must not stop this one. */
+	function d5b_audit_activate(): void {
+		if ( function_exists( 'delete_transient' ) ) { delete_transient( 'd5b_audit_install_failed' ); }
+		d5b_audit_maybe_install();
+	}
 }
 
 if ( ! function_exists( 'd5b_audit_deactivate' ) ) {
-	function d5b_audit_deactivate(): void {
-		if ( function_exists( 'wp_clear_scheduled_hook' ) ) { wp_clear_scheduled_hook( 'd5b_audit_prune' ); }
+	/**
+	 * Clears the daily clean-up event. Network deactivation clears it on every site of the network (up to 1000 sites), since
+	 * each site that served an ability scheduled its own.
+	 */
+	function d5b_audit_deactivate( $network_wide = false ): void {
+		if ( ! function_exists( 'wp_clear_scheduled_hook' ) ) { return; }
+		if ( $network_wide && is_multisite() && function_exists( 'get_sites' ) && function_exists( 'switch_to_blog' ) ) {
+			foreach ( (array) get_sites( array( 'fields' => 'ids', 'number' => 1000 ) ) as $id ) {
+				switch_to_blog( (int) $id );
+				try { wp_clear_scheduled_hook( 'd5b_audit_prune' ); } finally { restore_current_blog(); }
+			}
+			return;
+		}
+		wp_clear_scheduled_hook( 'd5b_audit_prune' );
+	}
+}
+
+if ( ! function_exists( 'd5b_audit_table_broken' ) ) {
+	/**
+	 * True when the audit table could not be created: a failed attempt left its transient, or the master is on and the table
+	 * is missing. Every AI call is then refused (audit_unavailable), so the settings page says so.
+	 */
+	function d5b_audit_table_broken(): bool {
+		if ( function_exists( 'get_transient' ) && false !== get_transient( 'd5b_audit_install_failed' ) ) { return true; }
+		return function_exists( 'd5b_abilities_master_on' ) && d5b_abilities_master_on() && ! d5b_audit_table_exists();
+	}
+}
+
+if ( ! function_exists( 'd5b_audit_user_login' ) ) {
+	/** Who a row belongs to, for people reading the log: the login, "anonymous" (user 0) or "deleted user". */
+	function d5b_audit_user_login( int $user_id ): string {
+		if ( $user_id < 1 ) { return 'anonymous'; }
+		$u = function_exists( 'get_userdata' ) ? get_userdata( $user_id ) : false;
+		return is_object( $u ) && isset( $u->user_login ) && '' !== (string) $u->user_login ? (string) $u->user_login : 'deleted user';
 	}
 }
 
@@ -318,7 +354,7 @@ if ( ! function_exists( 'd5b_audit_redact' ) ) {
 if ( ! function_exists( 'd5b_audit_args_cap' ) ) {
 	/** Bytes of encoded args a row may hold: 1 KB for a refused call (forbidden, bad input), which damps flooding; else 8 KB. */
 	function d5b_audit_args_cap( string $status ): int {
-		return in_array( $status, array( 'forbidden', 'invalid_input', 'error:invalid_input' ), true ) ? 1024 : 8192;
+		return in_array( $status, array( 'forbidden', 'forbidden_anonymous', 'invalid_input', 'error:invalid_input' ), true ) ? 1024 : 8192;
 	}
 }
 

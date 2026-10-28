@@ -39,10 +39,27 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 	}
 
 	/**
+	 * A boolean input as core's schema check accepts it (rest_is_boolean): true or false, 1 or 0, or the strings "true",
+	 * "false", "1" and "0" in any case. A GET query string brings every value as a string, and core does not convert it
+	 * before the ability runs. @return bool|null null when it is none of these
+	 */
+	function d5b_rc_bool( $v ): ?bool {
+		if ( is_bool( $v ) ) { return $v; }
+		if ( is_int( $v ) ) { return 1 === $v ? true : ( 0 === $v ? false : null ); }
+		if ( is_string( $v ) ) {
+			$s = strtolower( $v );
+			if ( 'true' === $s || '1' === $s ) { return true; }
+			if ( 'false' === $s || '0' === $s ) { return false; }
+		}
+		return null;
+	}
+
+	/**
 	 * Checks and cleans an input array against $spec (key => kind). Returns the cleaned values of the keys that were
 	 * given, or a WP_Error 'invalid_input'. null and '' count as not given. Unknown keys are an error.
 	 * Kinds: id (positive whole number), int (zero or more), str (text up to 200 characters), strs (list of text),
-	 * slug (a post type or taxonomy name), key (a meta key), mime, menu (an id, slug or name), enum:a|b|c.
+	 * slug (a post type or taxonomy name), key (a meta key), mime, menu (an id, slug or name), bool (see d5b_rc_bool),
+	 * enum:a|b|c.
 	 *
 	 * @return array|WP_Error
 	 */
@@ -93,7 +110,11 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 					$list[] = $one;
 				}
 				$out[ $key ] = array_values( $list );
-			} elseif ( 0 === strpos( $kind, 'enum:' ) ) {
+			} elseif ( 'bool' === $kind ) {
+			$b = d5b_rc_bool( $v );
+			if ( null === $b ) { return new WP_Error( 'invalid_input', $key . ' must be true or false.' ); }
+			$out[ $key ] = $b;
+		} elseif ( 0 === strpos( $kind, 'enum:' ) ) {
 				$allowed = explode( '|', substr( $kind, 5 ) );
 				if ( ! is_string( $v ) || ! in_array( $v, $allowed, true ) ) { return new WP_Error( 'invalid_input', $key . ' must be one of: ' . implode( ', ', $allowed ) . '.' ); }
 				$out[ $key ] = $v;
@@ -187,7 +208,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		if ( in_array( $type, d5b_rc_internal_types(), true ) ) {
 			return new WP_Error( 'not_allowed', 'The post type "' . $type . '" has its own guarded abilities and is not available here.' );
 		}
-		if ( null === get_post_type_object( $type ) ) { return new WP_Error( 'invalid_type', 'There is no post type "' . $type . '". divi5-builder/cpt-types lists them.' ); }
+		if ( null === get_post_type_object( $type ) ) { return new WP_Error( 'invalid_input', 'There is no post type "' . $type . '". divi5-builder/cpt-types lists them.' ); }
 		if ( ! isset( d5b_rc_exposed_types( true )[ $type ] ) ) { return new WP_Error( 'not_allowed', 'The post type "' . $type . '" is not a public custom type (posts, pages, media and blocks have their own abilities), so it is not available here.' ); }
 		return $type;
 	}
@@ -322,7 +343,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 	// ---- posts and pages
 
 	function d5b_rc_status_prop(): array {
-		return array( 'type' => 'string', 'enum' => array( 'publish', 'draft', 'pending', 'private', 'future', 'any' ), 'default' => 'publish', 'description' => 'Only items with this status. Drafts and private items of other people are left out unless the caller may read them.' );
+		return array( 'type' => 'string', 'enum' => array( 'publish', 'draft', 'pending', 'private', 'future', 'any' ), 'default' => 'publish', 'description' => 'Only items with this status. Drafts and private items of other people are left out unless the caller may read them. For a caller who may not edit other people\'s items, any leaves out their own drafts too: ask for draft instead.' );
 	}
 
 	function d5b_rc_h_posts_list( array $in ) {
@@ -383,7 +404,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		return d5b_rc_get( array( 'id' => $a['id'] ), array( $type ) );
 	}
 
-	/** A bad type passes here so the handler can answer not_allowed or invalid_type; a real type is checked per object. */
+	/** A bad type passes here so the handler can answer not_allowed or invalid_input; a real type is checked per object. */
 	function d5b_rc_can_cpt_get( array $in ): bool {
 		if ( ! current_user_can( 'read' ) ) { return false; }
 		if ( is_wp_error( d5b_rc_type_check( $in['type'] ?? null ) ) ) { return true; }
@@ -438,6 +459,15 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		return $v;
 	}
 
+	/**
+	 * The size of a value as the caller will receive it (JSON), not as it is stored: a control character is 1 byte
+	 * serialized but 6 in JSON. When the value cannot be encoded, 6 times its serialized size (the worst case).
+	 */
+	function d5b_rc_json_bytes( $v ): int {
+		$j = function_exists( 'wp_json_encode' ) ? wp_json_encode( $v ) : json_encode( $v );
+		return is_string( $j ) ? strlen( $j ) : 6 * strlen( serialize( $v ) );
+	}
+
 	/** The post whose custom fields the caller may read: readable AND editable (edit_post, as the wp-admin Custom Fields box). */
 	function d5b_rc_meta_post( $id ) {
 		$p = d5b_rc_post( $id, null );
@@ -459,7 +489,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 			$vals = d5b_rc_meta_clean( (array) $vals );
 			// An object keyed by meta key, never a list of key/value pairs: the secret scrubber works by key.
 			$v    = 1 === count( $vals ) ? $vals[0] : $vals;
-			$size = strlen( serialize( $v ) );
+			$size = d5b_rc_json_bytes( $v );
 			if ( $size > 65536 ) { $v = array( '_truncated' => true, 'bytes' => $size ); $size = 40; }
 			if ( $bytes + $size > 524288 ) { $truncated = true; break; }
 			$bytes += $size;
@@ -509,7 +539,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 	$d5b_rc_id_prop  = function ( string $what ) { return array( 'id' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The id of the ' . $what . ' to read.' ) ); };
 
 	d5b_rc_def( 'posts-list', 'posts', 'List posts',
-		'Returns one page of blog posts (id, title, slug, status, dates, author, link), newest first. Refuses posts the caller may not read, so drafts and private posts of other people are left out.',
+		'Returns one page of blog posts (id, title, slug, status, dates, author, link), newest first. Refuses posts the caller may not read, so drafts and private posts of other people are left out. A caller who may not edit other people\'s posts (an author) does not get their own password-protected posts either, and status any leaves out their own drafts (ask for status draft instead).',
 		array( 'status' => d5b_rc_status_prop(), 'search' => array( 'type' => 'string', 'description' => 'Only posts whose title or text contains this.' ), 'category' => array( 'type' => 'integer', 'description' => 'Only posts in this category id (see taxonomy-list).' ), 'tag' => array( 'type' => 'integer', 'description' => 'Only posts with this tag id (see taxonomy-list).' ), 'author' => array( 'type' => 'integer', 'description' => 'Only posts by this user id.' ) ) + d5b_rc_paging_props(),
 		array(), 'd5b_rc_h_posts_list', 'd5b_rc_can_list' );
 	d5b_rc_def( 'posts-get', 'posts', 'Get a post',
@@ -556,7 +586,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		$d5b_rc_id_prop( 'reusable block' ), array( 'id' ), 'd5b_rc_h_blocks_get', $d5b_rc_get_perm( array( 'wp_block' ) ) );
 
 	d5b_rc_def( 'search', 'search', 'Search the site',
-		'Returns one page of items whose title or text contains the query, each with a short snippet. Refuses items the caller may not read, and post types that are internal or not public.',
+		'Returns one page of items whose title or text contains the query, each with a short snippet. Refuses items the caller may not read, and post types that are internal or not public. Finds published items and private ones the caller may read (when more than one type is searched, WordPress itself keeps only the caller\'s own private items), never drafts; a caller who may not edit other people\'s items (an author) does not get their own password-protected items either.',
 		array( 'query' => array( 'type' => 'string', 'description' => 'The words to look for.' ), 'types' => array( 'type' => 'array', 'items' => array( 'type' => 'string' ), 'description' => 'Only these post types. Leave out for posts, pages and the public custom types.' ) ) + d5b_rc_paging_props(),
 		array( 'query' ), 'd5b_rc_h_search', 'd5b_rc_can_list' );
 
