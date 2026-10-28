@@ -763,9 +763,9 @@ Maintenance tools, not page building. **Read `references/site-care/README.md` be
 - Media audit (unused media, orphan files, disk space): `node scripts/site-care/media-audit.js scan|crawl|report <site> --dir D`
 - Media clean-up (quarantine, reversible): `node scripts/site-care/media-quarantine.js verify|plan|move|restore <site> --dir D`
 - Updates (plugins, themes, WordPress): `node scripts/site-care/site-updates.js status|update|clear <site>`
-- Go-live (dev over live) and slow-page profiling: `references/site-care/wp-go-live.md`, `node scripts/site-care/hook-profiler.js gen <dir>`
+- Go-live (dev over live) and slow-page profiling: `references/site-care/wp-go-live.md`, `node scripts/site-care/hook-profiler.js gen <dir>` (the USER uploads d5b-profiler.php to wp-content/mu-plugins/ and deletes it afterwards, never you)
 - Media audit, Media clean-up and Updates need their switch on in Settings > Divi 5 Builder (off by default, only an administrator flips it; the USER does it, never a script).
-- Never hard-delete: you audit and quarantine, the USER deletes. Updates: show the plan and get a go first, they change a live site with NO rollback, and pages are checked after each one. On STALE (exit 3) stop and ask, as in the Workflow.
+- Never hard-delete: you audit and quarantine, the USER deletes. Updates: show the plan and get a go first, they change a live site with NO rollback, and pages are checked before and after each one. On STALE (exit 3) stop and ask, as in the Workflow.
 
 ## Reference
 
