@@ -50,7 +50,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		$in = is_array( $in ) ? $in : array();
 		foreach ( array_keys( $in ) as $k ) {
 			if ( ! isset( $spec[ $k ] ) ) {
-				return new WP_Error( 'invalid_input', 'Unknown input "' . preg_replace( '/[^A-Za-z0-9_\-]/', '', (string) $k ) . '". Allowed: ' . implode( ', ', array_keys( $spec ) ) . '.' );
+				return new WP_Error( 'invalid_input', 'Unknown input "' . substr( preg_replace( '/[^A-Za-z0-9_\-]/', '', (string) $k ), 0, 100 ) . '". Allowed: ' . implode( ', ', array_keys( $spec ) ) . '.' );
 			}
 		}
 		$out = array();
@@ -107,22 +107,47 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 	/** per_page held to 1..100 (default 20), page to 1 or more. @return int[] array( per_page, page ) */
 	function d5b_rc_paging( array $a ): array {
 		$per = isset( $a['per_page'] ) ? min( 100, max( 1, (int) $a['per_page'] ) ) : 20;
-		return array( $per, max( 1, (int) ( $a['page'] ?? 1 ) ) );
+		return array( $per, min( 100000, max( 1, (int) ( $a['page'] ?? 1 ) ) ) );
 	}
 
-	/** A post the caller may read, of one of $types (null = any type that is not internal), or null. */
-	function d5b_rc_post( $id, ?array $types = null ) {
+	/** The category (switch) that governs a post type: post, page, attachment and wp_block have their own, the rest is cpt. */
+	function d5b_rc_type_category( string $type ): string {
+		$map = array( 'post' => 'posts', 'page' => 'pages', 'attachment' => 'media', 'wp_block' => 'blocks' );
+		return $map[ $type ] ?? 'cpt';
+	}
+
+	/** Strictest switch wins: an object is reachable only while the category of its type is on. */
+	function d5b_rc_type_on( string $type ): bool {
+		return d5b_abilities_category_on( d5b_rc_type_category( $type ) );
+	}
+
+	/**
+	 * Why a post cannot be used: not_allowed when the caller could read it but the switch of its type is off,
+	 * else not_found (missing, unreadable or the wrong kind look the same).
+	 */
+	function d5b_rc_deny( $id, ?array $types = null ): WP_Error {
+		$p = d5b_rc_post( $id, $types, false );
+		if ( null !== $p && ! d5b_rc_type_on( (string) $p->post_type ) ) {
+			return new WP_Error( 'not_allowed', 'The ability category for this kind of content is switched off.' );
+		}
+		return new WP_Error( 'not_found', 'No readable item with that id.' );
+	}
+
+	/** A post the caller may read, of one of $types (null = any exposed type), or null. $strict_cat false skips the switch check of its type. */
+	function d5b_rc_post( $id, ?array $types = null, bool $strict_cat = true ) {
 		$id = d5b_rc_id_of( $id );
 		if ( $id < 1 ) { return null; }
 		$post = get_post( $id );
 		if ( ! is_object( $post ) || ! isset( $post->post_type ) ) { return null; }
 		$type = (string) $post->post_type;
 		if ( null === $types ) {
-			if ( in_array( $type, d5b_rc_internal_types(), true ) || in_array( $type, array( 'revision', 'nav_menu_item' ), true ) ) { return null; }
+			// Only the exposed types (public or REST, not internal) plus reusable blocks: user_request and the like stay out.
+			if ( ! isset( d5b_rc_exposed_types()[ $type ] ) && 'wp_block' !== $type ) { return null; }
 		} elseif ( ! in_array( $type, $types, true ) ) {
 			return null;
 		}
 		if ( 'auto-draft' === $post->post_status ) { return null; }
+		if ( $strict_cat && ! d5b_rc_type_on( $type ) ) { return null; }
 		if ( ! current_user_can( 'read_post', $post->ID ) ) { return null; }
 		if ( '' !== (string) $post->post_password && ! current_user_can( 'edit_post', $post->ID ) ) { return null; }
 		return $post;
@@ -179,20 +204,67 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		return $out;
 	}
 
+	function d5b_rc_type_cap( string $type, string $which ): string {
+		$o = get_post_type_object( $type );
+		return (string) ( $o->cap->$which ?? $which );
+	}
+
+	/** True when the caller holds the capability $which (edit_others_posts, read_private_posts) for every one of the types. */
+	function d5b_rc_can_all( array $types, string $which ): bool {
+		foreach ( $types as $t ) { if ( ! current_user_can( d5b_rc_type_cap( (string) $t, $which ) ) ) { return false; } }
+		return true;
+	}
+
+	/**
+	 * The status part of a list query, built so the database returns only rows the caller may read (the count must not
+	 * count hidden rows). Core's perm=readable narrows only an explicit private status, and 'any' skips it, so:
+	 * 'any' is never passed on (an explicit list instead); drafts, pending and future posts of other people need
+	 * edit_others_posts, otherwise the query is limited to the caller's own; password-protected posts need edit_others_posts.
+	 */
+	function d5b_rc_scope( array $types, string $status ): array {
+		$others = d5b_rc_can_all( $types, 'edit_others_posts' );
+		if ( 'any' === $status ) { $list = $others ? array( 'publish', 'draft', 'pending', 'private', 'future' ) : array( 'publish', 'private' ); }
+		else { $list = array( $status ); }
+		$q = array( 'post_status' => $list );
+		if ( ! $others ) {
+			$q['has_password'] = false;
+			if ( array_intersect( $list, array( 'draft', 'pending', 'future' ) ) ) { $q['author'] = get_current_user_id(); }
+		}
+		return $q;
+	}
+
+	/** Adds an author filter the caller asked for. Returns false when it contradicts the author limit (nothing can match). */
+	function d5b_rc_with_author( array &$q, ?int $author ): bool {
+		if ( null === $author ) { return true; }
+		if ( isset( $q['author'] ) && (int) $q['author'] !== $author ) { return false; }
+		$q['author'] = $author;
+		return true;
+	}
+
+	function d5b_rc_empty_page( array $a ): array {
+		list( $per, $page ) = d5b_rc_paging( $a );
+		return array( 'items' => array(), 'total' => 0, 'page' => $page, 'per_page' => $per, 'total_pages' => 1 );
+	}
+
 	/**
 	 * One page of posts of the given types: the query arguments in $query, only the items the caller may read.
+	 * The total is left out when the PHP check had to drop anything (or $totals is false), so it can never count hidden rows.
 	 * @return array|WP_Error
 	 */
-	function d5b_rc_list( array $query, array $types, array $a, ?callable $format = null ) {
+	function d5b_rc_list( array $query, array $types, array $a, ?callable $format = null, bool $totals = true ) {
 		list( $per, $page ) = d5b_rc_paging( $a );
 		$q = new WP_Query( array_merge( $query, array( 'post_type' => $types, 'posts_per_page' => $per, 'paged' => $page, 'perm' => 'readable', 'ignore_sticky_posts' => true, 'orderby' => 'date', 'order' => 'DESC' ) ) );
-		$items = array();
+		$items = array(); $dropped = false;
 		foreach ( (array) $q->posts as $p ) {
-			if ( ! is_object( $p ) || null === d5b_rc_post( $p->ID, $types ) ) { continue; }
+			if ( ! is_object( $p ) || null === d5b_rc_post( $p->ID, $types ) ) { $dropped = true; continue; }
 			$items[] = $format ? call_user_func( $format, $p ) : d5b_rc_summary( $p );
 		}
-		$total = (int) $q->found_posts;
-		return array( 'items' => $items, 'total' => $total, 'page' => $page, 'per_page' => $per, 'total_pages' => max( 1, (int) ceil( $total / $per ) ) );
+		$out = array( 'items' => $items, 'page' => $page, 'per_page' => $per );
+		if ( $totals && ! $dropped ) {
+			$out['total'] = (int) $q->found_posts;
+			$out['total_pages'] = max( 1, (int) ceil( $out['total'] / $per ) );
+		}
+		return $out;
 	}
 
 	/** One post of the given types by id, as the detail row (or the formatter's). @return array|WP_Error */
@@ -245,11 +317,11 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 	function d5b_rc_h_posts_list( array $in ) {
 		$a = d5b_rc_args( $in, array( 'status' => 'enum:publish|draft|pending|private|future|any', 'search' => 'str', 'category' => 'id', 'tag' => 'id', 'author' => 'id', 'per_page' => 'int', 'page' => 'int' ) );
 		if ( is_wp_error( $a ) ) { return $a; }
-		$q = array( 'post_status' => $a['status'] ?? 'publish' );
+		$q = d5b_rc_scope( array( 'post' ), $a['status'] ?? 'publish' );
+		if ( ! d5b_rc_with_author( $q, $a['author'] ?? null ) ) { return d5b_rc_empty_page( $a ); }
 		if ( isset( $a['search'] ) ) { $q['s'] = $a['search']; }
 		if ( isset( $a['category'] ) ) { $q['cat'] = $a['category']; }
 		if ( isset( $a['tag'] ) ) { $q['tag_id'] = $a['tag']; }
-		if ( isset( $a['author'] ) ) { $q['author'] = $a['author']; }
 		return d5b_rc_list( $q, array( 'post' ), $a );
 	}
 
@@ -262,7 +334,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 	function d5b_rc_h_pages_list( array $in ) {
 		$a = d5b_rc_args( $in, array( 'status' => 'enum:publish|draft|pending|private|future|any', 'parent' => 'int', 'search' => 'str', 'per_page' => 'int', 'page' => 'int' ) );
 		if ( is_wp_error( $a ) ) { return $a; }
-		$q = array( 'post_status' => $a['status'] ?? 'publish' );
+		$q = d5b_rc_scope( array( 'page' ), $a['status'] ?? 'publish' );
 		if ( isset( $a['parent'] ) ) { $q['post_parent'] = $a['parent']; }
 		if ( isset( $a['search'] ) ) { $q['s'] = $a['search']; }
 		return d5b_rc_list( $q, array( 'page' ), $a );
@@ -289,7 +361,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		if ( is_wp_error( $a ) ) { return $a; }
 		$type = d5b_rc_type_check( $a['type'] );
 		if ( is_wp_error( $type ) ) { return $type; }
-		return d5b_rc_list( array( 'post_status' => $a['status'] ?? 'publish' ), array( $type ), $a );
+		return d5b_rc_list( d5b_rc_scope( array( $type ), $a['status'] ?? 'publish' ), array( $type ), $a );
 	}
 
 	function d5b_rc_h_cpt_get( array $in ) {
@@ -335,7 +407,8 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		$q = array( 'post_status' => 'inherit' );
 		if ( isset( $a['mime'] ) ) { $q['post_mime_type'] = $a['mime']; }
 		if ( isset( $a['search'] ) ) { $q['s'] = $a['search']; }
-		return d5b_rc_list( $q, array( 'attachment' ), $a, 'd5b_rc_media_summary' );
+		// Whether a file may be read depends on its parent post, which the query cannot see: so no total is ever reported.
+		return d5b_rc_list( $q, array( 'attachment' ), $a, 'd5b_rc_media_summary', false );
 	}
 
 	function d5b_rc_h_media_get( array $in ) {
@@ -344,23 +417,37 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 
 	// ---- custom fields
 
+	/** Scalars and arrays pass through; any object (also an unserialized-class stand-in) becomes the text [object]. */
+	function d5b_rc_meta_clean( $v, int $depth = 0 ) {
+		if ( is_object( $v ) ) { return '[object]'; }
+		if ( ! is_array( $v ) ) { return $v; }
+		if ( $depth > 8 ) { return '[nested]'; }
+		foreach ( $v as $k => $x ) { $v[ $k ] = d5b_rc_meta_clean( $x, $depth + 1 ); }
+		return $v;
+	}
+
 	function d5b_rc_h_meta_get( array $in ) {
 		$a = d5b_rc_args( $in, array( 'post_id' => 'id', 'key' => 'key' ), array( 'post_id' ) );
 		if ( is_wp_error( $a ) ) { return $a; }
 		$p = d5b_rc_post( $a['post_id'], null );
-		if ( null === $p ) { return new WP_Error( 'not_found', 'No readable item with that id.' ); }
+		if ( null === $p ) { return d5b_rc_deny( $a['post_id'], null ); }
 		$can_edit = current_user_can( 'edit_post', $p->ID );
 		$all      = (array) get_post_meta( $p->ID );
 		if ( isset( $a['key'] ) ) { $all = array_key_exists( $a['key'], $all ) ? array( $a['key'] => $all[ $a['key'] ] ) : array(); }
-		$meta = array(); $omitted = 0;
+		$meta = array(); $omitted = 0; $bytes = 0; $truncated = false;
 		foreach ( $all as $k => $vals ) {
 			$k = (string) $k;
 			if ( is_protected_meta( $k, 'post' ) && ! $can_edit ) { $omitted++; continue; }
-			$vals = (array) $vals;
+			$vals = d5b_rc_meta_clean( (array) $vals );
 			// An object keyed by meta key, never a list of key/value pairs: the secret scrubber works by key.
-			$meta[ $k ] = 1 === count( $vals ) ? $vals[0] : $vals;
+			$v    = 1 === count( $vals ) ? $vals[0] : $vals;
+			$size = strlen( serialize( $v ) );
+			if ( $size > 65536 ) { $v = array( '_truncated' => true, 'bytes' => $size ); $size = 40; }
+			if ( $bytes + $size > 524288 ) { $truncated = true; break; }
+			$bytes += $size;
+			$meta[ $k ] = $v;
 		}
-		return array( 'post_id' => (int) $p->ID, 'meta' => $meta, 'omitted_protected' => $omitted );
+		return array( 'post_id' => (int) $p->ID, 'meta' => $meta, 'omitted_protected' => $omitted, 'truncated' => $truncated );
 	}
 
 	// ---- reusable blocks
@@ -368,7 +455,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 	function d5b_rc_h_blocks_list( array $in ) {
 		$a = d5b_rc_args( $in, array( 'status' => 'enum:publish|draft|pending|private|future|any', 'per_page' => 'int', 'page' => 'int' ) );
 		if ( is_wp_error( $a ) ) { return $a; }
-		return d5b_rc_list( array( 'post_status' => $a['status'] ?? 'publish' ), array( 'wp_block' ), $a );
+		return d5b_rc_list( d5b_rc_scope( array( 'wp_block' ), $a['status'] ?? 'publish' ), array( 'wp_block' ), $a );
 	}
 
 	function d5b_rc_h_blocks_get( array $in ) {
@@ -385,9 +472,17 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		foreach ( $types as $t ) {
 			if ( ! isset( $exposed[ $t ] ) ) { return new WP_Error( 'not_allowed', 'Search does not cover the type "' . preg_replace( '/[^A-Za-z0-9_\-]/', '', $t ) . '". divi5-builder/cpt-types lists the types.' ); }
 		}
-		return d5b_rc_list( array( 'post_status' => 'any', 's' => $a['query'] ), array_values( $types ), $a, function ( $p ) {
+		// Strictest switch wins: a type whose category is off is skipped.
+		$types = array_values( array_filter( $types, 'd5b_rc_type_on' ) );
+		if ( ! $types ) { return d5b_rc_empty_page( $a ); }
+		// Like core's REST search: published items, plus private ones only for a caller who may read private items of every type
+		// searched. No drafts. Password-protected items only for someone who can edit other people's items.
+		$q = array( 'post_status' => d5b_rc_can_all( $types, 'read_private_posts' ) ? array( 'publish', 'private' ) : array( 'publish' ), 's' => $a['query'] );
+		if ( in_array( 'attachment', $types, true ) ) { $q['post_status'][] = 'inherit'; }
+		if ( ! d5b_rc_can_all( $types, 'edit_others_posts' ) ) { $q['has_password'] = false; }
+		return d5b_rc_list( $q, $types, $a, function ( $p ) {
 			return d5b_rc_summary( $p ) + array( 'snippet' => d5b_rc_cut( wp_strip_all_tags( (string) $p->post_content ), 160 ) );
-		} );
+		}, ! in_array( 'attachment', $types, true ) );
 	}
 
 	// ---- the definitions

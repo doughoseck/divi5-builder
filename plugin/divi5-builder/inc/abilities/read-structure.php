@@ -79,6 +79,8 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 		$id = d5b_rc_id_of( $id );
 		$c  = $id > 0 ? get_comment( $id ) : null;
 		if ( ! is_object( $c ) ) { return null; }
+		// Real comments only: block notes, order notes and other private comment types stay out.
+		if ( ! in_array( (string) $c->comment_type, array( '', 'comment', 'pingback', 'trackback' ), true ) ) { return null; }
 		if ( '1' !== (string) $c->comment_approved && ! current_user_can( 'moderate_comments' ) ) { return null; }
 		return null === d5b_rc_post( $c->comment_post_ID, null ) ? null : $c;
 	}
@@ -89,9 +91,9 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 		$status = $a['status'] ?? 'approve';
 		$mod    = current_user_can( 'moderate_comments' );
 		if ( 'approve' !== $status && ! $mod ) { return new WP_Error( 'forbidden_status', 'Only a moderator may list comments that are not approved.' ); }
-		if ( isset( $a['post'] ) && null === d5b_rc_post( $a['post'], null ) ) { return new WP_Error( 'not_found', 'No readable item with that id.' ); }
+		if ( isset( $a['post'] ) && null === d5b_rc_post( $a['post'], null ) ) { return d5b_rc_deny( $a['post'], null ); }
 		list( $per, $page ) = d5b_rc_paging( $a );
-		$args = array( 'status' => $status, 'orderby' => 'comment_date_gmt', 'order' => 'DESC' );
+		$args = array( 'status' => $status, 'type__in' => array( 'comment', 'pingback', 'trackback' ), 'orderby' => 'comment_date_gmt', 'order' => 'DESC' );
 		if ( isset( $a['post'] ) ) { $args['post_id'] = $a['post']; }
 		$rows  = get_comments( $args + array( 'number' => $per, 'offset' => ( $page - 1 ) * $per ) );
 		$items = array();
@@ -116,7 +118,17 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 
 	// ---- menus
 
+	/** Menus are theme structure: edit_theme_options, as in core's REST API. */
+	function d5b_rc_can_menus( array $in = array() ): bool {
+		return current_user_can( 'edit_theme_options' );
+	}
+
+	function d5b_rc_menus_denied() {
+		return d5b_rc_can_menus() ? null : new WP_Error( 'forbidden', 'Reading menus needs the right to edit theme options.' );
+	}
+
 	function d5b_rc_h_menus_list( array $in ) {
+		if ( $denied = d5b_rc_menus_denied() ) { return $denied; }
 		$a = d5b_rc_args( $in, array() );
 		if ( is_wp_error( $a ) ) { return $a; }
 		$items = array();
@@ -125,6 +137,7 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 	}
 
 	function d5b_rc_h_menus_items( array $in ) {
+		if ( $denied = d5b_rc_menus_denied() ) { return $denied; }
 		$a = d5b_rc_args( $in, array( 'menu' => 'menu' ), array( 'menu' ) );
 		if ( is_wp_error( $a ) ) { return $a; }
 		$menu = wp_get_nav_menu_object( $a['menu'] );
@@ -132,13 +145,20 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 		$items = array();
 		foreach ( (array) wp_get_nav_menu_items( $menu->term_id ) as $i ) {
 			// A link to a page or post the caller may not read does not show its title either.
-			if ( 'post_type' === ( $i->type ?? '' ) && null === d5b_rc_post( $i->object_id, null ) ) { continue; }
-			$items[] = array( 'id' => (int) $i->ID, 'title' => (string) $i->title, 'url' => (string) $i->url, 'type' => (string) $i->type, 'object' => (string) $i->object, 'object_id' => (int) $i->object_id, 'parent' => (int) $i->menu_item_parent, 'order' => (int) $i->menu_order );
+			$row_title = (string) $i->title; $row_url = (string) $i->url;
+			if ( 'post_type' === ( $i->type ?? '' ) ) {
+				$linked = d5b_rc_post( $i->object_id, null, false );
+				if ( null === $linked ) { continue; }
+				// The linked content belongs to a category that is switched off: keep the slot, hide what it points at.
+				if ( ! d5b_rc_type_on( (string) $linked->post_type ) ) { $row_title = ''; $row_url = ''; }
+			}
+			$items[] = array( 'id' => (int) $i->ID, 'title' => $row_title, 'url' => $row_url, 'type' => (string) $i->type, 'object' => (string) $i->object, 'object_id' => (int) $i->object_id, 'parent' => (int) $i->menu_item_parent, 'order' => (int) $i->menu_order );
 		}
 		return array( 'menu' => array( 'id' => (int) $menu->term_id, 'name' => (string) $menu->name, 'slug' => (string) $menu->slug ), 'items' => $items, 'total' => count( $items ) );
 	}
 
 	function d5b_rc_h_menus_locations( array $in ) {
+		if ( $denied = d5b_rc_menus_denied() ) { return $denied; }
 		$a = d5b_rc_args( $in, array() );
 		if ( is_wp_error( $a ) ) { return $a; }
 		$assigned = (array) get_nav_menu_locations();
@@ -175,12 +195,17 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 		$a = d5b_rc_args( $in, array( $key => 'id', 'per_page' => 'int', 'page' => 'int' ), array( $key ) );
 		if ( is_wp_error( $a ) ) { return $a; }
 		$p = d5b_rc_editable( $a[ $key ], $types );
-		if ( null === $p ) { return new WP_Error( 'not_found', 'No editable item with that id.' ); }
+		if ( null === $p ) { return d5b_rc_deny( $a[ $key ], $types ); }
 		list( $per, $page ) = d5b_rc_paging( $a );
-		$all   = array_values( (array) wp_get_post_revisions( $p->ID ) );
+		// Only the ids of this page come from the database; the revisions themselves are loaded one page at a time.
+		$q = new WP_Query( array( 'post_type' => 'revision', 'post_parent' => $p->ID, 'post_status' => 'inherit', 'fields' => 'ids', 'posts_per_page' => $per, 'paged' => $page, 'orderby' => 'date ID', 'order' => 'DESC', 'ignore_sticky_posts' => true ) );
 		$items = array();
-		foreach ( array_slice( $all, ( $page - 1 ) * $per, $per ) as $r ) { $items[] = d5b_rc_revision_row( $r ); }
-		return array( 'post_id' => (int) $p->ID, 'items' => $items, 'total' => count( $all ), 'page' => $page, 'per_page' => $per, 'total_pages' => max( 1, (int) ceil( count( $all ) / $per ) ) );
+		foreach ( (array) $q->posts as $rid ) {
+			$r = get_post( (int) $rid );
+			if ( is_object( $r ) && 'revision' === $r->post_type ) { $items[] = d5b_rc_revision_row( $r ); }
+		}
+		$total = (int) $q->found_posts;
+		return array( 'post_id' => (int) $p->ID, 'items' => $items, 'total' => $total, 'page' => $page, 'per_page' => $per, 'total_pages' => max( 1, (int) ceil( $total / $per ) ) );
 	}
 
 	function d5b_rc_h_posts_revisions( array $in ) { return d5b_rc_revisions_for( $in, 'id', array( 'post' ) ); }
@@ -190,7 +215,11 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 		$a = d5b_rc_args( $in, array( 'id' => 'id' ), array( 'id' ) );
 		if ( is_wp_error( $a ) ) { return $a; }
 		$r = d5b_rc_revision( $a['id'] );
-		return null === $r ? new WP_Error( 'not_found', 'No readable revision with that id.' ) : d5b_rc_revision_detail( $r );
+		if ( null === $r ) {
+			$raw = d5b_rc_id_of( $a['id'] ) > 0 ? get_post( d5b_rc_id_of( $a['id'] ) ) : null;
+			return ( is_object( $raw ) && 'revision' === $raw->post_type ) ? d5b_rc_deny( $raw->post_parent, null ) : new WP_Error( 'not_found', 'No readable revision with that id.' );
+		}
+		return d5b_rc_revision_detail( $r );
 	}
 
 	/** One side of a comparison: a revision, or the live post itself. @return array|null the detail row */
@@ -207,7 +236,14 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 		if ( is_wp_error( $a ) ) { return $a; }
 		$from = d5b_rc_side( $a['from'] );
 		$to   = d5b_rc_side( $a['to'] );
-		if ( null === $from || null === $to ) { return new WP_Error( 'not_found', 'No editable revision or post with that id.' ); }
+		if ( null === $from || null === $to ) {
+			foreach ( array( $a['from'], $a['to'] ) as $one ) {
+				$raw = get_post( (int) $one );
+				$e   = d5b_rc_deny( is_object( $raw ) && 'revision' === $raw->post_type ? $raw->post_parent : $one, null );
+				if ( 'not_allowed' === $e->get_error_code() ) { return $e; }
+			}
+			return new WP_Error( 'not_found', 'No editable revision or post with that id.' );
+		}
 		if ( $from['parent'] !== $to['parent'] ) { return new WP_Error( 'invalid_input', 'The two ids must belong to the same post.' ); }
 		return array( 'from' => $from, 'to' => $to, 'identical' => $from['hash'] === $to['hash'] );
 	}
@@ -238,14 +274,14 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 
 	d5b_rc_def( 'menus-list', 'menus', 'List menus',
 		'Returns the navigation menus: id, name, slug and how many items each holds. Refuses callers who lack the read capability.',
-		array(), array(), 'd5b_rc_h_menus_list', 'd5b_rc_can_list' );
+		array(), array(), 'd5b_rc_h_menus_list', 'd5b_rc_can_menus' );
 	d5b_rc_def( 'menus-items', 'menus', 'List menu items',
 		'Returns the items of one menu in order (title, link, type, parent). Refuses an unknown menu, and leaves out links to pages and posts the caller may not read.',
 		array( 'menu' => array( 'type' => array( 'integer', 'string' ), 'description' => 'The menu id, slug or name (see menus-list).' ) ),
-		array( 'menu' ), 'd5b_rc_h_menus_items', 'd5b_rc_can_list' );
+		array( 'menu' ), 'd5b_rc_h_menus_items', 'd5b_rc_can_menus' );
 	d5b_rc_def( 'menus-locations', 'menus', 'List menu locations',
 		'Returns the menu locations the theme registers and which menu id each one shows (0 when none). Refuses callers who lack the read capability.',
-		array(), array(), 'd5b_rc_h_menus_locations', 'd5b_rc_can_list' );
+		array(), array(), 'd5b_rc_h_menus_locations', 'd5b_rc_can_menus' );
 
 	d5b_rc_def( 'posts-revisions', 'posts', 'List revisions of a post',
 		'Returns the saved revisions of one blog post, newest first (id, date, author, title). Refuses a post the caller may not edit, because revisions can hold text that was never published.',

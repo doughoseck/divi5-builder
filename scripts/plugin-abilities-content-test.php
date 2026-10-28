@@ -251,7 +251,7 @@ check( 'blocks-list / blocks-get return the block with its raw markup and hash; 
 
 // ---- menus
 echo "menus\n";
-site( READER, 3 );
+site( array( 'read', 'edit_theme_options' ), 3 );
 $pg = t_add_post( array( 'post_type' => 'page', 'post_title' => 'About' ) ); $pgp = t_add_post( array( 'post_type' => 'page', 'post_status' => 'private', 'post_author' => 2, 'post_title' => 'Secret page' ) );
 $GLOBALS['T_menus'][7] = (object) array( 'term_id' => 7, 'name' => 'Main', 'slug' => 'main', 'count' => 3 );
 $GLOBALS['T_menu_items'][7] = array(
@@ -297,7 +297,7 @@ check( 'search: a query is required; an unknown or internal type is not_allowed'
 
 // ---- every handler checks its own input
 echo "input checks\n";
-site( EDITOR, 1 );
+site( array_merge( EDITOR, array( 'edit_theme_options' ) ), 1 );
 $bad = array();
 foreach ( $names as $x ) {
 	if ( 'invalid_input' !== code( d5b_ability_run( 'divi5-builder/' . $x, array( 'bogus' => 1 ) ) ) ) { $bad[] = "$x accepts an unknown input"; }
@@ -312,6 +312,130 @@ foreach ( array( 'posts-get' => 'id', 'pages-get' => 'id', 'media-get' => 'id', 
 check( 'every ability refuses an unknown input; every id input refuses -5, "12abc", an array, 0, a float, true and a missing value', array() === $bad, $bad );
 check( 'a string of digits is a good id', is_array( call( 'posts-get', array( 'id' => (string) $pub ) ) ) || 'FORBIDDEN' !== call( 'posts-get', array( 'id' => (string) t_add_post() ) ) );
 check( 'the permission callback never throws on junk input', ( function () use ( $names ) { foreach ( $names as $x ) { foreach ( array( array( 'id' => array( 1 ) ), array( 'type' => array(), 'id' => 'x' ), array( 'from' => -1 ) ) as $in ) { $p = d5b_ability_permit( 'divi5-builder/' . $x, $in ); if ( true !== $p && false !== $p ) { return false; } } } return true; } )() );
+
+
+// ---- fix round 1
+echo "count oracle (the reviewer's probe: a total must never count rows the caller cannot read)\n";
+function leaked_total( $r ) { return is_array( $r ) && ( ( $r['total'] ?? 0 ) > 0 || ( $r['total_pages'] ?? 0 ) > 1 ); }
+site( READER, 3 );
+t_add_post( array( 'post_status' => 'private', 'post_author' => 2, 'post_title' => 'x', 'post_content' => 'the code is K7Q9' ) );
+t_add_post( array( 'post_status' => 'draft', 'post_author' => 2, 'post_title' => 'y', 'post_content' => 'merger with ACME' ) );
+t_add_post( array( 'post_status' => 'pending', 'post_author' => 2, 'post_title' => 'y2', 'post_content' => 'pending PEND77' ) );
+t_add_post( array( 'post_status' => 'future', 'post_author' => 2, 'post_title' => 'y3', 'post_content' => 'future FUT88' ) );
+t_add_post( array( 'post_status' => 'publish', 'post_author' => 2, 'post_password' => 'pw', 'post_content' => 'pwd-only PIN 4412' ) );
+$oracle = array(); $shown = array();
+foreach ( array( 'K7Q', 'ACME', 'PEND77', 'FUT88', '4412' ) as $w ) {
+	$tries = array( 'search' => call( 'search', array( 'query' => $w ) ) );
+	foreach ( array( 'any', 'draft', 'pending', 'future', 'private', 'publish' ) as $st ) { $tries[ "posts-list $st" ] = call( 'posts-list', array( 'status' => $st, 'search' => $w ) ); }
+	foreach ( $tries as $label => $r ) {
+		if ( ! is_array( $r ) || array() !== ids( $r ) || leaked_total( $r ) ) { $oracle[] = "$label $w => " . json_encode( $r ); }
+	}
+	$shown[] = $w;
+}
+check( 'a subscriber learns nothing from hidden private, draft, pending, future and password posts: no items and no total through search and posts-list (every status)', array() === $oracle, array_slice( $oracle, 0, 3 ) );
+t_add_post( array( 'post_content' => 'visible K7Qvisible' ) );
+check( 'positive control: a matching public post is found, with a total of exactly 1', 1 === call( 'search', array( 'query' => 'K7Q' ) )['total'] && 1 === call( 'posts-list', array( 'search' => 'K7Q' ) )['total'] );
+check( 'the query itself is scoped: no "any", protected posts excluded, drafts limited to the caller', ( function () { call( 'posts-list', array( 'status' => 'any' ) ); $q = end( $GLOBALS['T_queries'] ); call( 'posts-list', array( 'status' => 'draft' ) ); $d = end( $GLOBALS['T_queries'] ); call( 'search', array( 'query' => 'z' ) ); $s = end( $GLOBALS['T_queries'] ); return array( 'publish', 'private' ) === $q['post_status'] && false === $q['has_password'] && 3 === $d['author'] && false === $d['has_password'] && array( 'publish' ) === $s['post_status'] && false === $s['has_password']; } )() );
+check( 'a contributor asking for another author\'s drafts gets an empty page', array() === ids( call( 'posts-list', array( 'status' => 'draft', 'author' => 2 ) ) ) );
+site( array( 'read', 'edit_posts' ), 3 );
+$mine = t_add_post( array( 'post_status' => 'draft', 'post_author' => 3, 'post_content' => 'my K7Q draft' ) ); t_add_post( array( 'post_status' => 'draft', 'post_author' => 2, 'post_content' => 'their K7Q draft' ) );
+$r = call( 'posts-list', array( 'status' => 'draft', 'search' => 'K7Q' ) );
+check( 'a contributor lists only their own drafts, and the total counts only those', array( $mine ) === ids( $r ) && 1 === $r['total'], $r );
+site( EDITOR, 1 );
+t_add_post( array( 'post_status' => 'private', 'post_author' => 2, 'post_content' => 'the code is K7Q9' ) ); t_add_post( array( 'post_status' => 'draft', 'post_author' => 2, 'post_content' => 'ACME deal' ) ); t_add_post( array( 'post_password' => 'pw', 'post_author' => 2, 'post_content' => 'PIN 4412' ) );
+check( 'an editor (edit_others_posts, read_private_posts) does see them, with totals', 1 === call( 'posts-list', array( 'status' => 'any', 'search' => 'K7Q' ) )['total'] && 1 === call( 'posts-list', array( 'status' => 'draft', 'search' => 'ACME' ) )['total'] && 1 === call( 'search', array( 'query' => '4412' ) )['total'] && 1 === call( 'search', array( 'query' => 'K7Q' ) )['total'] );
+site( READER, 3 );
+$pp = t_add_post( array( 'post_status' => 'private', 'post_author' => 2 ) );
+t_add_post( array( 'post_type' => 'attachment', 'post_status' => 'inherit', 'post_parent' => $pp, 'post_title' => 'M9Zsecret', 'post_mime_type' => 'image/png' ) );
+$r = call( 'media-list', array( 'search' => 'M9Z' ) );
+check( 'media-list: a file under a private post gives a subscriber no item and no total', array() === ids( $r ) && ! array_key_exists( 'total', $r ) && ! array_key_exists( 'total_pages', $r ), $r );
+site( EDITOR, 1 );
+check( 'media-list never reports a total (the parent check happens after the query)', ! array_key_exists( 'total', call( 'media-list' ) ) );
+
+echo "belt and braces: a total never survives a dropped item\n";
+site( READER, 3 );
+t_add_post( array( 'post_status' => 'draft', 'post_author' => 2 ) ); t_add_post();
+$r = d5b_rc_list( array( 'post_status' => array( 'publish', 'draft' ) ), array( 'post' ), array() );
+check( 'd5b_rc_list: when the PHP check drops an item (a query that was not scoped), total and total_pages are left out', 1 === count( $r['items'] ) && ! array_key_exists( 'total', $r ) && ! array_key_exists( 'total_pages', $r ), $r );
+
+echo "strictest switch wins\n";
+site( EDITOR, 1 );
+d5b_abilities_set_category( 'pages', false, false, 'tester' ); d5b_abilities_set_category( 'posts', false, false, 'tester' );
+$pg = t_add_post( array( 'post_type' => 'page', 'post_content' => 'PAGE BODY', 'post_author' => 2, 'post_status' => 'private' ) );
+$po = t_add_post( array( 'post_content' => 'POST BODY', 'post_author' => 1 ) );
+$pg_rev = t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $pg, 'post_content' => 'old page' ) );
+$po_rev = t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $po, 'post_content' => 'old post' ) );
+check( 'pages and posts off: revisions-compare on a page (live/live, rev/live) returns nothing', 'FORBIDDEN' === call( 'revisions-compare', array( 'from' => $pg, 'to' => $pg ) ) && 'FORBIDDEN' === call( 'revisions-compare', array( 'from' => $pg_rev, 'to' => $pg ) ) && 'not_allowed' === code( d5b_ability_run( 'divi5-builder/revisions-compare', array( 'from' => $pg, 'to' => $pg ) ) ) );
+check( 'revisions-list / revisions-get / posts-revisions on content of an off category: refused, not_allowed from the handler', 'FORBIDDEN' === call( 'revisions-list', array( 'post_id' => $po ) ) && 'FORBIDDEN' === call( 'revisions-get', array( 'id' => $po_rev ) ) && 'FORBIDDEN' === call( 'posts-revisions', array( 'id' => $po ) ) && 'not_allowed' === code( d5b_ability_run( 'divi5-builder/revisions-list', array( 'post_id' => $po ) ) ) && 'not_allowed' === code( d5b_ability_run( 'divi5-builder/revisions-get', array( 'id' => $po_rev ) ) ) );
+$nq = count( $GLOBALS['T_queries'] );
+check( 'search with types [page] returns nothing; the default search leaves posts and pages out', array() === ids( call( 'search', array( 'query' => 'BODY', 'types' => array( 'page' ) ) ) ) && array() === ids( call( 'search', array( 'query' => 'BODY' ) ) ) );
+check( 'search does not even query a type whose category is off', ( function () use ( $nq ) { foreach ( array_slice( $GLOBALS['T_queries'], $nq ) as $q ) { if ( array_intersect( (array) $q['post_type'], array( 'page', 'post' ) ) ) { return false; } } return true; } )() );
+check( 'meta-get on a post of an off category: refused, not_allowed from the handler', 'FORBIDDEN' === call( 'meta-get', array( 'post_id' => $po ) ) && 'not_allowed' === code( d5b_ability_run( 'divi5-builder/meta-get', array( 'post_id' => $po ) ) ) );
+$cm = t_add_comment( array( 'comment_post_ID' => $po ) );
+check( 'comments on content of an off category are not listed or returned, and the post filter is refused', array() === ids( call( 'comments-list' ) ) && 'FORBIDDEN' === call( 'comments-get', array( 'id' => $cm ) ) && 'FORBIDDEN' === call( 'comments-list', array( 'post' => $po ) ) && 'not_allowed' === code( d5b_ability_run( 'divi5-builder/comments-list', array( 'post' => $po ) ) ) );
+t_add_type( 'book', true, true ); $bk = t_add_post( array( 'post_type' => 'book' ) ); $bk_rev = t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $bk ) );
+check( 'categories that are on still work (a custom item, its meta and revisions)', is_array( call( 'meta-get', array( 'post_id' => $bk ) ) ) && is_array( call( 'revisions-get', array( 'id' => $bk_rev ) ) ) );
+d5b_abilities_set_category( 'cpt', false, false, 'tester' );
+check( 'with cpt off too, a custom item is out of reach through meta-get and revisions', 'FORBIDDEN' === call( 'meta-get', array( 'post_id' => $bk ) ) && 'FORBIDDEN' === call( 'revisions-get', array( 'id' => $bk_rev ) ) );
+d5b_abilities_set_category( 'cpt', true, false, 'tester' );
+site( array_merge( EDITOR, array( 'edit_theme_options' ) ), 1 );
+d5b_abilities_set_category( 'posts', false, false, 'tester' );
+$GLOBALS['T_menus'][8] = (object) array( 'term_id' => 8, 'name' => 'Side', 'slug' => 'side', 'count' => 2 );
+$po = t_add_post( array( 'post_content' => 'POST BODY', 'post_author' => 1 ) );
+$GLOBALS['T_menu_items'][8] = array(
+	(object) array( 'ID' => 81, 'title' => 'Our post', 'url' => '/our-post', 'type' => 'post_type', 'object' => 'post', 'object_id' => $po, 'menu_item_parent' => 0, 'menu_order' => 1 ),
+	(object) array( 'ID' => 82, 'title' => 'Shop', 'url' => 'https://shop.example', 'type' => 'custom', 'object' => 'custom', 'object_id' => 82, 'menu_item_parent' => 0, 'menu_order' => 2 ),
+);
+$mi = call( 'menus-items', array( 'menu' => 'side' ) )['items'];
+check( 'menus-items: a link to a post of an off category keeps its slot but loses title and url; other items are untouched', 2 === count( $mi ) && '' === $mi[0]['title'] && '' === $mi[0]['url'] && 81 === $mi[0]['id'] && 'Shop' === $mi[1]['title'] );
+
+echo "only exposed post types\n";
+site( READER, 3 );
+t_add_type( 'user_request', false, false );
+$ur = t_add_post( array( 'post_type' => 'user_request', 'post_title' => 'victim@example.org' ) ); t_add_meta( $ur, 'note', 'visible?' );
+check( 'meta-get, revisions-list and comments-list refuse a non-public, non-REST type such as user_request', 'FORBIDDEN' === call( 'meta-get', array( 'post_id' => $ur ) ) && 'not_found' === code( d5b_ability_run( 'divi5-builder/meta-get', array( 'post_id' => $ur ) ) ) && 'FORBIDDEN' === call( 'comments-list', array( 'post' => $ur ) ) );
+
+echo "output bounds\n";
+site( READER, 3 );
+$big = t_add_post();
+t_add_meta( $big, 'huge', str_repeat( 'A', 70000 ) ); t_add_meta( $big, 'small', 'ok' );
+$r = call( 'meta-get', array( 'post_id' => $big ) );
+check( 'meta-get: a value over 64 KB is replaced by {_truncated, bytes}; small ones are untouched', is_array( $r ) && is_array( $r['meta']['huge'] ?? null ) && true === $r['meta']['huge']['_truncated'] && $r['meta']['huge']['bytes'] > 70000 && 'ok' === $r['meta']['small'] && false === $r['truncated'], $r );
+$many = t_add_post();
+for ( $i = 0; $i < 50; $i++ ) { t_add_meta( $many, "k$i", str_repeat( 'B', 60000 ) ); }
+$r = call( 'meta-get', array( 'post_id' => $many ) );
+check( 'meta-get: the total is held to 512 KB and truncated is set', is_array( $r ) && true === $r['truncated'] && count( $r['meta'] ) < 10 && strlen( json_encode( $r ) ) < 600000, is_array( $r ) ? array( count( $r['meta'] ), strlen( json_encode( $r ) ) ) : $r );
+$ob = t_add_post(); t_add_meta( $ob, 'obj', new stdClass() ); t_add_meta( $ob, 'inc', unserialize( 'O:11:"NotExisting":0:{}' ) ); t_add_meta( $ob, 'nest', array( 'a' => array( 1, new stdClass() ) ) ); t_add_meta( $ob, 'arr', array( 'x' => 1 ) );
+$r = call( 'meta-get', array( 'post_id' => $ob ) );
+check( 'meta-get: scalars and arrays pass through; objects (also __PHP_Incomplete_Class) become "[object]", even inside arrays', '[object]' === $r['meta']['obj'] && '[object]' === $r['meta']['inc'] && array( 'a' => array( 1, '[object]' ) ) === $r['meta']['nest'] && array( 'x' => 1 ) === $r['meta']['arr'], $r );
+site( EDITOR, 1 );
+$P = t_add_post( array( 'post_author' => 1 ) );
+for ( $i = 0; $i < 130; $i++ ) { t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $P, 'post_content' => "rev $i" ) ); }
+$r = call( 'revisions-list', array( 'post_id' => $P, 'per_page' => 500 ) );
+$q = end( $GLOBALS['T_queries'] );
+check( 'revisions-list pages in the database: 130 revisions, 100 per page, only ids fetched by the query, total 130', is_array( $r ) && 100 === count( $r['items'] ) && 130 === $r['total'] && 'ids' === $q['fields'] && 'revision' === $q['post_type'] && 100 === $q['posts_per_page'] && $P === $q['post_parent'], $q );
+check( 'revisions-list page 2 holds the rest, none repeated', 30 === count( call( 'revisions-list', array( 'post_id' => $P, 'per_page' => 100, 'page' => 2 ) )['items'] ) );
+check( 'revisions-list never loads the whole list (wp_get_post_revisions is not called by the plugin code)', false === strpos( file_get_contents( $dir . '/inc/abilities/read-structure.php' ), 'wp_get_post_revisions(' ) );
+
+echo "minor fixes\n";
+site( EDITOR, 1 );
+$r = d5b_ability_run( 'divi5-builder/posts-list', array( str_repeat( 'x', 65536 ) => 1 ) );
+check( 'the unknown-input error names at most 100 characters of the key', is_wp_error( $r ) && 'invalid_input' === $r->code && strlen( $r->message ) < 250, is_wp_error( $r ) ? strlen( $r->message ) : $r );
+$ok = true; $P = t_add_post( array( 'post_author' => 1 ) );
+foreach ( array( array( 'posts-list', array( 'page' => PHP_INT_MAX ) ), array( 'posts-list', array( 'page' => '99999999999999999999999' ) ), array( 'taxonomy-list', array( 'page' => PHP_INT_MAX ) ), array( 'revisions-list', array( 'post_id' => $P, 'page' => PHP_INT_MAX ) ), array( 'comments-list', array( 'page' => PHP_INT_MAX ) ) ) as $c ) {
+	$r = d5b_ability_run( 'divi5-builder/' . $c[0], $c[1] );
+	if ( ! is_array( $r ) || 100000 !== $r['page'] ) { $ok = false; }
+}
+check( 'page is clamped to 100000 everywhere (no overflow)', $ok );
+site( array( 'read' ), 3 );
+$GLOBALS['T_menus'][7] = (object) array( 'term_id' => 7, 'name' => 'Main', 'slug' => 'main', 'count' => 0 );
+check( 'menus abilities need edit_theme_options: a subscriber is refused all three, and the handlers refuse too', 'FORBIDDEN' === call( 'menus-list' ) && 'FORBIDDEN' === call( 'menus-items', array( 'menu' => 'main' ) ) && 'FORBIDDEN' === call( 'menus-locations' ) && 'forbidden' === code( d5b_ability_run( 'divi5-builder/menus-list', array() ) ) );
+$cp = t_add_post();
+$note = t_add_comment( array( 'comment_post_ID' => $cp, 'comment_type' => 'note', 'comment_content' => 'block note' ) ); $ord = t_add_comment( array( 'comment_post_ID' => $cp, 'comment_type' => 'order_note', 'comment_content' => 'order note' ) );
+$ping = t_add_comment( array( 'comment_post_ID' => $cp, 'comment_type' => 'pingback' ) ); $legacy = t_add_comment( array( 'comment_post_ID' => $cp, 'comment_type' => '' ) ); $norm = t_add_comment( array( 'comment_post_ID' => $cp ) );
+$r = call( 'comments-list' );
+check( 'comments: only comment, pingback, trackback and the legacy empty type; block notes and order notes are excluded from list and get', 3 === count( ids( $r ) ) && array() === array_diff( ids( $r ), array( $norm, $legacy, $ping ) ), ids( $r ) );
+check( 'comments-get refuses a note and an order note', 'FORBIDDEN' === call( 'comments-get', array( 'id' => $note ) ) && 'FORBIDDEN' === call( 'comments-get', array( 'id' => $ord ) ) && is_array( call( 'comments-get', array( 'id' => $ping ) ) ) );
 
 echo "\n" . ( $n - $failed ) . " / $n passed\n";
 exit( $failed ? 1 : 0 );

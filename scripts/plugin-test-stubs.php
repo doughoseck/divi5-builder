@@ -360,6 +360,7 @@ function get_comments( $args = array() ) {
 	$st = $args['status'] ?? 'approve';
 	$rows = array_values( array_filter( $GLOBALS['T_comments'], function ( $c ) use ( $args, $st, $map ) {
 		if ( ! empty( $args['post_id'] ) && (int) $c->comment_post_ID !== (int) $args['post_id'] ) { return false; }
+		if ( ! empty( $args['type__in'] ) && ! in_array( '' === $c->comment_type ? 'comment' : $c->comment_type, $args['type__in'], true ) ) { return false; }
 		return 'all' === $st ? in_array( (string) $c->comment_approved, array( '0', '1' ), true ) : (string) $c->comment_approved === ( $map[ $st ] ?? $st );
 	} ) );
 	if ( ! empty( $args['count'] ) ) { return count( $rows ); }
@@ -375,8 +376,11 @@ function wp_get_post_revisions( $id, $args = array() ) {
 	krsort( $rows );
 	return $rows;
 }
-// WordPress's query, reduced to what the read abilities send: type, status, search, author, parent, category, tag, mime, paging.
-// Every post that matches comes back whoever is asking: filtering by permission is the code under test's job.
+// WordPress's query, reduced to what the read abilities send: type, status, search, author, parent, category, tag, mime, paging,
+// fields=ids, has_password, perm. It copies core's blind spots on purpose (class-wp-query.php): perm=readable narrows ONLY the
+// private status (to the caller's own posts unless they hold read_private_posts); post_status 'any' skips perm altogether;
+// draft, pending and future rows are never narrowed by perm; has_password=false drops protected rows; the search matches
+// protected and private text for any logged-in caller. Everything else comes back whoever is asking.
 class WP_Query {
 	public $posts = array(); public $found_posts = 0; public $max_num_pages = 0; public $query_args = array();
 	function __construct( $a = array() ) {
@@ -385,6 +389,8 @@ class WP_Query {
 		foreach ( $GLOBALS['T_posts'] as $p ) {
 			if ( ! in_array( $p->post_type, $types, true ) || 'auto-draft' === $p->post_status ) { continue; }
 			if ( 'any' === $st ? 'trash' === $p->post_status : ! in_array( $p->post_status, (array) $st, true ) ) { continue; }
+			if ( 'any' !== $st && 'readable' === ( $a['perm'] ?? '' ) && 'private' === $p->post_status && ! t_has_cap( 'read_private_posts' ) && (int) $p->post_author !== (int) $GLOBALS['T_user_id'] ) { continue; }
+			if ( array_key_exists( 'has_password', $a ) && false === $a['has_password'] && '' !== (string) $p->post_password ) { continue; }
 			if ( isset( $a['s'] ) && '' !== $a['s'] && false === stripos( $p->post_title . ' ' . $p->post_content, $a['s'] ) ) { continue; }
 			if ( ! empty( $a['author'] ) && (int) $p->post_author !== (int) $a['author'] ) { continue; }
 			if ( isset( $a['post_parent'] ) && (int) $p->post_parent !== (int) $a['post_parent'] ) { continue; }
@@ -397,5 +403,6 @@ class WP_Query {
 		$this->found_posts = count( $rows );
 		$per = max( 1, (int) ( $a['posts_per_page'] ?? 10 ) ); $this->max_num_pages = (int) ceil( $this->found_posts / $per );
 		$this->posts = array_slice( $rows, ( max( 1, (int) ( $a['paged'] ?? 1 ) ) - 1 ) * $per, $per );
+		if ( 'ids' === ( $a['fields'] ?? '' ) ) { $this->posts = array_map( function ( $p ) { return $p->ID; }, $this->posts ); }
 	}
 }
