@@ -102,6 +102,26 @@ if ( ! function_exists( 'd5b_secret_key_norm' ) ) {
 		return $memo[ $mk ] = d5b_secret_key_decide( $key );
 	}
 
+	/**
+	 * Divi's own global ids: the built-in colour ids (gcid-primary-color ...), UUID ids (gvid-3cf7c930-5f16-...), and the
+	 * random ids (gvid- or gcid- plus letters and digits, no further hyphen: gvid-xdtsp8ywr8). Exact shapes, not a prefix: a
+	 * random id that IS a secret word (gvid-password, gcid-pw, gvid-apikey) or holds a long one (gvid-smtppassword2) is not
+	 * exempt, and neither is gvid-password written with a hyphen anywhere else (gcid-api-key, gcid-smtp-password).
+	 * A random id whose letters merely spell a short secret word by chance (...pw, ...pass...) is exempt: that is the case
+	 * that made variables and colours vanish from the design system about once in 560 ids.
+	 */
+	function d5b_secret_is_divi_id( $key ): bool {
+		if ( ! is_string( $key ) ) { return false; }
+		if ( 1 === preg_match( '/^gcid-(?:primary|secondary|tertiary|heading|body|link|font|header)-color$/iD', $key ) ) { return true; }
+		if ( 1 === preg_match( '/^(?:gvid|gcid)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iD', $key ) ) { return true; }
+		if ( 1 !== preg_match( '/^(?:gvid|gcid)-([a-z0-9]{1,64})$/iD', $key, $m ) ) { return false; }
+		$s = strtolower( $m[1] );
+		if ( ctype_alpha( $s ) && d5b_secret_token_rule( $s, $s ) ) { return false; }
+		foreach ( array_merge( d5b_secret_substrings(), d5b_secret_compounds() ) as $w ) {
+			if ( strlen( $w ) >= 6 && false !== strpos( $s, $w ) ) { return false; }
+		}
+		return true;
+	}
 	/** The rule itself, without the memo. */
 	function d5b_secret_key_decide( $key ): bool {
 		$joined = d5b_secret_key_norm( $key );
@@ -109,7 +129,7 @@ if ( ! function_exists( 'd5b_secret_key_norm' ) ) {
 		// Divi's global ids (gvid-xdtsp8ywr8, gcid-primary-color) are the map keys of the design system. Their random part
 		// is letters and digits by chance, and about 1 id in 560 spells "pw" or another secret word. The exact shape, with
 		// its hyphen, is not a stored secret name: gvid_password, api_key and smtp_pw are not this shape and stay hidden.
-		if ( is_string( $key ) && 1 === preg_match( '/^(?:gvid|gcid)-[a-z0-9-]{1,64}$/iD', $key ) ) { return false; }
+		if ( d5b_secret_is_divi_id( $key ) ) { return false; }
 		foreach ( d5b_secret_substrings() as $w ) { if ( false !== strpos( $joined, $w ) ) { return true; } }
 		// ends in "auth": basicauth, httpauth, smtpauth (author and authority do not end in it)
 		if ( 'auth' === substr( $joined, -4 ) ) { return true; }

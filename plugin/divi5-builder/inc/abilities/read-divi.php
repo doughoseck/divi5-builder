@@ -32,6 +32,11 @@ if ( ! function_exists( 'd5b_dv_h_design_system' ) ) {
 		return in_array( $type, d5b_dv_own_types(), true ) || d5b_rc_type_on( $type );
 	}
 
+	/** The post types builder status may describe: the exposed ones, reusable blocks and Divi's own. Never revisions or internal WordPress types. */
+	function d5b_dv_type_known( string $type ): bool {
+		return in_array( $type, d5b_dv_own_types(), true ) || 'wp_block' === $type || isset( d5b_rc_exposed_types()[ $type ] );
+	}
+
 	/** A WP_Error 'unavailable' when one of the page-building functions is missing (a broken load), else null. */
 	function d5b_dv_need( array $fns ): ?WP_Error {
 		foreach ( $fns as $f ) {
@@ -145,6 +150,9 @@ if ( ! function_exists( 'd5b_dv_h_design_system' ) ) {
 		if ( $id < 1 ) { return null; }
 		$p = get_post( $id );
 		if ( ! is_object( $p ) || ! isset( $p->post_type ) || in_array( (string) $p->post_status, array( 'auto-draft', 'trash' ), true ) ) { return null; }
+		// Only the kinds of post the other abilities may reach, plus Divi's own. A revision (and an autosave, which is one) is refused
+		// outright, as are templates, Custom CSS, menu items and privacy requests: they look the same as a missing id.
+		if ( ! d5b_dv_type_known( (string) $p->post_type ) ) { return null; }
 		if ( ! current_user_can( 'edit_post', $p->ID ) ) { return null; }
 		if ( $strict && ! d5b_dv_type_on( (string) $p->post_type ) ) { return null; }
 		return $p;
