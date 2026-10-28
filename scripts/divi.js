@@ -31,6 +31,10 @@
  * name for any colour (rendered as a global-colour token) and a global font family
  * name. Column widths come from the row layout (fractional flex by default; see COLUMNS/LAYOUT below).
  *
+ * VARIABLES IN ANY VALUE (Divi 5.18): "{{gvid-xxxx}}" becomes that design variable's token and "{{dc:post_author}}"
+ * a dynamic-content token, inside any string: "padding":{"top":"{{gvid-x}}"}, "margin":{"top":"{{gvid-x}} * -1"}
+ * (math is + - * / only, never "×"), "html":"<p>By {{dc:post_author}} · {{gvid-y}}</p>". See expandRefs below.
+ *
  * MODULE SPECS (all styling via settings — colours accept "gcid-*" names):
  *   {"type":"heading","level":"h1","text":"Hi","family":"Outfit","size":"44px","weight":"800","color":"gcid-heading-color","align":"center"}
  *   {"type":"text","html":"<p>Body</p>","size":"18px","color":"gcid-body-color","align":"left","textColor":"light"}
@@ -93,8 +97,40 @@ function dropEmpty(v) {
   }
   return out;
 }
+// ---- Variable references inside any value (issue #45, Divi 5.18) ----
+// In ANY string value of a spec (a number field, a text body, a URL...):
+//   {{gvid-xxxx}}        -> the design variable's token, the form the Visual Builder stores (live 5.18.0 page):
+//                           $variable({"type":"content","value":{"name":"gvid-xxxx","settings":{}}})$
+//   {{dc:post_author}}   -> a dynamic-content token, the same shape with the dynamic-content name (dc() below)
+// So "padding":{"top":"{{gvid-space}}"}, "margin":{"top":"{{gvid-space}} * -1"} (Divi wraps + - * / in calc() at render;
+// "×" is NOT an operator) and "html":"<p>By {{dc:post_author}} · {{gvid-copyright}}</p>" all work. Colours keep their
+// own form: a "gcid-…" name in a colour field. Expanded once, in attrJSON, so every block (raw ones too) gets it.
+const VAR_PLACEHOLDER = /\{\{\s*(gvid-[^}\s]*|dc:[^}\s]*)\s*\}\}/g;
+function expandRefs(v) {
+  if (typeof v === 'string') {
+    if (v.indexOf('{{') < 0) return v;
+    const out = v.replace(VAR_PLACEHOLDER, (all, ref) => {
+      if (ref.startsWith('gvid-')) {
+        if (!/^gvid-[a-z0-9_-]+$/i.test(ref)) throw new Error(`"${all}" is not a variable id (take gvid-… ids from wp.js <site> design-system)`);
+        return dc(ref);
+      }
+      const name = ref.slice(3);
+      if (!/^[a-z][a-z0-9_]*$/.test(name)) throw new Error(`"${all}" is not a dynamic-content name (lowercase letters, digits and _ , e.g. {{dc:post_author}})`);
+      return dc(name);
+    });
+    // Anything still shaped like a placeholder ("{{gvid-a b}}", "{{ dc: x }}") would reach the page as literal text.
+    const left = /\{\{\s*(?:gvid-|dc\s*:)[^}]*\}\}/.exec(out);
+    if (left) throw new Error(`"${left[0]}" is not a variable id or dynamic-content name (use {{gvid-xxxx}} or {{dc:name}}, no spaces)`);
+    return out;
+  }
+  if (Array.isArray(v)) return v.map(expandRefs);
+  if (!v || typeof v !== 'object') return v;
+  const out = {};
+  for (const k of Object.keys(v)) out[k] = expandRefs(v[k]);
+  return out;
+}
 function attrJSON(obj) {
-  return JSON.stringify(dropEmpty(obj))
+  return JSON.stringify(expandRefs(dropEmpty(obj)))
     .replace(/\\\\/g, '\u0000BS\u0000')
     .replace(/\\"/g, '\\u0022')
     .replace(/\u0000BS\u0000/g, '\\u005c')
@@ -1109,7 +1145,35 @@ function checkSpec(spec, kind = 'page') {
     if (kd === 'column' || kd === 'popup' || kd === 'module') kids(o.modules, (x) => (x && x.type === 'row' ? 'row' : 'module'), 'modules');
   };
   visit(spec, kind, kind === 'page' ? 'spec' : 'popup');
+  // Variable math (issue #45): a value with a variable in it and a "×", "÷" or "x" used as an operator.
+  const values = (o, where) => {
+    if (typeof o === 'string') { const w = variableMathWarning(o); if (w) out.push(`${where} = "${o}": ${w}`); return; }
+    if (Array.isArray(o)) { o.forEach((x, i) => values(x, `${where}[${i}]`)); return; }
+    if (o && typeof o === 'object') for (const k of Object.keys(o)) if (!/^[_$]/.test(k)) values(o[k], `${where}.${k}`);
+  };
+  values(spec, kind === 'page' ? 'spec' : 'popup');
   return out;
+}
+
+// Divi 5.18 wraps a value holding a variable in calc() when it has + - * / between operands
+// (StyleLibrary/Utils/Utils.php normalize_variable_math). "×" or "÷" pass through unchanged: calc(var(--gvid-x) × -1)
+// is invalid CSS and the browser drops the whole declaration (measured live: an image margin). Text with a variable in
+// it (mixed text, "Copyright © {{gvid-year}}") is not math and is left alone: only a value that is, apart from its
+// variables, numbers, units, CSS functions and operators is checked. Returns the warning, or null.
+const CSS_WORDS = new Set(['px', 'em', 'rem', 'vw', 'vh', 'vmin', 'vmax', 'svh', 'lvh', 'dvh', 'svw', 'lvw', 'dvw', 'ch', 'ex', 'lh', 'rlh', 'cqw', 'cqh', 'cqi', 'cqb', 'cqmin', 'cqmax',
+  'pt', 'pc', 'cm', 'mm', 'q', 'in', 'deg', 'rad', 'grad', 'turn', 's', 'ms', 'fr', 'calc', 'clamp', 'min', 'max', 'var', 'x']);
+function variableMathWarning(value) {
+  if (typeof value !== 'string') return null;
+  const hasVar = /\$variable\(\{"type":"content","value":\{"name":"gvid-|var\(--gvid-|\{\{\s*gvid-/.test(value);
+  if (!hasVar) return null;
+  const rest = value
+    .replace(/\$variable\(\{"type":"content","value":\{"name":"gvid-[^"]*","settings":\{[^}]*\}\}\}\)\$/g, ' ')
+    .replace(/var\(--gvid-[\w-]*\)/g, ' ').replace(/\{\{\s*gvid-[^}]*\}\}/g, ' ');
+  if (!/^[\s\d.%+\-*/×÷(),a-z]*$/i.test(rest)) return null;                       // text, not a number expression
+  if ((rest.match(/[a-z]+/gi) || []).some((w) => !CSS_WORDS.has(w.toLowerCase()))) return null;
+  const op = /×/.test(rest) ? '×' : /÷/.test(rest) ? '÷' : /(^|[\s\d)])x(?=[\s\d(+-]|$)/i.test(rest) ? 'x' : null;
+  if (!op) return null;
+  return `\`${op}\` is not a CSS operator; Divi only treats + - * / as math. Use \`${op === '÷' ? '/' : '*'}\`.`;
 }
 
 // ---- Checks after compiling (issue #17) ----
@@ -1132,8 +1196,13 @@ function checkAgainstSite(out, site) {
     if (!colors[c]) problems.push(`global colour ${c} does not exist on ${site} (take ids from: wp.js ${site} design-system)`);
     else if (colors[c].status && colors[c].status !== 'active') problems.push(`global colour ${c} ("${colors[c].label}") is ${colors[c].status} on ${site}`);
   }
-  const vars = new Set((Array.isArray(ds.variables) ? ds.variables : Object.values(ds.variables || {}).flatMap((x) => (Array.isArray(x) ? x : Object.values(x || {})))).map((v) => v && v.id).filter(Boolean));
-  for (const v of ids.variables) if (!vars.has(v)) problems.push(`design variable ${v} does not exist on ${site}`);
+  // Variables: by id, wherever they are referenced ({{gvid-…}} placeholders are tokens by now, and a token inside a
+  // calculation or a mixed text still names the id). An archived one is deleted in the builder: report it too.
+  const vars = new Map((Array.isArray(ds.variables) ? ds.variables : Object.values(ds.variables || {}).flatMap((x) => (Array.isArray(x) ? x : Object.values(x || {})))).filter((v) => v && v.id).map((v) => [v.id, v]));
+  for (const v of ids.variables) {
+    if (!vars.has(v)) problems.push(`design variable ${v} does not exist on ${site}`);
+    else if (vars.get(v).status && vars.get(v).status !== 'active') problems.push(`design variable ${v} ("${vars.get(v).label}") is ${vars.get(v).status} on ${site}`);
+  }
   const presets = new Set([...((ds.presets || {}).module || []), ...((ds.presets || {}).group || [])].map((p) => p.id));
   for (const p of ids.presets) if (!presets.has(p)) problems.push(`preset ${p} does not exist on ${site} (take ids from: wp.js ${site} design-system)`);
   return problems;
@@ -1177,4 +1246,4 @@ if (require.main === module) {
 // lines, for splicing into an existing page's content — e.g. replacing a single stale block
 // (a leftover shortcode) without regenerating the section/row/column around it and losing
 // responsive values a spec can't express (buildSection only takes one padding, not per-breakpoint).
-module.exports = { compile, compilePopupCanvas, dc, buildModule, checkSpec, knownKeys };
+module.exports = { compile, compilePopupCanvas, dc, buildModule, checkSpec, knownKeys, expandRefs, variableMathWarning, referencedIds };

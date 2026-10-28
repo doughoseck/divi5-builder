@@ -17,6 +17,7 @@
  * version, from the copy your licence gives you. catalog/ is git-ignored.
  */
 const fs = require('fs'), path = require('path');
+const { variableMathWarning } = require('./divi.js');
 const OUT_DIR = path.join(__dirname, '..', 'catalog'), OUT = path.join(OUT_DIR, 'catalog.json');
 const die = (m) => { console.error('ERROR: ' + m); process.exit(1); };
 
@@ -135,6 +136,8 @@ const MISPLACED = {
 };
 function lint(file, strict) { const cat = load(); const t = fs.readFileSync(file, 'utf8'); const blocks = parseBlocks(t); const errs = [], warns = []; let n = 0;
   for (const b of blocks) { if (b.error) { errs.push(b.error); continue; } if (b.name === 'divi/placeholder') continue; n++; const m = cat.modules[b.name];
+    // Variable math (issue #45): "×", "÷" or "x" next to a variable is not CSS math; Divi 5.18 only wraps + - * / in calc().
+    (function vm(v, p) { if (typeof v === 'string') { const w = variableMathWarning(v); if (w) warns.push(`${b.name}: ${p} = "${v}": ${w}`); } else if (v && typeof v === 'object') for (const k of Object.keys(v)) vm(v[k], p ? `${p}.${k}` : k); })(b.attrs, '');
     if (!b.name.startsWith('divi/')) { warns.push(`${b.name}: not a Divi block, not checked`); continue; }
     if (!m) { errs.push(`${b.name}: no such module in Divi ${cat.diviVersion}`); continue; }
     // A module that declares no elements at all (shortcode-module, global-layout) has free-form attributes: nothing to check.

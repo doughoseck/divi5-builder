@@ -49,5 +49,12 @@ check('image: a shadow on the module element is a WARNING, not an error (it stil
 const blurb = `<!-- wp:divi/placeholder --><!-- wp:divi/section {"builderVersion":"5.13"} --><!-- wp:divi/row {"builderVersion":"5.13"} --><!-- wp:divi/column {"builderVersion":"5.13"} --><!-- wp:divi/blurb {"imageIcon":{"innerContent":{"desktop":{"value":{"useIcon":"on"}}},"decoration":{"sizing":{"desktop":{"value":{"iconFontSize":"30px"}}}}},"builderVersion":"5.13"} --><!-- /wp:divi/blurb --><!-- /wp:divi/column --><!-- /wp:divi/row --><!-- /wp:divi/section --><!-- /wp:divi/placeholder -->`;
 const bl = lint(blurb);
 check('no false alarm: a blurb\'s imageIcon.decoration.sizing (undeclared in module.json, but rendered by BlurbModule.php) lints clean', bl.code === 0 && !/wrong place/.test(bl.out), bl.out);
+// Variable math (issue #45): the page the Visual Builder saved on Divi 5.18.0 has an image margin "<token> × -1",
+// which renders calc(var(--gvid-…) × -1), invalid CSS. A warning (the page still saves and renders the rest).
+const vb518 = fs.readFileSync(path.join(here, 'fixtures', 'vb-5.18.0-variables.html'), 'utf8');
+const vm = lint(vb518);
+check('variable math: the 5.18 page\'s "<token> × -1" is a WARNING with the fix', vm.code === 0 && /warn\s+divi\/image: module\.advanced\.spacing\.desktop\.value\.margin\.top = .* `×` is not a CSS operator; Divi only treats \+ - \* \/ as math\. Use `\*`\./.test(vm.out), vm.out);
+const vmOk = lint(vb518.replace(' × -1', ' * -1'));
+check('variable math: the same page with "*" raises no such warning', vmOk.code === 0 && !/not a CSS operator/.test(vmOk.out), vmOk.out);
 for (const n of ['spec.json', 'clean.html', 'case.html']) try { fs.unlinkSync(tmp(n)); } catch (e) {}
 console.log(failed ? `\n${failed} check(s) FAILED` : '\nall checks passed'); process.exit(failed ? 1 : 0);
