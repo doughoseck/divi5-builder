@@ -153,6 +153,16 @@ On a phone the skill's rules are not loaded, so every rule lives in the ability.
 5. **Descriptions an AI can follow:** every ability's `description` and schema field descriptions say what it does, what it will refuse, and what to do next. `meta.annotations` is set truthfully (`readonly`, `destructive`, `idempotent`).
 6. **Secrets never leave the site:** no password hashes, application passwords, API keys, or secret options in any output, including `options` reads (an allow-list of readable settings) and user records.
 
+### What the secret filter cannot catch
+
+The filter (`inc/abilities/secrets.php`, `scrub.php`, the masker in `audit.php`) hides values by the name they are stored under, by the name beside them, by key=value text and by a few certain shapes (private keys, Stripe keys, JSON Web Tokens, password hashes, bearer tokens). Names are a heuristic, so it is built to hide when in doubt. These are its known limits, accepted rather than chased:
+
+- **Look-alike letters.** A key written with letters from another alphabet (`pаssword` with a Cyrillic а) or full-width letters is not recognised.
+- **Names held only by index.** A value whose name is given only as a number pointing into a separate list (`{ "name": 0, "value": "…", "names": ["password"] }`) is not linked to that name.
+- **Deeply nested names.** The name beside a value is looked for in the same small array and one level down. A name two or more levels below or away from its value (`{ "name": [["password"]], "value": "…" }`) is not seen.
+- **Secrets in prose with no key word.** A secret written into text with no word such as password, token or key before it, and no known shape ("my login is hunter2-x"), passes. Post content (posts, pages, custom items, blocks, revisions, templates, global styles, Custom CSS) gets only the shape check, so that it stays editable; results say `"masked": true` whenever anything was hidden.
+- **Harmless fields get hidden.** Keys or values that merely contain a secret word are hidden too: `pin_color`, `random_seed`, `cookie_notice`, `post_password_required`, and every other short text in a small array where one value names a secret (`{ "name": "smtp password", "host": "…" }` hides the host). Only a short exact list of known-harmless keys (compass, author, layout_key and a few more) is exempt. Text over 256 KB is cut and marked `…[truncated]`.
+
 ## Audit log and change history
 
 - **Storage:** custom tables created on activation and dropped by `uninstall.php`, so the options table stays small. The builder may choose another store if it argues for it in the plan. Multisite: per-site tables.

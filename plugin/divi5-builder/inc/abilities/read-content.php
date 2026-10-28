@@ -310,12 +310,12 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		);
 	}
 
-	/** Adds one read-only definition. The default annotations apply. $report_masked: a get of post-like content (adds "masked": true when the scrubber masked a secret shape in it). */
-	function d5b_rc_def( string $name, string $category, string $label, string $description, array $props, array $required, string $handler, $permission, bool $report_masked = false ): void {
+	/** Adds one read-only definition. The default annotations (read-only, not destructive, idempotent) apply. */
+	function d5b_rc_def( string $name, string $category, string $label, string $description, array $props, array $required, string $handler, $permission ): void {
 		d5b_ability_add( array(
 			'name' => 'divi5-builder/' . $name, 'category' => $category, 'label' => $label, 'description' => $description,
 			'input_schema' => d5b_rc_schema( $props, $required ), 'output_schema' => array( 'type' => 'object' ),
-			'handler' => $handler, 'permission' => $permission, 'report_masked' => $report_masked,
+			'handler' => $handler, 'permission' => $permission,
 		) );
 	}
 
@@ -513,14 +513,14 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		array(), 'd5b_rc_h_posts_list', 'd5b_rc_can_list' );
 	d5b_rc_def( 'posts-get', 'posts', 'Get a post',
 		'Returns one post with its raw content, excerpt, categories, tags and a hash of the content (md5 of the raw content, the stale check for writes). Refuses a post the caller may not read, or one that is not a blog post.',
-		$d5b_rc_id_prop( 'post' ), array( 'id' ), 'd5b_rc_h_posts_get', $d5b_rc_get_perm( array( 'post' ) ), true );
+		$d5b_rc_id_prop( 'post' ), array( 'id' ), 'd5b_rc_h_posts_get', $d5b_rc_get_perm( array( 'post' ) ) );
 	d5b_rc_def( 'pages-list', 'pages', 'List pages',
 		'Returns one page of pages (id, title, slug, status, parent, dates, link). Refuses pages the caller may not read, so drafts and private pages of other people are left out.',
 		array( 'status' => d5b_rc_status_prop(), 'parent' => array( 'type' => 'integer', 'minimum' => 0, 'description' => 'Only the direct children of this page id. Use 0 for top-level pages.' ), 'search' => array( 'type' => 'string', 'description' => 'Only pages whose title or text contains this.' ) ) + d5b_rc_paging_props(),
 		array(), 'd5b_rc_h_pages_list', 'd5b_rc_can_list' );
 	d5b_rc_def( 'pages-get', 'pages', 'Get a page',
 		'Returns one page with its raw content, excerpt, parent and a hash of the content (md5 of the raw content, the stale check for writes). Refuses a page the caller may not read, or an id that is not a page.',
-		$d5b_rc_id_prop( 'page' ), array( 'id' ), 'd5b_rc_h_pages_get', $d5b_rc_get_perm( array( 'page' ) ), true );
+		$d5b_rc_id_prop( 'page' ), array( 'id' ), 'd5b_rc_h_pages_get', $d5b_rc_get_perm( array( 'page' ) ) );
 
 	d5b_rc_def( 'cpt-types', 'cpt', 'List custom post types',
 		'Returns the post types that are public or available in the REST API, with their name and label. Refuses to list the internal types (templates, Divi layouts and the like), which have their own abilities.',
@@ -532,7 +532,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 	d5b_rc_def( 'cpt-get', 'cpt', 'Get a custom post type item',
 		'Returns one item of a custom post type with its raw content and a hash of the content. Refuses internal post types with the code not_allowed, an item of another type, and an item the caller may not read.',
 		array( 'type' => array( 'type' => 'string', 'description' => 'The post type name, for example product or event.' ), 'id' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The id of the item to read.' ) ),
-		array( 'type', 'id' ), 'd5b_rc_h_cpt_get', 'd5b_rc_can_cpt_get', true );
+		array( 'type', 'id' ), 'd5b_rc_h_cpt_get', 'd5b_rc_can_cpt_get' );
 
 	d5b_rc_def( 'media-list', 'media', 'List media',
 		'Returns one page of media library items (id, title, type, file link). Refuses items the caller may not read, such as files attached to a private post.',
@@ -540,7 +540,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		array(), 'd5b_rc_h_media_list', 'd5b_rc_can_list' );
 	d5b_rc_def( 'media-get', 'media', 'Get a media item',
 		'Returns one media item with its alt text, caption, description, file link, every image size and a hash of the description. Refuses an item the caller may not read, or an id that is not media.',
-		$d5b_rc_id_prop( 'media item' ), array( 'id' ), 'd5b_rc_h_media_get', $d5b_rc_get_perm( array( 'attachment' ) ), true );
+		$d5b_rc_id_prop( 'media item' ), array( 'id' ), 'd5b_rc_h_media_get', $d5b_rc_get_perm( array( 'attachment' ) ) );
 
 	d5b_rc_def( 'meta-get', 'meta', 'Get custom fields',
 		'Returns the custom fields (post meta) of one item as an object keyed by field name, including the fields whose name starts with an underscore (Divi keeps its layout data there); values under secret-named keys are removed. Refuses an item the caller may not edit (edit_post, the same rule as the Custom Fields box in wp-admin).',
@@ -552,7 +552,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		array( 'status' => d5b_rc_status_prop() ) + d5b_rc_paging_props(), array(), 'd5b_rc_h_blocks_list', 'd5b_rc_can_list' );
 	d5b_rc_def( 'blocks-get', 'blocks', 'Get a reusable block',
 		'Returns one reusable block with its raw block markup and a hash of the content. Refuses a block the caller may not read, or an id that is not a reusable block.',
-		$d5b_rc_id_prop( 'reusable block' ), array( 'id' ), 'd5b_rc_h_blocks_get', $d5b_rc_get_perm( array( 'wp_block' ) ), true );
+		$d5b_rc_id_prop( 'reusable block' ), array( 'id' ), 'd5b_rc_h_blocks_get', $d5b_rc_get_perm( array( 'wp_block' ) ) );
 
 	d5b_rc_def( 'search', 'search', 'Search the site',
 		'Returns one page of items whose title or text contains the query, each with a short snippet. Refuses items the caller may not read, and post types that are internal or not public.',
@@ -560,4 +560,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		array( 'query' ), 'd5b_rc_h_search', 'd5b_rc_can_list' );
 
 	unset( $d5b_rc_get_perm, $d5b_rc_id_prop );
+
+	// Post-like results: their content fields get value-shape masking only (see d5b_ability_scrub_result).
+	d5b_ability_set_content_keys( array( 'posts-list', 'posts-get', 'pages-list', 'pages-get', 'cpt-list', 'cpt-get', 'blocks-list', 'blocks-get' ) );
 }

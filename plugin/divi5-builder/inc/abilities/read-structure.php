@@ -293,9 +293,12 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 	d5b_rc_def( 'revisions-get', 'revisions', 'Get a revision',
 		'Returns one revision with its raw content and a hash of that content (md5 of the raw content). Refuses a revision of a post the caller may not edit, and an id that is not a revision.',
 		array( 'id' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The revision id.' ) ),
-		array( 'id' ), 'd5b_rc_h_revisions_get', function ( array $in ) { return current_user_can( 'read' ) && null !== d5b_rc_revision( $in['id'] ?? 0 ); }, true );
+		array( 'id' ), 'd5b_rc_h_revisions_get', function ( array $in ) { return current_user_can( 'read' ) && null !== d5b_rc_revision( $in['id'] ?? 0 ); } );
 	d5b_rc_def( 'revisions-compare', 'revisions', 'Compare two revisions',
 		'Returns both versions (content and hash) and whether they are identical. Either id may be a revision or the live post. Refuses ids of different posts, and posts the caller may not edit.',
 		array( 'from' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The older revision id, or the post id.' ), 'to' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The newer revision id, or the post id.' ) ),
-		array( 'from', 'to' ), 'd5b_rc_h_revisions_compare', function ( array $in ) { return current_user_can( 'read' ) && null !== d5b_rc_side( $in['from'] ?? 0 ) && null !== d5b_rc_side( $in['to'] ?? 0 ); }, true );
+		array( 'from', 'to' ), 'd5b_rc_h_revisions_compare', function ( array $in ) { return current_user_can( 'read' ) && null !== d5b_rc_side( $in['from'] ?? 0 ) && null !== d5b_rc_side( $in['to'] ?? 0 ); } );
+
+	// Revisions hold post content: value-shape masking only.
+	d5b_ability_set_content_keys( array( 'posts-revisions', 'revisions-list', 'revisions-get', 'revisions-compare' ) );
 }

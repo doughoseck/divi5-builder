@@ -155,12 +155,12 @@ check( 'the loader lists scrub.php and read-site.php, and secrets.php before aud
 echo "the scrubber\n";
 $k_each = array( 'user_pass', 'user_activation_key', 'session_tokens', '_application_passwords', 'smtp_password', 'mailserver_pass', 'my_secret', 'x_apikey', 'x_api_key', 'API_KEY', 'x_token', 'access_tokens', 'x_salt', 'x_auth_key', 'x_nonce', 'USER_PASS' );
 $in = array(); foreach ( $k_each as $k ) { $in[ $k ] = 'v'; }
-// passenger and compass_dir hold "pass" inside a word, not as a token: the tokenised rule keeps them (round 2).
+// round 3: the key rule is a union with an exact harmless list: passenger is on it, compass_dir is not (holds "pass"), so it goes.
 $in += array( 'title' => 'Keep', 'author' => 'Keep', 'hash' => 'Keep', 'passenger' => 'v', 'compass_dir' => 'v', 7 => 'Keep', 'nested' => array( 'ok' => 1, 'api_key' => 'v', 'deeper' => array( array( 'token' => 'v', 'name' => 'Keep' ) ) ) );
 $out = d5b_ability_scrub( $in );
 $left = array_keys( $out );
 sort( $left );
-$want = array( 7, 'author', 'compass_dir', 'hash', 'nested', 'passenger', 'title' ); sort( $want );
+$want = array( 7, 'author', 'hash', 'nested', 'passenger', 'title' ); sort( $want );
 check( 'every alternative of the key rule removes its key (and nothing else goes)', $left === $want, $left );
 check( 'the scrubber recurses through nested arrays and lists', array( 'ok' => 1, 'deeper' => array( array( 'name' => 'Keep' ) ) ) === $out['nested'], $out['nested'] );
 foreach ( array( 'pass$ (smtp_password)' => 'smtp_password', 'secret' => 'my_secret', 'api_?key' => 'x_apikey', 'token' => 'x_token', 'salt' => 'x_salt', 'auth_key' => 'x_auth_key', 'nonce' => 'x_nonce', 'user_pass' => 'user_pass', 'user_activation_key' => 'user_activation_key', 'session_tokens' => 'session_tokens', '_application_passwords' => '_application_passwords' ) as $why => $key ) {
@@ -227,7 +227,8 @@ foreach ( $shapes as $label => $c ) {
 	check( "value shape masked in a string, also under a numeric key: $label (the rest of the text kept)", $ok, $o );
 }
 $prose = array( 'The price is $5 and $10.', 'Bearer of good news', 'eyJ is not a token', 'sk_live_short', '-----BEGIN PUBLIC KEY-----abc', 'a $P$ sign', 'Pay $2y now' );
-check( 'ordinary text with look-alike bits is left alone', $prose === d5b_ability_scrub( $prose ), d5b_ability_scrub( $prose ) );
+$prose_out = array_map( function ( $p ) { return d5b_ability_scrub( array( 'v' => $p ) )['v']; }, $prose ); // one per array: a list holding sk_live_short would be a named row (round 3)
+check( 'ordinary text with look-alike bits is left alone', $prose === $prose_out, $prose_out );
 check( 'a scalar string result is masked too', '[redacted]' === d5b_ability_scrub( $jwt ) );
 
 echo "WP_Error on the way out\n";
@@ -253,7 +254,7 @@ $must2 = array_merge( $must, array( 'basic_auth', 'http_auth', 'proxy_authorizat
 	'smtpPassword', 'apiKey', 'oauth2_token', 'access_key', 'secretKey' ) );
 $missed = array_values( array_filter( $must2, function ( $k ) { return ! d5b_is_secret_key( $k ); } ) );
 check( 'must-scrub (round 1 list + 21 more): every key is a secret', array() === $missed, $missed );
-$should_keep = array( 'compass', 'bypass_cache', 'passenger', 'footprint', 'hotpink', 'screenshot_path', 'basalt', 'monkey', 'turkey', 'hotkey', 'layout_key', 'module_key', 'author', 'author_id', 'authority', 'authorized' );
+$should_keep = array( 'compass', 'bypass_cache', 'passenger', 'footprint', 'hotpink', 'basalt', 'monkey', 'turkey', 'hotkey', 'layout_key', 'module_key', 'author', 'author_id', 'authority', 'authorized' );
 $eaten2 = array_values( array_filter( $should_keep, 'd5b_is_secret_key' ) );
 check( 'should-keep: ordinary keys with a secret word inside another word stay', array() === $eaten2, $eaten2 );
 check( 'tokens: split at separators, camelCase and digits', array( 'smtp', 'pw' ) === d5b_secret_key_tokens( 'smtp_pw' ) && array( 'api', 'key' ) === d5b_secret_key_tokens( 'apiKey' ) && array( 'proxy', 'authorization' ) === d5b_secret_key_tokens( 'Proxy-Authorization' ) && array( 'oauth', '2' ) === d5b_secret_key_tokens( 'oauth2' ) );
@@ -286,8 +287,8 @@ $pairs2 = array(
 );
 $leaked = array(); foreach ( $pairs2 as $label => $v ) { if ( false !== strpos( (string) json_encode( d5b_ability_scrub( array( 'x' => $v ) ) ), 'S3CR3T' ) ) { $leaked[] = $label; } }
 check( 'every a9 pair case holds (' . count( $pairs2 ) . ' cases)', array() === $leaked, $leaked );
-$o = d5b_ability_scrub( array( 'names' => array( 'color', 'password' ), 'values' => array( 'red', $S ) ) );
-check( 'parallel lists: only the secret index goes, the rest stays', array( 'color', 'password' ) === $o['names'] && array( 0 => 'red' ) === $o['values'], $o );
+$o = d5b_ability_scrub( array( 'names' => array( 'color', 'size', 'password' ), 'values' => array( 'red', 'XL', $S ) ) );
+check( 'parallel lists: only the secret index goes in the values; the names list itself is a named list (its other names are redacted, the secret label kept)', array( '[redacted]', '[redacted]', 'password' ) === $o['names'] && array( 'red', 'XL', '[redacted]' ) === $o['values'], $o );
 $plainp = array( array( 'name' => 'color', 'value' => 'red' ), array( 'Label' => 'Size', 'Data' => 'XL' ), array( 'title', 'Home' ), array( 'names' => array( 'a' ), 'values' => array( 'b' ) ) );
 check( 'ordinary pairs, two-item lists and parallel lists keep their values', $plainp === d5b_ability_scrub( $plainp ), d5b_ability_scrub( $plainp ) );
 
@@ -318,6 +319,77 @@ check( 'Bearer: "Bearer instrumentalisation" stays; a 20+ token with a digit or 
 $t = microtime( true ); d5b_secret_mask_values( '-----BEGIN PRIVATE KEY-----' . str_repeat( "MIIabc\n", 150000 ) ); d5b_secret_mask_values( str_repeat( '-----BEGIN ' . str_repeat( 'A ', 30 ) . 'X', 900 ) . 'PRIVATE KEY' );
 check( 'PEM masking stays fast on a 1 MB unterminated block and on BEGIN near-misses', microtime( true ) - $t < 1.0, round( ( microtime( true ) - $t ) * 1000 ) . ' ms' );
 
+// ---- round 3: the key rule is the union of tokens and substrings, minus an exact harmless list (break-it a10, a12)
+echo "round 3: key rule = union\n";
+$r3_secret = array(
+	// a12 (the round-2 regression) and a10 section 2
+	'apitoken', 'authtoken', 'bearertoken', 'sessiontoken', 'csrftoken', 'appsecret', 'webhooksecret', 'jwtsecret', 'smtppass', 'dbpass', 'adminpass', 'rootpw', 'passcode', 'apisecret', 'consumersecret',
+	'authsalt', 'oauthtoken', 'smtppwd', 'dbcreds', 'basicauth', 'httpauth', 'otpsecret', 'signingsecret', 'masterkey', 'secretphrase', 'api2key', 'api_2_key',
+	'accesstokens', 'pincode', 'secretkey', 'privatekey', 'accesskey', 'apikeys', 'wpsalt', 'clientsecret', 'mailpassword', 'sessionid', 'sessid', 'phpsessid', 'xauthtoken', 'proxyauthorization',
+	'totp', 'totpkey', 'twofactorsecret', 'recoverycodes', 'backupcodes', 'encryptionkey', 'hashkey', 'pass_word', 'pass-word', 'p_assword', 'pa_ss', 'se_cret', 'to_ken', 'api_k_e_y', 'a_p_i_key',
+	'sec-ret-key', 'auth_or_ization', 'Pass Word', 'pass.word', 'tok en',
+	// a10 section 1
+	'apiKey', 'APIKey', 'ApiKEY', 'APIKEY', 'apiKey2', 'oAuthToken', 'OAuthToken', 'x-Api-Key', 'XApiKey', 'PASSWORD123', 'password1', 'Password_v2', 'pass2', 'pwd1', 'token2', 'v2Token', 'JWTSecret',
+	'jwtSecret', 'SMTPPassword', 'smtpPass', 'dbPWD', 'AWSSecretAccessKey', 'awsAccessKeyId', 'secretAccessKey', 'privateKeyPem', 'clientSecretV2', 'HTTPAuth', 'httpAuthUser', 'BasicAuth', 'MFASeed', 'TOTPSecret',
+	// accepted over-scrub (round 3): short tokens and words stay hidden
+	'pin_color', 'random_seed', 'cookie_notice' );
+$missed3 = array_values( array_filter( $r3_secret, function ( $k ) { return ! d5b_is_secret_key( $k ); } ) );
+check( 'every a12 and a10 section 1-2 key is a secret (' . count( $r3_secret ) . ' keys)', array() === $missed3, $missed3 );
+$harmless = array( 'compass', 'bypass', 'bypass_cache', 'passenger', 'footprint', 'hotpink', 'basalt', 'monkey', 'turkey', 'hotkey', 'author', 'authors', 'author_id', 'author name', 'authority', 'authored', 'authorized', 'layout_key', 'module_key', 'hash', 'meta_key', 'menu_key' );
+$eaten3 = array_values( array_filter( $harmless, 'd5b_is_secret_key' ) );
+check( 'the exact harmless list stays visible (matched on the joined key)', array() === $eaten3, $eaten3 );
+check( 'the harmless list is exact: a longer key holding one of its words is still a secret (compass_dir, bypass_token, passengers)', d5b_is_secret_key( 'compass_dir' ) && d5b_is_secret_key( 'bypass_token' ) && d5b_is_secret_key( 'passengers' ) );
+
+echo "round 3: one general pair rule (break-it a10 section 4)\n";
+$p3 = array(
+	'Name / Value (Title case)' => array( 'Name' => 'Password', 'Value' => $S ), 'nAmE / vAlUe' => array( 'nAmE' => 'api_key', 'vAlUe' => $S ),
+	'"name " (trailing space)' => array( 'name ' => 'password', 'value ' => $S ), 'name with a trailing tab and newline' => array( 'name' => "password\t\n", 'value' => $S ), 'value field "Value " only' => array( 'name' => 'password', 'Value ' => $S ),
+	'value field "content"' => array( 'name' => 'password', 'content' => $S ), 'value field "text"' => array( 'name' => 'password', 'text' => $S ),
+	'value field "default"' => array( 'name' => 'smtp_password', 'default' => $S ), 'value field "v"' => array( 'k' => 'password', 'v' => $S ),
+	'name field "slug"' => array( 'slug' => 'api-key', 'value' => $S ), 'name field "option_key"' => array( 'option_key' => 'api_key', 'value' => $S ),
+	'name field "param"' => array( 'param' => 'password', 'value' => $S ), 'name field "header"' => array( 'header' => 'Authorization', 'value' => 'Basic ' . $S ),
+	'name in 2nd item of name array' => array( 'name' => array( 'label', 'password' ), 'value' => $S ), 'name as object' => array( 'name' => (object) array( 'n' => 'password' ), 'value' => $S ),
+	'3-item list [name,value,x]' => array( array( 'password', $S, 'x' ) ), 'list [value,name]' => array( array( $S, 'password' ) ),
+	'keys/vals parallel' => array( 'keys' => array( 'password' ), 'vals' => array( $S ) ), 'labels/values parallel' => array( 'labels' => array( 'password' ), 'values' => array( $S ) ),
+	'Names/Values parallel (caps)' => array( 'Names' => array( 'password' ), 'Values' => array( $S ) ), 'names assoc, values assoc' => array( 'names' => array( 'a' => 'password' ), 'values' => array( 'a' => $S ) ),
+	'names list, values keyed by name' => array( 'names' => array( 'password' ), 'values' => array( 'password' => $S ) ),
+	'widget-like row' => array( 'id_base' => 'custom_html', 'settings' => array( array( 'title' => 'x', 'content' => 'api_key=' . $S ) ) ),
+);
+$deep30 = array( 'name' => 'password', 'value' => $S ); for ( $i = 0; $i < 30; $i++ ) { $deep30 = array( 'n' => $deep30 ); } $p3['pair 30 levels deep'] = $deep30;
+$deep33 = array( 'name' => 'password', 'value' => $S ); for ( $i = 0; $i < 33; $i++ ) { $deep33 = array( 'n' => $deep33 ); } $p3['pair at depth 33'] = $deep33;
+// Not ported as "held": a name given only as an index into a separate names list ('name is int index') and a name two levels
+// below its value ('name 2 levels down'). They are the documented limits of the pair rule.
+$leak3 = array(); foreach ( $p3 as $label => $v ) { if ( false !== strpos( (string) json_encode( d5b_ability_scrub( array( 'x' => $v ) ) ), 'S3CR3T' ) ) { $leak3[] = $label; } }
+check( 'every a10 section 4 pair case holds (' . count( $p3 ) . ' cases)', array() === $leak3, $leak3 );
+$o = d5b_ability_scrub( array( 'name' => 'smtp_password', 'value' => $S, 'enabled' => true, 'port' => 587 ) );
+check( 'the name is kept as a label, the other strings become [redacted], numbers and booleans stay', array( 'name' => 'smtp_password', 'value' => '[redacted]', 'enabled' => true, 'port' => 587 ) === $o, $o );
+$rows = d5b_ability_scrub( array( array( 'name' => 'smtp_password', 'value' => $S ), array( 'name' => 'color', 'value' => 'red' ) ) );
+check( 'a list of rows: one secret row does not redact its neighbour row', 'red' === $rows[1]['value'] && 'color' === $rows[1]['name'], $rows );
+$nine = array( 'a' => 'password', 'b' => 'x1', 'c' => 'x2', 'd' => 'x3', 'e' => 'x4', 'f' => 'x5', 'g' => 'x6', 'h' => 'x7', 'i' => 'x8' );
+check( 'an array of more than 8 entries is a record, not a pair: a value that happens to name a secret does not redact it', $nine === d5b_ability_scrub( $nine ), d5b_ability_scrub( $nine ) );
+
+echo "round 3: free text in successful results (break-it a10 section 5)\n";
+foreach ( array( 'smtp password=' . $S, 'Authorization: Basic ' . $S, 'curl -u admin:' . $S, "define('DB_PASSWORD','$S');" ) as $t ) {
+	$o = d5b_ability_scrub( array( 'content' => $t ) );
+	check( 'a result string through the full masker: ' . substr( $t, 0, 30 ), false === strpos( json_encode( $o ), 'S3CR3T' ), $o );
+}
+site( ADMIN, 1 );
+$GLOBALS['T_sidebars'] = array( 'sidebar-1' => array( 'custom_html-2' ) ); $GLOBALS['wp_registered_sidebars'] = array( 'sidebar-1' => array( 'name' => 'Main' ) );
+$GLOBALS['T_options']['widget_custom_html'] = array( 2 => array( 'title' => 'x', 'content' => '<script src="https://x/?api_key=' . $S . '"></script>' ) );
+$r = call( 'widgets-list' );
+check( 'widgets are not post content: a widget\'s content goes through the full masker, and masked: true', is_array( $r ) && false === strpos( json_encode( $r ), 'S3CR3T' ) && true === ( $r['masked'] ?? null ), $r );
+$cp = t_add_post( array( 'post_content' => 'Docs: set smtp password=hunter2 in the form.', 'post_title' => 'password=hunter2' ) );
+$r = call( 'posts-get', array( 'id' => $cp ) );
+check( 'post content keeps free text (value shapes only, so it stays editable); the title is not content and is masked; masked: true', is_array( $r ) && 'Docs: set smtp password=hunter2 in the form.' === $r['content'] && false === strpos( $r['title'], 'hunter2' ) && true === $r['masked'], $r );
+$cp2 = t_add_post( array( 'post_content' => 'Docs: set smtp password=hunter2 in the form.' ) );
+$r = call( 'posts-get', array( 'id' => $cp2 ) );
+check( '... and free text in content alone does not set masked (nothing returned was changed)', is_array( $r ) && ! array_key_exists( 'masked', $r ), $r );
+$r = call( 'media-get', array( 'id' => t_add_post( array( 'post_type' => 'attachment', 'post_status' => 'inherit', 'post_content' => 'token=' . $S ) ) ) );
+check( 'media is not in the post-like list: its description goes through the full masker', is_array( $r ) && false === strpos( json_encode( $r ), 'S3CR3T' ) && true === $r['masked'], $r );
+$big = str_repeat( 'lorem ', 50000 ) . 'password=' . $S;
+$o = d5b_ability_scrub( array( 'note' => $big ) );
+check( 'a result string over 256 KB: cut at 256 KB with …[truncated], nothing after the cut passes through', false === strpos( $o['note'], 'S3CR3T' ) && '…[truncated]' === substr( $o['note'], -strlen( '…[truncated]' ) ) );
+
 // ---- the wrapper applies it
 echo "the wrapper applies the scrubber\n";
 site( ADMIN );
@@ -339,7 +411,7 @@ $GLOBALS['T_options']['blogname'] = 'Test Site';
 $GLOBALS['T_options']['admin_email'] = 'admin@example.org';
 $GLOBALS['T_options']['active_plugins'] = array( 'a/a.php' );
 $GLOBALS['T_plugins'] = array( 'a/a.php' => array( 'Name' => 'Alpha', 'Version' => '1.0' ), 'b/b.php' => array( 'Name' => 'Beta', 'Version' => '2.0' ) );
-$GLOBALS['T_theme_mods'] = array( 'header_color' => '#ff0000', 'smtp_password' => 'sv-smtp', 'my_secret' => 'sv-secret', 'x_token' => 'sv-token', 'x_salt' => 'sv-salt', 'x_auth_key' => 'sv-authkey', 'x_nonce' => 'sv-nonce', 'x_apikey' => 'sv-apikey' );
+$GLOBALS['T_theme_mods'] = array( 'header_color' => '#ff0000', 'smtp_password' => 'sv-smtp', 'my_secret' => 'sv-v2', 'x_token' => 'sv-v3', 'x_salt' => 'sv-v4', 'x_auth_key' => 'sv-v5', 'x_nonce' => 'sv-v6', 'x_apikey' => 'sv-v7' );
 $GLOBALS['T_custom_css'] = (object) array( 'post_content' => 'body { color: red; }' );
 $GLOBALS['T_sidebars'] = array( 'sidebar-1' => array( 'text-3' ), 'wp_inactive_widgets' => array(), 'array_version' => 3 );
 $GLOBALS['wp_registered_sidebars'] = array( 'sidebar-1' => array( 'name' => 'Main sidebar' ) );
@@ -371,7 +443,7 @@ check( 'planted: widgets-list\'s handler returns the widget instance with its ap
 check( 'planted: the debug log file holds hunter2', false !== strpos( (string) file_get_contents( LOGFILE ), 'hunter2' ) );
 
 $forbidden_keys   = array( 'user_pass', 'user_activation_key', 'session_tokens', '_application_passwords', 'mailserver_pass', 'smtp_password', 'api_key', '_api_key', 'my_secret', 'x_token', 'x_salt', 'x_auth_key', 'x_nonce', 'x_apikey' );
-$forbidden_values = array( 'hunter2', 'APPPWD-PLANTED-123', 'actkey-xyz', 'SESSTOK', 'sv-smtp', 'sv-secret', 'sv-token', 'sv-salt', 'sv-authkey', 'sv-nonce', 'sv-apikey', 'sv-widget-key', 'sv-postmeta', 'sv-bearer-abc', 'sv-cron-arg' );
+$forbidden_values = array( 'hunter2', 'APPPWD-PLANTED-123', 'actkey-xyz', 'SESSTOK', 'sv-smtp', 'sv-secret', 'sv-token', 'sv-salt', 'sv-authkey', 'sv-nonce', 'sv-apikey', 'sv-v2', 'sv-v3', 'sv-v4', 'sv-v5', 'sv-v6', 'sv-v7', 'sv-widget-key', 'sv-postmeta', 'sv-bearer-abc', 'sv-cron-arg' );
 $writes_before = count( $GLOBALS['T_writes'] );
 $ran = 0; $leaks = array(); $noinput = array(); $errs = array(); $live = 0;
 foreach ( array_keys( d5b_ability_defs() ) as $full ) {
@@ -631,9 +703,12 @@ check( 'templates-list, templates-get, global-styles-get, appearance-get as edit
 echo "meta-get, deep paging and descriptions\n";
 site( ADMIN, 1 );
 $mp = t_add_post( array( 'post_author' => 2 ) );
-t_add_meta( $mp, 'license_key', 'S3CR3T-VALUE' ); t_add_meta( $mp, 'pwd', 'S3CR3T-VALUE' ); t_add_meta( $mp, 'authorization', 'Bearer S3CR3T-VALUE' ); t_add_meta( $mp, 'customer_phone', '+27 82 000 0000' ); t_add_meta( $mp, '_internal_note', 'protected value' );
+t_add_meta( $mp, 'license_key', 'S3CR3T-VALUE' ); t_add_meta( $mp, 'pwd', 'S3CR3T-VALUE' ); t_add_meta( $mp, 'authorization', 'Bearer S3CR3T-VALUE/x=' ); t_add_meta( $mp, 'customer_phone', '+27 82 000 0000' ); t_add_meta( $mp, '_internal_note', 'protected value' );
 $r = call( 'meta-get', array( 'post_id' => $mp ) );
 check( 'meta-get as admin: license_key, pwd and authorization are removed; ordinary and _ fields come through', is_array( $r ) && false === strpos( json_encode( $r ), 'S3CR3T' ) && '+27 82 000 0000' === $r['meta']['customer_phone'] && 'protected value' === $r['meta']['_internal_note'] && array( 'customer_phone', '_internal_note' ) === array_keys( $r['meta'] ), $r );
+t_add_meta( $mp, 'note2', 'smtp password' );
+$r = call( 'meta-get', array( 'post_id' => $mp ) );
+check( 'fail-safe: a small meta map holding a value that names a secret ("smtp password") hides its neighbours, keeps the label', is_array( $r ) && '[redacted]' === $r['meta']['customer_phone'] && 'smtp password' === $r['meta']['note2'] && true === $r['masked'], $r );
 // deep paging in the site abilities too
 $GLOBALS['T_users'] = array( 1 => mkuser( 1, 'alice', array( 'administrator' ) ) );
 check( 'deep paging: users-list and templates-list refuse a page more than 10,000 items in (page_too_deep), page 101 x 100 still answers', 'page_too_deep' === code( call( 'users-list', array( 'page' => 102, 'per_page' => 100 ) ) ) && 'page_too_deep' === code( call( 'templates-list', array( 'page' => 600 ) ) ) && is_array( call( 'users-list', array( 'page' => 101, 'per_page' => 100 ) ) ) );
@@ -643,10 +718,10 @@ check( 'descriptions: appearance-get and widgets-list say "values under secret-n
 check( 'descriptions: menus-list and menus-locations name edit_theme_options; core-version names manage_network; meta-get names edit_post', false !== strpos( $d( 'menus-list' ), 'edit_theme_options' ) && false !== strpos( $d( 'menus-locations' ), 'edit_theme_options' ) && false !== strpos( $d( 'core-version' ), 'manage_network' ) && false === strpos( $d( 'core-version' ), 'update_core' ) && false !== strpos( $d( 'meta-get' ), 'edit_post' ) );
 
 // ---- round 2: get abilities say when the scrubber masked something (break-it Minor 6)
-echo "round 2: masked flag on gets of post-like content\n";
-$flagged = array_keys( array_filter( d5b_ability_defs(), function ( $x ) { return ! empty( $x['report_masked'] ); } ) ); sort( $flagged );
-$want_flag = array_map( function ( $x ) { return 'divi5-builder/' . $x; }, array( 'blocks-get', 'cpt-get', 'media-get', 'pages-get', 'posts-get', 'revisions-compare', 'revisions-get', 'templates-get' ) );
-check( 'exactly the gets of post-like content report masking', $want_flag === $flagged, $flagged );
+echo "round 2/3: masked flag; post-content fields (round 3: content_keys per definition)\n";
+$flagged = array_keys( array_filter( d5b_ability_defs(), function ( $x ) { return ! empty( $x['content_keys'] ); } ) ); sort( $flagged );
+$want_flag = array_map( function ( $x ) { return 'divi5-builder/' . $x; }, array( 'appearance-get', 'blocks-get', 'blocks-list', 'cpt-get', 'cpt-list', 'global-styles-get', 'pages-get', 'pages-list', 'posts-get', 'posts-list', 'posts-revisions', 'revisions-compare', 'revisions-get', 'revisions-list', 'templates-get', 'templates-list' ) );
+check( 'exactly the post-like abilities (posts, pages, cpt, blocks, revisions, templates, global styles, appearance) name content keys', $want_flag === $flagged, $flagged );
 site( ADMIN, 1 );
 $hashy = 'Price $2y$10$abcdefghijklmnopqrstuv end';
 t_add_type( 'book' );
@@ -666,7 +741,9 @@ check( 'a masked secret shape in the content: every get of post-like content ret
 $r = call( 'posts-get', array( 'id' => $plain ) );
 check( 'nothing masked: no "masked" key at all', is_array( $r ) && ! array_key_exists( 'masked', $r ), $r );
 $r = call( 'search', array( 'query' => 'Price' ) );
-check( 'a list ability never carries "masked", even when a snippet in it was masked (only the gets that a write can build on)', is_array( $r ) && ! array_key_exists( 'masked', $r ) && false !== strpos( json_encode( $r ), '[redacted]' ), $r );
+check( 'round 3: every ability says masked: true when a string was masked (here a search snippet)', is_array( $r ) && true === ( $r['masked'] ?? null ) && false !== strpos( json_encode( $r ), '[redacted]' ), $r );
+$r = call( 'search', array( 'query' => 'Nothing secret' ) );
+check( '... and no "masked" key when nothing was', is_array( $r ) && ! array_key_exists( 'masked', $r ), $r );
 $r = call( 'posts-get', array( 'id' => $mpost ) ); $r2 = call( 'posts-get', array( 'id' => $plain ) );
 check( 'the flag is per call (a masked read before does not flag the next clean one)', true === $r['masked'] && ! array_key_exists( 'masked', $r2 ) );
 

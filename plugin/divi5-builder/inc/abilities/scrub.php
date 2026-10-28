@@ -1,53 +1,97 @@
 <?php
 /**
  * The secret scrubber the run wrapper applies to every ability result and every WP_Error it returns (#32). This file only
- * defines functions; the rule itself is d5b_is_secret_key() in secrets.php.
+ * defines functions; the key rule itself is d5b_is_secret_key() in secrets.php. The rules are heuristics, so they are
+ * built to hide when in doubt: a hidden harmless field costs little, a leaked secret a lot.
  *
  * - By KEY: a value stored under a key that names a secret is removed, wherever it sits in the result.
- * - By PAIR: in an array whose name field (key, name, option, option_name, meta_key, id, label, field, setting, title, in any
- *   letter case) names a secret, every value field (value, values, val, data, option_value, meta_value) is removed too.
- *   A two-item list [ name, value ] loses its value, and parallel names/values (or keys/values) lists lose the value at
- *   each index whose name is a secret.
- * - By SHAPE: every string is checked for the few values that are a secret wherever they appear (a private key, a Stripe
- *   secret key, a JSON Web Token, a password hash, a bearer token); only that part becomes [redacted].
- * Free text under an ordinary key ("password=..." in a sentence) is not caught in results; a WP_Error's messages and data
- * go through the free-text masker as well (d5b_ability_scrub_error).
+ * - By NAME BESIDE IT: in any array of at most 8 entries where a direct entry is a string that looks like an identifier
+ *   and names a secret ("smtp_password", "Authorization"), every other direct string entry becomes [redacted]. The name
+ *   is kept so the reader sees the label. A name one level down (a small array holding it) counts too.
+ * - PARALLEL LISTS: two or more array entries with the same keys; where one holds a secret name at an index, that index
+ *   is [redacted] in the others (names/values, keys/vals, labels/values, whatever they are called).
+ * - FREE TEXT: every string goes through the value shapes and the free-text masker (key=value, key: value, headers,
+ *   define(), curl -u ...). Post content (the content keys of the post-like abilities) gets the value shapes only, so it
+ *   stays editable.
+ * Every string changed this way is counted (d5b_secret_masked_count), and the wrapper adds "masked": true.
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( ! function_exists( 'd5b_ability_scrub_pair' ) ) {
-	function d5b_ability_scrub_name_fields(): array { return array( 'key', 'name', 'option', 'option_name', 'meta_key', 'id', 'label', 'field', 'setting', 'title' ); }
-	function d5b_ability_scrub_value_fields(): array { return array( 'value', 'values', 'val', 'data', 'option_value', 'meta_value' ); }
-
-	/** A name field's value as text: a string, or the first string in an array (one level). */
-	function d5b_ability_scrub_name_of( $v ): ?string {
-		if ( is_string( $v ) || is_int( $v ) ) { return (string) $v; }
-		if ( is_array( $v ) ) { foreach ( $v as $x ) { if ( is_string( $x ) ) { return $x; } } }
-		return null;
+if ( ! function_exists( 'd5b_ability_scrub_secret_name' ) ) {
+	/** True when $v is a string that looks like an identifier (letters, digits, space _ . -, up to 64) and names a secret. */
+	function d5b_ability_scrub_secret_name( $v ): bool {
+		if ( ! is_string( $v ) ) { return false; }
+		$t = trim( $v );
+		return 1 === preg_match( '/^[A-Za-z0-9 _.\-]{1,64}$/', $t ) && d5b_is_secret_key( $t );
 	}
 
-	/** True when $row holds a name field (any letter case) whose value names a secret. */
-	function d5b_ability_scrub_pair( array $row ): bool {
-		foreach ( $row as $k => $v ) {
-			if ( ! is_string( $k ) || ! in_array( strtolower( $k ), d5b_ability_scrub_name_fields(), true ) ) { continue; }
-			$name = d5b_ability_scrub_name_of( $v );
-			if ( null !== $name && d5b_is_secret_key( $name ) ) { return true; }
+	/** True when $v (an array of at most 2 entries: ['label', 'password'], { n: 'password' }) holds a secret name directly. */
+	function d5b_ability_scrub_holds_name( $v ): bool {
+		if ( is_object( $v ) ) { $v = get_object_vars( $v ); }
+		if ( ! is_array( $v ) || count( $v ) > 2 ) { return false; }
+		foreach ( $v as $x ) { if ( d5b_ability_scrub_secret_name( $x ) ) { return true; } }
+		return false;
+	}
+
+	/** True for a list (keys 0..n-1). */
+	function d5b_ability_scrub_is_list( array $a ): bool {
+		return array() === $a || array_keys( $a ) === range( 0, count( $a ) - 1 );
+	}
+
+	/**
+	 * True when $row (at most 8 entries) holds a secret name directly, or, in a keyed row, one level down in a tiny array
+	 * ({ name: ['label', 'password'] }). A list of rows is never "named" by what its rows hold, so one secret pair in a
+	 * list does not redact its neighbours.
+	 */
+	function d5b_ability_scrub_is_named( array $row ): bool {
+		if ( count( $row ) > 8 ) { return false; }
+		$keyed = ! d5b_ability_scrub_is_list( $row );
+		foreach ( $row as $v ) {
+			if ( d5b_ability_scrub_secret_name( $v ) || ( $keyed && d5b_ability_scrub_holds_name( $v ) ) ) { return true; }
 		}
 		return false;
 	}
 
-	/** Parallel names/values (or keys/values) lists: the value at each index whose name is a secret is dropped. */
+	/** Every string in $v becomes [redacted] (the value side of a named row, however deep); numbers and booleans stay. */
+	function d5b_ability_scrub_redact_all( $v, int $depth = 0 ) {
+		if ( is_object( $v ) ) { $v = get_object_vars( $v ); }
+		if ( is_string( $v ) ) { if ( '[redacted]' !== $v ) { d5b_ability_scrub_note(); } return '[redacted]'; }
+		if ( ! is_array( $v ) ) { return $v; }
+		if ( $depth >= 32 ) { return '[too deep]'; }
+		$out = array();
+		foreach ( $v as $k => $x ) { if ( ! d5b_is_secret_key( $k ) ) { $out[ $k ] = d5b_ability_scrub_redact_all( $x, $depth + 1 ); } }
+		return $out;
+	}
+
+	/** Counts one changed string for the "masked" flag. */
+	function d5b_ability_scrub_note(): void {
+		if ( function_exists( 'd5b_secret_masked_count' ) ) { d5b_secret_masked_count( false, 1 ); }
+	}
+
+	/**
+	 * Parallel lists: array entries with the same keys; an index holding a secret name in one is [redacted] in the others.
+	 * Lists count wherever they are. Small keyed arrays (8 entries or fewer) count only inside a keyed parent
+	 * ({ names: { a: .. }, values: { a: .. } }), so a list of records (rows with the same fields) is never cross-redacted.
+	 */
 	function d5b_ability_scrub_parallel( array $row ): array {
-		$names = null; $vkey = null;
+		$arrays = array();
+		$parent_is_list = d5b_ability_scrub_is_list( $row );
 		foreach ( $row as $k => $v ) {
-			if ( ! is_string( $k ) || ! is_array( $v ) ) { continue; }
-			$l = strtolower( $k );
-			if ( 'names' === $l || 'keys' === $l ) { $names = $v; }
-			if ( 'values' === $l ) { $vkey = $k; }
+			if ( ! is_array( $v ) || array() === $v ) { continue; }
+			$is_list = d5b_ability_scrub_is_list( $v );
+			if ( $is_list || ( ! $parent_is_list && count( $v ) <= 8 ) ) { $arrays[ $k ] = $v; }
 		}
-		if ( null === $names || null === $vkey ) { return $row; }
-		foreach ( $names as $i => $n ) {
-			if ( is_string( $n ) && d5b_is_secret_key( $n ) ) { unset( $row[ $vkey ][ $i ] ); }
+		if ( count( $arrays ) < 2 ) { return $row; }
+		foreach ( $arrays as $src => $list ) {
+			foreach ( $list as $i => $name ) {
+				if ( ! d5b_ability_scrub_secret_name( $name ) ) { continue; }
+				foreach ( $arrays as $dst => $other ) {
+					if ( $dst === $src || array_keys( $other ) !== array_keys( $list ) ) { continue; }
+					if ( d5b_ability_scrub_secret_name( $row[ $dst ][ $i ] ) || '[redacted]' === $row[ $dst ][ $i ] ) { continue; }
+					$row[ $dst ][ $i ] = '[redacted]';
+					d5b_ability_scrub_note();
+				}
+			}
 		}
 		return $row;
 	}
@@ -55,28 +99,36 @@ if ( ! function_exists( 'd5b_ability_scrub_pair' ) ) {
 
 if ( ! function_exists( 'd5b_ability_scrub' ) ) {
 	/**
-	 * @param mixed $value an ability result
-	 * @return mixed the same shape without any key that names a secret and with secret-shaped values masked. Objects become
-	 *               arrays (an object never passes through unscrubbed); nesting deeper than 32 levels is replaced by "[too deep]".
+	 * @param mixed $value        an ability result
+	 * @param array $content_keys keys whose strings are post content (value shapes only), at any depth
+	 * @param bool  $content      this value sits under one of those keys
+	 * @return mixed the same shape without any key that names a secret, with secret values redacted and masked. Objects
+	 *               become arrays (an object never passes through unscrubbed); nesting deeper than 32 levels is "[too deep]".
 	 */
-	function d5b_ability_scrub( $value, int $depth = 0 ) {
+	function d5b_ability_scrub( $value, int $depth = 0, array $content_keys = array(), bool $content = false ) {
 		if ( is_object( $value ) ) {
 			$value = $value instanceof JsonSerializable ? $value->jsonSerialize() : get_object_vars( $value );
 			if ( is_object( $value ) ) { $value = get_object_vars( $value ); }
 		}
-		if ( is_string( $value ) ) { return d5b_secret_mask_values( $value ); }
+		if ( is_string( $value ) ) {
+			$out = $content ? d5b_secret_mask_values( $value ) : d5b_ability_scrub_text( $value );
+			if ( $out !== $value ) { d5b_ability_scrub_note(); }
+			return $out;
+		}
 		if ( ! is_array( $value ) ) { return $value; }
 		if ( $depth >= 32 ) { return '[too deep]'; }
 		$value = d5b_ability_scrub_parallel( $value );
-		$pair  = d5b_ability_scrub_pair( $value );
-		// [ name, value ]: a two-item list whose first item names a secret
-		$list2 = array( 0, 1 ) === array_keys( $value ) && is_string( $value[0] ) && d5b_is_secret_key( $value[0] );
+		$named = d5b_ability_scrub_is_named( $value );
 		$out   = array();
 		foreach ( $value as $k => $v ) {
 			if ( d5b_is_secret_key( $k ) ) { continue; }
-			if ( $pair && is_string( $k ) && in_array( strtolower( $k ), d5b_ability_scrub_value_fields(), true ) ) { continue; }
-			if ( $list2 && 1 === $k ) { continue; }
-			$out[ $k ] = d5b_ability_scrub( $v, $depth + 1 );
+			if ( $named && ! d5b_ability_scrub_secret_name( $v ) && ! d5b_ability_scrub_holds_name( $v ) && ( is_string( $v ) || is_array( $v ) || is_object( $v ) ) ) {
+				// the value side of a named row: every string in it, however deep (the name itself is kept)
+				$out[ $k ] = d5b_ability_scrub_redact_all( $v );
+				continue;
+			}
+			$is_content = $content || ( is_string( $k ) && in_array( strtolower( $k ), $content_keys, true ) );
+			$out[ $k ] = d5b_ability_scrub( $v, $depth + 1, $content_keys, $is_content );
 		}
 		return $out;
 	}
@@ -88,18 +140,10 @@ if ( ! function_exists( 'd5b_ability_scrub_text' ) ) {
 		$s = d5b_secret_mask_values( $s );
 		return function_exists( 'd5b_audit_mask_secrets' ) ? d5b_audit_mask_secrets( $s ) : $s;
 	}
-
-	/** Every string in $v (already key-scrubbed) through d5b_ability_scrub_text, recursively. */
-	function d5b_ability_scrub_text_deep( $v, int $depth = 0 ) {
-		if ( is_string( $v ) ) { return d5b_ability_scrub_text( $v ); }
-		if ( ! is_array( $v ) || $depth >= 32 ) { return $v; }
-		foreach ( $v as $k => $x ) { $v[ $k ] = d5b_ability_scrub_text_deep( $x, $depth + 1 ); }
-		return $v;
-	}
 }
 
 if ( ! function_exists( 'd5b_ability_scrub_error' ) ) {
-	/** A copy of $e: every message and every string in its data through the free-text masker, the data scrubbed in full. */
+	/** A copy of $e: every message through the free-text masker, its data scrubbed in full (which masks every string too). */
 	function d5b_ability_scrub_error( WP_Error $e ): WP_Error {
 		$out = new WP_Error();
 		foreach ( $e->get_error_codes() as $code ) {
@@ -108,7 +152,7 @@ if ( ! function_exists( 'd5b_ability_scrub_error' ) ) {
 			foreach ( $all as $data ) {
 				if ( null === $data ) { continue; }
 				if ( $data instanceof WP_Error ) { $data = d5b_ability_scrub_error( $data ); }
-				$out->add_data( d5b_ability_scrub_text_deep( d5b_ability_scrub( $data ) ), $code );
+				$out->add_data( d5b_ability_scrub( $data ), $code );
 			}
 		}
 		return $out;

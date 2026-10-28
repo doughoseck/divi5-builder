@@ -477,6 +477,37 @@ $sts = array_column( rows(), 'status' );
 check( 'a handler WP_Error is stored as error:<code>: code ok -> error:ok, started -> error:started, forbidden -> error:forbidden', array( 'error:ok', 'error:started', 'error:forbidden' ) === array_slice( $sts, 0, 3 ), $sts );
 check( '... capped at 64 characters (in the wrapper, not only by the column cut)', 64 === strlen( $sts[3] ) && 0 === strpos( $sts[3], 'error:xxx' ) && 64 === strlen( d5b_ability_error_status( str_repeat( 'y', 100 ) ) ), $sts[3] );
 
+echo "round 3: masker cost is bounded (break-it a11 and a10 section 7)\n";
+$units = array( 'kv' => 'password=', 'kvx' => 'token=x ', 'colon' => 'key:', 'arrow' => '[password] => ', 'word' => 'password ', 'keyis' => 'key is ', 'dash_u' => '-u a:',
+	'plain' => 'lorem ipsum dolor sit amet ', 'log' => "[28-Oct-2026 10:00:00 UTC] PHP Notice:  Undefined index: key in /x/foo.php on line 42\n", 'define' => "define('A_KEY','x');", 'qesc' => '\\"', 'url' => 'a:' );
+$slow = array();
+foreach ( array( 65536, 262144 ) as $size ) {
+	foreach ( $units as $label => $unit ) {
+		$s = substr( str_repeat( $unit, (int) ceil( $size / strlen( $unit ) ) ), 0, $size );
+		if ( function_exists( 'memory_reset_peak_usage' ) ) { memory_reset_peak_usage(); }
+		$base = memory_get_usage(); $t = microtime( true );
+		$o = d5b_audit_mask_secrets( $s );
+		$ms = ( microtime( true ) - $t ) * 1000; $mb = ( memory_get_peak_usage() - $base ) / 1048576;
+		if ( $ms > 500 || $mb > 32 ) { $slow[] = sprintf( '%s %d KB: %d ms, +%.1f MB', $label, $size / 1024, $ms, $mb ); }
+		unset( $o, $s );
+	}
+}
+check( 'a11: every input at 64 KB and 256 KB masks in under 500 ms and under 32 MB of peak memory', array() === $slow, $slow );
+$K = 65536;
+$redos = array( 'password ' => str_repeat( 'password ', 7281 ), 'key is ' => str_repeat( 'key is ', 9362 ), 'token + long' => 'token ' . str_repeat( 'a', $K ), 'long key run' => str_repeat( 'a', $K ) . ' key x',
+	'-u run' => str_repeat( '-u a:', 13107 ), '-u no colon' => '-u ' . str_repeat( 'a', $K ), '--user=' => '--user=' . str_repeat( 'a', $K ) . ':',
+	'PEM lines' => '-----BEGIN PRIVATE KEY-----' . str_repeat( "\n" . str_repeat( 'A', 64 ), 1008 ), 'PEM many BEGIN' => str_repeat( "-----BEGIN PRIVATE KEY-----\nAAAA\n", 1985 ),
+	'Bearer near miss' => 'Bearer ' . str_repeat( 'a', $K ), 'Bearer many' => str_repeat( 'Bearer aaaaaaaaaaaaaaaaaaaa ', 2340 ), '[k] => run' => str_repeat( '[password] => ', 4681 ), 'quoted unterminated' => 'password="' . str_repeat( '\\"', 32768 ) );
+$slow = array();
+foreach ( $redos as $label => $s ) { $t = microtime( true ); d5b_audit_mask_secrets( $s ); $ms = ( microtime( true ) - $t ) * 1000; if ( $ms > 500 ) { $slow[] = "$label: " . round( $ms ) . ' ms'; } }
+check( 'a10 section 7: the 64 KB ReDoS inputs each mask in under 500 ms', array() === $slow, $slow );
+$long = 'password=' . str_repeat( 'S', 2000 ) . ' tail';
+check( 'a long secret value (2000 characters, past the 512 capture) is masked whole', 'password=[redacted] tail' === d5b_audit_mask_secrets( $long ), substr( d5b_audit_mask_secrets( $long ), 0, 80 ) );
+check( 'a long quoted value is masked to its closing quote', "x 'password' => [redacted], 'b' => 1" === d5b_audit_mask_secrets( "x 'password' => '" . str_repeat( 'q', 3000 ) . "', 'b' => 1" ) );
+$big = str_repeat( 'lorem ipsum ', 30000 ) . 'password=hunter2';
+$o = d5b_audit_mask_secrets( $big );
+check( 'over 256 KB: the first 256 KB are masked, the rest is cut and marked, never passed through', 262144 + strlen( '…[truncated]' ) === strlen( $o ) && '…[truncated]' === substr( $o, -strlen( '…[truncated]' ) ) && false === strpos( $o, 'hunter2' ), strlen( $o ) );
+
 echo "source checks\n";
 $src = file_get_contents( $dir . '/inc/abilities/audit.php' );
 check( 'audit.php defines functions only: no add_action / add_filter / register_* / wp_schedule_event at load time', 0 === preg_match( '/^(?!\s*(\/\/|\*|\/\*)).*\b(add_action|add_filter|register_[a-z_]+_hook)\s*\(/m', $src ) );

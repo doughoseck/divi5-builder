@@ -127,21 +127,50 @@ if ( ! function_exists( 'd5b_audit_utf8' ) ) {
 if ( ! function_exists( 'd5b_audit_mask_after_keys' ) ) {
 	/**
 	 * Replaces with [redacted] the value that follows each key $pattern finds, when $is_secret says the key names a secret.
-	 * $pattern captures the key as (?<k>...) and the value as (?<v>...) inside a lookahead, so a value is never consumed
-	 * and a key hidden inside another key's value is still found.
+	 * $pattern captures the key as (?<k>...) and the start of the value as (?<v>...) inside a lookahead, bounded to at most
+	 * 512 characters; d5b_audit_value_end() then finds where a secret value really ends. One match at a time from a moving
+	 * offset (never preg_match_all over rest-of-text captures), so memory stays flat and time linear in the input. A value
+	 * is never consumed by a non-secret key, so a key hidden inside another key's value is still found.
+	 *
+	 * @param string $kind 'plain' (a quoted or unquoted value) or 'line' (a print_r value: to the end of the line or the next [key] =>)
 	 */
-	function d5b_audit_mask_after_keys( string $s, string $pattern, callable $is_secret, ?callable $value_ok = null ): string {
-		if ( ! preg_match_all( $pattern, $s, $all, PREG_SET_ORDER | PREG_OFFSET_CAPTURE ) ) { return $s; }
-		$cuts = array(); $end = -1;
-		foreach ( $all as $m ) {
-			if ( ! isset( $m['v'] ) || $m['v'][1] < 0 || '' === $m['v'][0] || $m['k'][1] < $end ) { continue; }
-			if ( ! call_user_func( $is_secret, $m['k'][0] ) ) { continue; }
-			if ( null !== $value_ok && ! call_user_func( $value_ok, $m['v'][0] ) ) { continue; }
-			$cuts[] = array( $m['v'][1], strlen( $m['v'][0] ) );
-			$end    = $m['v'][1] + strlen( $m['v'][0] );
+	function d5b_audit_mask_after_keys( string $s, string $pattern, callable $is_secret, ?callable $value_ok = null, string $kind = 'plain' ): string {
+		$out = ''; $pos = 0; $off = 0; $n = strlen( $s );
+		while ( $off < $n && 1 === preg_match( $pattern, $s, $m, PREG_OFFSET_CAPTURE, $off ) ) {
+			$mend = $m[0][1] + strlen( $m[0][0] );
+			$v    = $m['v'] ?? null;
+			if ( is_array( $v ) && $v[1] >= 0 && '' !== $v[0] && call_user_func( $is_secret, $m['k'][0] ) && ( null === $value_ok || call_user_func( $value_ok, $v[0] ) ) ) {
+				$vend = d5b_audit_value_end( $s, $v[1], $kind );
+				if ( $v[1] >= $pos ) { $out .= substr( $s, $pos, $v[1] - $pos ) . '[redacted]'; $pos = $vend; }
+				$off = max( $vend, $mend, $off + 1 );
+			} else {
+				$off = max( $mend, $off + 1 );
+			}
 		}
-		for ( $i = count( $cuts ) - 1; $i >= 0; $i-- ) { $s = substr_replace( $s, '[redacted]', $cuts[ $i ][0], $cuts[ $i ][1] ); }
-		return $s;
+		return 0 === $pos ? $s : $out . substr( $s, $pos );
+	}
+}
+
+if ( ! function_exists( 'd5b_audit_value_end' ) ) {
+	/** Where the value starting at $start ends: a quoted value at its closing quote (or the line end), else at a separator. */
+	function d5b_audit_value_end( string $s, int $start, string $kind ): int {
+		$n = strlen( $s );
+		if ( 'line' === $kind ) {
+			// the first line end or next "[key] =>" after the value's first character: the search stops at whichever comes first
+			if ( 1 === preg_match( '/[ \t]+\[[^\]\r\n]{1,100}\][ \t]*=>|[\r\n]/', $s, $mm, PREG_OFFSET_CAPTURE, $start + 1 ) ) { return $mm[0][1]; }
+			return $n;
+		}
+		$q = $s[ $start ];
+		if ( '"' === $q || "'" === $q ) {
+			for ( $i = $start + 1; $i < $n; $i++ ) {
+				$c = $s[ $i ];
+				if ( '\\' === $c ) { $i++; continue; }
+				if ( $c === $q ) { return $i + 1; }
+				if ( "\r" === $c || "\n" === $c ) { return $i; }
+			}
+			return $n;
+		}
+		return $start + strcspn( $s, " \t\r\n\f\v&;,\"'", $start );
 	}
 }
 
@@ -187,7 +216,18 @@ if ( ! function_exists( 'd5b_audit_mask_secrets' ) ) {
 	 * the key forms (define(), print_r, var_export / JSON / key=value / key: value, and "password hunter2").
 	 */
 	function d5b_audit_mask_secrets( string $s ): string {
-		$value = '(?<v>"(?:[^"\\\\\r\n]|\\\\.)*"|\'(?:[^\'\\\\\r\n]|\\\\.)*\'|[^\s&;,"\']+)';
+		// At most 256 KB is masked; the rest is cut off and marked, never passed through unmasked.
+		$cut = strlen( $s ) > 262144;
+		if ( $cut ) { $s = function_exists( 'mb_strcut' ) ? mb_strcut( $s, 0, 262144, 'UTF-8' ) : substr( $s, 0, 262144 ); }
+		$s = d5b_audit_mask_text( $s );
+		return $cut ? $s . '…[truncated]' : $s;
+	}
+}
+
+if ( ! function_exists( 'd5b_audit_mask_text' ) ) {
+	/** The masking itself (d5b_audit_mask_secrets caps the size first). Every value capture is bounded to 512 characters. */
+	function d5b_audit_mask_text( string $s ): string {
+		$value = '(?<v>"(?:[^"\\\\\r\n]|\\\\.){0,512}|\'(?:[^\'\\\\\r\n]|\\\\.){0,512}|[^\s&;,"\']{1,512})';
 		$key   = '(?<![A-Za-z0-9_.\-])(?<k>[A-Za-z0-9_.\-]{1,100})';
 		// scheme://user:pass@host: everything up to the LAST @ before the path (a password may hold an @)
 		$s = (string) preg_replace( '#(\b[a-z][a-z0-9+.\-]*://)[^/\s:@]*:[^\s/]*@#i', '$1[redacted]@', $s );
@@ -205,7 +245,7 @@ if ( ! function_exists( 'd5b_audit_mask_secrets' ) ) {
 		// define( 'DB_PASSWORD', '...' )
 		$s = d5b_audit_mask_after_keys( $s, '/\bdefine\s*\(\s*(["\'])(?<k>[A-Za-z0-9_]{1,100})\1\s*,\s*(?=' . $value . ')/i', 'd5b_audit_is_secret' );
 		// print_r: [user_pass] => value (to the end of the line or the next [key] =>)
-		$s = d5b_audit_mask_after_keys( $s, '/\[(?<k>[^\]\r\n]{1,100})\]\s*=>\s*(?=(?<v>(?:(?!\s+\[[^\]\r\n]{1,100}\]\s*=>)[^\r\n])+))/', 'd5b_audit_is_secret' );
+		$s = d5b_audit_mask_after_keys( $s, '/\[(?<k>[^\]\r\n]{1,100})\]\s*=>[ \t]*(?=(?<v>[^\r\n]{1,512}))/', 'd5b_audit_is_secret', null, 'line' );
 		// key=value, key: value, key%3Dvalue, 'key' => 'value', "key": "value", key -> value, [PHP_AUTH_PW] = value: any value
 		$s = d5b_audit_mask_after_keys( $s, '/[\["\']?' . $key . '["\'\]]?\s*(?:=>|->|=|:|%3D)\s*(?=' . $value . ')/i', 'd5b_audit_is_secret' );
 		// password hunter2, token abc, password is hunter2, API key is x: only when the value looks like a secret

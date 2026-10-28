@@ -208,7 +208,7 @@ check( 'array/junk posted values do not throw', null === $e, null === $e ? '' : 
 echo "the settings page\n";
 fresh(); t_set_caps( array( 'manage_options' ) );
 $h = html( 'd5b_settings_render' );
-$risk = 'Lets AI clients connected to this site (over the REST API) read site content and settings through this plugin. Nothing is shared until you switch this on. Every call is logged for 30 days.';
+$risk = 'Lets AI clients connected to this site (over the REST API) read site content and settings through this plugin. Nothing is shared until you switch this on. Every call is logged for 30 days. Secrets are filtered out by name and shape; the filter is careful but not perfect, so switch on only what you need.';
 check( 'has an "AI abilities" section and the master checkbox', false !== strpos( $h, 'AI abilities' ) && false !== strpos( $h, 'name="d5b_abilities_master"' ) );
 check( 'the risk note is printed verbatim', false !== strpos( $h, esc_html( $risk ) ) );
 check( 'one checkbox per category, named d5b_abilities_cat[<slug>]', 23 === substr_count( $h, 'name="d5b_abilities_cat[' ), substr_count( $h, 'name="d5b_abilities_cat[' ) );

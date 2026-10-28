@@ -175,18 +175,41 @@ if ( ! function_exists( 'd5b_ability_error_status' ) ) {
 
 if ( ! function_exists( 'd5b_ability_scrub_result' ) ) {
 	/**
-	 * A successful result through the scrubber. A definition with 'report_masked' (the get abilities that return post-like
-	 * content) gets "masked": true when a secret shape was masked in any of its strings, so a later write can refuse to
-	 * build on a masked read (the hash is of the raw content).
+	 * A successful result through the scrubber. Strings under the definition's 'content_keys' (post content of the post-like
+	 * abilities) get value-shape masking only, so the content stays editable; every other string gets the full free-text
+	 * masker. Any string the scrubber changes adds "masked": true, so a later write can refuse to build on a masked read
+	 * (the hash is of the raw content).
 	 */
 	function d5b_ability_scrub_result( array $def, $result ) {
 		if ( ! function_exists( 'd5b_ability_scrub' ) ) { return $result; }
 		if ( function_exists( 'd5b_secret_masked_count' ) ) { d5b_secret_masked_count( true ); }
-		$result = d5b_ability_scrub( $result );
-		if ( ! empty( $def['report_masked'] ) && is_array( $result ) && function_exists( 'd5b_secret_masked_count' ) && d5b_secret_masked_count() > 0 ) {
+		$result = d5b_ability_scrub( $result, 0, isset( $def['content_keys'] ) && is_array( $def['content_keys'] ) ? $def['content_keys'] : array() );
+		if ( is_array( $result ) && function_exists( 'd5b_secret_masked_count' ) && d5b_secret_masked_count() > 0 ) {
 			$result['masked'] = true;
 		}
 		return $result;
+	}
+}
+
+if ( ! function_exists( 'd5b_ability_post_content_keys' ) ) {
+	/** The fields that hold post content (raw block markup, CSS, template markup) in the post-like abilities' results. */
+	function d5b_ability_post_content_keys(): array {
+		return array( 'content', 'raw', 'rendered', 'post_content', 'excerpt', 'css', 'custom_css', 'markup', 'template' );
+	}
+}
+
+if ( ! function_exists( 'd5b_ability_set_content_keys' ) ) {
+	/**
+	 * Marks these definitions (by short name) as post-like: their post_content_keys fields get value-shape masking only.
+	 * An explicit list per ability, never a guess from a key name. Unknown names are ignored.
+	 */
+	function d5b_ability_set_content_keys( array $short_names ): void {
+		$defs = d5b_ability_registry();
+		foreach ( $short_names as $short ) {
+			$name = 'divi5-builder/' . $short;
+			if ( isset( $defs[ $name ] ) ) { $defs[ $name ]['content_keys'] = d5b_ability_post_content_keys(); }
+		}
+		d5b_ability_registry( $defs );
 	}
 }
 

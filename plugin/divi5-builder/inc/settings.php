@@ -90,7 +90,7 @@ if ( ! function_exists( 'd5b_settings_render_abilities' ) ) {
 		echo '<h2>AI abilities</h2>';
 		echo '<table class="form-table" role="presentation"><tr><th scope="row"><label for="d5b-abilities-master">AI abilities</label></th><td>';
 		echo '<label><input type="checkbox" id="d5b-abilities-master" name="d5b_abilities_master" value="1"' . ( $master['on'] ? ' checked="checked"' : '' ) . ' /> Switched on</label>';
-		echo '<p class="description">' . esc_html( 'Lets AI clients connected to this site (over the REST API) read site content and settings through this plugin. Nothing is shared until you switch this on. Every call is logged for 30 days.' ) . '</p>';
+		echo '<p class="description">' . esc_html( 'Lets AI clients connected to this site (over the REST API) read site content and settings through this plugin. Nothing is shared until you switch this on. Every call is logged for 30 days. Secrets are filtered out by name and shape; the filter is careful but not perfect, so switch on only what you need.' ) . '</p>';
 		if ( '' !== $master['changed_at'] || '' !== $master['changed_by'] ) {
 			echo '<p class="description">Last switched ' . ( $master['on'] ? 'on' : 'off' ) . ' ' . esc_html( $master['changed_at'] ) . ' by ' . esc_html( $master['changed_by'] ) . '</p>';
 		}
