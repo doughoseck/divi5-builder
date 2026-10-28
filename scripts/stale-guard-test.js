@@ -46,6 +46,11 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
       else if (p === '/wp-json/' && opts.method === 'GET') out = { name: 'fake', namespaces: st.index || ['oembed/1.0', 'wp/v2'] };
       else if (p === '/wp-json/wp/v2/settings' && opts.method === 'GET') { if (typeof st.settings === 'number') { status = st.settings; out = { code: 'rest_forbidden' }; } else out = st.settings || { title: 'fake' }; }
       else if (p === '/wp-json/divi5-builder/v1/design-system') out = { colors: st.colors || {}, presets: st.presets || { module: [], group: [] }, variables: st.variables || [] };
+      // Design-system writes (issue #45): the body is recorded; st.dsReply = { status, body } is the plugin's answer.
+      else if (/^\/wp-json\/divi5-builder\/v1\/design-system\/(variable(\/archive)?|restore)$/.test(p) && opts.method === 'POST') {
+        st.dsPosts = st.dsPosts || []; st.dsPosts.push({ path: p, body: JSON.parse(body || '{}') }); fs.writeFileSync(STATE, JSON.stringify(st));
+        if (st.dsReply) { status = st.dsReply.status; out = st.dsReply.body; } else out = { ok: true };
+      }
       else if (!m) { status = 404; out = { code: 'rest_no_route' }; }
       else {
         const [, kind, id] = m; st[kind] = st[kind] || {};
@@ -301,6 +306,44 @@ console.log('--- wp.js palette-set is retired: it refuses, points at ds-color-se
   r = wp('palette-set', '--colors-file', colorsFile, '--option', 'et_global_colors', '--replace');
   check('... also with the old flags (--option, --replace)', r.code === 1 && /ds-color-set/.test(r.err), [r.code, r.err]);
   check('... and no request reached the site (nothing was written)', !(st().requests || []).length && !st().writes, st().requests);
+}
+
+console.log('--- nested variables: {{gvid-…}} placeholders, --site, and the plugin\'s refusals printed (issue #45)');
+{
+  // The value the Visual Builder stored for "Fluid Heading" on a live Divi 5.18.0 site (wp.js design-system --json --full).
+  const LIVE_FLUID = 'clamp( $variable({"type":"content","value":{"name":"gvid-k1iggz3omp","settings":{}}})$, 4vw, $variable({"type":"content","value":{"name":"gvid-4az4m3i650","settings":{}}})$)';
+  fs.writeFileSync(STATE, JSON.stringify({ pages: {} }));
+  let r = wp('ds-variable-set', '--type', 'numbers', '--label', 'Fluid Heading', '--value', 'clamp( {{gvid-k1iggz3omp}}, 4vw, {{gvid-4az4m3i650}})');
+  const sent = (st().dsPosts || [])[0];
+  check('ds-variable-set: {{gvid-…}} placeholders are sent as the token the builder stores (byte for byte)', r.code === 0 && sent && sent.path === '/wp-json/divi5-builder/v1/design-system/variable' && sent.body.value === LIVE_FLUID, [r.code, r.err, sent && sent.body.value]);
+  fs.writeFileSync(STATE, JSON.stringify({ pages: {} }));
+  r = wp('ds-variable-set', '--type', 'strings', '--label', 'X', '--value', 'by {{dc:post_author}}');
+  check('ds-variable-set: a {{dc:…}} placeholder is refused, nothing sent', r.code === 1 && /dynamic content/.test(r.err) && !(st().dsPosts || []).length, [r.code, r.err]);
+  for (const bad of ['{{gvid-bad$id}} * 2', '{{gvid-Not An Id}} * 2']) {
+    r = wp('ds-variable-set', '--type', 'numbers', '--label', 'X', '--value', bad);
+    check(`ds-variable-set: a placeholder that is not a variable id ("${bad}") is refused, nothing sent`, r.code === 1 && /is not a variable id/.test(r.err) && !(st().dsPosts || []).length, [r.code, r.err]);
+  }
+  fs.writeFileSync(STATE, JSON.stringify({ pages: {}, dsReply: { status: 409, body: { code: 'variable_in_use', message: 'gvid-k1iggz3omp is used by other active variables', data: { status: 409, id: 'gvid-k1iggz3omp',
+    dependents: [{ id: 'gvid-lk82fchj2p', label: 'Fluid Heading', type: 'numbers', direct: true }, { id: 'gvid-hero000001', label: 'Hero heading', type: 'numbers', direct: false }] } } } }));
+  r = wp('ds-variable-archive', '--id', 'gvid-k1iggz3omp');
+  check('ds-variable-archive: a 409 variable_in_use is printed with every user by id and label (and which are indirect); exit 1', r.code === 1 && /409 variable_in_use/.test(r.err) && /gvid-lk82fchj2p\s+"Fluid Heading"/.test(r.err) && /gvid-hero000001\s+"Hero heading"\s+\(numbers, indirectly\)/.test(r.err) && /nothing was written/.test(r.err) && r.out === '', [r.code, r.err, r.out]);
+  fs.writeFileSync(STATE, JSON.stringify({ pages: {}, dsReply: { status: 409, body: { code: 'variable_in_use', message: 'x', data: { status: 409, id: 'gvid-new0000001', dependents: [{ id: 'gvid-b', label: 'B', type: 'numbers', direct: true }] } } } }));
+  r = wp('ds-restore', '--store', 'variables', '--index', '0');
+  check('ds-restore: the same 409 is printed with its users', r.code === 1 && /variable_in_use/.test(r.err) && /gvid-b\s+"B"/.test(r.err), [r.code, r.err]);
+  fs.writeFileSync(STATE, JSON.stringify({ pages: {}, dsReply: { status: 400, body: { code: 'bad_references', message: 'x', data: { status: 400, references: [{ id: 'gvid-nope', problem: 'missing', message: 'gvid-nope does not exist on this site' }, { id: 'gvid-a', problem: 'cycle', message: 'a cycle: gvid-a -> gvid-b -> gvid-a' }] } } } }));
+  r = wp('ds-variable-set', '--type', 'numbers', '--label', 'A', '--id', 'gvid-a', '--value', '{{gvid-b}} + {{gvid-nope}}');
+  check('ds-variable-set: a 400 bad_references lists each bad reference and why; exit 1', r.code === 1 && /400 bad_references/.test(r.err) && /gvid-nope: missing/.test(r.err) && /gvid-a -> gvid-b -> gvid-a/.test(r.err), [r.code, r.err]);
+  // divi.js compile --site: placeholders become tokens, so the site check sees the ids inside a calculation and a mixed text
+  const DIVI = path.join(path.dirname(WPJS), 'divi.js');
+  const dv = (spec) => { const f = file('spec45.json', JSON.stringify(spec)); const r = spawnSync(process.execPath, [DIVI, 'compile', f, '--out', path.join(tmp, 'out45.html'), '--site', 'fake', '--no-lint'], { encoding: 'utf8',
+    env: Object.assign({}, process.env, { FAKE_WP_STATE: STATE, WEB_CREDS_PATH: CREDS, NODE_OPTIONS: `--require ${__filename.replace(/\\/g, '/')}` }) }); return { code: r.status, err: r.stderr || '' }; };
+  fs.writeFileSync(STATE, JSON.stringify({ pages: {}, variables: { numbers: { 'gvid-xdtsp8ywr8': { id: 'gvid-xdtsp8ywr8', label: 'Space', value: '40px', status: 'active' }, 'gvid-old0000001': { id: 'gvid-old0000001', label: 'Old gap', value: '1px', status: 'archived' } },
+    strings: { 'gvid-zca7w37pd4': { id: 'gvid-zca7w37pd4', label: 'Copyright', value: 'c', status: 'active' } } } }));
+  const sec = (padTop, html) => ({ sections: [{ padding: { top: padTop }, rows: [{ columns: [{ modules: [{ type: 'text', html }] }] }] }] });
+  r = dv(sec('{{gvid-xdtsp8ywr8}} * -1', '<p>By {{dc:post_author}} · {{gvid-zca7w37pd4}}</p>'));
+  check('--site: variables inside a calculation and a mixed text that exist and are active -> exit 0', r.code === 0 && /site check: every colour, variable and preset exists on fake/.test(r.err), r.err);
+  r = dv(sec('{{gvid-old0000001}} / 2', '<p>By {{dc:post_author}} · {{gvid-nosuchvar1}}</p>'));
+  check('--site: an archived variable in a calculation and a missing one in a mixed text are each reported; exit 1', r.code === 1 && /design variable gvid-old0000001 \("Old gap"\) is archived/.test(r.err) && /design variable gvid-nosuchvar1 does not exist/.test(r.err) && !/post_author/.test(r.err), r.err);
 }
 
 console.log('--- secrets');
