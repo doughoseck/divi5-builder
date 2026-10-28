@@ -292,26 +292,50 @@ foreach ( array( 'with Divi\'s DynamicData' => array( 'refs' => '' ), 'with our 
 	$keep = $GLOBALS['d5b_test_classes'];
 	$GLOBALS['d5b_test_classes'] = $off + $keep;
 	foreach ( $enc as $what => list( $val, $want ) ) {
-		$got = d5b_ds_variable_refs( $val ); sort( $got );
-		$check( "fallback finder ($how): $what", $want === $got, json_encode( $got ) );
+		$got = d5b_ds_variable_refs( $val, $complete ); sort( $got );
+		$check( "fallback finder ($how): $what", $want === $got && $complete, json_encode( $got ) );
 	}
-	// Hostile input, 1 MB (the largest value the size check lets through): the search must stay linear. The old scanner
-	// restarted after every unclosed opener: 64 KB of "$variable({" took 26 s, 1 MB would take hours.
+	// Stray openers: a real token AFTER them is still found (the search goes on right after a stray opener).
+	foreach ( array(
+		'an opener that never closes, then a real token'        => 'Price $variable({ oops ' . $tok( 'gvid-after00001' ),
+		'an opener with an unterminated string, then a token'    => 'x $variable({"a":"unterminated ' . $tok( 'gvid-after00001' ) . ' tail',
+		'an opener that closes without ")$", around a token'    => '$variable({ a ' . $tok( 'gvid-after00001' ) . ' } z',
+	) as $what => $val ) {
+		$got = d5b_ds_variable_refs( $val, $complete );
+		$check( "fallback finder ($how): $what: found", array( 'gvid-after00001' ) === $got && $complete, json_encode( $got ) );
+	}
+	// Hostile input, 1 MB (the largest value the size check lets through). Restarting after each stray opener is what
+	// finds the tokens above, and unbudgeted it is quadratic (64 KB of "$variable({" took 26 s, 1 MB hours). The scan
+	// budget stops it fast and the value is reported INCOMPLETE (a write refuses it as value_too_complex).
 	// 64 KB first: a quadratic scanner fails this one in seconds (by assertion) instead of hanging for hours on 1 MB.
 	$adv = substr( str_repeat( '$variable({', 6000 ), 0, 65536 );
-	$t0  = microtime( true ); d5b_ds_variable_refs( $adv ); $dt = microtime( true ) - $t0;
-	if ( ! $check( sprintf( 'fallback finder (%s): 64 KB of "$variable({" repeated finishes in %.3f s (< 0.5 s)', $how, $dt ), $dt < 0.5 ) ) { $GLOBALS['d5b_test_classes'] = $keep; continue; }
+	$t0  = microtime( true ); d5b_ds_variable_refs( $adv, $complete ); $dt = microtime( true ) - $t0;
+	if ( ! $check( sprintf( 'fallback finder (%s): 64 KB of "$variable({" repeated: %s in %.3f s (< 0.5 s)', $how, $complete ? 'complete' : 'incomplete', $dt ), $dt < 0.5 && ! $complete ) ) { $GLOBALS['d5b_test_classes'] = $keep; continue; }
 	foreach ( array( '$variable({', '$variable({"', '$variable({"a":"' ) as $unit ) {
 		$adv = substr( str_repeat( $unit, intdiv( 1048576, strlen( $unit ) ) + 1 ), 0, 1048576 );
-		$t0  = microtime( true ); d5b_ds_variable_refs( $adv ); $dt = microtime( true ) - $t0;
-		$check( sprintf( 'fallback finder (%s): 1 MB of %s repeated finishes in %.3f s (< 2 s)', $how, json_encode( $unit ), $dt ), $dt < 2.0 );
+		$t0  = microtime( true ); d5b_ds_variable_refs( $adv, $complete ); $dt = microtime( true ) - $t0;
+		$check( sprintf( 'fallback finder (%s): 1 MB of %s repeated: incomplete (refused), in %.3f s (< 2 s)', $how, json_encode( $unit ), $dt ), $dt < 2.0 && ! $complete );
 	}
 	$deep = '$variable(' . str_repeat( '{', 1048576 - 10 );
-	$t0   = microtime( true ); d5b_ds_variable_refs( $deep ); $dt = microtime( true ) - $t0;
-	$check( sprintf( 'fallback finder (%s): 1 MB of nested "{" finishes in %.3f s (< 2 s)', $how, $dt ), $dt < 2.0 );
+	$t0   = microtime( true ); $got = d5b_ds_variable_refs( $deep, $complete ); $dt = microtime( true ) - $t0;
+	$check( sprintf( 'fallback finder (%s): 1 MB of nested "{": %s, nothing found, in %.3f s (< 2 s)', $how, $complete ? 'complete' : 'incomplete', $dt ), $dt < 2.0 && array() === $got );
 	$many = str_repeat( '$variable({})x', 74898 ) . $tok( 'gvid-last000001' ); // closed but not tokens, then a real one
-	$t0   = microtime( true ); $got = d5b_ds_variable_refs( $many ); $dt = microtime( true ) - $t0;
-	$check( sprintf( 'fallback finder (%s): 1 MB of closed non-tokens, then a real token: found, in %.3f s (< 2 s)', $how, $dt ), array( 'gvid-last000001' ) === $got && $dt < 2.0, json_encode( $got ) );
+	$t0   = microtime( true ); $got = d5b_ds_variable_refs( $many, $complete ); $dt = microtime( true ) - $t0;
+	$check( sprintf( 'fallback finder (%s): 1 MB of closed non-tokens, then a real token: found, complete, in %.3f s (< 2 s)', $how, $dt ), array( 'gvid-last000001' ) === $got && $complete && $dt < 2.0, json_encode( $got ) );
+	// FAIL CLOSED: a value the finder cannot search completely is refused, never written as if it had no references.
+	$hostile = substr( str_repeat( '$variable({', 95326 ), 0, 1048576 ) . ''; // 1 MB, passes the size check
+	$before  = json_encode( $vars() ); $bk = count( $GLOBALS['d5b_options']['d5b_ds_backups']['variables'] ?? array() );
+	$tc      = d5b_ds_variable_upsert( array( 'type' => 'strings', 'label' => 'Hostile', 'value' => $hostile ), false );
+	$check( "fail closed ($how): a value too convoluted to search is refused, 400 value_too_complex, nothing written, no backup", is_wp_error( $tc ) && 'value_too_complex' === $tc->get_error_code() && 400 === $tc->get_error_data()['status'] && json_encode( $vars() ) === $before && count( $GLOBALS['d5b_options']['d5b_ds_backups']['variables'] ?? array() ) === $bk, is_wp_error( $tc ) ? $tc->get_error_message() : json_encode( $tc ) );
+	// ... and a store holding such a value (saved some other way) blocks an archive: whether it uses the id is unknown.
+	$st0                                            = $vars();
+	$st1                                            = $st0;
+	$st1['strings']['gvid-hostile0001']             = array( 'id' => 'gvid-hostile0001', 'label' => 'Hostile', 'value' => $hostile, 'order' => '9', 'status' => 'active' );
+	$st1['numbers']['gvid-plain000009']             = array( 'id' => 'gvid-plain000009', 'label' => 'Plain', 'value' => '1px', 'order' => '9', 'status' => 'active' );
+	et_update_option( 'global_variables', $st1 );
+	$ax = d5b_ds_variable_archive( array( 'id' => 'gvid-plain000009' ), false );
+	$check( "fail closed ($how): archive is refused (400 value_too_complex) when a stored value cannot be searched, nothing written", is_wp_error( $ax ) && 'value_too_complex' === $ax->get_error_code() && false !== strpos( $ax->get_error_message(), 'gvid-hostile0001' ) && 'active' === $vars()['numbers']['gvid-plain000009']['status'], is_wp_error( $ax ) ? $ax->get_error_message() : json_encode( $ax ) );
+	et_update_option( 'global_variables', $st0 );
 	$GLOBALS['d5b_test_classes'] = $keep;
 }
 $fluid = 'clamp( ' . $tok( 'gvid-k1iggz3omp' ) . ', 4vw, ' . $tok( 'gvid-4az4m3i650' ) . ')';

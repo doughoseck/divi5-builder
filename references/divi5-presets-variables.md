@@ -833,6 +833,9 @@ node scripts/wp.js <site> ds-variable-set --type strings --label "Copyright" --v
   (5.18+); before that, the same rules through Divi's `DynamicData` plus its own scanner, which also reads tokens with
   `&quot;` or block-encoded quotes and a settings string holding `)$`.
 - A value over 1 MB is refused (400 `value_too_large`): Divi 5.18 would resolve it as empty.
+- A value too convoluted to search completely within the plugin's work limits (before Divi 5.18, where the plugin
+  uses its own finder) is refused rather than half-checked (400 `value_too_complex`); an archive or restore is refused
+  the same way while a stored value cannot be searched, since whether it uses the variable is then unknown.
 - **Archive guard:** `ds-variable-archive` refuses with **409 `variable_in_use`** while another ACTIVE variable uses the
   variable, directly or through other variables, and lists those variables by id and label. There is no force flag:
   archive (or change) the users first. A variables restore that would archive a variable an active one uses is
