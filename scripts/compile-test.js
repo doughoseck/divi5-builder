@@ -95,4 +95,18 @@ const l33 = spawnSync('node', [path.join(__dirname, 'catalog.js'), 'lint', t33],
 // passes the OLD, wrong image markup (border in module.decoration). The path checks above are what prove #33.
 check('#33 catalogue lint (block names, options, nesting) finds no error in the new markup', /no errors/.test(lo33) && !/^\s+ERROR\s/m.test(lo33), lo33.slice(-500));
 
+// ---- issue #21: no empty object as an attribute value. WordPress stores `{}` as `[]` ("module":{} -> "module":[]),
+// so a page with one is not stored as sent. Found on a blurb with an icon; the serialiser now drops empty groups for
+// every module. Empty arrays are fine (stored as `[]`), so they are not in the scan.
+const emptyObjects = (o, p, acc) => { if (Array.isArray(o)) o.forEach((v, i) => emptyObjects(v, p + '[' + i + ']', acc)); else if (o && typeof o === 'object') { const k = Object.keys(o); if (!k.length && p) acc.push(p); k.forEach((x) => emptyObjects(o[x], p + '.' + x, acc)); } return acc; };
+const rich21 = D.compile(JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', 'compile-rich-spec.json'), 'utf8')), { quiet: true });
+const rb21 = blocksOf(rich21);
+const found21 = []; rb21.forEach((b, i) => emptyObjects(b.attrs, '', []).forEach((p) => found21.push(i + ' ' + b.name + p)));
+check('#21 a rich spec (every module type, with and without presets) compiles with no {} attribute value (' + rb21.length + ' blocks)', rb21.length > 80 && !found21.length, found21.join(' | '));
+const bl21 = rb21.filter((b) => b.name === 'divi/blurb');
+check('#21 blurbs (icon, image, chip, preset) carry no "module" key unless they have a setting for it', bl21.length === 4 && bl21.every((b) => !('module' in b.attrs)), JSON.stringify(bl21.map((b) => Object.keys(b.attrs))));
+check('#21 the stored-form text of that spec has no :{} outside a string', !rich21.split('\n').some((l) => /:\{\}/.test(l.replace(/"(?:[^"\\]|\\.)*"/g, '""'))));
+const raw21 = blocksOf(D.compile({ sections: [{ rows: [{ columns: [{ modules: [{ type: 'raw', block: 'divi/text', attrs: { a: { b: {}, c: { d: {} }, e: [] }, keep: 'x' }, inner: '' }] }] }] }] })).find((b) => b.name === 'divi/text').attrs;
+check('#21 empty groups are dropped bottom-up (a group holding only empty groups goes too); arrays and values stay', JSON.stringify(raw21) === '{"a":{"e":[]},"keep":"x"}', JSON.stringify(raw21));
+
 console.log(failed ? failed + ' FAILED' : 'all passed'); process.exit(failed ? 1 : 0);

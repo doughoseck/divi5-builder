@@ -246,6 +246,23 @@ The reliable loop (no guessing):
 Divi has 115 modules; the compiler covers the common ones and the catalogue describes the rest. PRs adding more (via the loop
 above) are very welcome.
 
+## Verified on
+
+Divi ships often, so this table says what was actually checked on which version, and what was not. Reports from
+other sites and versions are welcome. Per release, the checks are in
+[references/divi-release-checklist.md](references/divi-release-checklist.md).
+
+| Divi version | Date | What was checked |
+|---|---|---|
+| 5.9 | 2026-09-21 | The page format and the module serialisations were taken from live builds. Round trip: the site stores what the compiler sends, byte for byte (`roundtrip-test.js`), and every stored page closes with the placeholder wrapper (9 of 9). Presets and variables read from a live site, read-only. |
+| 5.13 | 2026-09-21 | Round trip byte for byte, wrapper closer on 38 of 38 stored items. Presets and variables read from a live site, read-only. Interactions proven live (any module can be a trigger). |
+| 5.13.1 | 2026-09-21 to 2026-10-12 | Module catalogue (115 modules) built from the theme source, and the presets, variables and interactions code read from it. Loop Builder, timeline, popups, background video and header patterns built on live converted sites. No separate round-trip run is recorded for this version. |
+| 5.15.1 | 2026-10-28 | Round trip byte for byte with the extended round-trip spec (2707 characters, including an icon blurb, the regression case for the empty-group fix). **Visual Builder re-save with no changes:** same 35 blocks in the same tree, every attribute equal as data, rendered HTML identical. The builder only reformats the stored text (attribute key order, leaf modules saved self-closing, whitespace between blocks), so the content hash changes and the stale guard reports STALE afterwards; that is expected. Found: a blurb with an icon was stored with `"module":[]` instead of `{}`; the compiler no longer writes empty groups (#21). Components and Slots placement over REST proven live 2026-10-12 ([notes](references/divi5-components-slots.md)). Compare tool: `scripts/vb-resave-check.js`. |
+
+Sources: [references/divi5-format.md](references/divi5-format.md) ("What a save does to your content"),
+[references/divi5-presets-variables.md](references/divi5-presets-variables.md),
+[references/divi5-interactions-canvases.md](references/divi5-interactions-canvases.md) and the git history.
+
 ## Tests
 
 None of these needs a site, except the last one.
@@ -257,6 +274,7 @@ node scripts/compile-test.js          # link, swiper-posts, buildModule()
 node scripts/stale-guard-test.js      # page/post/canvas writes refuse when the content changed since the read
 node scripts/spec-check-test.js       # unknown spec keys are reported; every documented example checks clean
 node scripts/blocks-test.js           # block-level edits leave the rest of the page byte for byte
+node scripts/vb-resave-check-test.js  # the Visual Builder re-save comparison, on a real Divi 5.15.1 before/after pair
 php  scripts/permissions-test.php     # who may call each page-building route
 php  scripts/double-load-test.php     # the plugin loaded twice (must-use + normal, two folders) never fatals
 php  scripts/media-audit-test.php     # media audit: what counts as a reference to a file or an attachment ID

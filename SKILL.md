@@ -289,6 +289,8 @@ with `url`/`user`/`pass`; `pass` is a WordPress **Application Password**).
    for a replace the user explicitly asked for. Every content write first keeps what it replaces in
    `~/.divi5-builder/backups/<site>/` (`WP_BACKUP_DIR` to change), and prints the new `hash` for the next
    write. `md5` of `get-page --raw` is the same hash, so a script can compute it from what it read.
+   Opening a page in the Visual Builder and saving it, even with no changes, changes its hash (the builder
+   reformats the markup, not the content), so STALE after a builder save is expected: the rule stays, stop and ask, then re-read.
 
    **Changing one part of an existing page: `scripts/blocks.js`.** Never rebuild a hand-tuned page to change
    one section. Read it, change only the block you mean, write it back with the read's hash; everything
@@ -680,7 +682,7 @@ around:
 **Tests that keep the compiler and the guard honest** (run after touching either):
 - `node scripts/roundtrip-test.js <site> <throwaway_draft_id>`: compiles a spec full of
   quotes, backslashes, dashes, tags and non-ASCII, writes it, and fails unless the site
-  stores it byte for byte. Passed on Divi 5.9 and 5.13. Run once on any newer Divi.
+  stores it byte for byte. Passed on Divi 5.9, 5.13 and 5.15.1. Run once on any newer Divi.
 - `php scripts/tree-guard-test.php <wp-includes dir> <sent.html> <stored.html>`: runs the
   plugin's own comparison code locally. The pair must match and eight kinds of deliberate
   damage must each be caught.
@@ -775,6 +777,10 @@ valid page. Read it if you need to hand-write a `raw` module or debug rendering.
 It was reverse-engineered from the pages of a live Divi 5 site and verified by a live
 round-trip (build draft → confirm native render → delete), so trust it over
 general web docs.
+
+`scripts/vb-resave-check.js`: snapshots a page before and after a Visual Builder save and compares the block tree,
+every attribute, the text and the rendered HTML (formatting-only changes are listed apart). The procedure and the
+per-release checklist are in `references/divi-release-checklist.md`; the versions checked are in the README table.
 
 ## Safety notes
 

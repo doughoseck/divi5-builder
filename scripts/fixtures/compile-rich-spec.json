@@ -1,0 +1,76 @@
+{
+  "builderVersion": "5.13.0",
+  "sections": [
+    {
+      "background": { "color": "gcid-primary-color" },
+      "padding": { "top": "60px", "bottom": "60px" },
+      "rows": [
+        {
+          "layout": "1-1",
+          "columns": [
+            {
+              "background": "#ffffff", "padding": "24px", "radius": "14px",
+              "border": { "width": "1px", "color": "#e6e6e6" },
+              "hover": { "borderColor": "gcid-secondary-color", "shadow": { "blur": "18px" } },
+              "modules": [
+                { "type": "heading", "level": "h2", "text": "Rich spec", "color": "gcid-heading-color" },
+                { "type": "text", "html": "<p>Body</p>" },
+                { "type": "button", "text": "Go", "url": "https://example.com/" },
+                { "type": "link", "text": "More", "url": "https://example.com/more/" },
+                { "type": "image", "src": "https://example.com/a.png", "alt": "a" },
+                { "type": "image", "src": "https://example.com/a.png", "alt": "a", "frame": { "radius": "10px", "shadow": true } },
+                { "type": "blurb", "title": "Icon blurb", "text": "A blurb with an icon.", "icon": { "unicode": "&#xf00c;", "type": "fa" }, "titleLevel": "h4" },
+                { "type": "blurb", "title": "Image blurb", "text": "A blurb with an image.", "image": "https://example.com/b.png", "alt": "b" },
+                { "type": "blurb", "title": "Chip blurb", "text": "With a chip.", "icon": "&#xf00c;", "chip": { "bg": "#eeeeee" } },
+                { "type": "blurb", "title": "Preset blurb", "text": "On a preset.", "icon": "&#xf00c;", "modulePreset": "abcdefghij" },
+                { "type": "iconlist", "items": ["One", "Two"] },
+                { "type": "code", "html": "<p>code</p>" },
+                { "type": "video", "src": "https://example.com/v.mp4" },
+                { "type": "video", "src": "https://example.com/v.mp4", "frame": { "radius": "8px" } },
+                { "type": "icon", "unicode": "&#x51;" },
+                { "type": "divider" },
+                { "type": "divider", "showLine": true, "height": "10px" },
+                { "type": "accordion", "openFirst": true, "iconColor": "#000000", "itemRadius": "6px", "items": [{ "title": "Q1", "text": "A1" }, { "title": "Q2", "text": "A2" }] },
+                { "type": "accordion", "items": [{ "title": "Q3", "text": "A3" }] }
+              ]
+            },
+            {
+              "modules": [
+                { "type": "heading-module", "text": "Module heading", "level": "h3" },
+                { "type": "heading-module", "text": "Plain" },
+                { "type": "cta", "title": "CTA", "text": "Call", "button": { "text": "Click", "url": "https://example.com/" } },
+                { "type": "toggle", "title": "T", "text": "t" },
+                { "type": "toggle", "title": "T open", "text": "t", "open": true },
+                { "type": "tabs", "items": [{ "title": "A", "text": "a" }, { "title": "B", "text": "b" }] },
+                { "type": "testimonial", "author": "Ann", "jobTitle": "Boss", "company": "Co", "text": "Great" },
+                { "type": "pricing", "currency": "$", "tiers": [{ "title": "Basic", "price": "9", "features": ["a", { "text": "b", "excluded": true }] }, { "title": "Pro", "price": "19", "featured": true }] },
+                { "type": "counters", "items": [{ "title": "X", "percent": 50 }] },
+                { "type": "circle-counter", "title": "C", "number": 40 },
+                { "type": "number-counter", "title": "N", "number": 10, "percent": true },
+                { "type": "countdown", "title": "D", "dateTime": "2030-01-01 00:00" },
+                { "type": "hero", "title": "Hero", "text": "Hero text", "button1": { "text": "B1", "url": "#" }, "fullHeight": true, "modules": [{ "type": "text", "html": "<p>in hero</p>" }] },
+                { "type": "hero", "title": "Plain hero" },
+                { "type": "slider", "slides": [{ "title": "S1", "text": "s1" }, { "title": "S2", "text": "s2", "bgImage": "https://example.com/s.png", "image": "https://example.com/i.png" }] },
+                { "type": "person", "name": "Pat", "position": "Lead", "text": "Bio", "image": "https://example.com/p.png" },
+                { "type": "map", "lat": 1, "lng": 2, "address": "Somewhere", "pins": [{ "lat": 1, "lng": 2, "address": "Pin", "title": "P" }] },
+                { "type": "tooltip", "text": "tip", "trigger": "hover" },
+                { "type": "timeline", "items": [{ "date": "2020", "title": "T", "text": "t" }] },
+                { "type": "timeline", "direction": "vertical", "items": [{ "date": "2021", "title": "U", "text": "u" }] },
+                { "type": "post-carousel", "postType": "post" },
+                { "type": "group", "modules": [{ "type": "text", "html": "<p>in group</p>" }] },
+                { "type": "group", "loop": { "postType": "post", "count": 3 }, "modules": [{ "type": "text", "html": "<p>loop</p>" }] },
+                { "type": "group-carousel", "auto": true, "slidesToShow": { "desktop": 3, "tablet": 2, "phone": 1 }, "arrows": "inside", "groups": [{ "modules": [{ "type": "text", "html": "<p>g</p>" }] }] },
+                { "type": "group-carousel", "group": { "modules": [{ "type": "text", "html": "<p>g2</p>" }] } },
+                { "type": "filtergrid", "cpt": "post", "count": 4, "showFilters": "on" },
+                { "type": "swiper-posts", "postType": "post", "count": 6, "slidesPerView": { "desktop": 3, "tablet": 2, "phone": 1 }, "autoplay": "on", "titleFont": { "size": "18px" }, "htmlClass": "swp" },
+                { "type": "raw", "block": "divi/text", "attrs": { "content": { "innerContent": { "desktop": { "value": "<p>raw</p>" } } } }, "inner": "" }
+              ]
+            }
+          ]
+        },
+        { "grid": { "cols": { "desktop": 3, "tablet": 2, "phone": 1 } }, "columns": [{ "modules": [{ "type": "text", "html": "<p>g1</p>" }] }, { "modules": [{ "type": "text", "html": "<p>g2</p>" }] }] },
+        { "layout": "2-1", "columns": [{ "hideOn": ["phone"], "cssClass": "wide", "modules": [{ "type": "text", "html": "<p>w</p>", "cssId": "w1", "hideOn": ["tablet"] }] }, { "modules": [{ "type": "text", "html": "<p>n</p>", "hidden": true, "toggleId": "t1" }] }] }
+      ]
+    }
+  ]
+}
