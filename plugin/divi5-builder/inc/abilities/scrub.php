@@ -25,7 +25,8 @@ if ( ! function_exists( 'd5b_ability_scrub_secret_name' ) ) {
 	function d5b_ability_scrub_secret_name( $v ): bool {
 		if ( ! is_string( $v ) ) { return false; }
 		$t = trim( $v );
-		return 1 === preg_match( '/^[A-Za-z0-9_.\-]{1,64}$/', $t ) && d5b_is_secret_key( $t );
+		// round 5: the token and compound rule only (d5b_secret_is_name), never the substring union, and a slug is not a name
+		return 1 === preg_match( '/^[A-Za-z0-9_.\-]{1,64}$/', $t ) && d5b_secret_is_name( $t );
 	}
 
 	/** True when $path (keys from the result's root) matches one of the dotted specs; '*' matches any one key, '' the root. */
@@ -34,7 +35,7 @@ if ( ! function_exists( 'd5b_ability_scrub_secret_name' ) ) {
 			$parts = '' === $spec ? array() : explode( '.', (string) $spec );
 			if ( count( $parts ) !== count( $path ) ) { continue; }
 			$hit = true;
-			foreach ( $parts as $i => $p ) { if ( '*' !== $p && (string) $path[ $i ] !== $p ) { $hit = false; break; } }
+			foreach ( $parts as $i => $p ) { if ( '*' !== $p && 0 !== strcasecmp( (string) $path[ $i ], $p ) ) { $hit = false; break; } }
 			if ( $hit ) { return true; }
 		}
 		return false;
@@ -128,14 +129,15 @@ if ( ! function_exists( 'd5b_ability_scrub' ) ) {
 			$value = $value instanceof JsonSerializable ? $value->jsonSerialize() : get_object_vars( $value );
 			if ( is_object( $value ) ) { $value = get_object_vars( $value ); }
 		}
+		$raw = $raw || ( array() !== $raw_paths && d5b_ability_scrub_path_is_raw( $path, $raw_paths ) );
 		if ( is_string( $value ) ) {
-			$out = $content ? d5b_secret_mask_values( $value ) : d5b_ability_scrub_text( $value );
+			// post content: shapes only; raw third-party data: the FULL masker; every other string: the STRICT masker
+			$out = $content ? d5b_secret_mask_values( $value ) : ( $raw ? d5b_ability_scrub_text( $value ) : d5b_ability_scrub_text_strict( $value ) );
 			if ( $out !== $value ) { d5b_ability_scrub_note(); }
 			return $out;
 		}
 		if ( ! is_array( $value ) ) { return $value; }
 		if ( $depth >= 32 ) { return '[too deep]'; }
-		$raw   = $raw || ( array() !== $raw_paths && d5b_ability_scrub_path_is_raw( $path, $raw_paths ) );
 		if ( $raw ) { $value = d5b_ability_scrub_parallel( $value ); }
 		$named = $raw && d5b_ability_scrub_is_named( $value );
 		$out   = array();
@@ -162,10 +164,20 @@ if ( ! function_exists( 'd5b_ability_scrub_raw' ) ) {
 }
 
 if ( ! function_exists( 'd5b_ability_scrub_text' ) ) {
-	/** Free text on its way out: the value shapes, then the free-text masker when it is loaded. */
+	/** FULL profile: the value shapes, then the whole free-text masker (raw data, WP_Error messages and data). */
 	function d5b_ability_scrub_text( string $s ): string {
 		$s = d5b_secret_mask_values( $s );
 		return function_exists( 'd5b_audit_mask_secrets' ) ? d5b_audit_mask_secrets( $s ) : $s;
+	}
+
+	/**
+	 * STRICT profile, for the strings our handlers build (titles, snippets, descriptions, comments, names): the value shapes
+	 * and the unambiguous forms only (key=value with a secret key, Authorization headers, Bearer / Basic, define(), -u user:pass).
+	 * No "word value" and no "key: value", so "Password: choose a strong one" and "Cookie: chocolate chip" stay as written.
+	 */
+	function d5b_ability_scrub_text_strict( string $s ): string {
+		$s = d5b_secret_mask_values( $s );
+		return function_exists( 'd5b_audit_mask_strict' ) ? d5b_audit_mask_strict( $s ) : $s;
 	}
 }
 

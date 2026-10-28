@@ -224,6 +224,37 @@ if ( ! function_exists( 'd5b_audit_mask_secrets' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_audit_mask_strict' ) ) {
+	/**
+	 * The STRICT profile, for the strings our own handlers return (titles, snippets, descriptions, comments, names). Only
+	 * the unambiguous forms: key=value (also %3D and =>) where the key is secret by the token and compound rule,
+	 * Authorization / Proxy-Authorization header values, Bearer and Basic credentials, URL user:pass@, define('NAME', ...),
+	 * -u user:pass, and the value shapes. Never "word value" or "key: value", so prose stays as written. Capped like the
+	 * FULL masker (d5b_audit_mask_secrets), which raw data, error messages, the audit log and the debug log keep using.
+	 */
+	function d5b_audit_mask_strict( string $s ): string {
+		$cut = strlen( $s ) > 262144;
+		if ( $cut ) { $s = function_exists( 'mb_strcut' ) ? mb_strcut( $s, 0, 262144, 'UTF-8' ) : substr( $s, 0, 262144 ); }
+		$value = '(?<v>"(?:[^"\\\r\n]|\\.){0,512}|\'(?:[^\'\\\r\n]|\\.){0,512}|[^\s&;,"\']{1,512})';
+		$key   = '(?<![A-Za-z0-9_.\-])(?<k>[A-Za-z0-9_.\-]{1,100})';
+		$s = (string) preg_replace( '#(\b[a-z][a-z0-9+.\-]*://)[^/\s:@]*:[^\s/]*@#i', '$1[redacted]@', $s );
+		$s = (string) preg_replace( '/\b((?:Proxy-)?Authorization)\s*:[^\r\n]*/i', '$1: [redacted]', $s );
+		$s = (string) preg_replace( '/\bBearer\s+(?=[A-Za-z0-9\-._~+\/]*[0-9._\-~+\/])[A-Za-z0-9\-._~+\/]{8,}=*/i', 'Bearer [redacted]', $s );
+		$s = (string) preg_replace( '/\bBasic\s+[A-Za-z0-9+\/]{8,}=*/', 'Basic [redacted]', $s );
+		$s = (string) preg_replace( '/(?<![A-Za-z0-9_\-])(?:-u|--user)(?:\s+|=)[^\s:]+:\K[^\s]+/', '[redacted]', $s );
+		if ( function_exists( 'd5b_secret_mask_values' ) ) { $s = d5b_secret_mask_values( $s ); }
+		$s = d5b_audit_mask_after_keys( $s, '/\bdefine\s*\(\s*(["\'])(?<k>[A-Za-z0-9_]{1,100})\1\s*,\s*(?=' . $value . ')/i', 'd5b_audit_is_secret' );
+		$s = d5b_audit_mask_after_keys( $s, '/[\["\']?' . $key . '["\'\]]?\s*(?:=>|=|%3D)\s*(?=' . $value . ')/i', 'd5b_audit_is_strict_key' );
+		return $cut ? $s . '…[truncated]' : $s;
+	}
+}
+
+if ( ! function_exists( 'd5b_audit_is_strict_key' ) ) {
+	/** The STRICT key test (secrets.php); fails closed to the full rule when it is missing. */
+	function d5b_audit_is_strict_key( $key ): bool {
+		return function_exists( 'd5b_secret_is_strict_key' ) ? d5b_secret_is_strict_key( $key ) : d5b_audit_is_secret( $key );
+	}
+}
 if ( ! function_exists( 'd5b_audit_mask_text' ) ) {
 	/** The masking itself (d5b_audit_mask_secrets caps the size first). Every value capture is bounded to 512 characters. */
 	function d5b_audit_mask_text( string $s ): string {

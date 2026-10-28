@@ -334,13 +334,13 @@ $r3_secret = array(
 	// a10 section 1
 	'apiKey', 'APIKey', 'ApiKEY', 'APIKEY', 'apiKey2', 'oAuthToken', 'OAuthToken', 'x-Api-Key', 'XApiKey', 'PASSWORD123', 'password1', 'Password_v2', 'pass2', 'pwd1', 'token2', 'v2Token', 'JWTSecret',
 	'jwtSecret', 'SMTPPassword', 'smtpPass', 'dbPWD', 'AWSSecretAccessKey', 'awsAccessKeyId', 'secretAccessKey', 'privateKeyPem', 'clientSecretV2', 'HTTPAuth', 'httpAuthUser', 'BasicAuth', 'MFASeed', 'TOTPSecret',
-	// accepted over-scrub (round 3): short tokens and words stay hidden
-	'pin_color', 'random_seed', 'cookie_notice' );
+	// short tokens: seed as a whole token; cookie / session / pin last or before a qualifier (round 5)
+	'random_seed', 'pin_code', 'session_id', 'cookie' );
 $missed3 = array_values( array_filter( $r3_secret, function ( $k ) { return ! d5b_is_secret_key( $k ); } ) );
 check( 'every a12 and a10 section 1-2 key is a secret (' . count( $r3_secret ) . ' keys)', array() === $missed3, $missed3 );
-$harmless = array( 'compass', 'bypass', 'bypass_cache', 'passenger', 'footprint', 'hotpink', 'basalt', 'monkey', 'turkey', 'hotkey', 'author', 'authors', 'author_id', 'author name', 'authority', 'authored', 'authorized', 'layout_key', 'module_key', 'hash', 'meta_key', 'menu_key' );
+$harmless = array( 'pin_color', 'cookie_notice', 'cookie_notice_text', 'pin_icon_color', 'session_banner_text', 'ads_network', 'head_snippet', 'screenshot_path', 'compass', 'bypass', 'bypass_cache', 'passenger', 'footprint', 'hotpink', 'basalt', 'monkey', 'turkey', 'hotkey', 'author', 'authors', 'author_id', 'author name', 'authority', 'authored', 'authorized', 'layout_key', 'module_key', 'hash', 'meta_key', 'menu_key' );
 $eaten3 = array_values( array_filter( $harmless, 'd5b_is_secret_key' ) );
-check( 'the exact harmless list stays visible (matched on the joined key)', array() === $eaten3, $eaten3 );
+check( 'the exact harmless list, and (round 5) cookie/session/pin before an ordinary word, dsn and otp inside words, stay visible', array() === $eaten3, $eaten3 );
 check( 'the harmless list is exact: a longer key holding one of its words is still a secret (compass_dir, bypass_token, passengers)', d5b_is_secret_key( 'compass_dir' ) && d5b_is_secret_key( 'bypass_token' ) && d5b_is_secret_key( 'passengers' ) );
 
 echo "round 3: one general pair rule (break-it a10 section 4)\n";
@@ -799,6 +799,113 @@ check( 'scoping: an a10 case (name/text) under a declared raw path is redacted; 
 check( 'scoping: parallel lists outside a raw path are left alone (only key removal and the masker apply there)', is_array( $r ) && 'v3' === $r['built_lists']['values'][2], $r['built_lists'] ?? $r );
 check( 'raw path syntax: dotted keys, * for any one key, \'\' for the root', d5b_ability_scrub_path_is_raw( array( 'sidebars', 0, 'widgets', 3, 'settings' ), array( 'sidebars.*.widgets.*.settings' ) ) && ! d5b_ability_scrub_path_is_raw( array( 'sidebars', 0, 'widgets' ), array( 'sidebars.*.widgets.*.settings' ) ) && d5b_ability_scrub_path_is_raw( array(), array( '' ) ) );
 d5b_ability_registry( $snapshot );
+
+// ---- round 5: usability on a realistic site (break-it a13, a15, a14)
+echo "round 5: a realistic small site comes back unchanged (a13)\n";
+/** The a13 site: ordinary content whose words (password, session, token, cookie, pin) used to trip the filter. @return array the calls */
+function a13_site(): array {
+	site( ADMIN, 1 );
+	$GLOBALS['T_theme'] = theme_row( 'Divi', 'Divi', '5.0.1' ); $GLOBALS['T_themes'] = array( $GLOBALS['T_theme'] );
+	$GLOBALS['T_custom_css'] = (object) array( 'post_content' => ".et_pb_section{padding:0}\n/* session times banner */\n.password-reset-form{color:#333}" );
+	$p1 = t_add_post( array( 'post_title' => 'Password reset', 'post_name' => 'password-reset', 'post_content' => 'How to reset your password. Go to the login page and click Lost your password.', 'post_excerpt' => 'Resetting a password' ) );
+	$p2 = t_add_post( array( 'post_title' => 'Session times', 'post_name' => 'session-times', 'post_content' => 'Morning session: 9:00. Evening session: 18:00. Token system for the bar.' ) );
+	$p3 = t_add_post( array( 'post_title' => 'Password: choose a strong one', 'post_name' => 'password-tips', 'post_content' => 'Token: our loyalty scheme gives one token per visit. Your pin: the 4 digits on your card.' ) );
+	$pg = t_add_post( array( 'post_type' => 'page', 'post_title' => 'Passengers', 'post_name' => 'passengers', 'post_content' => '<!-- wp:divi/text {"content":{"innerContent":{"desktop":{"value":"Cookie policy and session info"}}}} /-->' ) );
+	$att = t_add_post( array( 'post_type' => 'attachment', 'post_status' => 'inherit', 'post_title' => 'token-coin', 'post_mime_type' => 'image/png', 'post_content' => 'A token coin' ) );
+	t_add_meta( $att, '_wp_attached_file', '2026/10/token-coin.png' ); t_add_meta( $att, '_wp_attachment_image_alt', 'Session token coin' );
+	foreach ( array( '_et_pb_use_builder' => 'on', '_et_pb_page_layout' => 'et_full_width_page', '_et_pb_side_nav' => 'off', '_et_builder_version' => 'VB|Divi|5.0.1', '_et_pb_built_for_post_type' => 'page', '_wp_page_template' => 'default', '_edit_lock' => '1761640000:1', '_wp_old_slug' => 'session-times-2025' ) as $k => $v ) { t_add_meta( $pg, $k, $v ); }
+	foreach ( array( '_wp_old_slug' => 'password-reset-old', '_et_pb_use_builder' => 'off', '_thumbnail_id' => (string) $att, 'subtitle' => 'Forgot it? Read on', 'reading_time' => '3' ) as $k => $v ) { t_add_meta( $p1, $k, $v ); }
+	foreach ( array( '_yoast_wpseo_focuskw' => 'session-times', '_yoast_wpseo_metadesc' => 'Our session times for the week', 'event_venue' => 'Main hall', 'event_capacity' => '40' ) as $k => $v ) { t_add_meta( $p2, $k, $v ); }
+	t_add_meta( $p3, '_et_dynamic_cached_shortcodes', array( 'et_pb_section', 'et_pb_row', 'et_pb_text' ) );
+	$t2 = t_add_term( 'post_tag', 'password' ); $GLOBALS['T_terms'][ $t2 ]->description = 'Posts about password safety'; t_add_term( 'category', 'Security tips' ); t_add_term( 'post_tag', 'sessions' );
+	t_add_comment( array( 'comment_post_ID' => $p1, 'comment_content' => 'Thanks, the password reset worked! My token: the green one.' ) );
+	$GLOBALS['T_menus'][7] = (object) array( 'term_id' => 7, 'name' => 'Main menu', 'slug' => 'main-menu', 'count' => 3 );
+	$GLOBALS['T_menu_items'][7] = array( (object) array( 'ID' => 900, 'title' => 'Passengers', 'url' => 'https://x.example/passengers/', 'type' => 'post_type', 'object' => 'page', 'object_id' => $pg, 'menu_item_parent' => 0, 'menu_order' => 1 ),
+		(object) array( 'ID' => 902, 'title' => 'Login', 'url' => 'https://x.example/wp-login.php?action=lostpassword', 'type' => 'custom', 'object' => 'custom', 'object_id' => 902, 'menu_item_parent' => 0, 'menu_order' => 3 ) );
+	$GLOBALS['T_menu_locations'] = array( 'primary-menu' => 7 ); $GLOBALS['T_registered_menus'] = array( 'primary-menu' => 'Primary Menu' );
+	$rev = t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $p1, 'post_title' => 'Password reset', 'post_content' => 'Old text about the password reset page.' ) );
+	$GLOBALS['T_users'] = array( 1 => (object) array( 'ID' => 1, 'user_login' => 'admin', 'display_name' => 'Site Admin', 'user_email' => 'admin@x.example', 'roles' => array( 'administrator' ), 'user_registered' => '2024-01-01 00:00:00' ),
+		2 => (object) array( 'ID' => 2, 'user_login' => 'passenger_pete', 'display_name' => 'Pete Passenger', 'user_email' => 'pete@x.example', 'roles' => array( 'subscriber' ), 'user_registered' => '2025-03-01 00:00:00' ),
+		3 => (object) array( 'ID' => 3, 'user_login' => 'tokenlady', 'display_name' => 'Tess Token', 'user_email' => 'tess@x.example', 'roles' => array( 'editor' ), 'user_registered' => '2025-04-01 00:00:00' ) );
+	$GLOBALS['wp_registered_sidebars'] = array( 'sidebar-1' => array( 'name' => 'Sidebar' ), 'sidebar-2' => array( 'name' => 'Footer Area #1' ) );
+	$GLOBALS['T_sidebars'] = array( 'wp_inactive_widgets' => array(), 'sidebar-1' => array( 'search-2', 'recent-posts-2', 'text-3' ), 'sidebar-2' => array( 'custom_html-4', 'text-5' ) );
+	$GLOBALS['T_options']['widget_search'] = array( 2 => array( 'title' => 'Search' ) );
+	$GLOBALS['T_options']['widget_recent-posts'] = array( 2 => array( 'title' => 'Latest news', 'number' => 5, 'show_date' => false ) );
+	$GLOBALS['T_options']['widget_text'] = array( 3 => array( 'title' => 'Opening hours', 'text' => 'Session 1: 9-12. Session 2: 14-17.', 'filter' => true, 'visual' => true ), 5 => array( 'title' => 'Forgot your password?', 'text' => 'Use the lost-password link on the login page.', 'filter' => true, 'visual' => true ) );
+	$GLOBALS['T_options']['widget_custom_html'] = array( 4 => array( 'title' => 'Newsletter', 'content' => '<form action="/subscribe"><input name="email"></form>' ) );
+	$GLOBALS['T_theme_mods'] = array( 'nav_menu_locations' => array( 'primary-menu' => 7 ), 'custom_css_post_id' => 12,
+		'et_divi' => array( 'accent_color' => '#2ea3f2', 'primary_nav_bg' => '#ffffff', 'header_style' => 'left', 'show_search_icon' => true, 'cookie_notice_text' => 'We use cookies', 'pin_icon_color' => '#ff0000', 'social_pinterest_url' => 'https://pinterest.com/x', 'ads_network' => 'none', 'head_snippet' => '' ),
+		'background_color' => 'ffffff', 'header_textcolor' => 'blank', 'et_pb_css_synced' => 'yes', 'session_banner_text' => 'Book a session' );
+	foreach ( array( 'blogname' => 'Pass & Go Shuttles', 'blogdescription' => 'Passenger transport, session bookings', 'siteurl' => 'https://x.example', 'home' => 'https://x.example', 'admin_email' => 'admin@x.example', 'timezone_string' => 'Africa/Johannesburg', 'date_format' => 'j F Y', 'time_format' => 'H:i', 'permalink_structure' => '/%postname%/', 'show_on_front' => 'page', 'page_on_front' => $pg ) as $k => $v ) { $GLOBALS['T_options'][ $k ] = $v; }
+	$GLOBALS['T_cron_array'] = array( 1761643600 => array( 'wp_session_garbage_collection' => array( 'k1' => array( 'schedule' => 'daily', 'args' => array() ) ) ), 1761647200 => array( 'wp_scheduled_auth_cookie_cleanup' => array( 'k3' => array( 'schedule' => 'daily', 'args' => array() ) ) ) );
+	$GLOBALS['T_plugins'] = array( 'password-protected/password-protected.php' => array( 'Name' => 'Password Protected', 'Version' => '2.7' ), 'wp-session-manager/wp-session-manager.php' => array( 'Name' => 'WP Session Manager', 'Version' => '4.2' ), 'cookie-notice/cookie-notice.php' => array( 'Name' => 'Cookie Notice & Compliance', 'Version' => '2.5' ), 'jwt-auth/jwt-auth.php' => array( 'Name' => 'JWT Auth', 'Version' => '3.0' ) );
+	$GLOBALS['T_options']['active_plugins'] = array( 'password-protected/password-protected.php' );
+	file_put_contents( LOGFILE, "[28-Oct-2026 10:00:00 UTC] PHP Notice:  Undefined index: session_id in /x/wp-content/plugins/wp-session-manager/x.php on line 12\n" );
+	return array( 'posts-list' => array(), 'posts-get' => array( 'id' => $p1 ), 'posts-get#3' => array( 'id' => $p3 ), 'pages-list' => array(), 'pages-get' => array( 'id' => $pg ), 'media-list' => array(), 'media-get' => array( 'id' => $att ),
+		'meta-get' => array( 'post_id' => $pg ), 'meta-get#1' => array( 'post_id' => $p1 ), 'meta-get#2' => array( 'post_id' => $p2 ), 'meta-get#3' => array( 'post_id' => $p3 ),
+		'search' => array( 'query' => 'password' ), 'search#2' => array( 'query' => 'session' ), 'taxonomy-list' => array(), 'taxonomy-list#tag' => array( 'taxonomy' => 'post_tag' ), 'taxonomy-get' => array( 'taxonomy' => 'post_tag', 'id' => $t2 ),
+		'comments-list' => array(), 'menus-list' => array(), 'menus-items' => array( 'menu' => 7 ), 'menus-locations' => array(), 'posts-revisions' => array( 'id' => $p1 ), 'revisions-get' => array( 'id' => $rev ), 'revisions-compare' => array( 'from' => $rev, 'to' => $p1 ),
+		'settings-get' => array(), 'appearance-get' => array(), 'widgets-list' => array(), 'cron-list' => array(), 'error-log' => array(), 'users-list' => array(), 'users-get' => array( 'id' => 2 ), 'plugins-list' => array(), 'themes-list' => array() );
+}
+function t_leaves( $v, $p = '' ) { $o = array(); if ( is_object( $v ) ) { $v = get_object_vars( $v ); } if ( is_array( $v ) ) { foreach ( $v as $k => $x ) { $o += t_leaves( $x, '' === $p ? (string) $k : $p . '.' . $k ); } } else { $o[ $p ] = $v; } return $o; }
+$calls13 = a13_site();
+$damaged = array(); $flagged13 = array();
+foreach ( $calls13 as $label => $in ) {
+	$short = explode( '#', $label )[0];
+	$raw = handler( $short, $in );
+	$out = call( $short, $in );
+	if ( ! is_array( $raw ) || ! is_array( $out ) ) { $damaged[] = "$label: not an array"; continue; }
+	if ( isset( $out['masked'] ) ) { $flagged13[] = $label; unset( $out['masked'] ); }
+	$a = t_leaves( $raw ); $b = t_leaves( $out );
+	foreach ( $a as $k => $v ) { if ( ! array_key_exists( $k, $b ) ) { $damaged[] = "$label GONE $k"; } elseif ( $b[ $k ] !== $v ) { $damaged[] = "$label CHANGED $k: " . json_encode( $b[ $k ] ); } }
+}
+check( 'a13: every one of ' . count( $calls13 ) . ' calls over the realistic site returns exactly what its handler built (the 28 damaged leaves of break-it 4 all come back)', array() === $damaged, $damaged );
+check( 'a13: and none of them says masked (nothing was changed)', array() === $flagged13, $flagged13 );
+
+echo "round 5: prose and slugs (a15)\n";
+$titles15 = array( 'Sea salt crackers', 'Salt baked potatoes', 'Our secret recipes', 'Secret garden brunch', 'Key ingredients', 'Key takeaways from 2026', 'Token rewards programme',
+	'Password reset', 'Password safety tips', 'Password Protected', 'Session times', 'Session: Monday 9:00', 'Pin: your loyalty number', 'Cookie recipes', 'Cookie: chocolate chip',
+	'Pass the parcel', 'Passion fruit cheesecake', 'Nonce words in poetry', 'Seed potatoes', 'API key rotation guide', 'Token economy explained', 'Chef secret: the sauce',
+	'Hours: Mon-Fri 9:00-17:00', 'Price: R120 per person', 'Menu key: V = vegetarian', 'Salted caramel cookies', 'Password: choose a strong one' );
+$changed15 = array(); foreach ( $titles15 as $t ) { $o = d5b_ability_scrub( array( 'title' => $t ) )['title']; if ( $o !== $t ) { $changed15[] = "$t -> $o"; } }
+check( 'a15: all ' . count( $titles15 ) . ' ordinary titles come back as written (STRICT profile)', array() === $changed15, $changed15 );
+$kv_prose = 'Seats: passengers=40, salted=yes, tokensused=3';
+check( 'STRICT key=value uses the token and compound rule only: passengers=, salted= and tokensused= in prose stay (the substring union would mask them)', $kv_prose === d5b_ability_scrub( array( 'title' => $kv_prose ) )['title'], d5b_ability_scrub( array( 'title' => $kv_prose ) ) );
+$slugs15 = array( 'salted-caramel-cookies', 'passion-fruit-cheesecake', 'session-times', 'cookie-policy', 'secret-garden', 'passengers', 'passover-menu', 'seed-potatoes', 'pin-board', 'token-rewards', 'reset-password', 'lost-password', 'sea-salt', 'compassion', 'key-lime-pie', 'gingerbread' );
+$names15 = array_values( array_filter( $slugs15, 'd5b_ability_scrub_secret_name' ) );
+check( 'a15: no slug-like value counts as a key name in raw data', array() === $names15, $names15 );
+check( 'a15: key names still count: otp, api-key, x-api-key, smtp_password, Password', d5b_ability_scrub_secret_name( 'otp' ) && d5b_ability_scrub_secret_name( 'api-key' ) && d5b_ability_scrub_secret_name( 'x-api-key' ) && d5b_ability_scrub_secret_name( 'smtp_password' ) && d5b_ability_scrub_secret_name( 'Password' ) );
+$meta15 = array( 'meta' => array( '_wp_old_slug' => 'salted-caramel-cookies', '_thumbnail_id' => '55', 'price' => 'R85', 'allergens' => 'nuts, dairy', '_et_pb_use_builder' => 'on' ) );
+check( 'a15: a meta map with an old slug "salted-caramel-cookies" keeps every value', $meta15 === d5b_ability_scrub( $meta15, 0, array(), false, array( 'meta' ) ), d5b_ability_scrub( $meta15, 0, array(), false, array( 'meta' ) ) );
+
+echo "round 5: what stays masked\n";
+$strict_mask = array( 'smtp password=' . $S, 'Authorization: Basic ' . $S, 'Proxy-Authorization: Digest ' . $S, 'curl -u admin:' . $S, "define('DB_PASSWORD','$S');", 'token=' . $S, 'url https://u:' . $S . '@h/x',
+	'Bearer ' . $S . '-0123456789', "x 'api_key' => '$S'", 'key sk_live_S3CR3TabcdefGH', 'eyJhbGciOiJIUzI1NiJ9.eyJTM0NSM1QiOiIxIn0.S3CR3Tsignaturexx', "-----BEGIN PRIVATE KEY-----\nS3CR3TAAAAAAAAAAAAAAAAAAAA\n-----END PRIVATE KEY-----" );
+$held5 = array(); foreach ( $strict_mask as $t ) { if ( false !== strpos( d5b_ability_scrub( array( 'title' => $t ) )['title'], 'S3CR3T' ) ) { $held5[] = $t; } }
+check( 'STRICT profile still masks key=value, Authorization / Proxy-Authorization, -u, define(), URL passwords, Bearer, => and the value shapes', array() === $held5, $held5 );
+$r = d5b_ability_scrub( array( 'theme_mods' => array( 'smtp' => 'password: hunter2x9', 'note' => 'token abc123def456' ) ), 0, array(), false, array( 'theme_mods' ) );
+check( 'FULL profile in raw data: "password: x" and "token x" are still masked there', false === strpos( json_encode( $r ), 'hunter2x9' ) && false === strpos( json_encode( $r ), 'abc123def456' ), $r );
+$e = d5b_ability_scrub_error( new WP_Error( 'x', 'login failed, password hunter2x9', array( 'note' => 'session: S3CR3TVALUE9' ) ) );
+check( 'FULL profile for WP_Error messages and data', false === strpos( $e->get_error_message(), 'hunter2x9' ) && false === strpos( json_encode( $e->get_error_data() ), 'S3CR3T' ), array( $e->get_error_message(), $e->get_error_data() ) );
+$held_keys = array_values( array_filter( array( 'cookie', 'set-cookie', 'session', 'session_id', 'sessionid', 'wp_session_token', 'PHPSESSID', 'pin', 'pin_code', 'pincode', 'cookie_value', 'otp', 'otp_secret', 'dsn', 'db_dsn', 'rootpw' ), function ( $k ) { return ! d5b_is_secret_key( $k ); } ) );
+check( 'cookie / session / pin as the last token or before a qualifier, and otp / dsn as whole tokens, are still secret', array() === $held_keys, $held_keys );
+
+echo "round 5: declared raw paths match real output (a14 self-check)\n";
+function t_paths( $v, array $p, array &$into, int $d = 0 ) { if ( $d > 8 ) { return; } if ( is_object( $v ) ) { $v = get_object_vars( $v ); } if ( ! is_array( $v ) ) { return; } foreach ( $v as $k => $x ) { $q = array_merge( $p, array( $k ) ); $into[] = $q; t_paths( $x, $q, $into, $d + 1 ); } }
+$calls13 = a13_site();
+$unmatched = array();
+foreach ( d5b_ability_defs() as $full => $def ) {
+	if ( empty( $def['raw_paths'] ) ) { continue; }
+	$short = substr( $full, strlen( 'divi5-builder/' ) );
+	$out = handler( $short, $calls13[ $short ] ?? array() );
+	$all = array(); t_paths( $out, array(), $all );
+	foreach ( $def['raw_paths'] as $spec ) {
+		$hit = false; foreach ( $all as $p ) { if ( d5b_ability_scrub_path_is_raw( $p, array( $spec ) ) ) { $hit = true; break; } }
+		if ( ! $hit ) { $unmatched[] = "$short: $spec"; }
+	}
+}
+check( 'every declared raw path of every ability matches at least one node of its real output', array() === $unmatched, $unmatched );
+check( 'raw path matching is case-insensitive', d5b_ability_scrub_path_is_raw( array( 'Meta' ), array( 'meta' ) ) && d5b_ability_scrub_path_is_raw( array( 'SIDEBARS', 0, 'Widgets', 1, 'Settings' ), array( 'sidebars.*.widgets.*.settings' ) ) );
 
 // ---- the keep list is built from reality: every ability, as an administrator, over ordinary data (no secrets planted)
 echo "keep list: no field our abilities return is called a secret\n";

@@ -30,8 +30,8 @@ if ( ! function_exists( 'd5b_secret_key_norm' ) ) {
 	/** A token that is one of these makes the key a secret. */
 	function d5b_secret_tokens(): array {
 		return array( 'pass', 'password', 'passwd', 'passphrase', 'pwd', 'pw', 'pword',
-			'secret', 'secrets', 'token', 'tokens', 'salt', 'nonce', 'cookie', 'cookies', 'session', 'sessid', 'phpsessid',
-			'credential', 'credentials', 'creds', 'signature', 'hmac', 'otp', 'jwt', 'bearer', 'csrf', 'xsrf', 'dsn', 'mnemonic', 'seed', 'privkey', 'apikey', 'pin', 'sid',
+			'secret', 'secrets', 'token', 'tokens', 'salt', 'nonce', 'sessid', 'phpsessid',
+			'credential', 'credentials', 'creds', 'signature', 'hmac', 'otp', 'jwt', 'bearer', 'csrf', 'xsrf', 'dsn', 'mnemonic', 'seed', 'privkey', 'apikey', 'sid',
 			'auth', 'authorization', 'oauth', 'authkey' );
 	}
 
@@ -43,6 +43,20 @@ if ( ! function_exists( 'd5b_secret_key_norm' ) ) {
 		return array( 'apikey', 'privatekey', 'secretkey', 'licensekey', 'activationkey', 'accesskey', 'authkey', 'loggedinkey', 'encryptionkey', 'signingkey',
 			'accesstoken', 'refreshtoken', 'clientsecret', 'password', 'passphrase', 'authorization', 'connectionstring', 'webhookurl', 'backupcode', 'recoverycode', 'mfacode',
 			'sklive', 'sktest', 'stripesk', 'nonce' );
+	}
+
+	/**
+	 * Words that are a secret only as the last token or right before a qualifier (cookie, session_id, pin_code), so
+	 * cookie_notice_text, session_banner_text and pin_icon_color stay visible.
+	 */
+	function d5b_secret_context_tokens(): array { return array( 'cookie', 'cookies', 'session', 'pin' ); }
+	function d5b_secret_context_qualifiers(): array { return array( 'value', 'id', 'key', 'token', 'data', 'secret', 'hash', 'code' ); }
+
+	/** The same words written in one piece with a qualifier (sessionid, cookievalue, pincode): matched on the joined key. */
+	function d5b_secret_context_compounds(): array {
+		$out = array();
+		foreach ( d5b_secret_context_tokens() as $w ) { foreach ( d5b_secret_context_qualifiers() as $q ) { $out[] = $w . $q; } }
+		return $out;
 	}
 
 	/** Joined keys that are a secret on their own (WordPress's user and session fields). */
@@ -57,10 +71,12 @@ if ( ! function_exists( 'd5b_secret_key_norm' ) ) {
 
 	/** (b) The joined key contains one of these: catches one-word compounds (apitoken, smtppass, appsecret) and split words. */
 	function d5b_secret_substrings(): array {
-		return array( 'pass', 'pwd', 'secret', 'token', 'salt', 'nonce', 'cookie', 'session', 'credential', 'creds', 'signature', 'hmac', 'otp', 'totp', 'csrf', 'xsrf', 'jwt', 'bearer',
+		// round 5: no 'dsn' or 'otp' (ads_network, head_snippet, screenshot_path) and no bare 'cookie' or 'session'; those count as
+		// whole tokens only (d5b_secret_tokens, d5b_secret_context_tokens) or in one piece with a qualifier (sessionid).
+		return array_merge( array( 'pass', 'pwd', 'secret', 'token', 'salt', 'nonce', 'credential', 'creds', 'signature', 'hmac', 'totp', 'csrf', 'xsrf', 'jwt', 'bearer',
 			'privkey', 'privatekey', 'apikey', 'licensekey', 'activationkey', 'accesskey', 'masterkey', 'hashkey', 'authkey', 'authsalt',
-			'passcode', 'passphrase', 'mnemonic', 'seedphrase', 'pincode', 'dsn', 'connectionstring', 'webhook', 'sklive', 'sktest', 'stripesk', 'twofactor', 'mfacode',
-			'authorization', 'oauth', 'xauth' );
+			'passcode', 'passphrase', 'mnemonic', 'seedphrase', 'pincode', 'connectionstring', 'webhook', 'sklive', 'sktest', 'stripesk', 'twofactor', 'mfacode',
+			'authorization', 'oauth', 'xauth' ), d5b_secret_context_compounds() );
 	}
 
 	/**
@@ -93,7 +109,32 @@ if ( ! function_exists( 'd5b_secret_key_norm' ) ) {
 		foreach ( d5b_secret_substrings() as $w ) { if ( false !== strpos( $joined, $w ) ) { return true; } }
 		// ends in "auth": basicauth, httpauth, smtpauth (author and authority do not end in it)
 		if ( 'auth' === substr( $joined, -4 ) ) { return true; }
+		// ends in "pw": rootpw, adminpw, dbpw (round 5: no longer caught by the dropped 'otp' substring)
+		if ( 'pw' === substr( $joined, -2 ) ) { return true; }
 		return d5b_secret_token_rule( $key, $joined );
+	}
+
+	/**
+	 * Is a VALUE a key name (the raw-row rule)? Only the token and compound rule, never the substring union, so ordinary
+	 * words and slugs stay values. A value holding '-' is a slug (session-times, salted-caramel-cookies) unless it is, in one
+	 * piece, exactly a compound or x- plus a compound (api-key, x-api-key).
+	 */
+	function d5b_secret_is_name( $v ): bool {
+		if ( ! is_scalar( $v ) ) { return false; }
+		$joined = d5b_secret_key_norm( $v );
+		if ( '' === $joined || in_array( $joined, d5b_secret_harmless(), true ) ) { return false; }
+		if ( false !== strpos( (string) $v, '-' ) ) {
+			$c = d5b_secret_compounds();
+			return in_array( $joined, $c, true ) || ( 'x' === $joined[0] && in_array( substr( $joined, 1 ), $c, true ) );
+		}
+		return d5b_secret_token_rule( $v, $joined );
+	}
+
+	/** A key in prose (the STRICT masker's key=value): the token and compound rule only, minus the harmless list. */
+	function d5b_secret_is_strict_key( $key ): bool {
+		if ( ! is_scalar( $key ) ) { return false; }
+		$joined = d5b_secret_key_norm( $key );
+		return '' !== $joined && ! in_array( $joined, d5b_secret_harmless(), true ) && d5b_secret_token_rule( $key, $joined );
 	}
 
 	/** (a) The token and compound rule of round 2. */
@@ -103,6 +144,10 @@ if ( ! function_exists( 'd5b_secret_key_norm' ) ) {
 		$tokens = d5b_secret_key_tokens( $key );
 		if ( array_intersect( $tokens, d5b_secret_tokens() ) ) { return true; }
 		if ( array( 'key' ) === $tokens ) { return true; }
+		$last = count( $tokens ) - 1;
+		foreach ( $tokens as $i => $t ) {
+			if ( in_array( $t, d5b_secret_context_tokens(), true ) && ( $i === $last || in_array( $tokens[ $i + 1 ], d5b_secret_context_qualifiers(), true ) ) ) { return true; }
+		}
 		// a lone "key" after an owner word; version numbers in between do not count (api2key, api_2_key)
 		$words = array_values( array_filter( $tokens, function ( $t ) { return ! ctype_digit( $t ); } ) );
 		foreach ( $words as $i => $t ) {
