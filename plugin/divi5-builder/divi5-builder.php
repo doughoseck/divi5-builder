@@ -37,6 +37,7 @@ foreach ( array(
 	'inc/gate.php',
 	'inc/takeover.php',
 	'inc/abilities/categories.php',
+	'inc/abilities/register.php',
 	'inc/settings.php',
 	'parts/page-building.php',
 	'parts/media-audit.php',
@@ -54,6 +55,11 @@ add_action( 'init', function () {
 
 // Late, so an old copy's routes are already there to see.
 add_action( 'rest_api_init', 'd5b_gate', 99 );
+
+// AI abilities (WordPress 6.9+ Abilities API). Both callbacks do nothing without the API, while the master switch is
+// off, or for a category whose switch is off.
+add_action( 'wp_abilities_api_categories_init', 'd5b_abilities_register_categories' );
+add_action( 'wp_abilities_api_init', 'd5b_abilities_register' );
 
 // Taking over from the old plugins. A must-use plugin is never "activated", so it runs on admin_init instead.
 register_activation_hook( D5B_FILE, 'd5b_takeover_on_activation' );

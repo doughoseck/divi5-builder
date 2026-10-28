@@ -30,6 +30,7 @@ function t_reset() {
 	$GLOBALS['T_options'] = array(); $GLOBALS['T_site_options'] = array(); $GLOBALS['T_server_routes'] = array();
 	unset( $GLOBALS['d5b_stood_aside'], $GLOBALS['d5b_gate_ran'], $GLOBALS['T_server'] );
 	if ( function_exists( 't_blogs_reset' ) ) { t_blogs_reset(); }
+	if ( function_exists( 't_abilities_reset' ) ) { t_abilities_reset(); }
 }
 // A new request: WordPress starts a request with the gate not yet run.
 function t_new_request() { unset( $GLOBALS['d5b_gate_ran'] ); }
@@ -38,7 +39,7 @@ function t_set_multisite( $on ) { $GLOBALS['T_multisite'] = (bool) $on; }
 t_reset(); t_set_caps( array() ); t_set_multisite( false );
 
 if ( ! class_exists( 'WP_Error' ) ) {
-	class WP_Error { public $code; public $message; public $data; function __construct( $c = '', $m = '', $d = null ) { $this->code = $c; $this->message = $m; $this->data = $d; } function get_error_message() { return $this->message; } }
+	class WP_Error { public $code; public $message; public $data; function __construct( $c = '', $m = '', $d = null ) { $this->code = $c; $this->message = $m; $this->data = $d; } function get_error_message() { return $this->message; } function get_error_code() { return $this->code; } }
 }
 // $method and $route as WP_REST_Request::get_method() / get_route() give them (only rest_pre_dispatch tests need them).
 class T_Request { private $p; private $m; private $r; function __construct( array $p = array(), $method = 'GET', $route = '' ) { $this->p = $p; $this->m = $method; $this->r = $route; } function get_param( $k ) { return $this->p[ $k ] ?? null; } function get_params() { return $this->p; } function get_json_params() { return $this->p; } function get_method() { return $this->m; } function get_route() { return $this->r; } }
@@ -140,3 +141,40 @@ function esc_html( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF
 function esc_attr( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
 function esc_url( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
 function wp_unslash( $v ) { return is_array( $v ) ? array_map( 'wp_unslash', $v ) : stripslashes( (string) $v ); }
+
+// ---- Abilities API stand-ins (#32, Task 2). Recorded in:
+//   T_abilities           name => args   (wp_register_ability calls that core would accept)
+//   T_ability_categories  slug => args   (wp_register_ability_category calls that core would accept)
+//   T_ability_errors      list of "register ... refused: reason" strings (what _doing_it_wrong would report)
+//   T_doing               hooks currently "running" (set by t_fire)
+// t_fire( $hook ) runs every callback added to $hook with doing_action( $hook ) true, as core does.
+// Set the environment variable D5B_NO_ABILITIES_API=1 before loading this file to leave wp_register_ability*
+// and wp_has_ability* undefined, like WordPress before 6.9.
+$GLOBALS['T_abilities'] = array(); $GLOBALS['T_ability_categories'] = array(); $GLOBALS['T_ability_errors'] = array(); $GLOBALS['T_doing'] = array();
+function t_abilities_reset() { $GLOBALS['T_abilities'] = array(); $GLOBALS['T_ability_categories'] = array(); $GLOBALS['T_ability_errors'] = array(); $GLOBALS['T_doing'] = array(); }
+function doing_action( $h = null ) { return null === $h ? ! empty( $GLOBALS['T_doing'] ) : in_array( $h, $GLOBALS['T_doing'], true ); }
+function t_fire( $hook ) { $GLOBALS['T_doing'][] = $hook; try { foreach ( $GLOBALS['T_actions'][ $hook ] ?? array() as $cb ) { call_user_func( $cb ); } } finally { array_pop( $GLOBALS['T_doing'] ); } }
+if ( ! getenv( 'D5B_NO_ABILITIES_API' ) ) {
+	function wp_has_ability( $n ) { return isset( $GLOBALS['T_abilities'][ $n ] ); }
+	function wp_has_ability_category( $s ) { return isset( $GLOBALS['T_ability_categories'][ $s ] ); }
+	function wp_register_ability( $name, $args = array() ) {
+		$why = '';
+		if ( ! doing_action( 'wp_abilities_api_init' ) ) { $why = 'outside wp_abilities_api_init'; }
+		elseif ( 1 !== preg_match( '#^[a-z0-9]+(-[a-z0-9]+)*/[a-z0-9]+(-[a-z0-9]+)*$#', (string) $name ) ) { $why = 'bad name'; }
+		elseif ( isset( $GLOBALS['T_abilities'][ $name ] ) ) { $why = 'already registered'; }
+		elseif ( empty( $args['label'] ) || empty( $args['description'] ) || ! is_callable( $args['execute_callback'] ?? null ) ) { $why = 'missing label, description or execute_callback'; }
+		if ( '' !== $why ) { $GLOBALS['T_ability_errors'][] = "ability $name refused: $why"; return null; }
+		$GLOBALS['T_abilities'][ $name ] = $args;
+		return (object) array( 'name' => $name );
+	}
+	function wp_register_ability_category( $slug, $args = array() ) {
+		$why = '';
+		if ( ! doing_action( 'wp_abilities_api_categories_init' ) ) { $why = 'outside wp_abilities_api_categories_init'; }
+		elseif ( 1 !== preg_match( '#^[a-z0-9]+(-[a-z0-9]+)*$#', (string) $slug ) ) { $why = 'bad slug'; }
+		elseif ( isset( $GLOBALS['T_ability_categories'][ $slug ] ) ) { $why = 'already registered'; }
+		elseif ( empty( $args['label'] ) || empty( $args['description'] ) ) { $why = 'missing label or description'; }
+		if ( '' !== $why ) { $GLOBALS['T_ability_errors'][] = "category $slug refused: $why"; return null; }
+		$GLOBALS['T_ability_categories'][ $slug ] = $args;
+		return (object) array( 'slug' => $slug );
+	}
+}

@@ -74,7 +74,7 @@ check( 'nothing stood aside, no stand-aside saved', array() === $st['stood_aside
 // ---- the hooks the loader registers
 echo "hooks\n";
 $hooks = array_keys( $GLOBALS['T_actions'] ); sort( $hooks );
-$want  = array( 'admin_init', 'admin_menu', 'admin_notices', 'admin_post_d5b_save_switches', 'init', 'network_admin_edit_d5b_save_switches', 'network_admin_menu', 'network_admin_notices', 'rest_api_init' );
+$want  = array( 'admin_init', 'admin_menu', 'admin_notices', 'admin_post_d5b_save_switches', 'init', 'network_admin_edit_d5b_save_switches', 'network_admin_menu', 'network_admin_notices', 'rest_api_init', 'wp_abilities_api_categories_init', 'wp_abilities_api_init' );
 check( 'exactly the expected hooks, each registered once', $want === $hooks && 1 === count( array_unique( array_map( 'count', $GLOBALS['T_actions'] ) ) ) && 1 === max( array_map( 'count', $GLOBALS['T_actions'] ) ), array( $hooks, array_map( 'count', $GLOBALS['T_actions'] ) ) );
 check( 'rest_api_init runs the gate at priority 99', array( 'd5b_gate' ) === $GLOBALS['T_actions']['rest_api_init'] && array( 99 ) === $GLOBALS['T_priorities']['rest_api_init'] );
 check( 'admin_menu and network_admin_menu run d5b_settings_menu', array( 'd5b_settings_menu' ) === $GLOBALS['T_actions']['admin_menu'] && array( 'd5b_settings_menu' ) === $GLOBALS['T_actions']['network_admin_menu'] );
