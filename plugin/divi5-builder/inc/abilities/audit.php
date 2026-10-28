@@ -114,17 +114,82 @@ if ( ! function_exists( 'd5b_audit_str_cut' ) ) {
 	function d5b_audit_str_cut( string $s, int $n ): string { return function_exists( 'mb_substr' ) ? mb_substr( $s, 0, $n, 'UTF-8' ) : substr( $s, 0, $n ); }
 }
 
+if ( ! function_exists( 'd5b_audit_utf8' ) ) {
+	/** $s as valid UTF-8: bad bytes replaced (mb_scrub) or dropped (iconv), never the whole string emptied. */
+	function d5b_audit_utf8( string $s ): string {
+		if ( 1 === preg_match( '//u', $s ) ) { return $s; }
+		if ( function_exists( 'mb_scrub' ) ) { return (string) mb_scrub( $s, 'UTF-8' ); }
+		$t = function_exists( 'iconv' ) ? @iconv( 'UTF-8', 'UTF-8//IGNORE', $s ) : false;
+		return is_string( $t ) ? $t : (string) preg_replace( '/[\x80-\xFF]/', '?', $s );
+	}
+}
+
+if ( ! function_exists( 'd5b_audit_mask_after_keys' ) ) {
+	/**
+	 * Replaces with [redacted] the value that follows each key $pattern finds, when $is_secret says the key names a secret.
+	 * $pattern captures the key as (?<k>...) and the value as (?<v>...) inside a lookahead, so a value is never consumed
+	 * and a key hidden inside another key's value is still found.
+	 */
+	function d5b_audit_mask_after_keys( string $s, string $pattern, callable $is_secret ): string {
+		if ( ! preg_match_all( $pattern, $s, $all, PREG_SET_ORDER | PREG_OFFSET_CAPTURE ) ) { return $s; }
+		$cuts = array(); $end = -1;
+		foreach ( $all as $m ) {
+			if ( ! isset( $m['v'] ) || $m['v'][1] < 0 || '' === $m['v'][0] || $m['k'][1] < $end ) { continue; }
+			if ( ! call_user_func( $is_secret, $m['k'][0] ) ) { continue; }
+			$cuts[] = array( $m['v'][1], strlen( $m['v'][0] ) );
+			$end    = $m['v'][1] + strlen( $m['v'][0] );
+		}
+		for ( $i = count( $cuts ) - 1; $i >= 0; $i-- ) { $s = substr_replace( $s, '[redacted]', $cuts[ $i ][0], $cuts[ $i ][1] ); }
+		return $s;
+	}
+}
+
+if ( ! function_exists( 'd5b_audit_is_secret' ) ) {
+	/** The shared rule (secrets.php); when it is missing every key counts as a secret (fail closed). */
+	function d5b_audit_is_secret( $key ): bool {
+		return function_exists( 'd5b_is_secret_key' ) ? d5b_is_secret_key( $key ) : true;
+	}
+}
+
+if ( ! function_exists( 'd5b_audit_is_secret_word' ) ) {
+	/** For "word value" with only a space between: the word must END in one of these nouns (password hunter2, API key sk_...). */
+	function d5b_audit_is_secret_word( $word ): bool {
+		$k = function_exists( 'd5b_secret_key_norm' ) ? d5b_secret_key_norm( $word ) : strtolower( (string) $word );
+		foreach ( array( 'pass', 'passwd', 'password', 'passphrase', 'pwd', 'secret', 'token', 'tokens', 'key', 'apikey', 'bearer', 'credential', 'credentials', 'salt', 'nonce', 'jwt' ) as $w ) {
+			if ( '' !== $k && substr( $k, -strlen( $w ) ) === $w ) { return true; }
+		}
+		return false;
+	}
+}
+
 if ( ! function_exists( 'd5b_audit_mask_secrets' ) ) {
-	/** Masks secret-looking substrings of free text (an exception message) with [redacted]. */
+	/**
+	 * Masks secrets in free text (an exception message, a debug log line) with [redacted]. Over-masking is accepted: a
+	 * harmless word after "key" or "token" may go too. Order matters: whole-line headers first, then value shapes, then
+	 * the key forms (define(), print_r, var_export / JSON / key=value / key: value, and "password hunter2").
+	 */
 	function d5b_audit_mask_secrets( string $s ): string {
-		// user:pass@host in a URL
-		$s = (string) preg_replace( '#(\b[a-z][a-z0-9+.\-]*://)[^/\s:@]*:[^@\s/]*@#i', '$1[redacted]@', $s );
-		// Authorization: <anything to the end of the line>, and a bare Bearer token
+		$value = '(?<v>"(?:[^"\\\\\r\n]|\\\\.)*"|\'(?:[^\'\\\\\r\n]|\\\\.)*\'|[^\s&;,"\']+)';
+		$key   = '(?<![A-Za-z0-9_.\-])(?<k>[A-Za-z0-9_.\-]{1,100})';
+		// scheme://user:pass@host: everything up to the LAST @ before the path (a password may hold an @)
+		$s = (string) preg_replace( '#(\b[a-z][a-z0-9+.\-]*://)[^/\s:@]*:[^\s/]*@#i', '$1[redacted]@', $s );
+		// whole header lines
+		$s = (string) preg_replace( '/\b(Set-Cookie|Cookie)\s*:[^\r\n]*/i', '$1: [redacted]', $s );
 		$s = (string) preg_replace( '/\bAuthorization\s*:[^\r\n]*/i', 'Authorization: [redacted]', $s );
 		$s = (string) preg_replace( '/\bBearer\s+[A-Za-z0-9\-._~+\/]+=*/i', 'Bearer [redacted]', $s );
 		$s = (string) preg_replace( '/\bBasic\s+[A-Za-z0-9+\/]{8,}=*/', 'Basic [redacted]', $s );
-		// password=..., pass=..., token=..., secret=..., key=... (also api_key, a colon, %3D, or a quoted value that holds spaces)
-		$s = (string) preg_replace( '/((?:pass(?:word|wd)?|pwd|token|secret|[a-z_\-]*key)["\']?\s*(?:=|:|%3D)\s*)(?:"[^"]*"|\'[^\']*\'|[^\s&;,"\']+)/i', '$1[redacted]', $s );
+		// value shapes: the shared ones, a JWT with any signature, an AWS access key id
+		if ( function_exists( 'd5b_secret_mask_values' ) ) { $s = d5b_secret_mask_values( $s ); }
+		$s = (string) preg_replace( '/(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*)?/', '[redacted]', $s );
+		$s = (string) preg_replace( '/\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/', '[redacted]', $s );
+		// define( 'DB_PASSWORD', '...' )
+		$s = d5b_audit_mask_after_keys( $s, '/\bdefine\s*\(\s*(["\'])(?<k>[A-Za-z0-9_]{1,100})\1\s*,\s*(?=' . $value . ')/i', 'd5b_audit_is_secret' );
+		// print_r: [user_pass] => value (to the end of the line or the next [key] =>)
+		$s = d5b_audit_mask_after_keys( $s, '/\[(?<k>[^\]\r\n]{1,100})\]\s*=>\s*(?=(?<v>(?:(?!\s+\[[^\]\r\n]{1,100}\]\s*=>)[^\r\n])+))/', 'd5b_audit_is_secret' );
+		// key=value, key: value, key%3Dvalue, 'key' => 'value', "key": "value", key -> value
+		$s = d5b_audit_mask_after_keys( $s, '/(["\']?)' . $key . '\1\s*(?:=>|->|=|:|%3D)\s*(?=' . $value . ')/i', 'd5b_audit_is_secret' );
+		// password hunter2, token abc, password is hunter2, API key sk_...
+		$s = d5b_audit_mask_after_keys( $s, '/' . $key . '(?:\s+(?:is|was))?\s+(?![=:>\-])(?=' . $value . ')/i', 'd5b_audit_is_secret_word' );
 		return $s;
 	}
 }
@@ -132,14 +197,15 @@ if ( ! function_exists( 'd5b_audit_mask_secrets' ) ) {
 if ( ! function_exists( 'd5b_audit_redact' ) ) {
 	/**
 	 * @param array $args the call's input (plus _exception on a thrown handler)
-	 * @return array the same shape with secrets removed: values under keys matching pass|secret|token|key|auth|cookie|nonce
-	 *               become "[redacted]"; strings over 1024 characters are cut and end with "…[truncated]"; _exception is
-	 *               masked and held to 300 characters in all; nested arrays are walked (to 12 levels).
+	 * @return array the same shape with secrets removed: values under keys that d5b_is_secret_key() names become
+	 *               "[redacted]" (the same rule the result scrubber uses); secret value shapes in strings are masked;
+	 *               strings over 1024 characters are cut and end with "…[truncated]"; _exception is masked and held to
+	 *               300 characters in all; nested arrays are walked (to 12 levels).
 	 */
 	function d5b_audit_redact( array $args, int $depth = 0 ): array {
 		$out = array();
 		foreach ( $args as $k => $v ) {
-			if ( is_string( $k ) && 1 === preg_match( '/pass|secret|token|key|auth|cookie|nonce/i', $k ) ) { $out[ $k ] = '[redacted]'; continue; }
+			if ( '_exception' !== $k && d5b_audit_is_secret( $k ) ) { $out[ $k ] = '[redacted]'; continue; }
 			if ( '_exception' === $k && is_string( $v ) ) {
 				$m = d5b_audit_mask_secrets( d5b_audit_str_cut( $v, 4000 ) );
 				if ( d5b_audit_str_len( $m ) > 300 ) { $m = d5b_audit_str_cut( $m, 300 - d5b_audit_str_len( '…[truncated]' ) ) . '…[truncated]'; }
@@ -148,6 +214,7 @@ if ( ! function_exists( 'd5b_audit_redact' ) ) {
 			}
 			if ( is_array( $v ) ) { $out[ $k ] = $depth >= 12 ? '[too deep]' : d5b_audit_redact( $v, $depth + 1 ); continue; }
 			if ( is_string( $v ) ) {
+				if ( function_exists( 'd5b_secret_mask_values' ) ) { $v = d5b_secret_mask_values( $v ); }
 				$out[ $k ] = d5b_audit_str_len( $v ) > 1024 ? d5b_audit_str_cut( $v, 1024 ) . '…[truncated]' : $v;
 				continue;
 			}
@@ -184,7 +251,7 @@ if ( ! function_exists( 'd5b_audit_update' ) ) {
 		try {
 			global $wpdb;
 			if ( $id < 1 || ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return false; }
-			$status = d5b_audit_str_cut( function_exists( 'wp_check_invalid_utf8' ) ? (string) wp_check_invalid_utf8( $status, true ) : $status, 64 );
+			$status = d5b_audit_str_cut( d5b_audit_utf8( $status ), 64 );
 			$data   = array( 'status' => $status, 'duration_ms' => max( 0, $duration_ms ) );
 			$fmt    = array( '%s', '%d' );
 			if ( null !== $args ) { $data['args'] = d5b_audit_args_json( $args, $status ); $fmt[] = '%s'; }
@@ -214,8 +281,8 @@ if ( ! function_exists( 'd5b_audit_write' ) ) {
 			$ip = isset( $_SERVER['REMOTE_ADDR'] ) && is_string( $_SERVER['REMOTE_ADDR'] ) ? $_SERVER['REMOTE_ADDR'] : '';
 			if ( false === filter_var( $ip, FILTER_VALIDATE_IP ) ) { $ip = ''; }
 			// A real wpdb::insert drops the whole row on invalid UTF-8; the args are JSON already, so only these two need it.
-			$ability = function_exists( 'wp_check_invalid_utf8' ) ? (string) wp_check_invalid_utf8( $ability, true ) : $ability;
-			$status  = function_exists( 'wp_check_invalid_utf8' ) ? (string) wp_check_invalid_utf8( $status, true ) : $status;
+			$ability = d5b_audit_utf8( $ability );
+			$status  = d5b_audit_utf8( $status );
 			$row = array(
 				'created_at'  => gmdate( 'Y-m-d H:i:s' ),
 				'user_id'     => function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0,

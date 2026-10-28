@@ -72,7 +72,7 @@ function wp_json_encode( $v ) { return json_encode( $v ); }
 $GLOBALS['T_audit'] = array();
 function d5b_audit_write( string $ability, array $args, string $status, int $duration_ms ): int { $GLOBALS['T_audit'][] = compact( 'ability', 'args', 'status' ); return count( $GLOBALS['T_audit'] ); }
 function d5b_audit_update( int $id, string $status, int $duration_ms, ?array $args = null ): bool { if ( ! isset( $GLOBALS['T_audit'][ $id - 1 ] ) ) { return false; } $GLOBALS['T_audit'][ $id - 1 ]['status'] = $status; return true; }
-foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/read-content', 'inc/abilities/read-structure', 'inc/abilities/read-site', 'parts/updates' ) as $f ) { require $dir . '/' . $f . '.php'; }
+foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/read-content', 'inc/abilities/read-structure', 'inc/abilities/read-site', 'parts/updates' ) as $f ) { require $dir . '/' . $f . '.php'; }
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . substr( is_string( $detail ) ? $detail : json_encode( $detail ), 0, 600 ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
@@ -139,17 +139,18 @@ $noprops = true;
 foreach ( array( 'error-log', 'settings-get', 'cron-list', 'health-status', 'plugins-list' ) as $x ) { if ( ! empty( $defs[ 'divi5-builder/' . $x ]['input_schema']['properties'] ) ) { $noprops = false; } }
 check( 'error-log, settings-get, cron-list, health-status and plugins-list declare no input properties at all', $noprops );
 $loader = file_get_contents( $dir . '/divi5-builder.php' );
-check( 'the loader lists scrub.php and read-site.php', false !== strpos( $loader, "'inc/abilities/scrub.php'" ) && false !== strpos( $loader, "'inc/abilities/read-site.php'" ) );
+check( 'the loader lists scrub.php and read-site.php, and secrets.php before audit.php and scrub.php (they use its rule)', false !== strpos( $loader, "'inc/abilities/scrub.php'" ) && false !== strpos( $loader, "'inc/abilities/read-site.php'" ) && false !== strpos( $loader, "'inc/abilities/secrets.php'" ) && strpos( $loader, "'inc/abilities/secrets.php'" ) < strpos( $loader, "'inc/abilities/audit.php'" ) );
 
 // ---- the scrubber
 echo "the scrubber\n";
 $k_each = array( 'user_pass', 'user_activation_key', 'session_tokens', '_application_passwords', 'smtp_password', 'mailserver_pass', 'my_secret', 'x_apikey', 'x_api_key', 'API_KEY', 'x_token', 'access_tokens', 'x_salt', 'x_auth_key', 'x_nonce', 'USER_PASS' );
 $in = array(); foreach ( $k_each as $k ) { $in[ $k ] = 'v'; }
-$in += array( 'title' => 'Keep', 'passenger' => 'Keep', 'compass_dir' => 'Keep', 7 => 'Keep', 'nested' => array( 'ok' => 1, 'api_key' => 'v', 'deeper' => array( array( 'token' => 'v', 'name' => 'Keep' ) ) ) );
+// passenger and compass_dir contain "pass": the shared rule removes them on purpose (a harmless field may go; a secret may not stay).
+$in += array( 'title' => 'Keep', 'author' => 'Keep', 'hash' => 'Keep', 'passenger' => 'v', 'compass_dir' => 'v', 7 => 'Keep', 'nested' => array( 'ok' => 1, 'api_key' => 'v', 'deeper' => array( array( 'token' => 'v', 'name' => 'Keep' ) ) ) );
 $out = d5b_ability_scrub( $in );
 $left = array_keys( $out );
 sort( $left );
-$want = array( 7, 'compass_dir', 'nested', 'passenger', 'title' ); sort( $want );
+$want = array( 7, 'author', 'hash', 'nested', 'title' ); sort( $want );
 check( 'every alternative of the key rule removes its key (and nothing else goes)', $left === $want, $left );
 check( 'the scrubber recurses through nested arrays and lists', array( 'ok' => 1, 'deeper' => array( array( 'name' => 'Keep' ) ) ) === $out['nested'], $out['nested'] );
 foreach ( array( 'pass$ (smtp_password)' => 'smtp_password', 'secret' => 'my_secret', 'api_?key' => 'x_apikey', 'token' => 'x_token', 'salt' => 'x_salt', 'auth_key' => 'x_auth_key', 'nonce' => 'x_nonce', 'user_pass' => 'user_pass', 'user_activation_key' => 'user_activation_key', 'session_tokens' => 'session_tokens', '_application_passwords' => '_application_passwords' ) as $why => $key ) {
@@ -162,6 +163,79 @@ check( 'a JsonSerializable object is scrubbed', array( 'x' => 1 ) === d5b_abilit
 check( 'scalars and null pass unchanged', 5 === d5b_ability_scrub( 5 ) && null === d5b_ability_scrub( null ) && 'x' === d5b_ability_scrub( 'x' ) && true === d5b_ability_scrub( true ) );
 $deep = array(); $p = &$deep; for ( $i = 0; $i < 60; $i++ ) { $p['a'] = array(); $p = &$p['a']; } unset( $p );
 check( 'absurdly deep nesting is cut, not recursed forever', false !== strpos( json_encode( d5b_ability_scrub( $deep ) ), 'too deep' ) );
+
+// ---- one shared rule (break-it Important 2): every variant the break-it found is removed from results AND redacted in the audit
+echo "one shared secret-key rule\n";
+$must = array( 'passwd', 'passphrase', 'password_hash', 'pass_hash', 'password ', ' password', "password\t", 'auth', 'Authorization', 'cookie', 'Cookie', 'set-cookie', 'private_key', 'privkey', 'license_key',
+	'logged_in_key', 'application_passwords', 'api-key', 'x-api-key', 'X-API-KEY', 'Api Key ', 'key', 'activation_key', 'pwd', 'db_pwd', 'bearer', 'Bearer', 'credentials', 'credential', 'signature', 'hmac', 'otp',
+	'2fa_backup_codes', 'recovery_codes', 'pin', 'csrf', 'xsrf', 'jwt', 'sid', 'session', 'sessid', 'PHPSESSID', 'dsn', 'connection_string', 'webhook_url', 'stripe_sk', 'salt', 'sk_live',
+	'password', 'user_pass', 'client_secret', 'access_token', 'refresh_token', 'secret_key', 'auth_key', 'AUTH_SALT', '_application_passwords', 'session_tokens', 'apikey', 'api_key', 'apiKey',
+	'totp_secret', 'nonce', '_wpnonce', 'user_activation_key', 'smtp_pass' );
+$leak_scrub = array(); $leak_audit = array();
+foreach ( $must as $k ) {
+	if ( false !== strpos( json_encode( d5b_ability_scrub( array( 'x' => array( $k => 'S3CR3T-VALUE' ) ) ) ), 'S3CR3T' ) ) { $leak_scrub[] = $k; }
+	if ( false !== strpos( json_encode( d5b_audit_redact( array( 'x' => array( $k => 'S3CR3T-VALUE' ) ) ) ), 'S3CR3T' ) ) { $leak_audit[] = $k; }
+}
+check( 'must-scrub: every key variant is removed from a result (' . count( $must ) . ' keys)', array() === $leak_scrub, $leak_scrub );
+check( 'must-scrub: the same keys are redacted in the audit args (one rule, no gap either way)', array() === $leak_audit, $leak_audit );
+$plain = array( 'title', 'name', 'slug', 'status', 'content', 'author', 'authors', 'author_email', 'hash', 'meta_key', 'menu_key', 'desk', 'task', 'id', 'url', 'version', 'roles', 'count', 'description', 'monkey_business' );
+$flagged = array_values( array_filter( $plain, 'd5b_is_secret_key' ) );
+check( 'ordinary field names are not secrets (keep list and the "sk" word rule hold)', array() === $flagged, $flagged );
+check( 'normalisation: X-API-KEY, api-key and "Api Key " all read as one key', d5b_is_secret_key( 'X-API-KEY' ) && 'xapikey' === d5b_secret_key_norm( 'X-API-KEY' ) && 'apikey' === d5b_secret_key_norm( 'api-key' ) && 'apikey' === d5b_secret_key_norm( 'Api Key ' ) );
+$src = file_get_contents( $dir . '/inc/abilities/scrub.php' ) . file_get_contents( $dir . '/inc/abilities/audit.php' );
+check( 'the scrubber and the audit redactor have no key regex of their own any more (both call d5b_is_secret_key)', false === strpos( $src, "pass|secret|token|key|auth" ) && false === strpos( $src, 'pass(word)?$' ) && false === strpos( $src, 'function d5b_ability_scrub_key' ) );
+
+echo "name/value pairs\n";
+$r = d5b_ability_scrub( array(
+	array( 'key' => 'password', 'value' => 'S3CR3T-A' ), array( 'name' => 'smtp_password', 'value' => 'S3CR3T-B' ), array( 'option' => 'stripe_api_key', 'value' => 'S3CR3T-C' ),
+	array( 'meta_key' => '_my_secret', 'meta_value' => 'S3CR3T-D' ), array( 'name' => 'color', 'value' => 'red' ), array( 'meta_key' => 'size', 'meta_value' => 'XL' ),
+) );
+check( 'a value beside a key/name/option/meta_key that names a secret is removed', false === strpos( json_encode( $r ), 'S3CR3T' ), $r );
+check( '... and an ordinary pair keeps its value', 'red' === ( $r[4]['value'] ?? null ) && 'XL' === ( $r[5]['meta_value'] ?? null ) && 'color' === $r[4]['name'], $r );
+
+echo "value shapes\n";
+$jwt  = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+$pem  = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAxS3CR3T\nmorelines\n-----END RSA PRIVATE KEY-----";
+$shapes = array(
+	'PEM block'        => array( "before\n$pem\nafter", 'MIIEow', array( 'before', 'after' ) ),
+	'PEM without END'  => array( 'key: -----BEGIN PRIVATE KEY-----S3CR3TBODY', 'S3CR3TBODY', array( 'key:' ) ),
+	'sk_live_'         => array( 'Use sk_live_51HxS3CR3Tabcdef in the form', 'S3CR3Tabcdef', array( 'Use ', ' in the form' ) ),
+	'rk_live_'         => array( 'rk_live_S3CR3T1234 ok', 'S3CR3T1234', array( ' ok' ) ),
+	'sk_test_'         => array( 'x sk_test_S3CR3T99999 y', 'S3CR3T99999', array( 'x ', ' y' ) ),
+	'JWT'              => array( "token is $jwt end", 'dozjgNryP4J3', array( 'token is ', ' end' ) ),
+	'phpass $P$'       => array( 'hash $P$BS3CR3Tabcdefghijklmnopqrstuv. done', 'S3CR3Tabc', array( 'hash ', ' done' ) ),
+	'phpass $H$'       => array( '$H$9S3CR3Tabcdefghijk', 'S3CR3T', array() ),
+	'$wp$ bcrypt'      => array( "('bob', '\$wp\$2y\$10\$S3CR3TINSERTHASH')", 'S3CR3TINSERT', array( "('bob', '", "')" ) ),
+	'bcrypt $2y$'      => array( 'pw $2y$10$S3CR3Tabcdefghijklmnop', 'S3CR3T', array( 'pw ' ) ),
+	'argon2id'         => array( '$argon2id$v=19$m=65536,t=4,p=1$S3CR3Tsalt$S3CR3Thash', 'S3CR3T', array() ),
+	'Bearer 16+'       => array( 'header Bearer S3CR3Tabcdefghijklmn sent', 'S3CR3Tabcdef', array( 'header Bearer ', ' sent' ) ),
+);
+foreach ( $shapes as $label => $c ) {
+	$o = d5b_ability_scrub( array( 'content' => $c[0], 5 => array( $c[0] ) ) );
+	$ok = false === strpos( json_encode( $o ), $c[1] ) && false !== strpos( $o['content'], '[redacted]' );
+	foreach ( $c[2] as $keep ) { if ( false === strpos( $o['content'], $keep ) ) { $ok = false; } }
+	check( "value shape masked in a string, also under a numeric key: $label (the rest of the text kept)", $ok, $o );
+}
+$prose = array( 'The price is $5 and $10.', 'Bearer of good news', 'eyJ is not a token', 'sk_live_short', '-----BEGIN PUBLIC KEY-----abc', 'a $P$ sign', 'Pay $2y now' );
+check( 'ordinary text with look-alike bits is left alone', $prose === d5b_ability_scrub( $prose ), d5b_ability_scrub( $prose ) );
+check( 'a scalar string result is masked too', '[redacted]' === d5b_ability_scrub( $jwt ) );
+
+echo "WP_Error on the way out\n";
+site( ADMIN );
+$snapshot = d5b_ability_registry();
+d5b_ability_add( array( 'name' => 'divi5-builder/posts-err', 'category' => 'posts', 'label' => 'e', 'description' => 'Returns an error. Refuses nothing.', 'permission' => function ( array $i ) { return true; },
+	'handler' => function ( array $i ) use ( $jwt ) { $e = new WP_Error( 'bad', "oops $jwt", array( 'status' => 400, 'db_password' => 'S3CR3T-1', 'user' => (object) array( 'user_pass' => 'S3CR3T-2', 'login' => 'bob' ) ) ); $e->add( 'second', 'more', array( 'api_key' => 'S3CR3T-3' ) ); return $e; } ) );
+d5b_ability_add( array( 'name' => 'divi5-builder/posts-perr', 'category' => 'posts', 'label' => 'e', 'description' => 'Returns nothing. Refuses everyone.', 'handler' => function ( array $i ) { return 1; },
+	'permission' => function ( array $i ) { return new WP_Error( 'nope', 'no', array( 'db_password' => 'S3CR3T-4', 'status' => 403 ) ); } ) );
+$r = d5b_ability_run( 'divi5-builder/posts-err', array() );
+$dump = json_encode( array( $r->get_error_messages(), $r->get_all_error_data( 'bad' ), $r->get_all_error_data( 'second' ) ) );
+check( 'a handler\'s WP_Error: messages masked by shape, data scrubbed in full (objects too), codes and ordinary data kept', is_wp_error( $r ) && array( 'bad', 'second' ) === $r->get_error_codes() && false === strpos( $dump, 'S3CR3T' ) && false === strpos( $dump, 'dozjgNryP4J3' )
+	&& 400 === $r->get_error_data( 'bad' )['status'] && 'bob' === $r->get_error_data( 'bad' )['user']['login'] && 'more' === $r->get_error_message( 'second' ), $dump );
+$p = d5b_ability_permit( 'divi5-builder/posts-perr', array() );
+check( 'the WP_Error a permission callback returns is scrubbed too (permit)', is_wp_error( $p ) && 'nope' === $p->get_error_code() && false === strpos( json_encode( $p->get_error_data() ), 'S3CR3T' ) && 403 === $p->get_error_data()['status'], $p->get_error_data() );
+$r = d5b_ability_run( 'divi5-builder/posts-perr', array() );
+check( '... and the same refusal through a direct run', is_wp_error( $r ) && 'nope' === $r->get_error_code() && false === strpos( json_encode( $r->get_error_data() ), 'S3CR3T' ) );
+d5b_ability_registry( $snapshot );
 
 // ---- the wrapper applies it
 echo "the wrapper applies the scrubber\n";
@@ -282,6 +356,24 @@ check( 'error-log: the rest of each line and the plain lines survive masking', f
 file_put_contents( LOGFILE, str_repeat( 'z', 5000 ) . "\n" . "bad \xC3\x28 bytes \xFF end\n" );
 $r = call( 'error-log' );
 check( 'error-log: a line is cut at 2000 characters and invalid UTF-8 does not break the JSON', is_array( $r ) && 2000 === strlen( $r['lines'][0] ) && false !== json_encode( $r ), is_array( $r ) ? strlen( $r['lines'][0] ) : $r );
+// M-1: core's wp_check_invalid_utf8( $line, true ) (the stand-in now does what core does) returns an EMPTY line for one bad byte.
+check( 'M-1 premise: core\'s wp_check_invalid_utf8( x, true ) blanks a line holding one bad byte', '' === (string) wp_check_invalid_utf8( "bad \xC3\x28 line with text", true ) );
+check( 'M-1: the error-log handler does not call wp_check_invalid_utf8 at all (it uses mb_scrub, else iconv //IGNORE)', false === strpos( file_get_contents( $dir . '/inc/abilities/read-site.php' ), 'wp_check_invalid_utf8(' ) );
+$r = call( 'error-log' );
+check( 'M-1: a line with real invalid bytes keeps its text (bad bytes replaced), so nothing in it is silently dropped', is_array( $r ) && 1 === preg_match( '/^bad .\( bytes . end$/u', $r['lines'][1] ) && false !== json_encode( $r ), is_array( $r ) ? $r['lines'][1] : $r );
+// I-1 (Task 5 review): the shapes a debug log really holds
+file_put_contents( LOGFILE, implode( "\n", array(
+	'[28-Oct-2026 10:00:00 UTC] Array', '(', '    [user_login] => alice', '    [user_pass] => hunter2-printr', '    [pwd] => hunter2-pwd', '    [api_key] => sk_live_PRINTR', ')',
+	"array ( 'password' => 'hunter2-varexport', 'stripe_secret' => 'sk_live_VAREXP', )",
+	"WordPress database error for query UPDATE wp_users SET user_pass = '\$P\$Bhashhash' WHERE ID = 1",
+	"WordPress database error for query INSERT INTO wp_users (user_login, user_pass) VALUES ('bob', '\$wp\$2y\$10\$INSERTHASH')",
+	'PHP Notice: smtp auth failed for user bob with password hunter2-plain',
+	'stdClass Object ( [access_token] => ya29.OBJTOKEN )',
+	str_repeat( 'a', 1990 ) . ' password=hunter2-straddle-xxxxxxxxxxxxxxxxxxxx',
+) ) . "\n" );
+$r = call( 'error-log' ); $j = json_encode( $r );
+check( 'I-1: print_r, var_export, SQL with hashes, "with password x" and a secret across the 2000 cut are all masked', is_array( $r ) && 13 === $r['line_count'] && false === strpos( $j, 'hunter2' ) && false === strpos( $j, 'PRINTR' ) && false === strpos( $j, 'VAREXP' )
+	&& false === strpos( $j, 'hashhash' ) && false === strpos( $j, 'INSERTHASH' ) && false === strpos( $j, 'OBJTOKEN' ) && false !== strpos( $j, 'alice' ) && false !== strpos( $j, 'WHERE ID = 1' ), $j );
 site( EDITOR );
 check( 'error-log as an editor: refused', 'FORBIDDEN' === call( 'error-log' ) );
 
@@ -434,6 +526,54 @@ site( array( 'read', 'edit_theme_options' ) );
 check( 'widgets-list is allowed with edit_theme_options alone; appearance-get is not', is_array( call( 'widgets-list' ) ) && 'FORBIDDEN' === call( 'appearance-get' ) );
 site( EDITOR );
 check( 'templates-list, templates-get, global-styles-get, appearance-get as editor: refused', 'FORBIDDEN' === call( 'templates-list' ) && 'FORBIDDEN' === call( 'templates-get', array( 'id' => 'a//b' ) ) && 'FORBIDDEN' === call( 'global-styles-get' ) && 'FORBIDDEN' === call( 'appearance-get' ) );
+
+// ---- the keep list is built from reality: every ability, as an administrator, over ordinary data (no secrets planted)
+echo "keep list: no field our abilities return is called a secret\n";
+site( ADMIN, 1 );
+$GLOBALS['T_block_theme'] = true;
+$GLOBALS['T_users'] = array( 1 => mkuser( 1, 'alice', array( 'administrator' ) ), 2 => mkuser( 2, 'bob', array( 'author' ) ) );
+foreach ( d5b_rs_settings_keys() as $k ) { $GLOBALS['T_options'][ $k ] = 'x'; }
+$GLOBALS['T_options']['active_plugins'] = array( 'a/a.php' );
+$GLOBALS['T_plugins'] = array( 'a/a.php' => array( 'Name' => 'Alpha', 'Version' => '1.0' ) );
+$GLOBALS['T_site_transients'] = array( 'update_plugins' => (object) array( 'response' => array( 'a/a.php' => (object) array( 'new_version' => '1.1' ) ) ), 'update_core' => (object) array( 'updates' => array( (object) array( 'response' => 'upgrade', 'current' => '7.0' ) ) ) );
+$GLOBALS['T_theme'] = theme_row( 'child', 'Child', '1.0', theme_row( 'parent', 'Parent', '3.0' ), true ); $GLOBALS['T_themes'] = array( $GLOBALS['T_theme'] );
+$GLOBALS['T_theme_mods'] = array( 'header_color' => '#ff0000', 'nav_menu_locations' => array( 'primary' => 7 ), 'custom_css_post_id' => 12 );
+$GLOBALS['T_custom_css'] = (object) array( 'post_content' => 'body { color: red; }' );
+$GLOBALS['T_sidebars'] = array( 'sidebar-1' => array( 'text-3' ) ); $GLOBALS['wp_registered_sidebars'] = array( 'sidebar-1' => array( 'name' => 'Main' ) );
+$GLOBALS['T_options']['widget_text'] = array( 3 => array( 'title' => 'Hello', 'text' => 'Welcome', 'filter' => true, 'visual' => true ) );
+$GLOBALS['T_cron_array'] = array( 86400 => array( 'wp_version_check' => array( 'k' => array( 'schedule' => 'twicedaily', 'args' => array(), 'interval' => 43200 ) ) ) );
+$GLOBALS['T_block_templates'] = array( (object) array( 'id' => 'theme//home', 'slug' => 'home', 'theme' => 'theme', 'type' => 'wp_template', 'title' => 'Home', 'source' => 'theme', 'status' => 'publish', 'has_theme_file' => true, 'is_custom' => false, 'content' => '<p>Hi</p>' ) );
+set_transient( 'health-check-site-status-result', json_encode( array( 'good' => 1, 'recommended' => 0, 'critical' => 0 ) ), 3600 );
+file_put_contents( LOGFILE, "[28-Oct-2026 10:00:00 UTC] PHP Notice: something ordinary\n" );
+$kp = t_add_post( array( 'post_title' => 'Ordinary', 'post_author' => 2 ) );
+foreach ( array( 'color' => 'blue', '_edit_lock' => '1:2', '_wp_page_template' => 'default', '_et_pb_use_builder' => 'on', '_et_pb_page_layout' => 'et_full_width_page', '_thumbnail_id' => '9' ) as $mk => $mv ) { t_add_meta( $kp, $mk, $mv ); }
+$cat = t_add_term( 'category', 'News' ); $GLOBALS['T_object_terms'][ $kp ] = array( 'category' => array( $cat ) );
+$kpg = t_add_post( array( 'post_type' => 'page' ) ); t_add_type( 'event' ); $kev = t_add_post( array( 'post_type' => 'event' ) );
+$katt = t_add_post( array( 'post_type' => 'attachment', 'post_status' => 'inherit', 'post_mime_type' => 'image/png' ) ); t_add_meta( $katt, '_wp_attached_file', '2026/10/a.png' );
+t_add_meta( $katt, '_wp_attachment_metadata', array( 'width' => 10, 'height' => 10, 'sizes' => array( 'thumbnail' => array( 'file' => 'a-1.png', 'width' => 5, 'height' => 5, 'mime-type' => 'image/png' ) ) ) );
+$kblk = t_add_post( array( 'post_type' => 'wp_block' ) ); $kcm = t_add_comment( array( 'comment_post_ID' => $kp ) );
+$krev = t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $kp ) );
+$GLOBALS['T_menus'][7] = (object) array( 'term_id' => 7, 'name' => 'Main', 'slug' => 'main', 'count' => 2 );
+$GLOBALS['T_menu_items'][7] = array( (object) array( 'ID' => 71, 'title' => 'Ordinary', 'url' => '/o', 'type' => 'post_type', 'object' => 'post', 'object_id' => $kp, 'menu_item_parent' => 0, 'menu_order' => 1 ),
+	(object) array( 'ID' => 72, 'title' => 'Shop', 'url' => 'https://shop.example', 'type' => 'custom', 'object' => 'custom', 'object_id' => 72, 'menu_item_parent' => 0, 'menu_order' => 2 ) );
+$GLOBALS['T_registered_menus'] = array( 'primary' => 'Primary' ); $GLOBALS['T_menu_locations'] = array( 'primary' => 7 );
+$kin = array( 'posts-get' => array( 'id' => $kp ), 'posts-revisions' => array( 'id' => $kp ), 'pages-get' => array( 'id' => $kpg ), 'cpt-list' => array( 'type' => 'event' ), 'cpt-get' => array( 'type' => 'event', 'id' => $kev ),
+	'media-get' => array( 'id' => $katt ), 'taxonomy-get' => array( 'taxonomy' => 'category', 'id' => $cat ), 'comments-get' => array( 'id' => $kcm ), 'meta-get' => array( 'post_id' => $kp ), 'blocks-get' => array( 'id' => $kblk ),
+	'menus-items' => array( 'menu' => 7 ), 'revisions-list' => array( 'post_id' => $kp ), 'revisions-get' => array( 'id' => $krev ), 'revisions-compare' => array( 'from' => $krev, 'to' => $kp ), 'search' => array( 'query' => 'Ordinary' ),
+	'users-get' => array( 'id' => 2 ), 'users-list' => array(), 'templates-get' => array( 'id' => 'theme//home' ), 'comments-list' => array( 'post' => $kp ) );
+function t_keys( $v, array &$into ) { if ( ! is_array( $v ) ) { return; } foreach ( $v as $k => $x ) { if ( is_string( $k ) ) { $into[ $k ] = true; } t_keys( $x, $into ); } }
+$keys = array(); $notarray = array(); $changed = array();
+foreach ( array_keys( d5b_ability_defs() ) as $full ) {
+	$short = substr( $full, strlen( 'divi5-builder/' ) );
+	$raw = handler( $short, $kin[ $short ] ?? array() );
+	if ( ! is_array( $raw ) ) { $notarray[] = $short . ':' . code( $raw ); continue; }
+	t_keys( $raw, $keys );
+	if ( json_encode( d5b_ability_scrub( $raw ) ) !== json_encode( $raw ) ) { $changed[] = $short; }
+}
+check( 'every ability answered with data over the ordinary site (' . count( d5b_ability_defs() ) . ' abilities, ' . count( $keys ) . ' distinct keys)', array() === $notarray && count( $keys ) > 60, $notarray );
+$eaten = array_values( array_filter( array_keys( $keys ), 'd5b_is_secret_key' ) );
+check( 'keep list: d5b_is_secret_key is false for every key any ability returns', array() === $eaten, $eaten );
+check( '... and the scrubber changes none of those ordinary results', array() === $changed, $changed );
 
 // clean up the temp dir
 @unlink( LOGFILE ); @unlink( $other ); @rmdir( $logdir );

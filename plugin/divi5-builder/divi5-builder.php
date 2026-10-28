@@ -38,6 +38,7 @@ foreach ( array(
 	'inc/takeover.php',
 	'inc/abilities/categories.php',
 	'inc/abilities/register.php',
+	'inc/abilities/secrets.php',
 	'inc/abilities/audit.php',
 	'inc/abilities/scrub.php',
 	'inc/abilities/read-content.php',

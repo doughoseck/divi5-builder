@@ -21,6 +21,7 @@ require $dir . '/inc/parts.php';
 require $dir . '/inc/switches.php';
 require $dir . '/inc/abilities/categories.php';
 require $dir . '/inc/abilities/register.php';
+require $dir . '/inc/abilities/secrets.php';
 require $dir . '/inc/abilities/audit.php';
 require $dir . '/inc/settings.php';
 
@@ -228,7 +229,7 @@ check( 'suppress_errors is back to its prior value afterwards (not left suppress
 echo "utf-8\n";
 installed();
 d5b_audit_write( "ab\xB1c", array(), "st\xB1atus", 1 );
-check( 'invalid UTF-8 in ability and status is stripped before insert (a real wpdb would drop the row)', 1 === count( rows() ) && 'abc' === rows()[0]['ability'] && 'status' === rows()[0]['status'], rows() );
+check( 'invalid UTF-8 in ability and status is replaced (mb_scrub: ?) before insert, the rest kept (a real wpdb would drop the row)', 1 === count( rows() ) && 'ab?c' === rows()[0]['ability'] && 'st?atus' === rows()[0]['status'], rows() );
 fresh(); unset( $GLOBALS['wpdb'] );
 check( 'no $wpdb at all: write 0, list empty, prune 0, install quiet', 0 === d5b_audit_write( 'a/b', array(), 'ok', 1 ) && array() === d5b_audit_list( array() ) && 0 === d5b_audit_prune() && null === d5b_audit_maybe_install() );
 t_wpdb_reset();
@@ -361,6 +362,54 @@ $o = $cap2( 'sent Basic dXNlcjpwYXNzd29yZA== to proxy' );
 check( '_exception masks a bare Basic credential', false === strpos( $o, 'dXNlcjpwYXNz' ) && false !== strpos( $o, 'Basic [redacted]' ), $o );
 $o = $cap2( 'json {"password":"p w d","ok":1}' );
 check( '_exception masks a JSON "password":"..." value', false === strpos( $o, 'p w d' ) && false !== strpos( $o, '"ok":1' ), $o );
+
+echo "free-text masker: every shape the break-it (a4 part 3) and the Task 5 review (I-1) got through\n";
+// array( text, what must be gone, what must stay ). Where the reproducer's literal was not the real shape of that secret
+// (an AWS key id, a JWT with a 3-letter signature still IS caught), a realistic value is used; see the report.
+$mask_cases = array(
+	'define DB_PASSWORD'          => array( "define('DB_PASSWORD', 'S3CR3T-VALUE');", 'S3CR3T', array( "define('DB_PASSWORD', " ) ),
+	'define( AUTH_KEY )'          => array( "define( 'AUTH_KEY', 'S3CR3T-VALUE' );", 'S3CR3T', array( 'AUTH_KEY' ) ),
+	'Cookie: header'              => array( 'Cookie: wordpress_logged_in_abc=admin|1700000000|S3CR3T-VALUE', 'S3CR3T', array( 'Cookie: [redacted]' ) ),
+	'Cookie: header, many cookies' => array( 'Cookie: theme=dark; wordpress_logged_in_abc=admin|S3CR3T-VALUE', 'S3CR3T', array() ),
+	'Set-Cookie: header'          => array( "x\nSet-Cookie: sid=S3CR3T-VALUE; path=/\ny", 'S3CR3T', array( "x\n", "\ny" ) ),
+	'auth='                       => array( 'auth=S3CR3T-VALUE', 'S3CR3T', array( 'auth=' ) ),
+	'nonce='                      => array( 'nonce=S3CR3T-VALUE', 'S3CR3T', array() ),
+	'salt='                       => array( 'salt=S3CR3T-VALUE', 'S3CR3T', array() ),
+	'token <space> value'         => array( 'token S3CR3T-VALUE', 'S3CR3T', array( 'token ' ) ),
+	'API key sk_live_ (word key)' => array( 'Invalid API key sk_live_S3CR3T-VALUE', 'S3CR3T', array( 'Invalid API key' ) ),
+	'bearer:'                     => array( 'bearer:S3CR3T-VALUE', 'S3CR3T', array() ),
+	'password => value'           => array( 'password => S3CR3T-VALUE', 'S3CR3T', array() ),
+	"'password' => 'value'"       => array( "'password' => 'S3CR3T-VALUE'", 'S3CR3T', array( "'password' => " ) ),
+	'password is value'           => array( 'password is S3CR3T-VALUE', 'S3CR3T', array() ),
+	'pass word=value'             => array( 'pass word=S3CR3T-VALUE', 'S3CR3T', array() ),
+	'URL password holding an @'   => array( 'smtp://u:pa@S3CR3T@mail.example/x', 'S3CR3T', array( 'mail.example/x' ) ),
+	'session='                    => array( 'session=S3CR3T-VALUE', 'S3CR3T', array() ),
+	'PHPSESSID='                  => array( 'PHPSESSID=S3CR3T-VALUE', 'S3CR3T', array() ),
+	'JWT, short signature'        => array( 'eyJhbGciOiJIUzI1NiJ9.S3CR3T-VALUE.sig', 'S3CR3T', array() ),
+	'AWS access key id'           => array( 'aws said AKIAIOSFODNN7EXAMPLE is invalid', 'IOSFODNN7', array( 'aws said ', ' is invalid' ) ),
+	'PEM without END'             => array( '-----BEGIN PRIVATE KEY-----S3CR3T-VALUE', 'S3CR3T', array() ),
+	'print_r [user_pass] =>'      => array( "Array\n(\n    [user_login] => alice\n    [user_pass] => hunter2-printr\n)", 'hunter2', array( '[user_login] => alice', '[user_pass] => [redacted]' ) ),
+	'print_r [pwd] =>'            => array( '    [pwd] => hunter2-pwd', 'hunter2', array( '[pwd] => ' ) ),
+	'print_r [api_key] =>'        => array( '    [api_key] => sk_live_PRINTR', 'PRINTR', array() ),
+	'print_r on one line'         => array( 'stdClass Object ( [access_token] => ya29.OBJTOKEN [ok] => 1 )', 'OBJTOKEN', array( '[ok] => 1' ) ),
+	'var_export array'            => array( "array ( 'password' => 'hunter2-varexport', 'stripe_secret' => 'sk_live_VAREXP', 'title' => 'Hi', )", 'hunter2', array( "'title' => 'Hi'" ) ),
+	'var_export stripe_secret'    => array( "array ( 'stripe_secret' => 'sk_live_VAREXP', )", 'VAREXP', array() ),
+	'SQL SET user_pass = $P$'     => array( "UPDATE wp_users SET user_pass = '\$P\$Bhashhash' WHERE ID = 1", 'Bhashhash', array( 'WHERE ID = 1' ) ),
+	'SQL INSERT VALUES $wp$'      => array( "INSERT INTO wp_users (user_login, user_pass) VALUES ('bob', '\$wp\$2y\$10\$INSERTHASH')", 'INSERTHASH', array( "VALUES ('bob', '" ) ),
+	'with password <value>'       => array( 'smtp auth failed for user bob with password hunter2-plain', 'hunter2', array( 'smtp auth failed for user bob with password ' ) ),
+);
+foreach ( $mask_cases as $label => $c ) {
+	$o = d5b_audit_mask_secrets( $c[0] );
+	$ok = false === strpos( $o, $c[1] );
+	foreach ( $c[2] as $keep ) { if ( false === strpos( $o, $keep ) ) { $ok = false; } }
+	check( "masker: $label", $ok, $o );
+}
+$ordinary = "PHP Notice: Undefined index: color in /var/www/x.php on line 5\nPHP Warning: Division by zero in /var/www/y.php:12";
+check( 'masker: ordinary log lines come through unchanged', $ordinary === d5b_audit_mask_secrets( $ordinary ), d5b_audit_mask_secrets( $ordinary ) );
+check( 'masker: the same rule as the scrubber decides (a key it calls secret is masked; one it does not is kept)', '2fa_backup_codes=[redacted] title=ok' === d5b_audit_mask_secrets( '2fa_backup_codes=abc title=ok' ) );
+$o = $cap2( "RuntimeException: define('DB_PASSWORD', 'S3CR3T-VALUE');" );
+check( 'the _exception of a thrown handler goes through it (break-it a4 "throws w/ secret")', false === strpos( $o, 'S3CR3T' ) && 0 === strpos( $o, 'RuntimeException: define(' ), $o );
+check( 'input args: secret value shapes are masked in stored strings, ordinary ones are not', ( function () { d5b_audit_write( 'a/b', array( 'q' => 'see sk_live_ABCDEFGH12345 now', 'r' => 'plain' ), 'ok', 1 ); $a = last_args(); return false === strpos( $a['q'], 'ABCDEFGH' ) && 'plain' === $a['r']; } )() );
 
 echo "source checks\n";
 $src = file_get_contents( $dir . '/inc/abilities/audit.php' );

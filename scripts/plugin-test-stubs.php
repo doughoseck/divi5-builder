@@ -256,7 +256,9 @@ function wp_schedule_event( $ts, $recurrence, $hook ) { $GLOBALS['T_cron'][ $hoo
 function wp_clear_scheduled_hook( $hook ) { unset( $GLOBALS['T_cron'][ $hook ] ); return 1; }
 function register_deactivation_hook( $file, $cb ) { $GLOBALS['T_deactivation'][] = array( $file, $cb ); }
 function get_current_user_id() { return $GLOBALS['T_user_id']; }
-function wp_check_invalid_utf8( $s, $strip = false ) { return preg_match( '//u', (string) $s ) ? $s : ( $strip ? (string) iconv( 'UTF-8', 'UTF-8//IGNORE', (string) $s ) : '' ); }
+// As core's formatting.php has it (up to 6.8 at least; 6.9 may differ, not checked): strip=true calls iconv('utf-8', 'utf-8')
+// WITHOUT //IGNORE, which fails on a bad byte, so a line with one bad byte comes back false (empty), not cleaned.
+function wp_check_invalid_utf8( $s, $strip = false ) { $s = (string) $s; if ( '' === $s || 1 === @preg_match( '/^./us', $s ) ) { return $s; } return $strip && function_exists( 'iconv' ) ? @iconv( 'utf-8', 'utf-8', $s ) : ''; }
 // T_transients: name => array( value, expires at, ttl ); a test expires one by lowering its expires-at.
 function set_transient( $n, $v, $ttl = 0 ) { $GLOBALS['T_transients'][ $n ] = array( $v, time() + $ttl, $ttl ); return true; }
 function get_transient( $n ) { $t = $GLOBALS['T_transients'][ $n ] ?? null; return ( null === $t || $t[1] < time() ) ? false : $t[0]; }

@@ -165,7 +165,7 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$mods  = is_array( $mods ) ? $mods : array();
 		if ( strlen( d5b_rs_json( $mods ) ) > 262144 ) {
 			$keys = array();
-			foreach ( array_keys( $mods ) as $k ) { if ( ! function_exists( 'd5b_ability_scrub_key' ) || ! d5b_ability_scrub_key( $k ) ) { $keys[] = (string) $k; } }
+			foreach ( array_keys( $mods ) as $k ) { if ( ! function_exists( 'd5b_is_secret_key' ) || ! d5b_is_secret_key( $k ) ) { $keys[] = (string) $k; } }
 			$out['theme_mods'] = array(); $out['theme_mods_truncated'] = true; $out['theme_mod_names'] = $keys;
 		} else {
 			$out['theme_mods'] = $mods; $out['theme_mods_truncated'] = false;
@@ -285,7 +285,7 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$more  = count( $lines ) > 200 || $from > 0;
 		$out   = array();
 		foreach ( array_slice( $lines, -200 ) as $line ) {
-			$line = function_exists( 'wp_check_invalid_utf8' ) ? (string) wp_check_invalid_utf8( $line, true ) : (string) iconv( 'UTF-8', 'UTF-8//IGNORE', $line );
+			$line = d5b_audit_utf8( $line ); // bad bytes replaced (core's check-invalid-utf8 helper with strip on can blank the whole line)
 			// Free text: key scrubbing cannot protect it, so every line goes through the audit log's masker.
 			$out[] = d5b_audit_mask_secrets( d5b_rc_cut( $line, 2000 ) );
 		}
