@@ -31,6 +31,7 @@ function t_reset() {
 	unset( $GLOBALS['d5b_stood_aside'], $GLOBALS['d5b_gate_ran'], $GLOBALS['T_server'] );
 	if ( function_exists( 't_blogs_reset' ) ) { t_blogs_reset(); }
 	if ( function_exists( 't_abilities_reset' ) ) { t_abilities_reset(); }
+	if ( function_exists( 't_wpdb_reset' ) ) { t_wpdb_reset(); }
 }
 // A new request: WordPress starts a request with the gate not yet run.
 function t_new_request() { unset( $GLOBALS['d5b_gate_ran'] ); }
@@ -141,6 +142,85 @@ function esc_html( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF
 function esc_attr( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
 function esc_url( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
 function wp_unslash( $v ) { return is_array( $v ) ? array_map( 'wp_unslash', $v ) : stripslashes( (string) $v ); }
+
+// ---- database, cron and user stand-ins for the audit log (#32, Task 3). t_reset() clears them.
+//   $wpdb              T_Wpdb: tables kept in memory (name => list of rows). Understands exactly the statements the audit code
+//                      sends: insert(), DELETE ... WHERE created_at < 'x', SELECT ... WHERE ability/user_id/status/created_at ...
+//                      ORDER BY id DESC LIMIT n OFFSET m, SHOW TABLES LIKE 'x', DROP TABLE IF EXISTS `x`.
+//   $wpdb->queries     every SQL string sent to query / get_results / get_var, in order
+//   $wpdb->unprepared  those of them that did not come out of $wpdb->prepare() (the audit code must leave this empty)
+//   $wpdb->tables      table name => rows;  $wpdb->fail_insert  true = insert() throws
+//   T_dbdelta          list of the SQL strings given to dbDelta (which creates an empty table named in its CREATE TABLE)
+//   T_cron             hook => next timestamp   (wp_schedule_event / wp_next_scheduled / wp_clear_scheduled_hook)
+//   T_user_id          what get_current_user_id returns
+if ( ! defined( 'ARRAY_A' ) ) { define( 'ARRAY_A', 'ARRAY_A' ); }
+class T_Wpdb {
+	public $prefix = 'wp_'; public $tables = array(); public $queries = array(); public $unprepared = array(); public $fail_insert = false; public $insert_id = 0;
+	private $prepared = array(); private $next_id = 1;
+	function get_blog_prefix( $id = null ) { return 'wp_' . ( ( null === $id || 1 === (int) $id ) ? '' : (int) $id . '_' ); }
+	function get_charset_collate() { return 'DEFAULT CHARACTER SET utf8mb4'; }
+	function suppress_errors( $on = true ) { return false; }
+	function prepare( $q, ...$args ) {
+		if ( 1 === count( $args ) && is_array( $args[0] ) ) { $args = $args[0]; }
+		$i = 0;
+		$out = preg_replace_callback( '/%([sd%])/', function ( $m ) use ( &$i, $args ) {
+			if ( '%' === $m[1] ) { return '%'; }
+			$v = $args[ $i++ ] ?? '';
+			return 'd' === $m[1] ? (string) (int) $v : "'" . addslashes( (string) $v ) . "'";
+		}, $q );
+		$this->prepared[ $out ] = true;
+		return $out;
+	}
+	private function note( $sql ) { $this->queries[] = $sql; if ( ! isset( $this->prepared[ $sql ] ) ) { $this->unprepared[] = $sql; } }
+	function insert( $table, $data, $formats = null ) {
+		if ( $this->fail_insert ) { throw new RuntimeException( 'insert exploded' ); }
+		if ( ! isset( $this->tables[ $table ] ) ) { return false; }
+		$data['id'] = $this->next_id++; $this->insert_id = $data['id'];
+		$this->tables[ $table ][] = $data;
+		return 1;
+	}
+	function get_var( $sql ) {
+		$this->note( $sql );
+		if ( preg_match( "/^SHOW TABLES LIKE '(.*)'$/", $sql, $m ) ) { $t = stripslashes( $m[1] ); return isset( $this->tables[ $t ] ) ? $t : null; }
+		return null;
+	}
+	function query( $sql ) {
+		$this->note( $sql );
+		if ( preg_match( '/^DROP TABLE IF EXISTS `(.+)`$/', $sql, $m ) ) { unset( $this->tables[ $m[1] ] ); return true; }
+		if ( preg_match( "/^DELETE FROM (\S+) WHERE created_at < '((?:[^'\\\\]|\\\\.)*)'$/", $sql, $m ) ) {
+			if ( ! isset( $this->tables[ $m[1] ] ) ) { return false; }
+			$cut = stripslashes( $m[2] ); $keep = array();
+			foreach ( $this->tables[ $m[1] ] as $r ) { if ( strcmp( $r['created_at'], $cut ) >= 0 ) { $keep[] = $r; } }
+			$n = count( $this->tables[ $m[1] ] ) - count( $keep ); $this->tables[ $m[1] ] = $keep;
+			return $n;
+		}
+		return false;
+	}
+	function get_results( $sql, $output = 'OBJECT' ) {
+		$this->note( $sql );
+		if ( ! preg_match( '/^SELECT .+ FROM (\S+)(?: WHERE (.+?))? ORDER BY id DESC LIMIT (\d+) OFFSET (\d+)$/', $sql, $m ) ) { return null; }
+		if ( ! isset( $this->tables[ $m[1] ] ) ) { return null; }
+		$rows = array_reverse( $this->tables[ $m[1] ] );
+		$w = $m[2] ?? '';
+		$q = "'((?:[^'\\\\]|\\\\.)*)'";
+		if ( preg_match( "/ability = $q/", $w, $x ) ) { $v = stripslashes( $x[1] ); $rows = array_filter( $rows, function ( $r ) use ( $v ) { return $r['ability'] === $v; } ); }
+		if ( preg_match( "/status = $q/", $w, $x ) ) { $v = stripslashes( $x[1] ); $rows = array_filter( $rows, function ( $r ) use ( $v ) { return $r['status'] === $v; } ); }
+		if ( preg_match( '/user_id = (\d+)/', $w, $x ) ) { $v = (int) $x[1]; $rows = array_filter( $rows, function ( $r ) use ( $v ) { return (int) $r['user_id'] === $v; } ); }
+		if ( preg_match( "/created_at >= $q/", $w, $x ) ) { $v = stripslashes( $x[1] ); $rows = array_filter( $rows, function ( $r ) use ( $v ) { return strcmp( $r['created_at'], $v ) >= 0; } ); }
+		return array_values( array_slice( array_values( $rows ), (int) $m[4], (int) $m[3] ) );
+	}
+}
+function t_wpdb_reset() { $GLOBALS['wpdb'] = new T_Wpdb(); $GLOBALS['T_dbdelta'] = array(); $GLOBALS['T_cron'] = array(); $GLOBALS['T_user_id'] = 0; }
+t_wpdb_reset();
+function dbDelta( $sql ) { $GLOBALS['T_dbdelta'][] = $sql; if ( preg_match( '/CREATE TABLE (\S+)/', $sql, $m ) && ! isset( $GLOBALS['wpdb']->tables[ $m[1] ] ) ) { $GLOBALS['wpdb']->tables[ $m[1] ] = array(); } return array(); }
+function wp_next_scheduled( $hook ) { return $GLOBALS['T_cron'][ $hook ] ?? false; }
+function wp_schedule_event( $ts, $recurrence, $hook ) { $GLOBALS['T_cron'][ $hook ] = $ts; return true; }
+function wp_clear_scheduled_hook( $hook ) { unset( $GLOBALS['T_cron'][ $hook ] ); return 1; }
+function register_deactivation_hook( $file, $cb ) { $GLOBALS['T_deactivation'][] = array( $file, $cb ); }
+function get_current_user_id() { return $GLOBALS['T_user_id']; }
+function absint( $n ) { return abs( (int) $n ); }
+function switch_to_blog( $id ) { $GLOBALS['T_blog_stack'][] = $GLOBALS['T_blog_id']; $GLOBALS['T_blog_id'] = (int) $id; return true; }
+function restore_current_blog() { $GLOBALS['T_blog_id'] = array_pop( $GLOBALS['T_blog_stack'] ); return true; }
 
 // ---- Abilities API stand-ins (#32, Task 2). Recorded in:
 //   T_abilities           name => args   (wp_register_ability calls that core would accept)

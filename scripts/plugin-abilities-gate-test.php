@@ -52,7 +52,7 @@ require $dir . '/inc/switches.php';
 require $dir . '/inc/abilities/categories.php';
 require $dir . '/inc/abilities/register.php';
 // Group files that later tasks add: loading them adds the real definitions to the registry (none exist yet).
-foreach ( glob( $dir . '/inc/abilities/*.php' ) as $f ) { if ( ! in_array( basename( $f ), array( 'categories.php', 'register.php' ), true ) ) { require_once $f; } }
+foreach ( glob( $dir . '/inc/abilities/*.php' ) as $f ) { if ( ! in_array( basename( $f ), array( 'categories.php', 'register.php', 'audit.php' ), true ) ) { require_once $f; } }
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . ( is_string( $detail ) ? $detail : json_encode( $detail ) ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }

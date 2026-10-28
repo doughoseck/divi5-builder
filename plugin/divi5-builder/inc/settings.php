@@ -72,6 +72,7 @@ if ( ! function_exists( 'd5b_settings_render' ) ) {
 		foreach ( $lines as $line ) {
 			echo '<p' . ( $line['red'] ? ' style="color:#b32d2e;font-weight:600"' : '' ) . '>' . esc_html( $line['text'] ) . '</p>';
 		}
+		d5b_settings_render_audit();
 		echo '</div>';
 	}
 }
@@ -106,6 +107,40 @@ if ( ! function_exists( 'd5b_settings_render_abilities' ) ) {
 			echo '</td></tr>';
 		}
 		echo '</table>';
+	}
+}
+
+if ( ! function_exists( 'd5b_settings_render_audit' ) ) {
+	/**
+	 * The "Audit log" section: the newest 50 calls, read-only (no delete or clear control), filtered by ability and user
+	 * through a GET form. Needs the settings capability itself, so it is safe to call from anywhere. On a network the
+	 * log is the one of the site the page is served for (the main site, in Network Admin).
+	 */
+	function d5b_settings_render_audit(): void {
+		if ( ! current_user_can( d5b_settings_cap() ) || ! function_exists( 'd5b_audit_list' ) ) { return; }
+		$ability = isset( $_GET['d5b_audit_ability'] ) && is_string( $_GET['d5b_audit_ability'] ) ? sanitize_text_field( wp_unslash( $_GET['d5b_audit_ability'] ) ) : '';
+		$user    = isset( $_GET['d5b_audit_user'] ) ? absint( is_scalar( $_GET['d5b_audit_user'] ) ? $_GET['d5b_audit_user'] : 0 ) : 0;
+		$rows    = d5b_audit_list( array( 'ability' => $ability, 'user_id' => $user ), 50, 0 );
+		$base    = is_multisite() ? network_admin_url( 'settings.php' ) : admin_url( 'options-general.php' );
+		echo '<h2>Audit log</h2>';
+		echo '<p class="description">' . esc_html( 'The newest 50 AI ability calls on this site, kept for 30 days. Times are UTC. Secrets are masked before they are stored.' ) . '</p>';
+		echo '<form method="get" action="' . esc_url( $base ) . '">';
+		echo '<input type="hidden" name="page" value="divi5-builder" />';
+		echo '<label>Ability <input type="text" name="d5b_audit_ability" value="' . esc_attr( $ability ) . '" /></label> ';
+		echo '<label>User ID <input type="number" min="0" name="d5b_audit_user" value="' . esc_attr( $user > 0 ? (string) $user : '' ) . '" /></label> ';
+		echo '<input type="submit" class="button" value="Filter" />';
+		echo '</form>';
+		echo '<table class="widefat striped"><thead><tr><th>Time (UTC)</th><th>User</th><th>Ability</th><th>Status</th><th>Ms</th><th>IP</th><th>Arguments</th></tr></thead><tbody>';
+		if ( array() === $rows ) {
+			echo '<tr><td colspan="7">' . esc_html( 'No calls recorded.' ) . '</td></tr>';
+		}
+		foreach ( $rows as $r ) {
+			$args = (string) $r['args'];
+			if ( strlen( $args ) > 300 ) { $args = d5b_audit_str_cut( $args, 300 ) . '…'; }
+			echo '<tr><td>' . esc_html( $r['created_at'] ) . '</td><td>' . esc_html( (string) $r['user_id'] ) . '</td><td>' . esc_html( $r['ability'] ) . '</td><td>' . esc_html( $r['status'] )
+				. '</td><td>' . esc_html( (string) $r['duration_ms'] ) . '</td><td>' . esc_html( $r['ip'] ) . '</td><td><code>' . esc_html( $args ) . '</code></td></tr>';
+		}
+		echo '</tbody></table>';
 	}
 }
 

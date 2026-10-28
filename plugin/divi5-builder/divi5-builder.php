@@ -38,6 +38,7 @@ foreach ( array(
 	'inc/takeover.php',
 	'inc/abilities/categories.php',
 	'inc/abilities/register.php',
+	'inc/abilities/audit.php',
 	'inc/settings.php',
 	'parts/page-building.php',
 	'parts/media-audit.php',
@@ -60,6 +61,13 @@ add_action( 'rest_api_init', 'd5b_gate', 99 );
 // off, or for a category whose switch is off.
 add_action( 'wp_abilities_api_categories_init', 'd5b_abilities_register_categories' );
 add_action( 'wp_abilities_api_init', 'd5b_abilities_register' );
+
+// The audit log: the table is made on activation or, for a must-use copy that is never activated, on the next admin page;
+// a daily event deletes rows older than 30 days (cleared on deactivation; uninstall.php drops the table).
+register_activation_hook( D5B_FILE, 'd5b_audit_activate' );
+register_deactivation_hook( D5B_FILE, 'd5b_audit_deactivate' );
+add_action( 'admin_init', 'd5b_audit_maybe_install' );
+add_action( 'd5b_audit_prune', 'd5b_audit_prune' );
 
 // Taking over from the old plugins. A must-use plugin is never "activated", so it runs on admin_init instead.
 register_activation_hook( D5B_FILE, 'd5b_takeover_on_activation' );
