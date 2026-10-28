@@ -136,7 +136,7 @@ is uploading the newer zip (there is no update checker).
 node scripts/wp.js mysite whoami          # 200 + your name  → creds OK
 node scripts/wp.js mysite divi-check      # verdict:"divi5"  → right engine
 node scripts/wp.js mysite check-plugin    # pluginActive:true → plugin OK
-node scripts/wp.js mysite global-colors   # discover gcid global-colour ids
+node scripts/wp.js mysite global-colors   # which gcids pages already use (palette: design-system)
 
 node scripts/divi.js compile examples/spec.json --out content.html
 node scripts/wp.js mysite create-page --title "New page" --content-file content.html --status draft

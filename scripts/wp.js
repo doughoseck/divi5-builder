@@ -312,8 +312,8 @@ function flags(argv) {
       // store (et_global_data): the colours were saved and never used. Nothing is sent to the site.
       die('palette-set is retired: it wrote the Divi 4 option et_global_colors, which Divi 5 ignores (a section bound to the gcid kept the factory colour). ' +
         'Create or update a global colour with: wp.js <site> ds-color-set --label "Brand" --color "#112233" [--dry-run]   (plugin 1.8 or newer). ' +
-        'See what the site has with: wp.js <site> design-system');
-      break;
+        'See what the site has with: wp.js <site> design-system. ' +
+        'On a Divi 4 site the palette option can still be written with: wp.js <site> option-set et_global_colors --value-file palette.json (replaces the whole option).');
     }
     case 'css-get': {
       // Divi's Theme Options -> Custom CSS field. Requires divi5-builder-rest.php >= 1.7.
