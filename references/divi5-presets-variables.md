@@ -673,7 +673,12 @@ and `order: ""`, value and label kept. The plugin's archive does the same; a var
 `ds-live-test.js all` passed there with 1.8.4 (35 checks), leaving the test variables archived.
 
 `design-system` lists archived variables with `ARCHIVED (deleted)`. A module still pointing at an archived variable
-loses its value without an error, so look before you archive a variable a page might use.
+still renders it today, by the source (read from source, not yet seen live): the front end prints the CSS variable of
+every variable a page references "regardless of status" (`FrontEnd/FrontEnd.php` 802-846 in 5.15.1 and 5.18,
+`FrontEnd/Module/Style.php` 1475 in 5.15.1, 1480 in 5.18), and a string variable's value is looked up with no status
+check (`DynamicContentGlobalVariableOptions::get_variable_value_by_id()`, 5.15.1 ~line 82; the 5.18 inline resolver,
+`GlobalData.php` 1519+). Do not rely on it: the builder hides an archived variable, so nobody can see or edit what the
+module uses, and a later Divi may stop printing it. Look before you archive a variable a page might use.
 
 `ds-live-test.js variables` on 5.15+ therefore ends with the two test variables archived, and checks that, plus that
 every other variable is exactly as before. It refuses to start while an ACTIVE "ZZ Test ... (delete me)" variable is
@@ -799,10 +804,11 @@ a `gvid-` id for a variable or a dynamic-content name (`post_author`). In block 
   the `numbers`/`strings` editor passes `type: "number"` or `"text"`, which `module-utils.js` maps to the `numbers` or
   `strings` group), and greys out the variable itself and everything that already depends on it
   (`collectGlobalVariableDependents`, `global-data.js`). The plugin applies the same rules on the server (6.4).
-- Archived variables still resolve: the inline resolver looks a name up in the whole store with no status check, and
-  the front end prints the CSS variable of every variable a page references "regardless of status"
-  (`FrontEnd/FrontEnd.php` ~800-846, `Style.php` ~1474). Archiving a base therefore does not blank the parent today,
-  but the builder hides the archived base, so nobody can see or change what the parent is made of.
+- Archived variables still resolve (read from source, not yet seen live): the inline resolver looks a name up in the
+  whole store with no status check (line 1565+), and the front end prints the CSS variable of every variable a page
+  references, and of what they depend on, "regardless of status" (`FrontEnd/FrontEnd.php` 802-846,
+  `FrontEnd/Module/Style.php` 1480). Archiving a base therefore does not blank the parent today, but do not rely on it:
+  the builder hides the archived base, so nobody can see or change what the parent is made of (section 5.0).
 - Saving variables takes a database lock: `409 global_variables_locked` ("Global variables are currently being saved by
   another request.", line 1227). The same lock is already in 5.15.1 (line 1177). The plugin passes Divi's `WP_Error`
   through; try again a moment later.
@@ -817,11 +823,16 @@ node scripts/wp.js <site> ds-variable-set --type strings --label "Copyright" --v
 
 - `{{gvid-xxxx}}` becomes the token before sending (the same conversion as the compiler). `{{dc:…}}` is refused in a
   variable: Divi resolves only variables there.
+- Only **number and string** variables may hold references (the builder's variable editor offers its picker for those
+  two types alone). A reference in a links, images, fonts or gradients variable is refused (400 `bad_references`,
+  problem `not_allowed`).
 - The plugin checks every reference on the server, dry run included, and refuses with **400 `bad_references`**,
   listing each one, when it does not exist, is archived, is of another type (a number variable may use only number
-  variables, a string variable only string variables, any other type only its own type), is the variable itself, or
-  leads back to it (a cycle, named start to end: `gvid-a -> gvid-b -> gvid-a`). It uses Divi's
-  `get_global_variable_references()` when Divi has it (5.18+) and the same patterns otherwise.
+  variables, a string variable only string variables), is the variable itself, or leads back to it (a cycle, named
+  start to end: `gvid-a -> gvid-b -> gvid-a`). It uses Divi's `get_global_variable_references()` when Divi has it
+  (5.18+); before that, the same rules through Divi's `DynamicData` plus its own scanner, which also reads tokens with
+  `&quot;` or block-encoded quotes and a settings string holding `)$`.
+- A value over 1 MB is refused (400 `value_too_large`): Divi 5.18 would resolve it as empty.
 - **Archive guard:** `ds-variable-archive` refuses with **409 `variable_in_use`** while another ACTIVE variable uses the
   variable, directly or through other variables, and lists those variables by id and label. There is no force flag:
   archive (or change) the users first. A variables restore that would archive a variable an active one uses is

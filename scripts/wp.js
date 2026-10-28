@@ -597,7 +597,9 @@ function flags(argv) {
     }
     case 'ds-variable-archive': {
       // Divi 5.15+ deletes a variable by setting its status to "archived" and refuses a store that drops an id; on
-      // older Divi the plugin removes it. Modules that use the variable lose its value, without an error.
+      // older Divi the plugin removes it. On 5.15+ a module that uses an archived variable still renders it (read from
+      // source, not yet seen live: FrontEnd.php 802-846 prints referenced variables regardless of status), but the
+      // builder hides it, so do not rely on that. See references/divi5-presets-variables.md 5.0.
       // Plugin >= 2.0.1 refuses (409 variable_in_use) while another active variable uses it; the users are printed.
       if (!f.id || f.id === true) die('ds-variable-archive needs --id gvid-x [--dry-run]   (ids: design-system)');
       console.log(JSON.stringify(await dsWrite(`${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/variable/archive`, c, { id: String(f.id), dry_run: !!f['dry-run'] })));
