@@ -66,6 +66,7 @@ Before opening a PR:
    node scripts/stale-guard-test.js   # page/post/canvas writes refuse when the content changed since the read
    node scripts/spec-check-test.js    # unknown spec keys are reported; every documented example checks clean
    node scripts/blocks-test.js        # block-level edits leave the rest of the page byte for byte
+   node scripts/vb-resave-check-test.js   # the Visual Builder re-save comparison, on a real Divi 5.15.1 before/after pair
    node scripts/site-care/media-audit-test.js && node scripts/site-care/site-updates-test.js
    node scripts/switch-advice-test.js    # what the scripts say when a switch is off
    node scripts/plugin-live-check-test.js    # the read-only live check (plugin-live-check.js <site>): GET only, exit 0/1/2
@@ -88,6 +89,8 @@ Before opening a PR:
    node scripts/wp.js <site> rendered <id>     # real et_pb_* output, no leaked <!-- wp:divi comments
    node scripts/wp.js <site> delete-page <id> --force
    ```
+4. **New Divi release?** Run the [per-release checklist](references/divi-release-checklist.md) (catalogue, round
+   trip, Visual Builder re-save with `scripts/vb-resave-check.js`) and add a row to the README's "Verified on" table.
 
 ## Pull requests
 
