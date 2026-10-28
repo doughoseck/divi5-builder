@@ -22,7 +22,7 @@ plugin (the version is in its header and in `GET /wp-json/divi5-builder/v1/versi
 
 | Plugin | Latest | Notes |
 |---|---|---|
-| `divi5-builder` (`divi5-builder.zip`) | 2.0.0 | One plugin: page building (always on), plus Media audit, Media clean-up and Updates, each a switch in Settings > Divi 5 Builder, **off by default**. Only an administrator in wp-admin can flip a switch. |
+| `divi5-builder` (`divi5-builder.zip`) | 2.0.1 | One plugin: page building (always on), plus Media audit, Media clean-up and Updates, each a switch in Settings > Divi 5 Builder, **off by default**. Only an administrator in wp-admin can flip a switch. 2.0.1 checks nested design variables on the server (a missing, archived, other-type, self or cyclic reference is refused) and refuses to archive a variable that another active variable uses. |
 | `divi5-builder-rest.php` | 1.8.5 | Replaced by `divi5-builder` 2.0.0. Security fixes only until 2027-01-31. In `assets/legacy/`. |
 | `wp-media-audit.php` | 1.1.2 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
 | `wp-media-quarantine.php` | 1.0.1 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |

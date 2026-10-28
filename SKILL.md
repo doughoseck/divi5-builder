@@ -592,6 +592,13 @@ Styling rule 2 says type and colour come from globals. This is how to find and u
   one). For another group, try one module and look at it first. A group preset holds its own
   group's settings only; the plugin leaves out the rest and reports it. On a site with
   mu-plugin < 1.8, ask the user to make the preset in the builder and read its id.
+- **Divi 5.18: variable math, nested variables, mixed text** (section 6 of the reference). In a spec,
+  `{{gvid-xxxx}}` inside any value is the variable's token and `{{dc:post_author}}` a dynamic-content
+  token: `"top":"{{gvid-space}} * -1"`, `"html":"<p>By {{dc:post_author}} · {{gvid-copyright}}</p>"`.
+  Math is `+ - * /` only: `×` renders invalid CSS and the compiler and lint warn about it.
+  `ds-variable-set --value "clamp( {{gvid-min}}, 4vw, {{gvid-max}})"` makes a nested variable (plugin
+  >= 2.0.1, which refuses missing, archived, other-type, self and cyclic references), and
+  `ds-variable-archive` refuses (409) while another active variable still uses the variable.
 
 ## Components and Slots, Divi 5.15+ (read `references/divi5-components-slots.md`)
 

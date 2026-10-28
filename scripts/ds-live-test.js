@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 /*
- * ds-live-test.js — prove the design-system WRITES on a real site (mu-plugin >= 1.8.4), and leave no trace.
- * (One trace on Divi 5.15+: Divi never drops a variable, it archives it, so the two test variables stay in the store
+ * ds-live-test.js: prove the design-system WRITES on a real site, and leave no trace. colors, variables and presets
+ * need the plugin >= 1.8.4; nested needs divi5-builder >= 2.0.1 (as a plugin or must-use), and "all" skips it, saying
+ * so, on an older plugin.
+ * (One trace on Divi 5.15+: Divi never drops a variable, it archives it, so the test variables stay in the store
  * with status "archived", which is exactly what deleting them in the Variable Manager leaves behind.)
  *
- *   node ds-live-test.js <site> colors | variables | presets | all
+ *   node ds-live-test.js <site> colors | variables | nested | presets | all
+ *
+ * "nested" (issue #45) needs Divi 5.18 or newer for nested variables to render; the plugin's checks run on any Divi 5.
  *
  * Each part creates a test item, updates it, checks Divi's own store after every step, then puts the store back from
  * the backup the plugin took before the test's FIRST write and proves the store is exactly what it was.
@@ -14,7 +18,6 @@
  */
 const path = require('path'); const fs = require('fs'); const os = require('os'); const { execFileSync } = require('child_process');
 const [site, what] = process.argv.slice(2);
-if (!site || !['colors', 'variables', 'presets', 'all'].includes(what)) { console.error('usage: node ds-live-test.js <site> colors|variables|presets|all'); process.exit(1); }
 const WP = path.join(__dirname, 'wp.js');
 const run = a => { try { return { ok: true, out: execFileSync('node', [WP, site, ...a], { encoding: 'utf8', maxBuffer: 64e6, stdio: ['ignore', 'pipe', 'pipe'] }) }; } catch (e) { return { ok: false, out: String(e.stderr || e.message) }; } };
 const J = a => { const r = run(a); if (!r.ok) return { __error: r.out.replace(/\s+/g, ' ').slice(0, 220) }; try { return JSON.parse(r.out); } catch (e) { return { __error: 'not json: ' + r.out.slice(0, 120) }; } };
@@ -80,6 +83,40 @@ const tests = {
     if (left.length) check('Divi 5.15+: the test variables are kept, ARCHIVED (deleted the way the builder does it)', left.every(id => find(now, id).status === 'archived') && (r.archived || []).includes(c.id), JSON.stringify(left.map(id => [id, find(now, id).status])) + ' archived by restore: ' + JSON.stringify(r.archived));
     check('END STATE: every variable that was there before is exactly as it was, no test variable is active', same(strip(now), strip(before)), JSON.stringify(strip(now)).slice(0, 200));
   },
+  // Nested variables (Divi 5.18, plugin >= 2.0.1, issue #45): a variable made of others is accepted and stored as the
+  // builder stores it; a missing, self, cyclic or other-type reference is refused; a variable in use cannot be archived.
+  nested() {
+    const before = ds().variables; let writes = 0;
+    const find = (v, id) => { for (const items of Object.values(v || {})) if (items && items[id]) return items[id]; return null; };
+    const live = Object.values(before || {}).flatMap(items => Object.entries(items || {})).filter(([, x]) => /^ZZ Test .*\(delete me\)$/.test(x.label || '') && x.status !== 'archived');
+    if (!check('no ACTIVE test variable left over from an earlier run', !live.length, 'archive them first: ' + live.map(([id]) => `wp.js ${site} ds-variable-archive --id ${id}`).join(' ; '))) return;
+    const tok = id => '$variable({"type":"content","value":{"name":"' + id + '","settings":{}}})$';
+    const make = (type, label, value) => { const r = J(['ds-variable-set', '--type', type, '--label', label + ' (delete me)', '--value', value]); if (r.ok) writes++; return r; };
+    const a = make('numbers', 'ZZ Test Nest Min', '10px'), b = make('numbers', 'ZZ Test Nest Max', '20px'), y = make('strings', 'ZZ Test Nest Year', '2026');
+    if (!check('three plain test variables created', a.ok && b.ok && y.ok, a.__error || b.__error || y.__error)) return undo('variables', writes);
+    const fl = make('numbers', 'ZZ Test Nest Fluid', `clamp( {{gvid-${a.id.slice(5)}}}, 4vw, {{gvid-${b.id.slice(5)}}})`);
+    let now = ds().variables;
+    check('a nested number variable is accepted and stored exactly as the builder stores one', fl.ok && find(now, fl.id) && find(now, fl.id).value === `clamp( ${tok(a.id)}, 4vw, ${tok(b.id)})`, fl.__error || JSON.stringify(find(now, fl.id)));
+    const cp = make('strings', 'ZZ Test Nest Copy', `© {{gvid-${y.id.slice(5)}}} Example`);
+    now = ds().variables;
+    check('a nested string variable is accepted, character for character', cp.ok && find(now, cp.id) && find(now, cp.id).value === `© ${tok(y.id)} Example`, cp.__error || JSON.stringify(find(now, cp.id)));
+    const snap = ds().variables;
+    const refused = (name, args, problem) => { const r = run(['ds-variable-set', ...args]); check(name + ': refused (400 bad_references, ' + problem + '), nothing written', !r.ok && /bad_references/.test(r.out) && new RegExp(': ' + problem + ':').test(r.out) && same(ds().variables, snap), r.out.slice(0, 200)); };
+    refused('a reference to a variable that does not exist', ['--type', 'numbers', '--label', 'ZZ Test Nest Bad (delete me)', '--value', '{{gvid-zzmissing01}} * 2'], 'missing');
+    refused('a reference to itself', ['--type', 'numbers', '--id', fl.id, '--label', 'ZZ Test Nest Fluid (delete me)', '--value', `{{${fl.id}}} * 2`], 'self');
+    refused('a cycle (Min uses Fluid, which uses Min)', ['--type', 'numbers', '--id', a.id, '--label', 'ZZ Test Nest Min (delete me)', '--value', `{{${fl.id}}} / 2`], 'cycle');
+    refused('a number variable using a string variable', ['--type', 'numbers', '--label', 'ZZ Test Nest Bad (delete me)', '--value', `{{${y.id}}}`], 'type');
+    const ar = run(['ds-variable-archive', '--id', a.id]);
+    check('archive of a variable another active variable uses: refused (409), the user listed by id and label, nothing written', !ar.ok && /409 variable_in_use/.test(ar.out) && ar.out.includes(fl.id) && ar.out.includes('ZZ Test Nest Fluid (delete me)') && same(ds().variables, snap), ar.out.slice(0, 300));
+    const a1 = J(['ds-variable-archive', '--id', fl.id]); if (a1.ok) writes++;
+    const a2 = J(['ds-variable-archive', '--id', a.id]); if (a2.ok) writes++;
+    check('once its user is archived first, the variable can be archived', a1.ok && a2.ok && ['archived', 'removed'].includes(a2.action), a1.__error || a2.__error);
+    const r = undo('variables', writes); now = ds().variables;
+    check('restore of the backup taken before the test', r.ok, r.__error);
+    const testIds = [a.id, b.id, y.id, fl.id, cp.id].filter(Boolean);
+    const strip = v => { const o = {}; for (const [t, items] of Object.entries(v || {})) { const k = {}; for (const [id, x] of Object.entries(items || {})) if (!testIds.includes(id)) k[id] = x; if (Object.keys(k).length) o[t] = k; } return o; };
+    check('END STATE: every variable that was there before is exactly as it was, no test variable is active', same(strip(now), strip(before)) && testIds.every(id => !find(now, id) || find(now, id).status === 'archived'), JSON.stringify(strip(now)).slice(0, 200));
+  },
   presets() {
     const before = ds().presets; const NAME = 'ZZ Test Preset (delete me)'; let writes = 0; const f = path.join(os.tmpdir(), 'd5b-live-test-preset.json');
     const spec = v => fs.writeFileSync(f, JSON.stringify({ moduleName: 'divi/text', name: NAME, attrs: { module: { decoration: { spacing: { desktop: { value: { padding: { top: v } } } } } }, content: { innerContent: { desktop: { value: '<p>must never be stored</p>' } } } } }));
@@ -101,8 +138,24 @@ const tests = {
     try { fs.unlinkSync(f); } catch (e) { /* */ }
   },
 };
-const v = J(['plugin-version']); const ver = String(v.version || '0').split('.').map(Number);
-if (v.__error || ver[0] < 1 || (ver[0] === 1 && (ver[1] < 8 || (ver[1] === 8 && (ver[2] || 0) < 4)))) { console.error('STOP: this test needs mu-plugin >= 1.8.4 on the site (found ' + (v.version || 'none') + ')'); process.exit(1); }
-for (const t of what === 'all' ? ['colors', 'variables', 'presets'] : [what]) { console.log('--- ' + t + ' ---'); try { tests[t](); } catch (e) { check(t + ' ran to the end', false, e.message); } }
-console.log(failed ? '\n' + failed + ' FAILED. Check the stores with `wp.js <site> design-system`; `wp.js <site> ds-backups` lists what can be restored.' : '\nall passed, nothing left behind');
+// Which parts run on a plugin version. colors, variables and presets need 1.8.4 (the archive-aware restore); nested
+// needs 2.0.1 (the nested-variable checks and the archive guard, issue #45). "all" runs what the version allows and
+// says what it skipped. -> { run: [...], skipped: [{ part, why }], stop: message | null }
+const MIN = { colors: [1, 8, 4], variables: [1, 8, 4], presets: [1, 8, 4], nested: [2, 0, 1] };
+function plan(part, version) {
+  const ver = String(version || '0').split('.').map((x) => parseInt(x, 10) || 0);
+  const atLeast = (want) => { for (let i = 0; i < want.length; i++) { const a = ver[i] || 0; if (a !== want[i]) return a > want[i]; } return true; };
+  const parts = part === 'all' ? ['colors', 'variables', 'nested', 'presets'] : [part];
+  const run = parts.filter((p) => atLeast(MIN[p])), skipped = parts.filter((p) => !run.includes(p)).map((p) => ({ part: p, why: `needs the divi5-builder plugin >= ${MIN[p].join('.')} (found ${version || 'none'})` }));
+  const stop = !run.length ? `STOP: ${parts.length === 1 ? `"${part}"` : 'this test'} ${skipped[0].why}` : null;
+  return { run, skipped, stop };
+}
+if (require.main !== module) { module.exports = { plan }; return; }
+if (!site || !['colors', 'variables', 'nested', 'presets', 'all'].includes(what)) { console.error('usage: node ds-live-test.js <site> colors|variables|nested|presets|all'); process.exit(1); }
+const v = J(['plugin-version']);
+const p = plan(what, v.__error ? '' : v.version);
+if (p.stop) { console.error(p.stop); process.exit(1); }
+for (const s of p.skipped) console.log(`--- ${s.part} --- SKIPPED: ${s.why}`);
+for (const t of p.run) { console.log('--- ' + t + ' ---'); try { tests[t](); } catch (e) { check(t + ' ran to the end', false, e.message); } }
+console.log(failed ? '\n' + failed + ' FAILED. Check the stores with `wp.js <site> design-system`; `wp.js <site> ds-backups` lists what can be restored.' : '\nall passed, nothing left behind' + (p.skipped.length ? ` (skipped: ${p.skipped.map((s) => s.part).join(', ')})` : ''));
 process.exit(failed ? 1 : 0);

@@ -258,6 +258,7 @@ other sites and versions are welcome. Per release, the checks are in
 | 5.13 | 2026-09-21 | Round trip byte for byte, wrapper closer on 38 of 38 stored items. Presets and variables read from a live site, read-only. Interactions proven live (any module can be a trigger). |
 | 5.13.1 | 2026-09-21 to 2026-10-12 | Module catalogue (115 modules) built from the theme source, and the presets, variables and interactions code read from it. Loop Builder, timeline, popups, background video and header patterns built on live converted sites. No separate round-trip run is recorded for this version. |
 | 5.15.1 | 2026-10-28 | Round trip byte for byte with the extended round-trip spec (2707 characters, including an icon blurb, the regression case for the empty-group fix). **Visual Builder re-save with no changes:** same 35 blocks in the same tree, every attribute equal as data, rendered HTML identical. The builder only reformats the stored text (attribute key order, leaf modules saved self-closing, whitespace between blocks), so the content hash changes and the stale guard reports STALE afterwards; that is expected. Found: a blurb with an icon was stored with `"module":[]` instead of `{}`; the compiler no longer writes empty groups (#21). Components and Slots placement over REST proven live 2026-10-12 ([notes](references/divi5-components-slots.md)). Compare tool: `scripts/vb-resave-check.js`. |
+| 5.18.0 | 2026-10-28 | Variable math, nested variables and mixed text read from a page and variables made in the Visual Builder, and from the theme source (#45, [notes](references/divi5-presets-variables.md)). `ds-live-test.js all` passed live with plugin 2.0.1: colours, variables, presets, and nested variables (accepted and stored as the builder stores them; missing, self, cyclic and cross-type references refused; archiving a variable in use refused), every store left exactly as it was. The plugin's design-system writes also pass `ds-write-test.php` against the 5.18.0 source. |
 
 Sources: [references/divi5-format.md](references/divi5-format.md) ("What a save does to your content"),
 [references/divi5-presets-variables.md](references/divi5-presets-variables.md),
@@ -271,7 +272,8 @@ None of these needs a site, except the last one.
 node scripts/catalog-test.js          # the module catalogue and its lint
 node scripts/preset-spec-test.js      # modulePreset in a page spec
 node scripts/compile-test.js          # link, swiper-posts, buildModule()
-node scripts/stale-guard-test.js      # page/post/canvas writes refuse when the content changed since the read
+node scripts/variable-refs-test.js    # Divi 5.18 variables in values: {{gvid-}} and {{dc:}} byte for byte vs a builder-saved page; the math-operator warning
+node scripts/stale-guard-test.js      # page/post/canvas writes refuse when the content changed since the read; nested-variable placeholders and refusals
 node scripts/spec-check-test.js       # unknown spec keys are reported; every documented example checks clean
 node scripts/blocks-test.js           # block-level edits leave the rest of the page byte for byte
 node scripts/vb-resave-check-test.js  # the Visual Builder re-save comparison, on a real Divi 5.15.1 before/after pair
@@ -290,14 +292,14 @@ php  scripts/plugin-uninstall-test.php  # deleting the plugin removes its option
 node scripts/switch-advice-test.js    # what the scripts say when a switch is off
 node scripts/plugin-live-check-test.js  # the read-only live check (plugin-live-check.js <site>): GET only, exit 0/1/2
 node scripts/build-plugin-zips-test.js  # the zip build and the must-use loader next to it
-php  scripts/ds-write-test.php "<path to a Divi 5 theme folder>"   # the plugin's design-system writes
-node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts every store back
+php  scripts/ds-write-test.php "<path to a Divi 5 theme folder>"   # the plugin's design-system writes, nested variables included: run it against a 5.18 AND a 5.15 copy
+node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts every store back (plugin >= 2.0.1; the "nested" part needs Divi 5.18)
 ```
 
 ## Security
 
 - **Found a vulnerability? Report it privately** - see [SECURITY.md](SECURITY.md).
-  Run the latest plugin (**divi5-builder 2.0.0**; the old single-file 1.8.3 and newer already fixed a Contributor-level option read).
+  Run the latest plugin (**divi5-builder 2.0.1**; the old single-file 1.8.3 and newer already fixed a Contributor-level option read).
 - Use the lowest role that works: page building needs an **Editor** Application Password.
 - Never commit `~/.web-creds.txt` or any Application Password.
 - The plugin exposes existing Divi meta keys, the global colour palette and (1.5+)

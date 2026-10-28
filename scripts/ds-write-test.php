@@ -59,7 +59,7 @@ require "$divi/includes/builder-5/server/vendor/autoload.php";
 require getenv( 'D5B_PLUGIN_FILE' ) ?: __DIR__ . '/../plugin/divi5-builder/parts/page-building.php'; // the env override is for mutation runs
 
 $failed = 0;
-$check  = function ( $name, $ok, $detail = '' ) use ( &$failed ) { echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ( ! $ok && $detail ) ? "\n          $detail" : '' ) . "\n"; if ( ! $ok ) { $failed++; } };
+$check  = function ( $name, $ok, $detail = '' ) use ( &$failed ) { echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ( ! $ok && $detail ) ? "\n          $detail" : '' ) . "\n"; if ( ! $ok ) { $failed++; } return $ok; };
 $canon  = function ( $v ) { return json_encode( d5b_ds_ksort( $v ) ); };
 
 // =====================================================================================================
@@ -266,6 +266,143 @@ D5B_Fake_Data515::$no_perm = false;
 $GLOBALS['d5b_options']['d5b_ds_backups']['variables'][0]['value'] = array( 'numbers' => array( 'gvid-aaa' => array( 'id' => 'gvid-aaa', 'label' => 'Gap', 'value' => '20px', 'status' => 'bogus' ) ) );
 $bad = d5b_ds_restore( 'variables', 0 );
 $check( '5.15: Divi\'s WP_Error reaches the caller, with its code and a 400', is_wp_error( $bad ) && 'global_variable_invalid_status' === $bad->get_error_code() && 400 === ( $bad->get_error_data()['status'] ?? 0 ) );
+
+echo "--- nested variables (Divi 5.18, issue #45): references checked, archive guarded ---\n";
+// The token is the one the Visual Builder stored on a live 5.18.0 site (ids and labels from that site's store).
+$tok = function ( $id ) { return '$variable({"type":"content","value":{"name":"' . $id . '","settings":{}}})$'; };
+$nv  = function ( $id, $label, $value, $status = 'active', $type = 'numbers' ) { return array( 'id' => $id, 'label' => $label, 'value' => $value, 'order' => 'archived' === $status ? '' : '1', 'status' => $status, 'lastUpdated' => '2026-10-28T08:08:44.912Z', 'variableType' => $type ); };
+et_update_option( 'global_variables', array(
+	'numbers' => array( 'gvid-xdtsp8ywr8' => $nv( 'gvid-xdtsp8ywr8', 'Space', '40px' ), 'gvid-k1iggz3omp' => $nv( 'gvid-k1iggz3omp', 'Min Heading', '28px' ), 'gvid-4az4m3i650' => $nv( 'gvid-4az4m3i650', 'Max Heading', '56px' ) ),
+	'strings' => array( 'gvid-n7rq1b1o9w' => $nv( 'gvid-n7rq1b1o9w', 'Year', '2026', 'active', 'strings' ), 'gvid-q35xsw1fp0' => $nv( 'gvid-q35xsw1fp0', 'Legal Name', 'Example Ltd', 'active', 'strings' ), 'gvid-old0000001' => $nv( 'gvid-old0000001', 'Old', 'gone', 'archived', 'strings' ) ),
+) );
+$refs = d5b_ds_variable_refs( 'clamp( ' . $tok( 'gvid-k1iggz3omp' ) . ', 4vw, ' . $tok( 'gvid-4az4m3i650' ) . ')' );
+$check( 'references are read from a nested value (' . ( method_exists( 'ET\\Builder\\Packages\\GlobalData\\GlobalData', 'get_global_variable_references' ) ? 'Divi\'s own get_global_variable_references' : 'the fallback patterns: this Divi has no get_global_variable_references' ) . ')', array( 'gvid-4az4m3i650', 'gvid-k1iggz3omp' ) === ( function ( $r ) { sort( $r ); return $r; } )( $refs ), json_encode( $refs ) );
+$check( 'var(--gvid-…) counts as a reference too; a dynamic-content token (post_author) and a colour id do not', array( 'gvid-xdtsp8ywr8' ) === d5b_ds_variable_refs( 'calc(var(--gvid-xdtsp8ywr8) * -1) ' . $tok( 'post_author' ) . ' var(--gcid-primary-color)' ) );
+// The fallback finder (Divi before 5.18), with DynamicData and then with nothing of Divi's at all (our scanner only).
+$bsl  = chr( 92 );
+$enc  = array(
+	'a plain token'                                         => array( $tok( 'gvid-plain00001' ), array( 'gvid-plain00001' ) ),
+	'a token with &quot; quotes'                            => array( str_replace( '"', '&quot;', $tok( 'gvid-quot000001' ) ), array( 'gvid-quot000001' ) ),
+	'a block-encoded token (backslash-u0022 quotes)'        => array( str_replace( '"', $bsl . 'u0022', $tok( 'gvid-uenc000001' ) ), array( 'gvid-uenc000001' ) ),
+	'a token whose settings string holds ")$", then another' => array( '$variable({"type":"content","value":{"name":"gvid-sett000001","settings":{"before":"a)$b"}}})$ ' . $tok( 'gvid-next000001' ), array( 'gvid-next000001', 'gvid-sett000001' ) ),
+	'a token inside another token\'s settings'              => array( '$variable({"type":"content","value":{"name":"post_title","settings":{"after":' . json_encode( $tok( 'gvid-inner00001' ) ) . '}}})$', array( 'gvid-inner00001' ) ),
+	'a colour token naming a gcid (not a variable)'         => array( '$variable({"type":"color","value":{"name":"gcid-x","settings":{}}})$', array() ),
+);
+foreach ( array( 'with Divi\'s DynamicData' => array( 'refs' => '' ), 'with our scanner only' => array( 'refs' => '', 'dynamic' => '' ) ) as $how => $off ) {
+	$keep = $GLOBALS['d5b_test_classes'];
+	$GLOBALS['d5b_test_classes'] = $off + $keep;
+	foreach ( $enc as $what => list( $val, $want ) ) {
+		$got = d5b_ds_variable_refs( $val, $complete ); sort( $got );
+		$check( "fallback finder ($how): $what", $want === $got && $complete, json_encode( $got ) );
+	}
+	// Stray openers: a real token AFTER them is still found (the search goes on right after a stray opener).
+	foreach ( array(
+		'an opener that never closes, then a real token'        => 'Price $variable({ oops ' . $tok( 'gvid-after00001' ),
+		'an opener with an unterminated string, then a token'    => 'x $variable({"a":"unterminated ' . $tok( 'gvid-after00001' ) . ' tail',
+		'an opener that closes without ")$", around a token'    => '$variable({ a ' . $tok( 'gvid-after00001' ) . ' } z',
+	) as $what => $val ) {
+		$got = d5b_ds_variable_refs( $val, $complete );
+		$check( "fallback finder ($how): $what: found", array( 'gvid-after00001' ) === $got && $complete, json_encode( $got ) );
+	}
+	// Hostile input, 1 MB (the largest value the size check lets through). Restarting after each stray opener is what
+	// finds the tokens above, and unbudgeted it is quadratic (64 KB of "$variable({" took 26 s, 1 MB hours). The scan
+	// budget stops it fast and the value is reported INCOMPLETE (a write refuses it as value_too_complex).
+	// 64 KB first: a quadratic scanner fails this one in seconds (by assertion) instead of hanging for hours on 1 MB.
+	$adv = substr( str_repeat( '$variable({', 6000 ), 0, 65536 );
+	$t0  = microtime( true ); d5b_ds_variable_refs( $adv, $complete ); $dt = microtime( true ) - $t0;
+	if ( ! $check( sprintf( 'fallback finder (%s): 64 KB of "$variable({" repeated: %s in %.3f s (< 0.5 s)', $how, $complete ? 'complete' : 'incomplete', $dt ), $dt < 0.5 && ! $complete ) ) { $GLOBALS['d5b_test_classes'] = $keep; continue; }
+	foreach ( array( '$variable({', '$variable({"', '$variable({"a":"' ) as $unit ) {
+		$adv = substr( str_repeat( $unit, intdiv( 1048576, strlen( $unit ) ) + 1 ), 0, 1048576 );
+		$t0  = microtime( true ); d5b_ds_variable_refs( $adv, $complete ); $dt = microtime( true ) - $t0;
+		$check( sprintf( 'fallback finder (%s): 1 MB of %s repeated: incomplete (refused), in %.3f s (< 2 s)', $how, json_encode( $unit ), $dt ), $dt < 2.0 && ! $complete );
+	}
+	$deep = '$variable(' . str_repeat( '{', 1048576 - 10 );
+	$t0   = microtime( true ); $got = d5b_ds_variable_refs( $deep, $complete ); $dt = microtime( true ) - $t0;
+	$check( sprintf( 'fallback finder (%s): 1 MB of nested "{": %s, nothing found, in %.3f s (< 2 s)', $how, $complete ? 'complete' : 'incomplete', $dt ), $dt < 2.0 && array() === $got );
+	$many = str_repeat( '$variable({})x', 74898 ) . $tok( 'gvid-last000001' ); // closed but not tokens, then a real one
+	$t0   = microtime( true ); $got = d5b_ds_variable_refs( $many, $complete ); $dt = microtime( true ) - $t0;
+	$check( sprintf( 'fallback finder (%s): 1 MB of closed non-tokens, then a real token: found, complete, in %.3f s (< 2 s)', $how, $dt ), array( 'gvid-last000001' ) === $got && $complete && $dt < 2.0, json_encode( $got ) );
+	// FAIL CLOSED: a value the finder cannot search completely is refused, never written as if it had no references.
+	$hostile = substr( str_repeat( '$variable({', 95326 ), 0, 1048576 ) . ''; // 1 MB, passes the size check
+	$before  = json_encode( $vars() ); $bk = count( $GLOBALS['d5b_options']['d5b_ds_backups']['variables'] ?? array() );
+	$tc      = d5b_ds_variable_upsert( array( 'type' => 'strings', 'label' => 'Hostile', 'value' => $hostile ), false );
+	$check( "fail closed ($how): a value too convoluted to search is refused, 400 value_too_complex, nothing written, no backup", is_wp_error( $tc ) && 'value_too_complex' === $tc->get_error_code() && 400 === $tc->get_error_data()['status'] && json_encode( $vars() ) === $before && count( $GLOBALS['d5b_options']['d5b_ds_backups']['variables'] ?? array() ) === $bk, is_wp_error( $tc ) ? $tc->get_error_message() : json_encode( $tc ) );
+	// ... and a store holding such a value (saved some other way) blocks an archive: whether it uses the id is unknown.
+	$st0                                            = $vars();
+	$st1                                            = $st0;
+	$st1['strings']['gvid-hostile0001']             = array( 'id' => 'gvid-hostile0001', 'label' => 'Hostile', 'value' => $hostile, 'order' => '9', 'status' => 'active' );
+	$st1['numbers']['gvid-plain000009']             = array( 'id' => 'gvid-plain000009', 'label' => 'Plain', 'value' => '1px', 'order' => '9', 'status' => 'active' );
+	et_update_option( 'global_variables', $st1 );
+	$ax = d5b_ds_variable_archive( array( 'id' => 'gvid-plain000009' ), false );
+	$check( "fail closed ($how): archive is refused (400 value_too_complex) when a stored value cannot be searched, nothing written", is_wp_error( $ax ) && 'value_too_complex' === $ax->get_error_code() && false !== strpos( $ax->get_error_message(), 'gvid-hostile0001' ) && 'active' === $vars()['numbers']['gvid-plain000009']['status'], is_wp_error( $ax ) ? $ax->get_error_message() : json_encode( $ax ) );
+	et_update_option( 'global_variables', $st0 );
+	$GLOBALS['d5b_test_classes'] = $keep;
+}
+$fluid = 'clamp( ' . $tok( 'gvid-k1iggz3omp' ) . ', 4vw, ' . $tok( 'gvid-4az4m3i650' ) . ')';
+$f     = d5b_ds_variable_upsert( array( 'type' => 'numbers', 'label' => 'Fluid Heading', 'value' => $fluid ), false );
+$check( 'nested number variable (Fluid Heading = clamp( Min, 4vw, Max )) is accepted and stored exactly', ! is_wp_error( $f ) && $fluid === ( $vars()['numbers'][ $f['id'] ]['value'] ?? '' ), is_wp_error( $f ) ? $f->get_error_message() : '' );
+$copy = 'Copyright © ' . $tok( 'gvid-n7rq1b1o9w' ) . ' ' . $tok( 'gvid-q35xsw1fp0' ) . '. All rights reserved.';
+$cr   = d5b_ds_variable_upsert( array( 'type' => 'strings', 'label' => 'Copyright', 'value' => $copy ), false );
+$check( 'nested string variable (Copyright © Year Legal Name) is accepted and stored exactly', ! is_wp_error( $cr ) && $copy === ( $vars()['strings'][ $cr['id'] ]['value'] ?? '' ), is_wp_error( $cr ) ? $cr->get_error_message() : '' );
+$check( 'math on a variable (Space * -1) is accepted', ! is_wp_error( $neg = d5b_ds_variable_upsert( array( 'type' => 'numbers', 'label' => 'Negative space', 'value' => $tok( 'gvid-xdtsp8ywr8' ) . ' * -1' ), false ) ), is_wp_error( $neg ) ? $neg->get_error_message() : '' );
+$refused = function ( $label, $in, $problem ) use ( $check, $vars ) {
+	$before = json_encode( $vars() ); $bk = count( $GLOBALS['d5b_options']['d5b_ds_backups']['variables'] ?? array() );
+	foreach ( array( true, false ) as $dry ) {
+		$r    = d5b_ds_variable_upsert( $in, $dry );
+		$data = is_wp_error( $r ) ? $r->get_error_data() : array();
+		$check( $label . ( $dry ? ' (dry run)' : '' ) . ': refused, 400 bad_references, problem "' . $problem . '", nothing written, no backup taken',
+			is_wp_error( $r ) && 'bad_references' === $r->get_error_code() && 400 === ( $data['status'] ?? 0 ) && in_array( $problem, array_column( $data['references'] ?? array(), 'problem' ), true )
+			&& json_encode( $vars() ) === $before && count( $GLOBALS['d5b_options']['d5b_ds_backups']['variables'] ?? array() ) === $bk, is_wp_error( $r ) ? $r->get_error_message() : json_encode( $r ) );
+	}
+	return isset( $r ) && is_wp_error( $r ) ? $r : null;
+};
+$refused( 'a reference to a variable that does not exist', array( 'type' => 'numbers', 'label' => 'Bad', 'value' => $tok( 'gvid-nosuchvar1' ) . ' * 2' ), 'missing' );
+$refused( 'a var(--gvid-…) reference to a variable that does not exist', array( 'type' => 'numbers', 'label' => 'Bad', 'value' => 'calc(var(--gvid-nosuchvar2) / 2)' ), 'missing' );
+$refused( 'a reference to an archived variable', array( 'type' => 'strings', 'label' => 'Bad', 'value' => 'x ' . $tok( 'gvid-old0000001' ) ), 'archived' );
+$refused( 'a reference to the variable itself', array( 'type' => 'numbers', 'id' => 'gvid-xdtsp8ywr8', 'label' => 'Space', 'value' => $tok( 'gvid-xdtsp8ywr8' ) . ' * 2' ), 'self' );
+$refused( 'a number variable using a string variable', array( 'type' => 'numbers', 'label' => 'Bad', 'value' => $tok( 'gvid-n7rq1b1o9w' ) ), 'type' );
+$refused( 'a string variable using a number variable', array( 'type' => 'strings', 'label' => 'Bad', 'value' => 'size ' . $tok( 'gvid-xdtsp8ywr8' ) ), 'type' );
+$refused( 'a links variable holding a reference (only numbers and strings may)', array( 'type' => 'links', 'label' => 'Bad', 'value' => 'https://example.com/' . $tok( 'gvid-n7rq1b1o9w' ) ), 'not_allowed' );
+$refused( 'a gradients variable holding a var(--gvid-…) reference', array( 'type' => 'gradients', 'label' => 'Bad', 'value' => 'linear-gradient(var(--gvid-xdtsp8ywr8), red)' ), 'not_allowed' );
+$check( 'a links variable without references is still fine', ! is_wp_error( $lk = d5b_ds_variable_upsert( array( 'type' => 'links', 'label' => 'Home', 'value' => 'https://example.com/' ), true ) ), is_wp_error( $lk ) ? $lk->get_error_message() : '' );
+$before = json_encode( $vars() );
+$big    = d5b_ds_variable_upsert( array( 'type' => 'strings', 'label' => 'Huge', 'value' => str_repeat( 'a', 1048577 ) ), false );
+$check( 'a value over 1 MB is refused (400 value_too_large), nothing written', is_wp_error( $big ) && 'value_too_large' === $big->get_error_code() && 400 === $big->get_error_data()['status'] && json_encode( $vars() ) === $before );
+$check( 'a value of exactly 1 MB is accepted (dry run)', ! is_wp_error( d5b_ds_variable_upsert( array( 'type' => 'strings', 'label' => 'Big', 'value' => str_repeat( 'a', 1048576 ) ), true ) ) );
+$va = d5b_ds_variable_upsert( array( 'type' => 'numbers', 'label' => 'ZZ A', 'value' => '10px' ), false );
+$vb = d5b_ds_variable_upsert( array( 'type' => 'numbers', 'label' => 'ZZ B', 'value' => $tok( $va['id'] ) . ' * 2' ), false );
+$check( 'A, then B uses A: accepted', ! is_wp_error( $va ) && ! is_wp_error( $vb ), is_wp_error( $vb ) ? $vb->get_error_message() : '' );
+$cyc = $refused( 'then A uses B (a cycle)', array( 'type' => 'numbers', 'id' => $va['id'], 'label' => 'ZZ A', 'value' => $tok( $vb['id'] ) . ' + 1px' ), 'cycle' );
+$check( 'the cycle is named, start to end', $cyc && false !== strpos( $cyc->get_error_message(), $va['id'] . ' -> ' . $vb['id'] . ' -> ' . $va['id'] ) );
+$vc = d5b_ds_variable_upsert( array( 'type' => 'numbers', 'label' => 'ZZ C', 'value' => $tok( $vb['id'] ) . ' / 2' ), false );
+$refused( 'a longer cycle (C uses B uses A, then A uses C)', array( 'type' => 'numbers', 'id' => $va['id'], 'label' => 'ZZ A', 'value' => $tok( $vc['id'] ) ), 'cycle' );
+$check( 'a value without references is never blocked by them (A = 12px)', ! is_wp_error( d5b_ds_variable_upsert( array( 'type' => 'numbers', 'id' => $va['id'], 'label' => 'ZZ A', 'value' => '12px' ), false ) ) );
+// archive guard
+$arch = function ( $id, $dry = false ) { return d5b_ds_variable_archive( array( 'id' => $id ), $dry ); };
+$before = json_encode( $vars() ); $bk = count( $GLOBALS['d5b_options']['d5b_ds_backups']['variables'] );
+foreach ( array( true, false ) as $dry ) {
+	$x    = $arch( 'gvid-k1iggz3omp', $dry );
+	$deps = is_wp_error( $x ) ? ( $x->get_error_data()['dependents'] ?? array() ) : array();
+	$check( 'archive of a variable another active variable uses' . ( $dry ? ' (dry run)' : '' ) . ': refused, 409 variable_in_use, the user listed by id and label, nothing written',
+		is_wp_error( $x ) && 'variable_in_use' === $x->get_error_code() && 409 === ( $x->get_error_data()['status'] ?? 0 ) && array( $f['id'] ) === array_column( $deps, 'id' ) && 'Fluid Heading' === $deps[0]['label']
+		&& false !== strpos( $x->get_error_message(), $f['id'] . ' ("Fluid Heading")' ) && json_encode( $vars() ) === $before && count( $GLOBALS['d5b_options']['d5b_ds_backups']['variables'] ) === $bk, is_wp_error( $x ) ? $x->get_error_message() : json_encode( $x ) );
+}
+$hero = d5b_ds_variable_upsert( array( 'type' => 'numbers', 'label' => 'Hero heading', 'value' => $tok( $f['id'] ) . ' * 1.5' ), false );
+$x    = $arch( 'gvid-k1iggz3omp' );
+$deps = is_wp_error( $x ) ? $x->get_error_data()['dependents'] : array();
+$byid = array_column( $deps, 'direct', 'id' );
+$check( 'an indirect user is listed too (Hero heading uses Fluid Heading uses Min Heading)', ! is_wp_error( $hero ) && 2 === count( $deps ) && true === ( $byid[ $f['id'] ] ?? null ) && false === ( $byid[ $hero['id'] ] ?? null ) && false !== strpos( $x->get_error_message(), '(indirectly)' ), is_wp_error( $x ) ? $x->get_error_message() : '' );
+$check( 'archive of a string variable used by Copyright: refused', is_wp_error( $y = $arch( 'gvid-q35xsw1fp0' ) ) && 'variable_in_use' === $y->get_error_code() );
+$check( 'archive of a variable nobody uses still works', ! is_wp_error( $z = $arch( $vc['id'] ) ) && 'archived' === $z['action'] && 'archived' === $vars()['numbers'][ $vc['id'] ]['status'] );
+$check( 'once the users are archived first (Hero, then Fluid), the variable can be archived', ! is_wp_error( $arch( $hero['id'] ) ) && ! is_wp_error( $arch( $f['id'] ) ) && ! is_wp_error( $z = $arch( 'gvid-k1iggz3omp' ) ) && 'archived' === $z['action'] && 'archived' === $vars()['numbers']['gvid-k1iggz3omp']['status'] );
+$check( 'an archived user does not block (Fluid is archived, Max Heading can go)', ! is_wp_error( $arch( 'gvid-4az4m3i650' ) ) );
+// a restore that would archive a variable an active one (in the restored store) uses
+$cur  = $vars();
+$back = $cur; unset( $back['numbers'][ $va['id'] ] ); $back['numbers'][ $vb['id'] ]['status'] = 'active'; // B uses A; the backup has no A, so the restore archives A
+$GLOBALS['d5b_options']['d5b_ds_backups']['variables'][0]['value'] = $back;
+$bk = count( $GLOBALS['d5b_options']['d5b_ds_backups']['variables'] );
+$rx = d5b_ds_restore( 'variables', 0 );
+$check( 'a restore that would archive a variable an active one uses: refused, 409 variable_in_use, nothing written, no backup', is_wp_error( $rx ) && 'variable_in_use' === $rx->get_error_code() && 409 === ( $rx->get_error_data()['status'] ?? 0 ) && $vars() === $cur && count( $GLOBALS['d5b_options']['d5b_ds_backups']['variables'] ) === $bk, is_wp_error( $rx ) ? $rx->get_error_message() : json_encode( $rx ) );
 $GLOBALS['d5b_test_classes']['data'] = 'D5B_Fake_Data';
 // Divi's colour and preset savers return no error today; if a later Divi does, it must not become a success
 class D5B_Fake_Refuses { static function save_data( $d ) { return new WP_Error( 'nope', 'refused' ); } static function set_global_colors( $d ) { return new WP_Error( 'nope', 'refused' ); } }

@@ -673,7 +673,12 @@ and `order: ""`, value and label kept. The plugin's archive does the same; a var
 `ds-live-test.js all` passed there with 1.8.4 (35 checks), leaving the test variables archived.
 
 `design-system` lists archived variables with `ARCHIVED (deleted)`. A module still pointing at an archived variable
-loses its value without an error, so look before you archive a variable a page might use.
+still renders it today, by the source (read from source, not yet seen live): the front end prints the CSS variable of
+every variable a page references "regardless of status" (`FrontEnd/FrontEnd.php` 802-846 in 5.15.1 and 5.18,
+`FrontEnd/Module/Style.php` 1475 in 5.15.1, 1480 in 5.18), and a string variable's value is looked up with no status
+check (`DynamicContentGlobalVariableOptions::get_variable_value_by_id()`, 5.15.1 ~line 82; in 5.18 the inline resolver
+`GlobalData::_resolve_inline_global_variables()`, line 1519, looks the name up in lines 1565-1587). Do not rely on it: the builder hides an archived variable, so nobody can see or edit what the
+module uses, and a later Divi may stop printing it. Look before you archive a variable a page might use.
 
 `ds-live-test.js variables` on 5.15+ therefore ends with the two test variables archived, and checks that, plus that
 every other variable is exactly as before. It refuses to start while an ACTIVE "ZZ Test ... (delete me)" variable is
@@ -731,6 +736,128 @@ Result on the reference site: 22 presets, 385 of 618 modules of those types on a
 a 33-URL computed-style snapshot (7,285 elements, colour, type, borders, padding, margin, alignment, width, display).
 Scripts (scratchpad of the the reference site port, worth generalising into the skill): `build-presets.js`, `create-presets.js`,
 `assign-presets.js`, `revert-split.js`, `warm.js`, `snapshot-instrument.js`.
+
+## 6. Divi 5.18: variable math, nested variables, mixed text (issue #45, read 2026-10-28)
+
+Divi 5.18.0 lets a variable sit inside a calculation, a variable hold other variables, and a text field mix static
+text, variables and dynamic content. Read from a page and a store the Visual Builder saved on a 5.18.0 site (the page
+is kept as `scripts/fixtures/vb-5.18.0-variables.html`, only the image's file name, alt and title made generic) and
+from the 5.18.0 source. Source paths below are under `includes/builder-5/server/`.
+
+### 6.1 Stored formats (proven, builder-saved)
+
+One token for everything: `$variable({"type":"content","value":{"name":"<name>","settings":{}}})$`, where the name is
+a `gvid-` id for a variable or a dynamic-content name (`post_author`). In block attributes it is in the stored form
+(quotes as `\u0022`, `&` as `\u0026`, `<` `>` as `\u003c` `\u003e`); in the variable store it is plain JSON text.
+
+| What | Where | Stored value |
+|---|---|---|
+| A variable alone in a NUMBER field | section `module.decoration.spacing.desktop.value.padding.top` | the token for `gvid-xdtsp8ywr8` ("Space") |
+| A variable in a calculation | image `module.advanced.spacing.desktop.value.margin.top` | the token, then the operator and number as typed: `<token> × -1` (see 6.2: this one is broken) |
+| A nested variable used in a field | heading `title.decoration.font.font.desktop.value.size` | the token for `gvid-lk82fchj2p` ("Fluid Heading") |
+| A NUMBER variable made of others | store, `numbers` | Fluid Heading = `clamp( <token gvid-k1iggz3omp>, 4vw, <token gvid-4az4m3i650>)` (Min Heading, Max Heading) |
+| A STRING variable made of others | store, `strings` | Copyright = `Copyright © <token gvid-n7rq1b1o9w> <token gvid-q35xsw1fp0>. All rights reserved.` (Year, Legal Name) |
+| Mixed text in a module field | text `content.innerContent.desktop.value` | `<p>By&nbsp;<token post_author>.&nbsp;<token gvid-zca7w37pd4></p>` |
+
+- Dynamic content and variables use the same token shape (`type: "content"`). The builder wrote `&nbsp;` on both sides
+  of each chip it inserted in a text field.
+- Front end of that page: the text rendered `By <author name>.&nbsp;Copyright © 2026 <legal name>. All rights reserved.`,
+  so the nested string resolved through two levels.
+
+### 6.2 How a calculation renders, and the `×` trap (proven, source and a run of Divi's own function)
+
+- At render, `StyleLibrary/Utils/Utils.php::resolve_dynamic_variable()` (line ~150) turns each token into
+  `var(--gvid-…)` and passes the result to `normalize_variable_math()` (line 81), which wraps arithmetic in `calc()`.
+- Operators are `+ - * /` only. Divi's own function, run on sample values (5.18.0, copied by line range):
+
+  | Value | Rendered |
+  |---|---|
+  | `var(--gvid-x) * -1` | `calc(var(--gvid-x) * -1)` |
+  | `var(--gvid-x) / 2` | `calc(var(--gvid-x) / 2)` |
+  | `100% - var(--gvid-x)` | `calc(100% - var(--gvid-x))` |
+  | `-var(--gvid-x)` | `calc(-1 * var(--gvid-x))` |
+  | `clamp( var(--gvid-a), 4vw, var(--gvid-b))` | unchanged (already a math function) |
+  | `0 2px var(--gvid-x) rgba(0,0,0,.2)` | unchanged: adjacent operands are a compound value (a shadow), not one sum |
+  | `var(--gvid-x) × -1` | `calc(var(--gvid-x) × -1)`: **invalid CSS, the browser drops the declaration** |
+
+- `×` (and `÷`, or a letter `x`) is not an operator. On the live page the image margin had `× -1` and so had no margin
+  at all. The compiler (`divi.js compile`) and `catalog.js lint` warn about it:
+  "`×` is not a CSS operator; Divi only treats + - * / as math. Use `*`."
+- Writing it from a spec: `"margin":{"top":"{{gvid-xxxx}} * -1"}` (see 6.5).
+
+### 6.3 Nested variables: references, limits, cycles (proven, source)
+
+- `GlobalData/GlobalData.php::get_global_variable_references()` (line 1387, new in 5.18) is Divi's list of what a value
+  references: `var(--gvid-…)`, a value that IS a bare `gvid-` id, and tokens of type `content`, `color` or `gradient`
+  whose name is a `gvid-` id, also inside a token's settings (it scans recursively).
+- `collect_global_variable_dependencies()` (line 1435) follows references indirectly, archived bases included. The
+  front end uses it to print the CSS variables a page needs (`FrontEnd/Module/Style.php` ~1470), and the builder's
+  export uses it (`export_global_variables()`, line ~1852): **exporting a variable from the builder includes every
+  variable it depends on.**
+- Strings are resolved inline by `resolve_inline_global_variables()` (line 1471, work in `_resolve_inline_global_variables()`
+  line 1519): **a cycle and a missing reference resolve EMPTY**, without an error. Limits (line 1521): a recursion path
+  over 32 variables, a value over 1 MB (1048576 bytes), a 16 MB processed-input budget, or 1024 sources each mark the
+  budget exceeded, and the value resolves empty.
+- Divi's server does NOT check references when a variable is saved (`set_global_variables()`, line 1649, validates
+  only ids, status and empty values). The builder prevents bad ones in its picker: the variable editor offers number
+  variables inside a number variable and string variables inside a string variable (`visual-builder/build/modal-library.js`,
+  the `numbers`/`strings` editor passes `type: "number"` or `"text"`, which `module-utils.js` maps to the `numbers` or
+  `strings` group), and greys out the variable itself and everything that already depends on it
+  (`collectGlobalVariableDependents`, `global-data.js`). The plugin applies the same rules on the server (6.4).
+- Archived variables still resolve (read from source, not yet seen live): the inline resolver looks a name up in the
+  whole store with no status check (`_resolve_inline_global_variables()`, line 1519; the lookup is lines 1565-1587), and the front end prints the CSS variable of every variable a page
+  references, and of what they depend on, "regardless of status" (`FrontEnd/FrontEnd.php` 802-846,
+  `FrontEnd/Module/Style.php` 1480). Archiving a base therefore does not blank the parent today, but do not rely on it:
+  the builder hides the archived base, so nobody can see or change what the parent is made of (section 5.0).
+- Saving variables takes a database lock: `409 global_variables_locked` ("Global variables are currently being saved by
+  another request.", line 1227). The same lock is already in 5.15.1 (line 1177). The plugin passes Divi's `WP_Error`
+  through; try again a moment later.
+
+### 6.4 Writing nested variables (plugin >= 2.0.1)
+
+```bash
+node scripts/wp.js <site> ds-variable-set --type numbers --label "Fluid Heading" --value "clamp( {{gvid-min}}, 4vw, {{gvid-max}})"
+node scripts/wp.js <site> ds-variable-set --type numbers --label "Negative space" --value "{{gvid-space}} * -1"
+node scripts/wp.js <site> ds-variable-set --type strings --label "Copyright" --value "Copyright © {{gvid-year}} {{gvid-name}}"
+```
+
+- `{{gvid-xxxx}}` becomes the token before sending (the same conversion as the compiler). `{{dc:…}}` is refused in a
+  variable: Divi resolves only variables there.
+- Only **number and string** variables may hold references (the builder's variable editor offers its picker for those
+  two types alone). A reference in a links, images, fonts or gradients variable is refused (400 `bad_references`,
+  problem `not_allowed`).
+- The plugin checks every reference on the server, dry run included, and refuses with **400 `bad_references`**,
+  listing each one, when it does not exist, is archived, is of another type (a number variable may use only number
+  variables, a string variable only string variables), is the variable itself, or leads back to it (a cycle, named
+  start to end: `gvid-a -> gvid-b -> gvid-a`). It uses Divi's `get_global_variable_references()` when Divi has it
+  (5.18+); before that, the same rules through Divi's `DynamicData` plus its own scanner, which also reads tokens with
+  `&quot;` or block-encoded quotes and a settings string holding `)$`.
+- A value over 1 MB is refused (400 `value_too_large`): Divi 5.18 would resolve it as empty.
+- A value too convoluted to search completely within the plugin's work limits (before Divi 5.18, where the plugin
+  uses its own finder) is refused rather than half-checked (400 `value_too_complex`); an archive or restore is refused
+  the same way while a stored value cannot be searched, since whether it uses the variable is then unknown.
+- **Archive guard:** `ds-variable-archive` refuses with **409 `variable_in_use`** while another ACTIVE variable uses the
+  variable, directly or through other variables, and lists those variables by id and label. There is no force flag:
+  archive (or change) the users first. A variables restore that would archive a variable an active one uses is
+  refused the same way.
+- Nothing is written, and no backup is taken, on a refusal.
+
+### 6.5 Variables in page specs (`divi.js compile`)
+
+Inside ANY string value: `{{gvid-xxxx}}` is the variable's token and `{{dc:name}}` a dynamic-content token.
+
+```json
+{ "padding": { "top": "{{gvid-space}}" } }
+{ "type": "raw", "block": "divi/image", "attrs": { "module": { "advanced": { "spacing": { "desktop": { "value": { "margin": { "top": "{{gvid-space}} * -1" } } } } } } } }
+{ "type": "text", "html": "<p>By {{dc:post_author}} · {{gvid-copyright}}</p>" }
+{ "type": "heading-module", "text": "Title", "size": "{{gvid-fluid}}" }
+```
+
+- The output is byte for byte what the builder stores (`scripts/variable-refs-test.js` compares it with the 5.18.0
+  page). A malformed placeholder (`{{gvid-a b}}`) is an error, never literal text on the page.
+- `--site <name>` checks every variable the page uses exists and is active, inside calculations and mixed text too.
+- Colours keep their own form: a `gcid-…` name in a colour field.
+- Globalising literals into calculations (`-40px` to `{{gvid-space}} * -1`) is not done by `globalize.js` yet.
 
 ## More preset facts (2026-10-01)
 

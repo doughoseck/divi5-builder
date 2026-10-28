@@ -1,3 +1,4 @@
 # Captured WordPress output is compared byte for byte (line breaks between blocks are part of what the tests measure),
 # so git must never convert its line endings, whatever core.autocrlf says on the machine that checks it out.
 scripts/fixtures/vb-resave-*/** -text
+scripts/fixtures/vb-5.18.0-variables.html -text

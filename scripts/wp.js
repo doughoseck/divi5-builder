@@ -49,7 +49,10 @@
  *   node wp.js <site> ds-selftest                  # run BEFORE the first write on a site: proves the preset split
  *   node wp.js <site> ds-color-set --label L --color C [--id gcid-x] [--dry-run]
  *   node wp.js <site> ds-variable-set --type numbers --label L --value V [--id gvid-x] [--dry-run]
+ *                                                  # V may nest variables (Divi 5.18, plugin >= 2.0.1): "{{gvid-x}} * -1",
+ *                                                  # "clamp( {{gvid-min}}, 4vw, {{gvid-max}})"; sent as Divi's token
  *   node wp.js <site> ds-variable-archive --id gvid-x [--dry-run]   # delete one variable, the builder's way (mu-plugin >= 1.8.4)
+ *                                                  # refused (409, users listed) while an active variable uses it (>= 2.0.1)
  *   node wp.js <site> ds-preset-set --file preset.json [--dry-run] [--summary]
  *   node wp.js <site> ds-backups [--store S --index N]  # what was kept before each write
  *   node wp.js <site> ds-restore --store S --index N    # put a whole store back
@@ -136,6 +139,30 @@ async function jreq(method, url, c, payload) {
   try { json = JSON.parse(text); } catch (e) { /* leave null */ }
   if (r.status >= 400) die(`HTTP ${r.status} ${method} ${url.replace(c.url, '')}\n${text.slice(0, 500)}`);
   return json !== null ? json : text;
+}
+
+// A design-system write whose refusal is explained, not dumped: the plugin's 400 bad_references (nested variables:
+// each bad reference and why) and 409 variable_in_use (the variables that still use it, by id and label). Any other
+// error is printed like jreq does. Exits 1 on a refusal; nothing was written.
+async function dsWrite(url, c, payload) {
+  const body = Buffer.from(JSON.stringify(payload));
+  const r = await request('POST', url, { Authorization: authHeader(c), 'Content-Type': 'application/json', 'Content-Length': body.length }, body);
+  const text = r.body.toString('utf8');
+  let json = null; try { json = JSON.parse(text); } catch (e) { /* leave null */ }
+  if (r.status < 400) return json !== null ? json : text;
+  const d = (json && json.data) || {};
+  if (json && json.code === 'variable_in_use') {
+    const deps = (d.dependents || []).map((x) => `  ${x.id}  "${x.label}"  (${x.type}${x.direct === false ? ', indirectly' : ''})`);
+    die(`HTTP ${r.status} variable_in_use: ${d.id || payload.id} is still used by ${deps.length} active variable(s); nothing was written.\n${deps.join('\n')}\nChange or archive those first (wp.js <site> design-system lists them).`);
+  }
+  if (json && json.code === 'value_too_complex') {
+    const ids = (d.ids || []).join(', ') || (payload.id || payload.label || 'this value');
+    die(`HTTP ${r.status} value_too_complex: the value of ${ids} is too convoluted to check for variable references; simplify it. Nothing was written.`);
+  }
+  if (json && json.code === 'bad_references') {
+    die(`HTTP ${r.status} bad_references: nothing was written.\n${(d.references || []).map((x) => `  ${x.id}: ${x.problem}: ${x.message}`).join('\n')}`);
+  }
+  die(`HTTP ${r.status} POST ${url.replace(c.url, '')}\n${text.slice(0, 500)}`);
 }
 
 // ---- Stale-write guard for pages, posts and canvases (issue #14) ------------------------------------
@@ -562,15 +589,24 @@ function flags(argv) {
     }
     case 'ds-variable-set': {
       if (!f.type || !f.label || f.value === undefined || f.value === true) die('ds-variable-set needs --type numbers|strings|images|links|fonts|gradients --label L --value V [--id gvid-x] [--dry-run]');
-      const p = { type: String(f.type), label: String(f.label), value: String(f.value), dry_run: !!f['dry-run'] }; if (f.id) p.id = String(f.id);
-      console.log(JSON.stringify(await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/variable`, c, p)));
+      // Nested variables (Divi 5.18, plugin >= 2.0.1): --value may hold {{gvid-xxxx}} placeholders, sent as the token the
+      // Visual Builder stores, e.g. --value "clamp( {{gvid-min}}, 4vw, {{gvid-max}})" or "{{gvid-space}} * -1". The same
+      // conversion as divi.js compile (expandRefs). The plugin checks every reference before writing anything.
+      let value = String(f.value);
+      if (/\{\{\s*dc:/.test(value)) die('ds-variable-set: {{dc:…}} (dynamic content) cannot go in a variable value; Divi only resolves other variables there');
+      try { value = require('./divi.js').expandRefs(value); } catch (e) { die('ds-variable-set: ' + e.message); }
+      const p = { type: String(f.type), label: String(f.label), value, dry_run: !!f['dry-run'] }; if (f.id) p.id = String(f.id);
+      console.log(JSON.stringify(await dsWrite(`${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/variable`, c, p)));
       break;
     }
     case 'ds-variable-archive': {
       // Divi 5.15+ deletes a variable by setting its status to "archived" and refuses a store that drops an id; on
-      // older Divi the plugin removes it. Modules that use the variable lose its value, without an error.
+      // older Divi the plugin removes it. On 5.15+ a module that uses an archived variable still renders it (read from
+      // source, not yet seen live: FrontEnd.php 802-846 prints referenced variables regardless of status), but the
+      // builder hides it, so do not rely on that. See references/divi5-presets-variables.md 5.0.
+      // Plugin >= 2.0.1 refuses (409 variable_in_use) while another active variable uses it; the users are printed.
       if (!f.id || f.id === true) die('ds-variable-archive needs --id gvid-x [--dry-run]   (ids: design-system)');
-      console.log(JSON.stringify(await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/variable/archive`, c, { id: String(f.id), dry_run: !!f['dry-run'] })));
+      console.log(JSON.stringify(await dsWrite(`${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/variable/archive`, c, { id: String(f.id), dry_run: !!f['dry-run'] })));
       break;
     }
     case 'ds-preset-set': {
@@ -597,7 +633,8 @@ function flags(argv) {
       // Puts a whole store back as it was. Presets created since then disappear, and modules that use them lose
       // that styling without any error. The store as it is now becomes backup 0, so a restore can be undone.
       if (!f.store || f.index === undefined) die('ds-restore needs --store presets|variables|colors --index N   (see ds-backups)');
-      console.log(JSON.stringify(await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/restore`, c, { store: String(f.store), index: parseInt(f.index, 10) })));
+      // Plugin >= 2.0.1: a variables restore that would archive a variable an active one uses is refused (409, printed).
+      console.log(JSON.stringify(await dsWrite(`${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/design-system/restore`, c, { store: String(f.store), index: parseInt(f.index, 10) })));
       break;
     }
     case 'list-canvases': {
