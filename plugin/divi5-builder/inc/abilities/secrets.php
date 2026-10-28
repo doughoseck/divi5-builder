@@ -106,6 +106,10 @@ if ( ! function_exists( 'd5b_secret_key_norm' ) ) {
 	function d5b_secret_key_decide( $key ): bool {
 		$joined = d5b_secret_key_norm( $key );
 		if ( '' === $joined || in_array( $joined, d5b_secret_harmless(), true ) ) { return false; }
+		// Divi's global ids (gvid-xdtsp8ywr8, gcid-primary-color) are the map keys of the design system. Their random part
+		// is letters and digits by chance, and about 1 id in 560 spells "pw" or another secret word. The exact shape, with
+		// its hyphen, is not a stored secret name: gvid_password, api_key and smtp_pw are not this shape and stay hidden.
+		if ( is_string( $key ) && 1 === preg_match( '/^(?:gvid|gcid)-[a-z0-9-]{1,64}$/iD', $key ) ) { return false; }
 		foreach ( d5b_secret_substrings() as $w ) { if ( false !== strpos( $joined, $w ) ) { return true; } }
 		// ends in "auth": basicauth, httpauth, smtpauth (author and authority do not end in it)
 		if ( 'auth' === substr( $joined, -4 ) ) { return true; }
