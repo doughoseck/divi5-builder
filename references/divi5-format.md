@@ -24,7 +24,12 @@ Rules learned from live pages:
   version of this file said "no closing tag"; that was wrong. It went unnoticed because a save
   adds the missing closer for you (see "What a save does to your content" below).
 - Nesting is **section › row › column › module**. Modules never sit directly in a
-  section or row.
+  row, and in an ordinary section they sit in a column. The exception is a **fullwidth
+  section** (`module.advanced.type.desktop.value: "fullwidth"` on the section; Divi 5.15.1
+  `SectionModule.php` adds the class `et_pb_fullwidth_section` for it): it holds fullwidth
+  modules (`divi/fullwidth-header` and similar) directly, with no row or column. `blocks.js`
+  handles both shapes (see `childKind` there). The compiler's section builder (`divi.js`
+  `buildSection`) always writes section › row › column, so fullwidth sections come from existing pages.
 - **Every** block (except `placeholder`) carries `"builderVersion":"5.9.0"` (or
   whatever the site is on — read it from an existing page; homepage was `5.9.0`,
   older draft `5.0.0-public-beta*`; either renders. Use the site's current one).
@@ -185,9 +190,14 @@ The theme's global colors are referenced, not inlined:
 (after escaping, `"` → `"`). `settings` may carry `{"opacity":50}`. Known
 example gcids: `gcid-primary-color`, `gcid-secondary-color`, and hashed ones
 like `gcid-5k6eyl31lg`, `gcid-txdazhvcvl`, `gcid-un0o5t9ffp`. There is no public
-REST endpoint that maps gcid→hex, so **discover** available gcids by scanning
-existing pages (`node scripts/wp.js <site> global-colors`) and map by role, or
-just emit literal hex from the brief. Prefer a global when one clearly matches.
+core REST endpoint that maps gcid→hex (Divi's own `/divi/v1/global-data/*` routes want a cookie nonce, so an
+Application Password cannot use them), but the plugin has one: **read** what the site has with
+`node scripts/wp.js <site> design-system` (plugin 1.6+; every global colour with id and value), and
+**create or change** a colour with `wp.js <site> ds-color-set --label "Brand" --color "#112233"` (plugin 1.8+,
+now the `divi5-builder` plugin 2.0.0). See `divi5-presets-variables.md` section 5 and SKILL.md, "Design system first".
+`wp.js <site> global-colors` is only a read-only scan of the gcids pages already use, so it returns `[]` on a site with
+no Divi pages yet; it does not list the palette. Prefer a global when one clearly matches; emit a literal hex only
+when the site has no matching global and you may not add one.
 
 ## Native modules — exact content keys
 
@@ -239,21 +249,34 @@ site's **globals** so one edit re-themes everything. **No `style="…"` anywhere
   `module.advanced.open…value:"on"` to start open). Toggle colours/fonts via the
   accordion's `title`/`openToggle`/`closedToggle`/`closedToggleIcon` decoration.
 - **Colours** everywhere use `gcid-*` global tokens; **fonts** use global family
-  names (Outfit, Plus Jakarta Sans). Get gcids with `wp.js global-colors`.
+  names (Outfit, Plus Jakarta Sans). Get gcids with `wp.js <site> design-system`
+  (see "Global colours" above; `global-colors` only lists gcids pages already use).
 
-### Columns: 100% + flex-wrap (NOT fixed fractions)
-Do **not** set `1_2`/`8_24` fractional column widths. Every column is 100%
-(`module.decoration.sizing.flexType:"24_24"`); the row defines the count and flex
-lays them side-by-side, wrapping (stacking) at a chosen breakpoint:
+### Columns: fractional flex for content rows, CSS Grid for card grids (Divi 5.9 and later)
+The compiler default is **fractional flex**: each column carries a `flexType` per
+breakpoint (a 24-based fraction, `module.decoration.sizing.<bp>.value.flexType`) and the
+row wraps (stacks) at the breakpoints listed. This is the `FRACTION` map in `scripts/divi.js`:
 
-| Layout | row `flexColumnStructure` | each column `flexType` | stacking |
+| Layout | row `flexColumnStructure` | column `flexType` desktop / tablet / phone | row `flexWrap: "wrap"` at |
 |---|---|---|---|
-| 1 col | `equal-columns_1` | `24_24` | — |
-| 2 col | `equal-columns_2` | `24_24` | row `module.decoration.layout.<bp>.value.flexWrap:"wrap"` |
-| 3 col | `equal-columns_3` | `24_24` | — same, wrap at `phone` (or `tablet`) |
-| 4 col | `equal-columns_4` | `24_24` | — |
+| `1` | `equal-columns_1` | `24_24` | none |
+| `1-1` | `equal-columns_2` | `12_24` / same as desktop / `24_24` | `phone` |
+| `1-1-1` | `equal-columns_3` | `8_24` / `12_24` / `24_24` | `tablet`, `phone` |
+| `1-1-1-1` | `equal-columns_4` | `6_24` / `12_24` / `24_24` | `tablet`, `phone` |
 
-Default: nowrap desktop/tablet, `flexWrap:"wrap"` on `phone`. **Column-bg trick:**
+Desktop is `flexWrap: "nowrap"`. Unequal rows (`2-1`, `1-3`, ...) use Divi's own offset
+structures (`offset-columns_N`) with their own fractions (`16_24`/`8_24`, `3_5`/`2_5`, ...);
+see the `OFFSET` map in `divi.js`. Fractions such as `12_24`, `8_24`, `1_5`, `3_5` are valid
+(see "Flex layout gotchas" above). Two other shapes exist:
+
+- **`mode: "flexwrap"`** is the older shape and still available: every column is 100%
+  (`24_24`), the row is `nowrap`, and it wraps at one breakpoint (`wrapAt`, default `phone`).
+  Use it only when the number of columns is not known in advance (dynamic reflow). It was the
+  only shape this file described before; it is no longer the default.
+- **CSS Grid** (`grid: {...}` on the row; the Grid Editor arrived in Divi 5.9) for card,
+  pricing, gallery and looped grids. The compiler writes its columns as `24_24` (`buildGridRow`). SKILL.md, "Layout", has the rule and the span caveat.
+
+**Column-bg trick:**
 give a column a background image (`module.decoration.background…image` with
 `size:"cover"`) and an invisible `divi/divider` (line off, fixed `height`) to hold
 the column's height, instead of an image module.
@@ -334,9 +357,13 @@ A Divi 5 popup = a separate **`et_pb_canvas`** post (the popup layout) + an
   "cookieName":"","cookieValue":"","triggerClass":"et-interaction-trigger-t<id>","presetId":"","timeDelay":"0ms"
 }]}}}
 ```
-Divi renders this as `data-interaction-trigger="t<id>"` on the element — **but
-only for buttons and similar, NOT `divi/text`** (text modules keep the attrs in
-markup but Divi emits no trigger, so the click does nothing). Use a `divi/button`.
+Divi renders this as `data-interaction-trigger="t<id>"` on the element. **Which modules
+can be a trigger depends on the Divi version.** On Divi 5.9 only buttons and similar did:
+a `divi/text` kept the attrs in the markup but Divi emitted no trigger, so the click did
+nothing (use a `divi/button` there). Since Divi 5.13 **any module** can be a trigger: the
+attribute is printed by the generic module wrapper (Divi 5.15.1 `Module.php` lines 502-536,
+which reads `module.decoration.interactionTrigger`), and a `divi/text` trigger was proven live.
+On a site older than 5.13, use a button or test first. Details: `divi5-interactions-canvases.md`.
 
 **Popup canvas (the `et_pb_canvas` post).** Content = one section with
 `module.decoration.interactionTarget:"<id>"`, `disabledOn` on for
@@ -400,33 +427,45 @@ Two rules follow, and the second one is a trap:
 ### `et_global_colors` is Divi 4 and is IGNORED by Divi 5
 
 Writing `et_global_colors` (the Divi 4 palette: `gcid => {color, active}`)
-changes nothing. Measured: with that option holding `gcid-primary-color =
-#2B5C7A`, a section bound to `gcid-primary-color` still rendered `#2ea3f2`.
+changes nothing. Measured on Divi 5.9.0: with that option holding `gcid-primary-color =
+#2B5C7A`, a section bound to `gcid-primary-color` still rendered `#2ea3f2`. That is why
+`wp.js palette-set`, which wrote that option, is retired (it now refuses and points at
+`ds-color-set`).
 
-`et_divi_global_variables` exists as an option but stayed `a:0:{}` even after
-three variables were created and saved in the Variable Manager. The definitions
-are NOT in that option, NOT in post meta, and NOT a custom post type
-(`wp/v2/types` shows none). They live in an option VALUE or a custom table —
-note the mu-plugin's `postinfo --scan` matches option NAMES only, so it cannot
-find them; a value search would be needed to go further.
+Where Divi 5 keeps its colours (Divi 5.15.1 source, `GlobalData.php`): in the key
+`et_global_data` inside the `et_divi` option, sub-key `global_colors`. It reads the Divi 4
+option `et_global_colors` only once, to convert it, when `et_global_data` does not exist yet
+(`maybe_convert_global_colors_data`). Non-colour variables (numbers, strings, images, links,
+fonts, gradients) are in their own row `et_divi_global_variables`; colours are not saved
+there. So an empty `et_divi_global_variables` (seen on 5.9.0 after three variables were made
+in the Variable Manager) is what to expect for colours. Details and line numbers:
+`divi5-presets-variables.md`, sections 0 and 2.1.
 
-### The practical workflow — EDIT THE FIVE, don't invent names
+### The practical workflow: use the design-system commands (plugin 1.8+)
 
-Do not try to create global variables over REST, and do not invent gcid names.
+Earlier versions of this file said not to create global variables over REST. That held
+until the plugin gained its own save routes (1.8, Divi 5.15.1 tested); it does not hold now.
+Divi's own `/divi/v1/global-data/*` routes still want a cookie nonce, so never call those.
 
-1. In the Visual Builder's **Variable Manager**, edit the five built-in colours
-   to the brand's values. Their names are stable, so a spec written against
-   `gcid-primary-color` themes correctly on any site set up this way.
-2. Bind specs to those names: `{"colorVar":"gcid-primary-color"}`.
-3. Only reach for CUSTOM variables where the five are genuinely not enough.
-   Those get GENERATED ids (`gcid-yrk1yosmyh`) which cannot be chosen — to use
-   one, apply it once in the builder, save, then read the id off the rendered
-   page (the `--gcid-<random>` custom properties in the inline `<style>`) and
-   record the name→id map in the project repo. Per site, unavoidably.
+1. **Look first:** `node scripts/wp.js <site> design-system` lists every global colour, with
+   id and value (plugin 1.6+, read-only).
+2. **Set the five built-in colours to the brand's values** (their NAMES are stable on every
+   site, so a spec written against `gcid-primary-color` themes correctly anywhere):
+   `node scripts/wp.js <site> ds-color-set --id gcid-primary-color --label "Primary" --color "#112233"`.
+   The builder's Variable Manager does the same by hand.
+3. **Add custom colours** the same way, without `--id` (Divi generates one, such as
+   `gcid-yrk1yosmyh`; or pass your own `--id gcid-brand-teal`). It adds or updates one colour per
+   call and keeps the previous store for `ds-restore`. Add `--dry-run` to preview. Run
+   `ds-selftest` once per site first (SKILL.md, "Presets and design variables").
+4. Bind specs to the ids: `{"colorVar":"gcid-primary-color"}`.
 
-Verified on a live Divi 5 site, which does exactly this: `--gcid-primary-color:
-#133c0b`, `--gcid-secondary-color: #e5c052` — edited built-ins, brand colours,
-stable names.
+Hand-made colours work too: apply one in the builder, save, and read its id from
+`design-system` (or from the `--gcid-<random>` custom properties in the page's inline
+`<style>`). The old advice to read the id off the rendered page is only needed when the
+plugin is not installed.
+
+Full commands, guarantees and the order to build in: `divi5-presets-variables.md` section 5
+and `divi5-globalize-site.md`.
 
 ### Buttons: use a module PRESET, not per-button styling
 
@@ -439,11 +478,11 @@ half the benefit.
 
 ### When to skip globals
 
-Only when the five built-ins have not been set up on that site yet. A gcid that
-is not defined renders as NOTHING — invisible until someone looks at the live
-page — whereas a literal hex is always what was asked for.
-`a live Divi 5 site/terms-and-privacy` shipped on literal hex for exactly that
-reason, and should move onto the five once they are set.
+Only when the site has no matching global colour and you may not add one (SKILL.md, step 3).
+A gcid that is not defined renders as NOTHING, invisible until someone looks at the live
+page, whereas a literal hex is always what was asked for. Check the id exists with
+`design-system` before using it (`divi.js compile --site <site>` does this check), and
+create a missing one with `ds-color-set` when you are allowed to.
 
 ---
 
