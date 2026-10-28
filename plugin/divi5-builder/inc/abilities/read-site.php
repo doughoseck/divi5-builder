@@ -446,4 +446,8 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 
 	// Template markup, global styles and Custom CSS are content: value-shape masking only.
 	d5b_ability_set_content_keys( array( 'templates-list', 'templates-get', 'global-styles-get', 'appearance-get' ) );
+
+	// Raw third-party data: theme mods, widget settings and option values are keyed and labelled by other plugins and themes.
+	// (Templates and global styles come back as one text field, already content.)
+	d5b_ability_set_raw_paths( array( 'appearance-get' => array( 'theme_mods' ), 'widgets-list' => array( 'sidebars.*.widgets.*.settings' ), 'settings-get' => array( 'settings' ) ) );
 }

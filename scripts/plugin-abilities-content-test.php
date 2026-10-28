@@ -419,9 +419,9 @@ $many = t_add_post();
 for ( $i = 0; $i < 50; $i++ ) { t_add_meta( $many, "k$i", str_repeat( 'B', 60000 ) ); }
 $r = call( 'meta-get', array( 'post_id' => $many ) );
 check( 'meta-get: the total is held to 512 KB and truncated is set', is_array( $r ) && true === $r['truncated'] && count( $r['meta'] ) < 10 && strlen( json_encode( $r ) ) < 600000, is_array( $r ) ? array( count( $r['meta'] ), strlen( json_encode( $r ) ) ) : $r );
-$ob = t_add_post(); t_add_meta( $ob, 'obj', new stdClass() ); t_add_meta( $ob, 'inc', unserialize( 'O:11:"NotExisting":0:{}' ) ); t_add_meta( $ob, 'nest', array( 'a' => array( 1, new stdClass() ) ) ); t_add_meta( $ob, 'arr', array( 'x' => 1 ) );
+$ob = t_add_post(); t_add_meta( $ob, 'obj', new ArrayObject( array( 'k' => 1 ) ) ); t_add_meta( $ob, 'std', (object) array( 'n' => 'v' ) ); t_add_meta( $ob, 'inc', unserialize( 'O:11:"NotExisting":0:{}' ) ); t_add_meta( $ob, 'nest', array( 'a' => array( 1, new ArrayObject() ) ) ); t_add_meta( $ob, 'arr', array( 'x' => 1 ) );
 $r = call( 'meta-get', array( 'post_id' => $ob ) );
-check( 'meta-get: scalars and arrays pass through; objects (also __PHP_Incomplete_Class) become "[object]", even inside arrays', '[object]' === $r['meta']['obj'] && '[object]' === $r['meta']['inc'] && array( 'a' => array( 1, '[object]' ) ) === $r['meta']['nest'] && array( 'x' => 1 ) === $r['meta']['arr'], $r );
+check( 'meta-get: scalars and arrays pass through; a plain stdClass becomes its array (round 4: its fields are data the scrubber must see); other objects (also __PHP_Incomplete_Class) become "[object]", even inside arrays', '[object]' === $r['meta']['obj'] && array( 'n' => 'v' ) === $r['meta']['std'] && '[object]' === $r['meta']['inc'] && array( 'a' => array( 1, '[object]' ) ) === $r['meta']['nest'] && array( 'x' => 1 ) === $r['meta']['arr'], $r );
 site( EDITOR, 1 );
 $P = t_add_post( array( 'post_author' => 1 ) );
 for ( $i = 0; $i < 130; $i++ ) { t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $P, 'post_content' => "rev $i" ) ); }

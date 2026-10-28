@@ -428,8 +428,9 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 
 	// ---- custom fields
 
-	/** Scalars and arrays pass through; any object (also an unserialized-class stand-in) becomes the text [object]. */
+	/** Scalars and arrays pass through; a plain stdClass becomes its array (its fields are data the scrubber must see); any other object (also an unserialized-class stand-in) becomes the text [object]. */
 	function d5b_rc_meta_clean( $v, int $depth = 0 ) {
+		if ( $v instanceof stdClass ) { $v = get_object_vars( $v ); }
 		if ( is_object( $v ) ) { return '[object]'; }
 		if ( ! is_array( $v ) ) { return $v; }
 		if ( $depth > 8 ) { return '[nested]'; }
@@ -563,4 +564,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 
 	// Post-like results: their content fields get value-shape masking only (see d5b_ability_scrub_result).
 	d5b_ability_set_content_keys( array( 'posts-list', 'posts-get', 'pages-list', 'pages-get', 'cpt-list', 'cpt-get', 'blocks-list', 'blocks-get' ) );
+
+	// Raw third-party data: custom fields are keyed and labelled by other plugins, so the row rule applies there.
+	d5b_ability_set_raw_paths( array( 'meta-get' => array( 'meta' ) ) );
 }

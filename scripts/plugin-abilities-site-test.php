@@ -196,7 +196,7 @@ $src = file_get_contents( $dir . '/inc/abilities/scrub.php' ) . file_get_content
 check( 'the scrubber and the audit redactor have no key regex of their own any more (both call d5b_is_secret_key)', false === strpos( $src, "pass|secret|token|key|auth" ) && false === strpos( $src, 'pass(word)?$' ) && false === strpos( $src, 'function d5b_ability_scrub_key' ) );
 
 echo "name/value pairs\n";
-$r = d5b_ability_scrub( array(
+$r = d5b_ability_scrub_raw( array(
 	array( 'key' => 'password', 'value' => 'S3CR3T-A' ), array( 'name' => 'smtp_password', 'value' => 'S3CR3T-B' ), array( 'option' => 'stripe_api_key', 'value' => 'S3CR3T-C' ),
 	array( 'meta_key' => '_my_secret', 'meta_value' => 'S3CR3T-D' ), array( 'name' => 'color', 'value' => 'red' ), array( 'meta_key' => 'size', 'meta_value' => 'XL' ),
 ) );
@@ -274,23 +274,26 @@ $pairs2 = array(
 	'label/value'               => array( 'label' => 'Password', 'value' => $S ),
 	'field/val'                 => array( 'field' => 'password', 'val' => $S ),
 	'setting/value'             => array( 'setting' => 'api_key', 'value' => $S ),
-	'title/value'               => array( 'title' => 'SMTP password', 'value' => $S ),
+	'title/value (key-like)'    => array( 'title' => 'SMTP_password', 'value' => $S ),
 	'name nested in sub-array'  => array( 'field' => array( 'name' => 'password' ), 'value' => $S ),
 	'value nested under pair'   => array( 'name' => 'password', 'value' => array( 'deep' => array( 'x' => $S ) ) ),
 	'pair inside numeric list'  => array( array( array( 'name' => 'password', 'value' => $S ) ) ),
 	'name as array'             => array( 'name' => array( 'password' ), 'value' => $S ),
-	'name with whitespace'      => array( 'name' => ' PASS WORD ', 'value' => $S ),
+	'name with outer spaces'    => array( 'name' => ' PASSWORD ', 'value' => $S ),
 	'parallel names/values'     => array( 'names' => array( 'color', 'password' ), 'values' => array( 'red', $S ) ),
 	'parallel keys/values'      => array( 'keys' => array( 'api_key' ), 'values' => array( $S ) ),
 	'[ name, value ] list'      => array( array( 'password', $S ) ),
 	'stdClass pair'             => (object) array( 'name' => 'password', 'value' => $S ),
 );
-$leaked = array(); foreach ( $pairs2 as $label => $v ) { if ( false !== strpos( (string) json_encode( d5b_ability_scrub( array( 'x' => $v ) ) ), 'S3CR3T' ) ) { $leaked[] = $label; } }
+$leaked = array(); foreach ( $pairs2 as $label => $v ) { if ( false !== strpos( (string) json_encode( d5b_ability_scrub_raw( array( 'x' => $v ) ) ), 'S3CR3T' ) ) { $leaked[] = $label; } }
 check( 'every a9 pair case holds (' . count( $pairs2 ) . ' cases)', array() === $leaked, $leaked );
-$o = d5b_ability_scrub( array( 'names' => array( 'color', 'size', 'password' ), 'values' => array( 'red', 'XL', $S ) ) );
+// Round 4: a spaced phrase is prose, not a key name, so it no longer names a row (the a9 cases 'SMTP password' and ' PASS WORD ' changed to key-like names above).
+$prose_row = d5b_ability_scrub_raw( array( 'title' => 'Password reset', 'url' => 'https://x.example/reset' ) );
+check( 'round 4: inside raw data too, a spaced phrase ("Password reset") does not redact its neighbours', 'https://x.example/reset' === $prose_row['url'], $prose_row );
+$o = d5b_ability_scrub_raw( array( 'names' => array( 'color', 'size', 'password' ), 'values' => array( 'red', 'XL', $S ) ) );
 check( 'parallel lists: only the secret index goes in the values; the names list itself is a named list (its other names are redacted, the secret label kept)', array( '[redacted]', '[redacted]', 'password' ) === $o['names'] && array( 'red', 'XL', '[redacted]' ) === $o['values'], $o );
 $plainp = array( array( 'name' => 'color', 'value' => 'red' ), array( 'Label' => 'Size', 'Data' => 'XL' ), array( 'title', 'Home' ), array( 'names' => array( 'a' ), 'values' => array( 'b' ) ) );
-check( 'ordinary pairs, two-item lists and parallel lists keep their values', $plainp === d5b_ability_scrub( $plainp ), d5b_ability_scrub( $plainp ) );
+check( 'ordinary pairs, two-item lists and parallel lists keep their values', $plainp === d5b_ability_scrub_raw( $plainp ), d5b_ability_scrub_raw( $plainp ) );
 
 echo "round 2: WP_Error free text (break-it a9 section 5)\n";
 $e = new WP_Error( 'one', 'first token=' . $S, array( 'status' => 400, 'api_key' => $S ) );
@@ -359,14 +362,14 @@ $deep30 = array( 'name' => 'password', 'value' => $S ); for ( $i = 0; $i < 30; $
 $deep33 = array( 'name' => 'password', 'value' => $S ); for ( $i = 0; $i < 33; $i++ ) { $deep33 = array( 'n' => $deep33 ); } $p3['pair at depth 33'] = $deep33;
 // Not ported as "held": a name given only as an index into a separate names list ('name is int index') and a name two levels
 // below its value ('name 2 levels down'). They are the documented limits of the pair rule.
-$leak3 = array(); foreach ( $p3 as $label => $v ) { if ( false !== strpos( (string) json_encode( d5b_ability_scrub( array( 'x' => $v ) ) ), 'S3CR3T' ) ) { $leak3[] = $label; } }
+$leak3 = array(); foreach ( $p3 as $label => $v ) { if ( false !== strpos( (string) json_encode( d5b_ability_scrub_raw( array( 'x' => $v ) ) ), 'S3CR3T' ) ) { $leak3[] = $label; } }
 check( 'every a10 section 4 pair case holds (' . count( $p3 ) . ' cases)', array() === $leak3, $leak3 );
-$o = d5b_ability_scrub( array( 'name' => 'smtp_password', 'value' => $S, 'enabled' => true, 'port' => 587 ) );
+$o = d5b_ability_scrub_raw( array( 'name' => 'smtp_password', 'value' => $S, 'enabled' => true, 'port' => 587 ) );
 check( 'the name is kept as a label, the other strings become [redacted], numbers and booleans stay', array( 'name' => 'smtp_password', 'value' => '[redacted]', 'enabled' => true, 'port' => 587 ) === $o, $o );
-$rows = d5b_ability_scrub( array( array( 'name' => 'smtp_password', 'value' => $S ), array( 'name' => 'color', 'value' => 'red' ) ) );
+$rows = d5b_ability_scrub_raw( array( array( 'name' => 'smtp_password', 'value' => $S ), array( 'name' => 'color', 'value' => 'red' ) ) );
 check( 'a list of rows: one secret row does not redact its neighbour row', 'red' === $rows[1]['value'] && 'color' === $rows[1]['name'], $rows );
 $nine = array( 'a' => 'password', 'b' => 'x1', 'c' => 'x2', 'd' => 'x3', 'e' => 'x4', 'f' => 'x5', 'g' => 'x6', 'h' => 'x7', 'i' => 'x8' );
-check( 'an array of more than 8 entries is a record, not a pair: a value that happens to name a secret does not redact it', $nine === d5b_ability_scrub( $nine ), d5b_ability_scrub( $nine ) );
+check( 'an array of more than 8 entries is a record, not a pair: a value that happens to name a secret does not redact it', $nine === d5b_ability_scrub_raw( $nine ), d5b_ability_scrub_raw( $nine ) );
 
 echo "round 3: free text in successful results (break-it a10 section 5)\n";
 foreach ( array( 'smtp password=' . $S, 'Authorization: Basic ' . $S, 'curl -u admin:' . $S, "define('DB_PASSWORD','$S');" ) as $t ) {
@@ -706,9 +709,9 @@ $mp = t_add_post( array( 'post_author' => 2 ) );
 t_add_meta( $mp, 'license_key', 'S3CR3T-VALUE' ); t_add_meta( $mp, 'pwd', 'S3CR3T-VALUE' ); t_add_meta( $mp, 'authorization', 'Bearer S3CR3T-VALUE/x=' ); t_add_meta( $mp, 'customer_phone', '+27 82 000 0000' ); t_add_meta( $mp, '_internal_note', 'protected value' );
 $r = call( 'meta-get', array( 'post_id' => $mp ) );
 check( 'meta-get as admin: license_key, pwd and authorization are removed; ordinary and _ fields come through', is_array( $r ) && false === strpos( json_encode( $r ), 'S3CR3T' ) && '+27 82 000 0000' === $r['meta']['customer_phone'] && 'protected value' === $r['meta']['_internal_note'] && array( 'customer_phone', '_internal_note' ) === array_keys( $r['meta'] ), $r );
-t_add_meta( $mp, 'note2', 'smtp password' );
+t_add_meta( $mp, 'note2', 'smtp_password' );
 $r = call( 'meta-get', array( 'post_id' => $mp ) );
-check( 'fail-safe: a small meta map holding a value that names a secret ("smtp password") hides its neighbours, keeps the label', is_array( $r ) && '[redacted]' === $r['meta']['customer_phone'] && 'smtp password' === $r['meta']['note2'] && true === $r['masked'], $r );
+check( 'fail-safe (meta is raw data): a small meta map holding a key-like value that names a secret (smtp_password) hides its neighbours, keeps the label', is_array( $r ) && '[redacted]' === $r['meta']['customer_phone'] && 'smtp_password' === $r['meta']['note2'] && true === $r['masked'], $r );
 // deep paging in the site abilities too
 $GLOBALS['T_users'] = array( 1 => mkuser( 1, 'alice', array( 'administrator' ) ) );
 check( 'deep paging: users-list and templates-list refuse a page more than 10,000 items in (page_too_deep), page 101 x 100 still answers', 'page_too_deep' === code( call( 'users-list', array( 'page' => 102, 'per_page' => 100 ) ) ) && 'page_too_deep' === code( call( 'templates-list', array( 'page' => 600 ) ) ) && is_array( call( 'users-list', array( 'page' => 101, 'per_page' => 100 ) ) ) );
@@ -746,6 +749,56 @@ $r = call( 'search', array( 'query' => 'Nothing secret' ) );
 check( '... and no "masked" key when nothing was', is_array( $r ) && ! array_key_exists( 'masked', $r ), $r );
 $r = call( 'posts-get', array( 'id' => $mpost ) ); $r2 = call( 'posts-get', array( 'id' => $plain ) );
 check( 'the flag is per call (a masked read before does not flag the next clean one)', true === $r['masked'] && ! array_key_exists( 'masked', $r2 ) );
+
+// ---- round 4: the row rule only inside raw third-party data
+echo "round 4: the named-row rule is confined to raw subtrees\n";
+site( ADMIN, 1 );
+foreach ( array( 'Password reset', 'Passengers', 'Session times', 'Token', 'api_key' ) as $t ) { t_add_post( array( 'post_title' => $t, 'post_name' => sanitize_key( $t ) ) ); }
+$r = call( 'posts-list', array( 'per_page' => 10 ) );
+$broken = array();
+foreach ( (array) ( $r['items'] ?? array() ) as $it ) { foreach ( array( 'url', 'slug', 'status', 'type', 'date_gmt', 'title' ) as $f ) { if ( '[redacted]' === $it[ $f ] ) { $broken[] = $it['title'] . '.' . $f; } } }
+check( 'posts-list: posts titled "Password reset", "Passengers", "Session times", "Token" and even "api_key" keep every field', is_array( $r ) && 5 === count( $r['items'] ) && array() === $broken && ! array_key_exists( 'masked', $r ), array( $broken, $r ) );
+site( array_merge( ADMIN, array( 'edit_theme_options' ) ), 1 );
+$GLOBALS['T_menus'][9] = (object) array( 'term_id' => 9, 'name' => 'Main', 'slug' => 'main', 'count' => 1 );
+$GLOBALS['T_menu_items'][9] = array( (object) array( 'ID' => 91, 'title' => 'Passengers', 'url' => 'https://x.example/passengers', 'type' => 'custom', 'object' => 'custom', 'object_id' => 91, 'menu_item_parent' => 0, 'menu_order' => 1 ),
+	(object) array( 'ID' => 92, 'title' => 'password', 'url' => 'https://x.example/pw-help', 'type' => 'custom', 'object' => 'custom', 'object_id' => 92, 'menu_item_parent' => 0, 'menu_order' => 2 ) );
+$r = call( 'menus-items', array( 'menu' => 9 ) );
+check( 'menus-items: items titled "Passengers" and "password" keep their URLs (a menu is built by us, not raw)', is_array( $r ) && 'https://x.example/passengers' === $r['items'][0]['url'] && 'https://x.example/pw-help' === $r['items'][1]['url'], $r );
+$t3 = t_add_term( 'category', 'Session times' );
+$r = call( 'taxonomy-get', array( 'taxonomy' => 'category', 'id' => $t3 ) );
+check( 'taxonomy-get: a term "Session times" keeps its slug and description', is_array( $r ) && 'session times' === $r['slug'] && 'About Session times' === $r['description'], $r );
+
+// every round-3 pair case still holds inside the raw data of meta-get, widgets-list and appearance-get
+site( ADMIN, 1 );
+$raw_leaks = array();
+foreach ( $p3 as $label => $case ) {
+	$mp = t_add_post( array( 'post_author' => 1 ) ); t_add_meta( $mp, 'x', $case );
+	if ( false !== strpos( (string) json_encode( call( 'meta-get', array( 'post_id' => $mp ) ) ), 'S3CR3T' ) ) { $raw_leaks[] = "meta-get: $label"; }
+	$GLOBALS['T_theme_mods'] = array( 'x' => $case );
+	if ( false !== strpos( (string) json_encode( call( 'appearance-get' ) ), 'S3CR3T' ) ) { $raw_leaks[] = "appearance-get: $label"; }
+	$GLOBALS['T_sidebars'] = array( 'sidebar-1' => array( 'custom_html-4' ) ); $GLOBALS['wp_registered_sidebars'] = array( 'sidebar-1' => array( 'name' => 'Main' ) );
+	$GLOBALS['T_options']['widget_custom_html'] = array( 4 => array( 'x' => $case ) );
+	if ( false !== strpos( (string) json_encode( call( 'widgets-list' ) ), 'S3CR3T' ) ) { $raw_leaks[] = "widgets-list: $label"; }
+}
+check( 'every round-3 pair case (' . count( $p3 ) . ') holds inside meta-get\'s meta, appearance-get\'s theme mods and widgets-list\'s widget settings', array() === $raw_leaks, $raw_leaks );
+$GLOBALS['T_options']['blogname'] = 'smtp_password'; $GLOBALS['T_options']['blogdescription'] = 'Just another site';
+$r = call( 'settings-get' );
+check( 'settings-get declares its values raw; the settings map has 18 entries, so it is a record, not a pair (nothing redacted)', array( 'settings' ) === ( d5b_ability_defs()['divi5-builder/settings-get']['raw_paths'] ?? null ) && is_array( $r ) && 'Just another site' === $r['settings']['blogdescription'], $r );
+$raw_decl = array();
+foreach ( array( 'meta-get' => array( 'meta' ), 'appearance-get' => array( 'theme_mods' ), 'widgets-list' => array( 'sidebars.*.widgets.*.settings' ) ) as $ab => $want ) { if ( $want !== ( d5b_ability_defs()[ 'divi5-builder/' . $ab ]['raw_paths'] ?? null ) ) { $raw_decl[] = $ab; } }
+$others = array_keys( array_filter( d5b_ability_defs(), function ( $x ) { return ! empty( $x['raw_paths'] ); } ) ); sort( $others );
+check( 'raw paths are declared exactly on meta-get, appearance-get, widgets-list and settings-get', array() === $raw_decl && array( 'divi5-builder/appearance-get', 'divi5-builder/meta-get', 'divi5-builder/settings-get', 'divi5-builder/widgets-list' ) === $others, array( $raw_decl, $others ) );
+
+// the scoping itself: the same a10 case in a raw path is redacted, in a path our handler built it is not
+$snapshot = d5b_ability_registry();
+d5b_ability_add( array( 'name' => 'divi5-builder/posts-scope', 'category' => 'posts', 'label' => 's', 'description' => 'Returns two copies. Refuses nothing.', 'permission' => function ( array $i ) { return true; },
+	'handler' => function ( array $i ) use ( $S ) { return array( 'raw' => array( 'name' => 'password', 'text' => $S ), 'built' => array( 'name' => 'password', 'text' => $S ), 'built_lists' => array( 'labels' => array( 'a1', 'b1', 'api_key', 'c1', 'd1', 'e1', 'f1', 'g1', 'h1' ), 'values' => array( 'v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8', 'v9' ) ) ); } ) );
+d5b_ability_set_raw_paths( array( 'posts-scope' => array( 'raw' ) ) );
+$r = d5b_ability_run( 'divi5-builder/posts-scope', array() );
+check( 'scoping: an a10 case (name/text) under a declared raw path is redacted; the same case outside it is left to key removal and the masker', is_array( $r ) && '[redacted]' === $r['raw']['text'] && $S === $r['built']['text'] && 'password' === $r['built']['name'], $r );
+check( 'scoping: parallel lists outside a raw path are left alone (only key removal and the masker apply there)', is_array( $r ) && 'v3' === $r['built_lists']['values'][2], $r['built_lists'] ?? $r );
+check( 'raw path syntax: dotted keys, * for any one key, \'\' for the root', d5b_ability_scrub_path_is_raw( array( 'sidebars', 0, 'widgets', 3, 'settings' ), array( 'sidebars.*.widgets.*.settings' ) ) && ! d5b_ability_scrub_path_is_raw( array( 'sidebars', 0, 'widgets' ), array( 'sidebars.*.widgets.*.settings' ) ) && d5b_ability_scrub_path_is_raw( array(), array( '' ) ) );
+d5b_ability_registry( $snapshot );
 
 // ---- the keep list is built from reality: every ability, as an administrator, over ordinary data (no secrets planted)
 echo "keep list: no field our abilities return is called a secret\n";

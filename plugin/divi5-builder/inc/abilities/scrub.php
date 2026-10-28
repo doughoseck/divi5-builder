@@ -5,11 +5,14 @@
  * built to hide when in doubt: a hidden harmless field costs little, a leaked secret a lot.
  *
  * - By KEY: a value stored under a key that names a secret is removed, wherever it sits in the result.
- * - By NAME BESIDE IT: in any array of at most 8 entries where a direct entry is a string that looks like an identifier
- *   and names a secret ("smtp_password", "Authorization"), every other direct string entry becomes [redacted]. The name
- *   is kept so the reader sees the label. A name one level down (a small array holding it) counts too.
- * - PARALLEL LISTS: two or more array entries with the same keys; where one holds a secret name at an index, that index
- *   is [redacted] in the others (names/values, keys/vals, labels/values, whatever they are called).
+ * - By NAME BESIDE IT, only inside RAW subtrees (data whose keys and labels other plugins chose: post meta, theme mods,
+ *   widget settings, option values, a WP_Error's data; each ability names them in its 'raw_paths'): in any array of at
+ *   most 8 entries where a direct entry is a key-like string (no spaces) that names a secret ("smtp_password",
+ *   "Authorization"), every other string in that array becomes [redacted]. The name is kept so the reader sees the label.
+ *   A name one level down (a small array holding it) counts too. Rows our handlers build field by field (posts, terms,
+ *   menus, users ...) are never treated this way, so a post titled "Password reset" keeps its fields.
+ * - PARALLEL LISTS, also only inside raw subtrees: two or more array entries with the same keys; where one holds a secret
+ *   name at an index, that index is [redacted] in the others (names/values, keys/vals, labels/values, whatever they are called).
  * - FREE TEXT: every string goes through the value shapes and the free-text masker (key=value, key: value, headers,
  *   define(), curl -u ...). Post content (the content keys of the post-like abilities) gets the value shapes only, so it
  *   stays editable.
@@ -18,11 +21,23 @@
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 if ( ! function_exists( 'd5b_ability_scrub_secret_name' ) ) {
-	/** True when $v is a string that looks like an identifier (letters, digits, space _ . -, up to 64) and names a secret. */
+	/** True when $v is a string that looks like a key name (letters, digits, _ . -, no spaces, up to 64) and names a secret. A spaced phrase is prose. */
 	function d5b_ability_scrub_secret_name( $v ): bool {
 		if ( ! is_string( $v ) ) { return false; }
 		$t = trim( $v );
-		return 1 === preg_match( '/^[A-Za-z0-9 _.\-]{1,64}$/', $t ) && d5b_is_secret_key( $t );
+		return 1 === preg_match( '/^[A-Za-z0-9_.\-]{1,64}$/', $t ) && d5b_is_secret_key( $t );
+	}
+
+	/** True when $path (keys from the result's root) matches one of the dotted specs; '*' matches any one key, '' the root. */
+	function d5b_ability_scrub_path_is_raw( array $path, array $raw_paths ): bool {
+		foreach ( $raw_paths as $spec ) {
+			$parts = '' === $spec ? array() : explode( '.', (string) $spec );
+			if ( count( $parts ) !== count( $path ) ) { continue; }
+			$hit = true;
+			foreach ( $parts as $i => $p ) { if ( '*' !== $p && (string) $path[ $i ] !== $p ) { $hit = false; break; } }
+			if ( $hit ) { return true; }
+		}
+		return false;
 	}
 
 	/** True when $v (an array of at most 2 entries: ['label', 'password'], { n: 'password' }) holds a secret name directly. */
@@ -102,10 +117,13 @@ if ( ! function_exists( 'd5b_ability_scrub' ) ) {
 	 * @param mixed $value        an ability result
 	 * @param array $content_keys keys whose strings are post content (value shapes only), at any depth
 	 * @param bool  $content      this value sits under one of those keys
+	 * @param array $raw_paths    dotted paths of the raw third-party subtrees (see d5b_ability_scrub_path_is_raw)
+	 * @param bool  $raw          this value sits inside a raw subtree (the row and parallel rules apply)
+	 * @param array $path         the keys from the root to this value
 	 * @return mixed the same shape without any key that names a secret, with secret values redacted and masked. Objects
 	 *               become arrays (an object never passes through unscrubbed); nesting deeper than 32 levels is "[too deep]".
 	 */
-	function d5b_ability_scrub( $value, int $depth = 0, array $content_keys = array(), bool $content = false ) {
+	function d5b_ability_scrub( $value, int $depth = 0, array $content_keys = array(), bool $content = false, array $raw_paths = array(), bool $raw = false, array $path = array() ) {
 		if ( is_object( $value ) ) {
 			$value = $value instanceof JsonSerializable ? $value->jsonSerialize() : get_object_vars( $value );
 			if ( is_object( $value ) ) { $value = get_object_vars( $value ); }
@@ -117,8 +135,9 @@ if ( ! function_exists( 'd5b_ability_scrub' ) ) {
 		}
 		if ( ! is_array( $value ) ) { return $value; }
 		if ( $depth >= 32 ) { return '[too deep]'; }
-		$value = d5b_ability_scrub_parallel( $value );
-		$named = d5b_ability_scrub_is_named( $value );
+		$raw   = $raw || ( array() !== $raw_paths && d5b_ability_scrub_path_is_raw( $path, $raw_paths ) );
+		if ( $raw ) { $value = d5b_ability_scrub_parallel( $value ); }
+		$named = $raw && d5b_ability_scrub_is_named( $value );
 		$out   = array();
 		foreach ( $value as $k => $v ) {
 			if ( d5b_is_secret_key( $k ) ) { continue; }
@@ -127,10 +146,18 @@ if ( ! function_exists( 'd5b_ability_scrub' ) ) {
 				$out[ $k ] = d5b_ability_scrub_redact_all( $v );
 				continue;
 			}
-			$is_content = $content || ( is_string( $k ) && in_array( strtolower( $k ), $content_keys, true ) );
-			$out[ $k ] = d5b_ability_scrub( $v, $depth + 1, $content_keys, $is_content );
+			// raw third-party data is never post content: inside it every string gets the full masker
+			$is_content = ! $raw && ( $content || ( is_string( $k ) && in_array( strtolower( $k ), $content_keys, true ) ) );
+			$out[ $k ] = d5b_ability_scrub( $v, $depth + 1, $content_keys, $is_content, $raw_paths, $raw, array_merge( $path, array( $k ) ) );
 		}
 		return $out;
+	}
+}
+
+if ( ! function_exists( 'd5b_ability_scrub_raw' ) ) {
+	/** The whole value treated as raw third-party data (the row and parallel rules apply everywhere in it). */
+	function d5b_ability_scrub_raw( $value ) {
+		return d5b_ability_scrub( $value, 0, array(), false, array(), true );
 	}
 }
 
@@ -143,7 +170,10 @@ if ( ! function_exists( 'd5b_ability_scrub_text' ) ) {
 }
 
 if ( ! function_exists( 'd5b_ability_scrub_error' ) ) {
-	/** A copy of $e: every message through the free-text masker, its data scrubbed in full (which masks every string too). */
+	/**
+	 * A copy of $e: every message through the free-text masker, its data scrubbed in full (which masks every string too).
+	 * The data is raw: an error's data can come from core or another plugin, so the row rule applies in it.
+	 */
 	function d5b_ability_scrub_error( WP_Error $e ): WP_Error {
 		$out = new WP_Error();
 		foreach ( $e->get_error_codes() as $code ) {
@@ -152,7 +182,7 @@ if ( ! function_exists( 'd5b_ability_scrub_error' ) ) {
 			foreach ( $all as $data ) {
 				if ( null === $data ) { continue; }
 				if ( $data instanceof WP_Error ) { $data = d5b_ability_scrub_error( $data ); }
-				$out->add_data( d5b_ability_scrub( $data ), $code );
+				$out->add_data( d5b_ability_scrub_raw( $data ), $code );
 			}
 		}
 		return $out;

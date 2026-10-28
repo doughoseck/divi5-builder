@@ -183,7 +183,9 @@ if ( ! function_exists( 'd5b_ability_scrub_result' ) ) {
 	function d5b_ability_scrub_result( array $def, $result ) {
 		if ( ! function_exists( 'd5b_ability_scrub' ) ) { return $result; }
 		if ( function_exists( 'd5b_secret_masked_count' ) ) { d5b_secret_masked_count( true ); }
-		$result = d5b_ability_scrub( $result, 0, isset( $def['content_keys'] ) && is_array( $def['content_keys'] ) ? $def['content_keys'] : array() );
+		$content = isset( $def['content_keys'] ) && is_array( $def['content_keys'] ) ? $def['content_keys'] : array();
+		$raw     = isset( $def['raw_paths'] ) && is_array( $def['raw_paths'] ) ? $def['raw_paths'] : array();
+		$result  = d5b_ability_scrub( $result, 0, $content, false, $raw );
 		if ( is_array( $result ) && function_exists( 'd5b_secret_masked_count' ) && d5b_secret_masked_count() > 0 ) {
 			$result['masked'] = true;
 		}
@@ -195,6 +197,24 @@ if ( ! function_exists( 'd5b_ability_post_content_keys' ) ) {
 	/** The fields that hold post content (raw block markup, CSS, template markup) in the post-like abilities' results. */
 	function d5b_ability_post_content_keys(): array {
 		return array( 'content', 'raw', 'rendered', 'post_content', 'excerpt', 'css', 'custom_css', 'markup', 'template' );
+	}
+}
+
+if ( ! function_exists( 'd5b_ability_set_raw_paths' ) ) {
+	/**
+	 * Declares where a definition's result carries raw third-party data (keys and labels chosen by other plugins): dotted
+	 * paths from the result's root, '*' for any one key (sidebars.*.widgets.*.settings). Only there does the scrubber's
+	 * row rule (a key-like value naming a secret redacts its neighbours) apply. Unknown names are ignored.
+	 *
+	 * @param array<string, string[]> $paths short name => paths
+	 */
+	function d5b_ability_set_raw_paths( array $paths ): void {
+		$defs = d5b_ability_registry();
+		foreach ( $paths as $short => $list ) {
+			$name = 'divi5-builder/' . $short;
+			if ( isset( $defs[ $name ] ) ) { $defs[ $name ]['raw_paths'] = array_values( array_map( 'strval', (array) $list ) ); }
+		}
+		d5b_ability_registry( $defs );
 	}
 }
 
