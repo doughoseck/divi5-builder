@@ -19,7 +19,7 @@ function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $o
 function fire( $hook ) { foreach ( $GLOBALS['T_actions'][ $hook ] ?? array() as $cb ) { 'rest_api_init' === $hook ? call_user_func( $cb, rest_get_server() ) : call_user_func( $cb ); } }
 // The files the loader names, and the .php files really under inc/ and parts/ (both sorted).
 function loader_list( $src ) { preg_match_all( "#'((?:inc|parts)/[^']+\\.php)'#", $src, $m ); sort( $m[1] ); return $m[1]; }
-function disk_list( $dir ) { $o = array(); foreach ( array( 'inc', 'parts' ) as $d ) { foreach ( scandir( "$dir/$d" ) as $f ) { if ( preg_match( '/\\.php$/', $f ) ) { $o[] = "$d/$f"; } } } sort( $o ); return $o; }
+function disk_list( $dir ) { $o = array(); foreach ( array( 'inc', 'parts' ) as $d ) { $it = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( "$dir/$d", FilesystemIterator::SKIP_DOTS ) ); foreach ( $it as $f ) { if ( preg_match( '/\\.php$/', $f->getFilename() ) ) { $o[] = $d . '/' . ltrim( str_replace( '\\', '/', substr( $f->getPathname(), strlen( "$dir/$d" ) ) ), '/' ); } } } sort( $o ); return $o; }
 function status() { return call_user_func( $GLOBALS['T_routes']['GET divi5-builder/v1/status']['callback'] ); }
 function routes_in( $ns ) { $o = array(); foreach ( $GLOBALS['T_routes'] as $k => $_ ) { if ( 0 === strpos( explode( ' ', $k, 2 )[1], $ns . '/' ) ) { $o[] = $k; } } sort( $o ); return $o; }
 function norm( $p ) { return str_replace( chr( 92 ), '/', $p ); }

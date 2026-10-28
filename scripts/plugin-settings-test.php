@@ -139,7 +139,7 @@ foreach ( array( 'media_audit', 'media_clean_up', 'updates' ) as $p ) {
 	check( "single site: $p note is printed as d5b_risk_note gives it", false !== strpos( $out, esc_html( d5b_risk_note( $p ) ) ) && '' !== d5b_risk_note( $p ), $p );
 	check( "$p has one checkbox", 1 === substr_count( $out, 'name="d5b_on[' . $p . ']"' ), $p );
 }
-check( 'page_building has no checkbox and the form names exactly three', false === strpos( $out, 'd5b_on[page_building]' ) && 3 === substr_count( $out, 'type="checkbox"' ), $out );
+check( 'page_building has no checkbox and the form names exactly three', false === strpos( $out, 'd5b_on[page_building]' ) && 3 === substr_count( $out, 'name="d5b_on[' ), $out );
 check( 'all three start unticked', false === strpos( $out, 'checked="checked"' ), $out );
 check( 'no multisite sentence on a single site', false === strpos( $out, 'every site in it at once' ) && false === strpos( $out, 'sites that share these files' ) );
 check( 'the form posts to admin-post.php with the nonce and the action', false !== strpos( $out, 'action="https://x.example/wp-admin/admin-post.php"' ) && false !== strpos( $out, 'value="nonce-for-d5b_switches"' ) && false !== strpos( $out, 'name="action" value="d5b_save_switches"' ), $out );

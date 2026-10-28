@@ -63,6 +63,7 @@ if ( ! function_exists( 'd5b_settings_render' ) ) {
 			echo '</td></tr>';
 		}
 		echo '</table>';
+		d5b_settings_render_abilities();
 		echo '<p class="submit"><input type="submit" class="button button-primary" value="Save changes" /></p>';
 		echo '</form>';
 		d5b_legacy_refresh( true ); // always here: an old copy with no constant (a code snippet) is found too
@@ -72,6 +73,59 @@ if ( ! function_exists( 'd5b_settings_render' ) ) {
 			echo '<p' . ( $line['red'] ? ' style="color:#b32d2e;font-weight:600"' : '' ) . '>' . esc_html( $line['text'] ) . '</p>';
 		}
 		echo '</div>';
+	}
+}
+
+if ( ! function_exists( 'd5b_settings_render_abilities' ) ) {
+	/**
+	 * The "AI abilities" section, inside the page's form: the master box, and one box per category.
+	 * The category boxes are disabled while the master is off (and so are not posted; the marker field
+	 * d5b_abilities_cat_form is printed only while they are enabled, so the save handler can tell "unticked" from "not shown").
+	 */
+	function d5b_settings_render_abilities(): void {
+		$a      = d5b_abilities_switches();
+		$master = $a['master'];
+		$cats   = function_exists( 'd5b_ability_categories' ) ? d5b_ability_categories() : array();
+		echo '<h2>AI abilities</h2>';
+		echo '<table class="form-table" role="presentation"><tr><th scope="row"><label for="d5b-abilities-master">AI abilities</label></th><td>';
+		echo '<label><input type="checkbox" id="d5b-abilities-master" name="d5b_abilities_master" value="1"' . ( $master['on'] ? ' checked="checked"' : '' ) . ' /> Switched on</label>';
+		echo '<p class="description">' . esc_html( 'Lets AI clients connected to this site (over the REST API) read site content and settings through this plugin. Nothing is shared until you switch this on. Every call is logged for 30 days.' ) . '</p>';
+		if ( '' !== $master['changed_at'] || '' !== $master['changed_by'] ) {
+			echo '<p class="description">Last switched ' . ( $master['on'] ? 'on' : 'off' ) . ' ' . esc_html( $master['changed_at'] ) . ' by ' . esc_html( $master['changed_by'] ) . '</p>';
+		}
+		echo '</td></tr>';
+		if ( array() !== $cats ) {
+			echo '<tr><th scope="row">Categories</th><td>';
+			if ( $master['on'] ) { echo '<input type="hidden" name="d5b_abilities_cat_form" value="1" />'; }
+			foreach ( $cats as $slug => $cat ) {
+				$id = 'd5b-abilities-cat-' . $slug;
+				echo '<p><label for="' . esc_attr( $id ) . '"><input type="checkbox" id="' . esc_attr( $id ) . '" name="d5b_abilities_cat[' . esc_attr( $slug ) . ']" value="1"'
+					. ( $a['categories'][ $slug ]['on'] ? ' checked="checked"' : '' ) . ( $master['on'] ? '' : ' disabled="disabled"' ) . ' /> ' . esc_html( $cat['label'] ) . '</label>'
+					. ' <span class="description">' . esc_html( $cat['description'] ) . '</span></p>';
+			}
+			echo '</td></tr>';
+		}
+		echo '</table>';
+	}
+}
+
+if ( ! function_exists( 'd5b_settings_save_abilities' ) ) {
+	/**
+	 * Called by d5b_settings_save() after its nonce and capability checks, never on its own.
+	 * Flips only what changed. Category fields are read only when the form marker says the boxes were enabled
+	 * (a disabled box is not posted, and must not be taken for an unticked one). Unknown slugs are never looked at:
+	 * the walk is over the known categories.
+	 */
+	function d5b_settings_save_abilities( string $login ): void {
+		$now = d5b_abilities_switches();
+		$want = isset( $_POST['d5b_abilities_master'] );
+		if ( $want !== $now['master']['on'] ) { d5b_abilities_set_master( $want, $login ); }
+		if ( ! isset( $_POST['d5b_abilities_cat_form'] ) ) { return; }
+		$posted = isset( $_POST['d5b_abilities_cat'] ) && is_array( $_POST['d5b_abilities_cat'] ) ? wp_unslash( $_POST['d5b_abilities_cat'] ) : array();
+		foreach ( $now['categories'] as $slug => $row ) {
+			$want = isset( $posted[ $slug ] );
+			if ( $want !== $row['on'] ) { d5b_abilities_set_category( $slug, $want, $row['risky_on'], $login ); }
+		}
 	}
 }
 
@@ -144,6 +198,7 @@ if ( ! function_exists( 'd5b_settings_save' ) ) {
 			$want = isset( $posted[ $key ] );
 			if ( $want !== $row['on'] ) { d5b_switch_set( $key, $want, $login ); }
 		}
+		d5b_settings_save_abilities( $login );
 		$base = is_multisite() ? network_admin_url( 'settings.php' ) : admin_url( 'options-general.php' );
 		wp_safe_redirect( $base . '?page=divi5-builder&updated=1' );
 		d5b_settings_exit();
