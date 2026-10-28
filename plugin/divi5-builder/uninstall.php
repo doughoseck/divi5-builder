@@ -3,7 +3,7 @@
  * Runs when the plugin is deleted (Plugins > Delete), never on deactivation. The loader does not load this file.
  *
  * Removes every option the plugin stored: d5b_switches, d5b_takeover, d5b_legacy_seen and d5b_db_version, and drops the
- * audit log table (d5b_audit), its daily event and its d5b_audit_install_failed transient, on every site of a network. On a multisite network,
+ * audit log table (d5b_audit), its daily event and its d5b_audit_install_failed and d5b_anon transients, on every site of a network. On a multisite network,
  * the network options and each site's own options (sites read in batches of 100). Only deletes, never writes,
  * so a later reinstall starts with every switch off, as on a new site. Nothing else is touched: the old plugins'
  * files and the media clean-up quarantine folder stay where they are.
@@ -38,6 +38,7 @@ if ( isset( $wpdb ) && is_object( $wpdb ) ) {
 					switch_to_blog( (int) $d5b_id );
 					wp_clear_scheduled_hook( 'd5b_audit_prune' );
 					delete_transient( 'd5b_audit_install_failed' );
+					delete_transient( 'd5b_anon' );
 					restore_current_blog();
 				}
 			}
@@ -47,6 +48,7 @@ if ( isset( $wpdb ) && is_object( $wpdb ) ) {
 		$wpdb->query( 'DROP TABLE IF EXISTS `' . $wpdb->prefix . 'd5b_audit`' );
 		wp_clear_scheduled_hook( 'd5b_audit_prune' );
 		delete_transient( 'd5b_audit_install_failed' );
+		delete_transient( 'd5b_anon' );
 	}
 }
 unset( $d5b_names, $d5b_name, $d5b_offset, $d5b_ids, $d5b_id );

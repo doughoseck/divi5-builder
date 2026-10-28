@@ -55,7 +55,8 @@ if ( ! function_exists( 'd5b_ability_defs' ) ) {
 if ( ! function_exists( 'd5b_ability_set_extra_categories' ) ) {
 	/**
 	 * Strictest switch wins across categories: these definitions (by short name) also need every listed category on, as
-	 * well as their own (posts-revisions needs Revisions as well as Posts). Unknown names and categories are ignored.
+	 * well as their own (posts-revisions needs Revisions as well as Posts). An unknown name is ignored; an unknown
+	 * category throws, as d5b_ability_add does, so a typo shows in the tests, not on a site.
 	 *
 	 * @param array<string, string[]> $extra short name => category short slugs
 	 */
@@ -65,7 +66,11 @@ if ( ! function_exists( 'd5b_ability_set_extra_categories' ) ) {
 		foreach ( $extra as $short => $list ) {
 			$name = 'divi5-builder/' . $short;
 			if ( ! isset( $defs[ $name ] ) ) { continue; }
-			$defs[ $name ]['extra_categories'] = array_values( array_filter( array_map( 'strval', (array) $list ), function ( $c ) use ( $cats ) { return isset( $cats[ $c ] ); } ) );
+			$list = array_values( array_map( 'strval', (array) $list ) );
+			foreach ( $list as $c ) {
+				if ( ! isset( $cats[ $c ] ) ) { throw new InvalidArgumentException( 'Unknown ability category: ' . $c ); }
+			}
+			$defs[ $name ]['extra_categories'] = $list;
 		}
 		d5b_ability_registry( $defs );
 	}
@@ -197,17 +202,18 @@ if ( ! function_exists( 'd5b_ability_with_status' ) ) {
 if ( ! function_exists( 'd5b_ability_anonymous_refusal' ) ) {
 	/**
 	 * Core lets anyone call an ability's permission callback over REST, logged in or not. A caller who is not logged in is
-	 * refused here, before any permission callback or handler runs. At most one audit row (status forbidden_anonymous) per
-	 * IP address per 10 minutes, so a loop of anonymous requests cannot fill the log.
+	 * refused here, before any permission callback or handler runs. At most ONE audit row (status forbidden_anonymous) per
+	 * 10 minutes for the whole site, whatever the address: a key per address would let rotating addresses write a row (and
+	 * two options rows) on every request. The row records the address of the first caller in the window.
+	 * The error carries 403; over REST core replaces the permission-path status with rest_authorization_required_code(),
+	 * so a logged-out caller sees 401 there.
 	 *
 	 * @return WP_Error|null the refusal, or null for a logged-in caller
 	 */
 	function d5b_ability_anonymous_refusal( string $name, array $args, float $start ): ?WP_Error {
 		if ( ! function_exists( 'get_current_user_id' ) || 0 !== (int) get_current_user_id() ) { return null; }
-		$ip  = isset( $_SERVER['REMOTE_ADDR'] ) && is_string( $_SERVER['REMOTE_ADDR'] ) ? $_SERVER['REMOTE_ADDR'] : '';
-		$key = 'd5b_anon_' . md5( $ip );
-		if ( function_exists( 'get_transient' ) && false === get_transient( $key ) ) {
-			if ( function_exists( 'set_transient' ) ) { set_transient( $key, 1, 600 ); }
+		if ( function_exists( 'get_transient' ) && false === get_transient( 'd5b_anon' ) ) {
+			if ( function_exists( 'set_transient' ) ) { set_transient( 'd5b_anon', 1, 600 ); }
 			d5b_ability_audit( $name, $args, 'forbidden_anonymous', d5b_ability_ms_since( $start ) );
 		}
 		return d5b_ability_with_status( new WP_Error( 'forbidden', 'You must be logged in to use this ability.' ) );

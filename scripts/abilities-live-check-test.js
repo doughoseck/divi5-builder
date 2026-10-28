@@ -147,8 +147,9 @@ r = run({ abilities: anonSet, auditRows: [] });
 check('without --anonymous nothing is sent without credentials', !(r.st.abilityRuns || []).some(x => !x.auth) && !/check anonymous/.test(r.out), r.st.abilityRuns);
 r = run({ abilities: anonSet }, ['--bogus']);
 check('an unknown option is a usage error (exit 2), nothing sent', r.code === 2 && /usage/.test(r.out) && !(r.st.requests || []).length, [r.code, r.out]);
-const anonSrc = fs.readFileSync(SCRIPT, 'utf8');
-const anonFn = (anonSrc.match(/function anonymousGet[\s\S]*?\n}\n/) || [''])[0];
+// Line endings normalised first: a git checkout on Windows has CRLF, a git archive LF; the scan must read both the same.
+const anonSrc = fs.readFileSync(SCRIPT, 'utf8').replace(/\r\n?/g, '\n');
+const anonFn = (anonSrc.match(/function anonymousGet[\s\S]*?\n}(?:\n|$)/) || [''])[0];
 check('the anonymous GET is built by hand with https.request, method GET, and no Authorization or Cookie header', /https\.request\(/.test(anonFn) && /method: 'GET'/.test(anonFn) && !/Authorization|Cookie|authHeader|wp\.js|web-creds/i.test(anonFn), anonFn.slice(0, 300));
 
 console.log('--- the API is not there');

@@ -107,16 +107,21 @@ if ( ! function_exists( 'd5b_audit_activate' ) ) {
 
 if ( ! function_exists( 'd5b_audit_deactivate' ) ) {
 	/**
-	 * Clears the daily clean-up event. Network deactivation clears it on every site of the network (up to 1000 sites), since
-	 * each site that served an ability scheduled its own.
+	 * Clears the daily clean-up event. Network deactivation clears it on every site of the network (read in batches of 100,
+	 * as uninstall does), since each site that served an ability scheduled its own.
 	 */
 	function d5b_audit_deactivate( $network_wide = false ): void {
 		if ( ! function_exists( 'wp_clear_scheduled_hook' ) ) { return; }
 		if ( $network_wide && is_multisite() && function_exists( 'get_sites' ) && function_exists( 'switch_to_blog' ) ) {
-			foreach ( (array) get_sites( array( 'fields' => 'ids', 'number' => 1000 ) ) as $id ) {
-				switch_to_blog( (int) $id );
-				try { wp_clear_scheduled_hook( 'd5b_audit_prune' ); } finally { restore_current_blog(); }
-			}
+			$offset = 0;
+			do {
+				$ids = (array) get_sites( array( 'fields' => 'ids', 'number' => 100, 'offset' => $offset ) );
+				foreach ( $ids as $id ) {
+					switch_to_blog( (int) $id );
+					try { wp_clear_scheduled_hook( 'd5b_audit_prune' ); } finally { restore_current_blog(); }
+				}
+				$offset += 100;
+			} while ( 100 === count( $ids ) );
 			return;
 		}
 		wp_clear_scheduled_hook( 'd5b_audit_prune' );

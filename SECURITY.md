@@ -70,13 +70,14 @@ From 2.1.0 the plugin can offer abilities to AI tools through the WordPress Abil
 - **Read only in 2.1.0.** Nothing an ability does can change the site. Each call is checked
   against the signed-in user's own capabilities, per object (a Contributor cannot read
   another user's draft through an ability). A caller who is not logged in is refused before
-  anything runs. On a multisite network the site health abilities (debug log, scheduled
+  anything runs (over REST WordPress answers 401 or 403). On a multisite network the site health abilities (debug log, scheduled
   tasks) need the network capability, as plugins, themes and core do.
 - **Audit log.** Every call is written to a table before it runs and updated afterwards,
   with the user, the ability, the arguments with secrets removed, the outcome and the time.
   Rows are kept for 30 days. Deleting the plugin drops the table. Refusals of callers who are
-  not logged in are logged at most once per IP address per 10 minutes, so they cannot flood
-  the table. A call that WordPress itself rejects before the plugin's code runs (input that
+  not logged in are logged at most once per 10 minutes for the whole site (whatever the
+  address, so rotating addresses cannot flood the table either); the row keeps the address of
+  the first caller. A call that WordPress itself rejects before the plugin's code runs (input that
   does not match the ability's schema, answered with HTTP 400 by core) leaves no row.
 - **Secrets are filtered, best effort.** Password hashes, activation keys, Application
   Passwords, session tokens and site settings outside a short list never leave the site.

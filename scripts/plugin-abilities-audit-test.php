@@ -536,18 +536,18 @@ for ( $i = 0; $i < 1000; $i++ ) {
 }
 check( '1000 anonymous permit + run pairs from one IP: every one refused with forbidden (403), and neither the permission callback nor the handler ever ran', array( 'forbidden/forbidden' => true ) === $codes && array( '403' => true ) === $statuses && 0 === $GLOBALS['T_ran'] && 0 === $GLOBALS['T_perm_ran'], array( $codes, $statuses, $GLOBALS['T_ran'], $GLOBALS['T_perm_ran'] ) );
 check( '...and they wrote exactly 1 row, status forbidden_anonymous, user 0, with the IP', 1 === count( rows() ) && 'forbidden_anonymous' === rows()[0]['status'] && 0 === rows()[0]['user_id'] && '198.51.100.7' === rows()[0]['ip'], rows() );
-$_SERVER['REMOTE_ADDR'] = '198.51.100.8';
-for ( $i = 0; $i < 20; $i++ ) { d5b_ability_run( 'divi5-builder/health-open', array() ); }
-check( 'a second IP gives exactly one more row (2 in all)', 2 === count( rows() ) && '198.51.100.8' === rows()[1]['ip'], array_column( rows(), 'ip' ) );
-$key = 'd5b_anon_' . md5( '198.51.100.7' );
-check( 'the limit is a 10-minute transient keyed on a hash of the address (the address itself is not in the key)', isset( $GLOBALS['T_transients'][ $key ] ) && 600 === $GLOBALS['T_transients'][ $key ][2] && false === strpos( $key, '198.51' ), array_keys( $GLOBALS['T_transients'] ) );
-$GLOBALS['T_transients'][ $key ][1] = time() - 1; // ten minutes later
-$_SERVER['REMOTE_ADDR'] = '198.51.100.7';
-d5b_ability_run( 'divi5-builder/health-open', array() ); d5b_ability_run( 'divi5-builder/health-open', array() );
-check( 'after the 10 minutes the first IP gets one more row, then is quiet again', 3 === count( rows() ) && 'forbidden_anonymous' === rows()[2]['status'], count( rows() ) );
+// Rotating addresses (residual A): ONE site-wide key, so 1000 calls from 1000 different IPs still make 1 row and 1 transient.
+anon_site();
+for ( $i = 0; $i < 1000; $i++ ) { $_SERVER['REMOTE_ADDR'] = '10.' . intdiv( $i, 250 ) . '.' . ( $i % 250 ) . '.1'; d5b_ability_permit( 'divi5-builder/health-open', array() ); d5b_ability_run( 'divi5-builder/health-open', array() ); }
+$anon_keys = array_values( array_filter( array_keys( $GLOBALS['T_transients'] ), function ( $k ) { return 0 === strpos( $k, 'd5b_anon' ); } ) );
+check( '1000 anonymous calls from 1000 different IPs: exactly 1 row (with the first caller\'s IP) and 1 transient, d5b_anon, for 10 minutes', 1 === count( rows() ) && '10.0.0.1' === rows()[0]['ip'] && array( 'd5b_anon' ) === $anon_keys && 600 === $GLOBALS['T_transients']['d5b_anon'][2], array( count( rows() ), $anon_keys ) );
+$GLOBALS['T_transients']['d5b_anon'][1] = time() - 1; // ten minutes later
+$_SERVER['REMOTE_ADDR'] = '198.51.100.9';
+d5b_ability_run( 'divi5-builder/health-open', array() ); $_SERVER['REMOTE_ADDR'] = '198.51.100.10'; d5b_ability_run( 'divi5-builder/health-open', array() );
+check( 'after the 10 minutes one more row (the next caller\'s IP), then quiet again whatever the address', 2 === count( rows() ) && '198.51.100.9' === rows()[1]['ip'], array_column( rows(), 'ip' ) );
 $GLOBALS['T_user_id'] = 5;
 for ( $i = 0; $i < 30; $i++ ) { d5b_ability_permit( 'divi5-builder/health-shut', array() ); }
-check( 'a logged-in refusal is still logged every time (30 refusals, 30 forbidden rows)', 33 === count( rows() ) && 30 === count( array_filter( rows(), function ( $r ) { return 'forbidden' === $r['status'] && 5 === $r['user_id']; } ) ), count( rows() ) );
+check( 'a logged-in refusal is still logged every time (30 refusals, 30 forbidden rows)', 32 === count( rows() ) &&30 === count( array_filter( rows(), function ( $r ) { return 'forbidden' === $r['status'] && 5 === $r['user_id']; } ) ), count( rows() ) );
 $r = d5b_ability_run( 'divi5-builder/health-open', array() );
 check( 'a logged-in caller is not affected: the handler runs', array( 'v' => 1 ) === $r && 1 === $GLOBALS['T_ran'], $r );
 anon_site(); d5b_abilities_set_master( false, 'tester' );
@@ -575,7 +575,12 @@ t_set_multisite( true );
 $GLOBALS['T_blogs'] = array( 1 => array(), 2 => array(), 3 => array() ); $GLOBALS['T_get_sites'] = array(); $GLOBALS['T_cleared_on'] = array();
 d5b_audit_deactivate( true );
 check( 'network deactivation clears the prune event on every site (switching to each one and back)', array( 1, 2, 3 ) === $GLOBALS['T_cleared_on'] && 1 === get_current_blog_id(), array( $GLOBALS['T_cleared_on'], get_current_blog_id() ) );
-check( 'network deactivation asks for at most 1000 site ids', 1000 === ( $GLOBALS['T_get_sites'][0]['number'] ?? null ) && 'ids' === ( $GLOBALS['T_get_sites'][0]['fields'] ?? null ), $GLOBALS['T_get_sites'] );
+check( 'network deactivation reads site ids in batches of 100', 100 === ( $GLOBALS['T_get_sites'][0]['number'] ?? null ) && 'ids' === ( $GLOBALS['T_get_sites'][0]['fields'] ?? null ), $GLOBALS['T_get_sites'] );
+$GLOBALS['T_blogs'] = array(); for ( $b = 1; $b <= 1250; $b++ ) { $GLOBALS['T_blogs'][ $b ] = array(); }
+$GLOBALS['T_get_sites'] = array(); $GLOBALS['T_cleared_on'] = array();
+d5b_audit_deactivate( true );
+check( 'network deactivation on 1250 sites: every one cleared (no 1000-site ceiling), 13 batches of at most 100, back on blog 1', range( 1, 1250 ) === $GLOBALS['T_cleared_on'] && 13 === count( $GLOBALS['T_get_sites'] ) && array() === array_filter( $GLOBALS['T_get_sites'], function ( $a ) { return 100 !== ( $a['number'] ?? 0 ); } ) && 1 === get_current_blog_id(), array( count( $GLOBALS['T_cleared_on'] ), count( $GLOBALS['T_get_sites'] ) ) );
+$GLOBALS['T_blogs'] = array( 1 => array(), 2 => array(), 3 => array() );
 $GLOBALS['T_cleared_on'] = array();
 d5b_audit_deactivate( false );
 check( 'deactivation on one site of a network clears only that site', array( 1 ) === $GLOBALS['T_cleared_on'], $GLOBALS['T_cleared_on'] );

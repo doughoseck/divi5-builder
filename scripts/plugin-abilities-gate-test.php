@@ -359,6 +359,12 @@ foreach ( new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir . 
 $unmapped = array_values( array_filter( array_keys( $codes ), function ( $c ) { return 500 === d5b_ability_http_status( $c ) && 'internal_error' !== $c; } ) );
 check( 'every WP_Error code in inc/abilities has its own status (no odd codes left: invalid_type, invalid_taxonomy, forbidden_status are gone)', array() === $unmapped && ! isset( $codes['invalid_type'] ) && ! isset( $codes['invalid_taxonomy'] ) && ! isset( $codes['forbidden_status'] ) && ! isset( $codes['ability_not_found'] ), array( $unmapped, array_keys( $codes ) ) );
 
+fresh( true );
+$threw = ''; try { d5b_ability_set_extra_categories( array( 'posts-list' => array( 'revisons' ) ) ); } catch ( InvalidArgumentException $e ) { $threw = $e->getMessage(); }
+check( 'an unknown extra category throws (as d5b_ability_add does) and is not stored', false !== strpos( $threw, 'revisons' ) && ! isset( d5b_ability_defs()['divi5-builder/posts-list']['extra_categories'] ), $threw );
+d5b_ability_set_extra_categories( array( 'posts-list' => array( 'revisions' ), 'no-such-ability' => array( 'revisions' ) ) );
+check( 'a known extra category is stored; an unknown ability name is still ignored', array( 'revisions' ) === ( d5b_ability_defs()['divi5-builder/posts-list']['extra_categories'] ?? null ) && ! isset( d5b_ability_defs()['divi5-builder/no-such-ability'] ) );
+
 echo "posts-revisions needs the Revisions switch too (strictest switch wins)\n";
 real_site( true, array( 'revisions' ) );
 add_action( 'wp_abilities_api_categories_init', 'd5b_abilities_register_categories' ); add_action( 'wp_abilities_api_init', 'd5b_abilities_register' ); fire_both();

@@ -53,6 +53,7 @@ check( 'all four options are deleted (d5b_db_version too)', array() === array_in
 check( 'nothing else is touched', array( 'active_plugins', 'd5b_other' ) === array_keys( $GLOBALS['T_options'] ) && array() === array_filter( $GLOBALS['T_writes'], function ( $w ) { return 'delete_option' !== $w[0]; } ), $GLOBALS['T_writes'] );
 check( 'no other site is read on a single site', array() === $GLOBALS['T_get_sites'] );
 check( 'the d5b_audit_install_failed transient is deleted', in_array( array( 'd5b_audit_install_failed', 1 ), $GLOBALS['T_transient_deletes'], true ), $GLOBALS['T_transient_deletes'] );
+check( 'the d5b_anon transient (anonymous refusal limit) is deleted', in_array( array( 'd5b_anon', 1 ), $GLOBALS['T_transient_deletes'], true ), $GLOBALS['T_transient_deletes'] );
 
 echo "multisite: the network options and every site's own\n";
 t_reset(); t_set_multisite( true );
@@ -77,7 +78,9 @@ check( 'the current site too', array() === array_intersect( $OURS, array_keys( $
 check( 'sites read in batches of ids, at most 100 at a time', count( $GLOBALS['T_get_sites'] ) >= 3 && array() === array_filter( $GLOBALS['T_get_sites'], function ( $a ) { return 'ids' !== ( $a['fields'] ?? '' ) || ( $a['number'] ?? 0 ) > 100 || ( $a['number'] ?? 0 ) < 1; } ), $GLOBALS['T_get_sites'] );
 $tdel = array_values( array_unique( array_map( function ( $d ) { return $d[1]; }, array_filter( $GLOBALS['T_transient_deletes'], function ( $d ) { return 'd5b_audit_install_failed' === $d[0]; } ) ) ) );
 check( 'the d5b_audit_install_failed transient is deleted on every one of the 250 sites (switched to each), and the event cleared there too', range( 1, 250 ) === $tdel && range( 1, 250 ) === $GLOBALS['T_cleared_on'] && 1 === $GLOBALS['T_blog_id'], array( count( $tdel ), count( $GLOBALS['T_cleared_on'] ) ) );
-check( 'only deletes, never a write',array() === array_filter( $GLOBALS['T_writes'], function ( $w ) { return 0 !== strpos( $w[0], 'delete_' ); } ), $GLOBALS['T_writes'] );
+$adel = array_values( array_unique( array_map( function ( $d ) { return $d[1]; }, array_filter( $GLOBALS['T_transient_deletes'], function ( $d ) { return 'd5b_anon' === $d[0]; } ) ) ) );
+check( 'the d5b_anon transient is deleted on every one of the 250 sites', range( 1, 250 ) === $adel, count( $adel ) );
+check( 'only deletes, never a write', array() === array_filter( $GLOBALS['T_writes'], function ( $w ) { return 0 !== strpos( $w[0], 'delete_' ); } ), $GLOBALS['T_writes'] );
 
 echo "without a database object\n";
 t_reset(); t_set_multisite( false ); unset( $GLOBALS['wpdb'] ); $GLOBALS['T_options'] = array( 'd5b_switches' => 1, 'd5b_db_version' => '1' );
