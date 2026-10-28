@@ -74,11 +74,24 @@ if ( ! function_exists( 'd5b_switches_store' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_abilities_category_stored_on' ) ) {
+	/**
+	 * One category's stored value: a category never stored reads on (the default, it only matters once the master is on);
+	 * a stored value counts as on only when it is an array whose 'on' is a real true. A scalar, false, "off", 0 or [] is off.
+	 */
+	function d5b_abilities_category_stored_on( array $rows, string $slug ): bool {
+		if ( ! array_key_exists( $slug, $rows ) ) { return true; }
+		$row = $rows[ $slug ];
+		return is_array( $row ) && array_key_exists( 'on', $row ) && true === $row['on'];
+	}
+}
+
 if ( ! function_exists( 'd5b_abilities_switches' ) ) {
 	/**
 	 * The AI abilities switches, normalized: { master: {on, changed_at, changed_by}, categories: { slug: {on, risky_on, changed_at, changed_by} } }.
-	 * Fail closed: the master and every risky_on read off unless stored as a real true. A category with no stored
-	 * 'on' reads on (it only matters once the master is on); one stored as anything but true reads off.
+	 * Fail closed: the master and every risky_on read off unless stored as a real true. A category never stored reads on
+	 * (it only matters once the master is on); a stored category reads on only as an array with 'on' => true; a
+	 * 'categories' value that is not an array turns every category off.
 	 * Every known category is listed. Reading writes nothing.
 	 */
 	function d5b_abilities_switches(): array {
@@ -90,12 +103,14 @@ if ( ! function_exists( 'd5b_abilities_switches' ) ) {
 			'master'     => array( 'on' => isset( $m['on'] ) && true === $m['on'], 'changed_at' => $str( $m, 'changed_at' ), 'changed_by' => $str( $m, 'changed_by' ) ),
 			'categories' => array(),
 		);
-		$rows = isset( $ab['categories'] ) && is_array( $ab['categories'] ) ? $ab['categories'] : array();
-		$slugs = function_exists( 'd5b_ability_categories' ) ? array_keys( d5b_ability_categories() ) : array();
+		// A 'categories' value that is not an array means nothing can be trusted: every category reads off.
+		$cats_ok = ! array_key_exists( 'categories', $ab ) || is_array( $ab['categories'] );
+		$rows    = $cats_ok && isset( $ab['categories'] ) ? $ab['categories'] : array();
+		$slugs   = function_exists( 'd5b_ability_categories' ) ? array_keys( d5b_ability_categories() ) : array();
 		foreach ( $slugs as $slug ) {
 			$row = isset( $rows[ $slug ] ) && is_array( $rows[ $slug ] ) ? $rows[ $slug ] : array();
 			$out['categories'][ $slug ] = array(
-				'on'         => ! array_key_exists( 'on', $row ) || true === $row['on'],
+				'on'         => $cats_ok && d5b_abilities_category_stored_on( $rows, $slug ),
 				'risky_on'   => isset( $row['risky_on'] ) && true === $row['risky_on'],
 				'changed_at' => $str( $row, 'changed_at' ),
 				'changed_by' => $str( $row, 'changed_by' ),
@@ -148,7 +163,12 @@ if ( ! function_exists( 'd5b_abilities_set_category' ) ) {
 		}
 		$all = d5b_switches_stored();
 		$ab  = isset( $all['abilities'] ) && is_array( $all['abilities'] ) ? $all['abilities'] : array();
-		if ( ! isset( $ab['categories'] ) || ! is_array( $ab['categories'] ) ) { $ab['categories'] = array(); }
+		if ( ! isset( $ab['categories'] ) ) { $ab['categories'] = array(); }
+		if ( ! is_array( $ab['categories'] ) ) {
+			// A corrupt value reads as every category off: write that down, so setting one category does not turn the
+			// others back on as "never stored".
+			$ab['categories'] = array_fill_keys( array_keys( d5b_ability_categories() ), array( 'on' => false, 'risky_on' => false, 'changed_at' => gmdate( 'Y-m-d\TH:i:s\Z' ), 'changed_by' => $user_login ) );
+		}
 		$ab['categories'][ $slug ] = array( 'on' => $on, 'risky_on' => $risky_on, 'changed_at' => gmdate( 'Y-m-d\TH:i:s\Z' ), 'changed_by' => $user_login );
 		$all['abilities'] = $ab;
 		d5b_switches_store( $all );

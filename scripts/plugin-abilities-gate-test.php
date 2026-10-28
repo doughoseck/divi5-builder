@@ -179,6 +179,10 @@ fire_both();
 check( 'posts off: none of its abilities and not its category registered', ! isset( $GLOBALS['T_abilities']['divi5-builder/posts-list'] ) && ! isset( $GLOBALS['T_abilities']['divi5-builder/posts-get'] ) && ! isset( $GLOBALS['T_ability_categories']['divi5-builder-posts'] ), array_keys( $GLOBALS['T_abilities'] ) );
 check( 'posts off: pages ability and category intact', isset( $GLOBALS['T_abilities']['divi5-builder/pages-list'] ) && isset( $GLOBALS['T_ability_categories']['divi5-builder-pages'] ) && 1 === count( $GLOBALS['T_abilities'] ) );
 check( 'posts off: a call to its permission callback is refused too (defence in depth)', false === d5b_ability_permit( 'divi5-builder/posts-list', array() ) );
+fresh( true );
+$st = get_option( 'd5b_switches' ); $st['abilities']['categories'] = array( 'posts' => false ); update_option( 'd5b_switches', $st );
+fire_both();
+check( 'break-it a1: a category stored as a bare false (not an array) registers nothing; others still do', ! isset( $GLOBALS['T_abilities']['divi5-builder/posts-list'] ) && isset( $GLOBALS['T_abilities']['divi5-builder/pages-list'] ), array_keys( $GLOBALS['T_abilities'] ) );
 
 // ---- registration only inside the hooks, and only once
 echo "registration timing\n";

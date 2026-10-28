@@ -72,7 +72,17 @@ function wp_json_encode( $v ) { return json_encode( $v ); }
 $GLOBALS['T_audit'] = array();
 function d5b_audit_write( string $ability, array $args, string $status, int $duration_ms ): int { $GLOBALS['T_audit'][] = compact( 'ability', 'args', 'status' ); return count( $GLOBALS['T_audit'] ); }
 function d5b_audit_update( int $id, string $status, int $duration_ms, ?array $args = null ): bool { if ( ! isset( $GLOBALS['T_audit'][ $id - 1 ] ) ) { return false; } $GLOBALS['T_audit'][ $id - 1 ]['status'] = $status; return true; }
-foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/read-content', 'inc/abilities/read-structure', 'inc/abilities/read-site', 'parts/updates' ) as $f ) { require $dir . '/' . $f . '.php'; }
+// --no-updates (a child run): parts/updates.php is not loaded, so wpsu_detect_caches does not exist.
+$no_updates = isset( $argv[1] ) && '--no-updates' === $argv[1];
+foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/read-content', 'inc/abilities/read-structure', 'inc/abilities/read-site', 'parts/updates' ) as $f ) {
+	if ( $no_updates && 'parts/updates' === $f ) { continue; }
+	require $dir . '/' . $f . '.php';
+}
+if ( $no_updates ) {
+	t_set_caps( array( 'read', 'manage_options' ) ); $GLOBALS['T_user_id'] = 1; d5b_abilities_set_master( true, 't' );
+	echo 'CACHE=' . json_encode( function_exists( 'wpsu_detect_caches' ) ? 'detector loaded' : d5b_ability_run( 'divi5-builder/cache-status', array() ) ) . "\n";
+	exit( 0 );
+}
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . substr( is_string( $detail ) ? $detail : json_encode( $detail ), 0, 600 ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
@@ -349,6 +359,10 @@ $mem = memory_get_usage();
 file_put_contents( LOGFILE, str_repeat( str_repeat( 'y', 99 ) . "\n", 120000 ) ); // 12 MB
 $r = call( 'error-log' );
 check( 'error-log: a 12 MB log still reads only the tail', is_array( $r ) && $r['bytes_read'] <= 65536 && 200 === $r['line_count'] && memory_get_usage() - $mem < 4000000, is_array( $r ) ? array( $r['bytes_read'], memory_get_usage() - $mem ) : $r );
+check( 'M-2: bytes_read is what was really read (64 KB here), not what was left after dropping the cut first line', is_array( $r ) && 65536 === $r['bytes_read'] && ! isset( $r['note'] ), is_array( $r ) ? $r['bytes_read'] : $r );
+file_put_contents( LOGFILE, str_repeat( 'x', 200000 ) . "\n" );
+$r = call( 'error-log' );
+check( 'M-2: one line longer than 64 KB: no line, bytes_read 65536, and a note that says why', is_array( $r ) && 0 === $r['line_count'] && 65536 === $r['bytes_read'] && true === $r['truncated'] && false !== strpos( (string) ( $r['note'] ?? '' ), 'no whole line' ), $r );
 file_put_contents( LOGFILE, "a password=hunter2 b\nAuthorization: Bearer sv-bearer-abc.def\nconnect https://dbuser:pw0rd@db.example/x ok\napi_key=KEYVAL123 end\n{\"smtp_password\":\"hunter2\"}\ntoken: \"tok 123 456\"\nplain line stays\n" );
 $r = call( 'error-log' ); $j = json_encode( $r );
 check( 'error-log: passwords, bearer tokens, url credentials, keys and tokens in the text are masked', is_array( $r ) && 7 === $r['line_count'] && false === strpos( $j, 'hunter2' ) && false === strpos( $j, 'sv-bearer' ) && false === strpos( $j, 'pw0rd' ) && false === strpos( $j, 'KEYVAL123' ) && false === strpos( $j, 'tok 123' ), $j );
@@ -453,7 +467,8 @@ check( 'plugins-list as editor: refused and logged', 'FORBIDDEN' === call( 'plug
 check( 'themes-list and core-version as editor: refused', 'FORBIDDEN' === call( 'themes-list' ) && 'FORBIDDEN' === call( 'core-version' ) );
 check( 'defence in depth: the plugins-list handler alone also refuses an editor', 'forbidden' === code( handler( 'plugins-list', array() ) ) );
 // multisite: the network capability too
-foreach ( array( 'plugins-list' => 'manage_network_plugins', 'themes-list' => 'manage_network_themes', 'core-version' => 'update_core' ) as $ab => $netcap ) {
+// core-version (M-4): manage_network, not update_core (update_core is do_not_allow under DISALLOW_FILE_MODS)
+foreach ( array( 'plugins-list' => 'manage_network_plugins', 'themes-list' => 'manage_network_themes', 'core-version' => 'manage_network' ) as $ab => $netcap ) {
 	site( ADMIN ); t_set_multisite( true ); d5b_abilities_set_master( true, 'tester' );
 	$a = call( $ab );
 	t_set_caps( array_merge( ADMIN, array( $netcap ) ) );
@@ -464,6 +479,17 @@ foreach ( array( 'plugins-list' => 'manage_network_plugins', 'themes-list' => 'm
 }
 site( ADMIN ); t_set_multisite( true ); d5b_abilities_set_master( true, 'tester' );
 check( 'multisite: the site-level abilities (settings-get) still need only manage_options', is_array( call( 'settings-get' ) ) );
+t_set_caps( array_merge( ADMIN, array( 'update_core' ) ) );
+check( 'multisite: core-version with update_core but without manage_network is refused (update_core is no longer the test)', 'FORBIDDEN' === call( 'core-version' ) );
+// users-get (Task 5 I-2): on a network, a user who is not a member of this site is not_found
+site( ADMIN, 1 ); t_set_multisite( true ); d5b_abilities_set_master( true, 'tester' );
+$GLOBALS['T_users'] = array( 1 => mkuser( 1, 'alice', array( 'administrator' ) ), 99 => mkuser( 99, 'othersite', array() ) );
+$GLOBALS['T_user_blogs'] = array( 1 => array( 1 ), 99 => array( 2 ) );
+$r = call( 'users-get', array( 'id' => 99 ) );
+check( 'multisite: users-get on a user of another site is not_found, and nothing of them is returned', 'not_found' === code( $r ) && false === strpos( json_encode( $r ), 'othersite' ), $r );
+check( 'multisite: users-get on a member of this site still works', 'alice' === ( call( 'users-get', array( 'id' => 1 ) )['login'] ?? null ) );
+t_set_multisite( false );
+check( 'single site: no membership check (users-get on any user works)', 'othersite' === ( call( 'users-get', array( 'id' => 99 ) )['login'] ?? null ) );
 
 // ---- cache-status
 echo "cache-status\n";
@@ -480,6 +506,9 @@ $cleared = wpsu_clear_caches();
 check( 'wpsu_clear_caches still empties exactly what the detection lists, in the same order (behaviour of the updates part unchanged)', 1 === $GLOBALS['wp_fastest_cache']->cleared && 1 === ( $GLOBALS['T_rocket'] ?? 0 ) && array_values( wpsu_detect_caches() ) === $cleared, $cleared );
 site( EDITOR );
 check( 'cache-status as editor: refused', 'FORBIDDEN' === call( 'cache-status' ) );
+// M-5: without the updates part (wpsu_detect_caches missing) the answer is { unavailable: true }, never an empty list
+$out = array(); exec( escapeshellarg( PHP_BINARY ) . ' -d max_execution_time=30 ' . escapeshellarg( __FILE__ ) . ' --no-updates 2>&1', $out, $rc );
+check( 'cache-status without wpsu_detect_caches answers exactly { "unavailable": true }', 0 === $rc && 'CACHE={"unavailable":true}' === trim( implode( '', $out ) ), $out );
 
 // ---- templates, global styles, appearance, widgets
 echo "templates, global styles, appearance, widgets\n";
@@ -526,6 +555,21 @@ site( array( 'read', 'edit_theme_options' ) );
 check( 'widgets-list is allowed with edit_theme_options alone; appearance-get is not', is_array( call( 'widgets-list' ) ) && 'FORBIDDEN' === call( 'appearance-get' ) );
 site( EDITOR );
 check( 'templates-list, templates-get, global-styles-get, appearance-get as editor: refused', 'FORBIDDEN' === call( 'templates-list' ) && 'FORBIDDEN' === call( 'templates-get', array( 'id' => 'a//b' ) ) && 'FORBIDDEN' === call( 'global-styles-get' ) && 'FORBIDDEN' === call( 'appearance-get' ) );
+
+// ---- meta-get with the real scrubber (break-it a5): secret-named custom fields never leave, even for an administrator
+echo "meta-get, deep paging and descriptions\n";
+site( ADMIN, 1 );
+$mp = t_add_post( array( 'post_author' => 2 ) );
+t_add_meta( $mp, 'license_key', 'S3CR3T-VALUE' ); t_add_meta( $mp, 'pwd', 'S3CR3T-VALUE' ); t_add_meta( $mp, 'authorization', 'Bearer S3CR3T-VALUE' ); t_add_meta( $mp, 'customer_phone', '+27 82 000 0000' ); t_add_meta( $mp, '_internal_note', 'protected value' );
+$r = call( 'meta-get', array( 'post_id' => $mp ) );
+check( 'meta-get as admin: license_key, pwd and authorization are removed; ordinary and _ fields come through', is_array( $r ) && false === strpos( json_encode( $r ), 'S3CR3T' ) && '+27 82 000 0000' === $r['meta']['customer_phone'] && 'protected value' === $r['meta']['_internal_note'] && array( 'customer_phone', '_internal_note' ) === array_keys( $r['meta'] ), $r );
+// deep paging in the site abilities too
+$GLOBALS['T_users'] = array( 1 => mkuser( 1, 'alice', array( 'administrator' ) ) );
+check( 'deep paging: users-list and templates-list refuse a page more than 10,000 items in (page_too_deep), page 101 x 100 still answers', 'page_too_deep' === code( call( 'users-list', array( 'page' => 102, 'per_page' => 100 ) ) ) && 'page_too_deep' === code( call( 'templates-list', array( 'page' => 600 ) ) ) && is_array( call( 'users-list', array( 'page' => 101, 'per_page' => 100 ) ) ) );
+$defs = d5b_ability_defs();
+$d = function ( $x ) use ( $defs ) { return (string) $defs[ 'divi5-builder/' . $x ]['description']; };
+check( 'descriptions: appearance-get and widgets-list say "values under secret-named keys removed", never "secrets removed"', false !== strpos( $d( 'appearance-get' ), 'values under secret-named keys removed' ) && false !== strpos( $d( 'widgets-list' ), 'values under secret-named keys removed' ) && false === strpos( json_encode( array_column( $defs, 'description' ) ), 'secrets removed' ) );
+check( 'descriptions: menus-list and menus-locations name edit_theme_options; core-version names manage_network; meta-get names edit_post', false !== strpos( $d( 'menus-list' ), 'edit_theme_options' ) && false !== strpos( $d( 'menus-locations' ), 'edit_theme_options' ) && false !== strpos( $d( 'core-version' ), 'manage_network' ) && false === strpos( $d( 'core-version' ), 'update_core' ) && false !== strpos( $d( 'meta-get' ), 'edit_post' ) );
 
 // ---- the keep list is built from reality: every ability, as an administrator, over ordinary data (no secrets planted)
 echo "keep list: no field our abilities return is called a secret\n";

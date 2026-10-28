@@ -106,8 +106,14 @@ function delete_site_option( $n ) { $GLOBALS['T_writes'][] = array( 'delete_site
 //   T_blogs          blog id => array( option name => value ): what get_blog_option reads for each site
 //   T_blog_id        what get_current_blog_id returns;  T_main_site   what get_main_site_id returns
 //   T_get_sites      list of the argument arrays get_sites was called with
-function t_blogs_reset() { $GLOBALS['T_blogs'] = array(); $GLOBALS['T_blog_id'] = 1; $GLOBALS['T_main_site'] = 1; $GLOBALS['T_get_sites'] = array(); }
+//   T_user_blogs     user id => list of blog ids the user is a member of (is_user_member_of_blog); no entry = member of none
+function t_blogs_reset() { $GLOBALS['T_blogs'] = array(); $GLOBALS['T_blog_id'] = 1; $GLOBALS['T_main_site'] = 1; $GLOBALS['T_get_sites'] = array(); $GLOBALS['T_user_blogs'] = array(); }
 t_blogs_reset();
+// As core: 0 means the current user / the current blog; a user with no role on that blog is not a member.
+function is_user_member_of_blog( $user_id = 0, $blog_id = 0 ) {
+	$u = (int) $user_id ?: (int) ( $GLOBALS['T_user_id'] ?? 0 ); $b = (int) $blog_id ?: (int) $GLOBALS['T_blog_id'];
+	return $u > 0 && in_array( $b, $GLOBALS['T_user_blogs'][ $u ] ?? array(), true );
+}
 function get_current_blog_id() { return $GLOBALS['T_blog_id']; }
 function get_main_site_id( $network_id = null ) { return $GLOBALS['T_main_site']; }
 function is_main_site( $site_id = null, $network_id = null ) { return ( null === $site_id ? $GLOBALS['T_blog_id'] : (int) $site_id ) === $GLOBALS['T_main_site']; }

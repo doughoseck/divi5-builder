@@ -78,8 +78,34 @@ foreach ( $garbage as $label => $value ) {
 fresh(); update_option( 'd5b_switches', array( 'abilities' => array( 'master' => array( 'on' => true ), 'categories' => array( 'posts' => array( 'on' => 'yes', 'risky_on' => 'yes' ), 'pages' => array( 'on' => false, 'risky_on' => true ), 'media' => 'junk' ) ) ) );
 check( 'master truly true, but a garbage category value does not count as on', true === d5b_abilities_master_on() && false === d5b_abilities_category_on( 'posts' ) && false === d5b_abilities_risky_on( 'posts' ) );
 check( 'a category stored off stays off even with master on', false === d5b_abilities_category_on( 'pages' ) );
-check( 'a category with junk row reads as the default (on) once master is on', true === d5b_abilities_category_on( 'media' ) );
+check( 'a category stored as junk (not an array with on => true) reads OFF, even with master on (fail closed)', false === d5b_abilities_category_on( 'media' ) );
+check( 'a category never stored still reads on (the default) once master is on', true === d5b_abilities_category_on( 'comments' ) );
 check( 'risky_on is false when the category is off even if stored true', false === d5b_abilities_risky_on( 'pages' ) );
+
+// ---- break-it a1: a stored category value that is not an array with a strict on fails closed; so does a non-array 'categories'
+echo "corrupt category values (break-it a1)\n";
+$a1 = array(
+	'users = false'        => array( 'users' => false ),
+	'users = "off"'        => array( 'users' => 'off' ),
+	'users = 0'            => array( 'users' => 0 ),
+	'users = []'           => array( 'users' => array() ),
+	'users = true'         => array( 'users' => true ),
+	'users.on = "1"'       => array( 'users' => array( 'on' => '1' ) ),
+	'users.on = null'      => array( 'users' => array( 'on' => null ) ),
+	'users = {risky_on}'   => array( 'users' => array( 'risky_on' => true ) ),
+);
+foreach ( $a1 as $label => $cats ) {
+	fresh(); update_option( 'd5b_switches', array( 'abilities' => array( 'master' => array( 'on' => true ), 'categories' => $cats ) ) );
+	check( "category $label: users reads off, an untouched category (posts) still reads on", true === d5b_abilities_master_on() && false === d5b_abilities_category_on( 'users' ) && false === d5b_abilities_risky_on( 'users' ) && true === d5b_abilities_category_on( 'posts' ) );
+}
+foreach ( array( 'categories = false' => false, 'categories = "none"' => 'none', 'categories = 1' => 1, 'categories = true' => true ) as $label => $cats ) {
+	fresh(); update_option( 'd5b_switches', array( 'abilities' => array( 'master' => array( 'on' => true ), 'categories' => $cats ) ) );
+	$any = false; foreach ( d5b_abilities_switches()['categories'] as $row ) { if ( $row['on'] ) { $any = true; } }
+	check( "$label (not an array): every category reads off", true === d5b_abilities_master_on() && false === $any && false === d5b_abilities_category_on( 'posts' ) );
+}
+fresh(); update_option( 'd5b_switches', array( 'abilities' => array( 'master' => array( 'on' => true ), 'categories' => 'none' ) ) );
+d5b_abilities_set_category( 'posts', true, false, 'doug' );
+check( 'corrupt categories, then one category switched on: only that one is on (the others were written down as off, not left as "never stored")', true === d5b_abilities_category_on( 'posts' ) && false === d5b_abilities_category_on( 'pages' ) && false === d5b_abilities_category_on( 'users' ) );
 
 // ---- category cannot bypass the master
 echo "category never bypasses the master\n";

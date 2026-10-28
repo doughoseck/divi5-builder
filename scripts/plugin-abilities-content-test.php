@@ -227,16 +227,27 @@ check( 'a moderator lists held comments and sees the email address (still no IP)
 
 // ---- meta
 echo "meta-get\n";
+// break-it Important 3: custom fields need edit_post on the item, as the Custom Fields box in wp-admin does.
+const AUTHOR = array( 'read', 'edit_posts', 'edit_published_posts', 'publish_posts', 'upload_files' );
+const CONTRIBUTOR = array( 'read', 'edit_posts' );
 site( READER, 3 );
-$mp = t_add_post( array( 'post_author' => 1 ) );
+$mp = t_add_post( array( 'post_author' => 1 ) ); t_add_meta( $mp, 'color', 'red' );
+check( 'meta-get: a subscriber is refused on a published post (permission callback), and the handler alone says not_found', 'FORBIDDEN' === call( 'meta-get', array( 'post_id' => $mp ) ) && 'not_found' === code( handler( 'meta-get', array( 'post_id' => $mp ) ) ) && 'forbidden' === last_audit()['status'] );
+site( CONTRIBUTOR, 3 );
+$mp = t_add_post( array( 'post_author' => 1 ) ); t_add_meta( $mp, 'color', 'red' );
+check( 'meta-get: a contributor is refused on another author\'s post', 'FORBIDDEN' === call( 'meta-get', array( 'post_id' => $mp ) ) && 'not_found' === code( handler( 'meta-get', array( 'post_id' => $mp ) ) ) );
+check( '... and a direct run is refused by the wrapper\'s gate too', 'forbidden' === code( d5b_ability_run( 'divi5-builder/meta-get', array( 'post_id' => $mp ) ) ) );
+site( AUTHOR, 3 );
+$mp = t_add_post( array( 'post_author' => 3 ) );
 t_add_meta( $mp, 'color', 'red' ); t_add_meta( $mp, '_edit_lock', '1:2' ); t_add_meta( $mp, 'api_key', 'sk-live-123' ); t_add_meta( $mp, 'tags', 'a' ); t_add_meta( $mp, 'tags', 'b' );
 $r = call( 'meta-get', array( 'post_id' => $mp ) );
-check( 'meta-get omits _ keys for a user without edit_post', is_array( $r ) && ! array_key_exists( '_edit_lock', $r['meta'] ) && 1 === $r['omitted_protected'] && 'red' === $r['meta']['color'], $r );
-check( 'meta-get shape: an object keyed by meta key, one value or a list of values; never a list of key/value pairs', is_array( $r ) && array( 'color', 'api_key', 'tags' ) === array_keys( $r['meta'] ) && array( 'a', 'b' ) === $r['meta']['tags'], $r );
+check( 'meta-get: an author on their own post is allowed, _ keys included (Divi keeps its layout there)', is_array( $r ) && '1:2' === ( $r['meta']['_edit_lock'] ?? null ) && 0 === $r['omitted_protected'] && 'red' === $r['meta']['color'], $r );
+check( 'meta-get shape: an object keyed by meta key, one value or a list of values; never a list of key/value pairs', is_array( $r ) && array( 'color', '_edit_lock', 'api_key', 'tags' ) === array_keys( $r['meta'] ) && array( 'a', 'b' ) === $r['meta']['tags'], $r );
 check( 'the key-based scrubber works on it: api_key comes back masked', '[hidden]' === $r['meta']['api_key'] && false === strpos( json_encode( $r ), 'sk-live-123' ), $r );
 $r = call( 'meta-get', array( 'post_id' => $mp, 'key' => 'color' ) );
 check( 'meta-get with a key returns just that key', array( 'color' => 'red' ) === $r['meta'] );
-check( 'meta-get for a protected key without edit rights returns nothing for it', array() === call( 'meta-get', array( 'post_id' => $mp, 'key' => '_edit_lock' ) )['meta'] );
+$other = t_add_post( array( 'post_author' => 1 ) );
+check( 'the same author is refused on someone else\'s post', 'FORBIDDEN' === call( 'meta-get', array( 'post_id' => $other ) ) );
 site( EDITOR, 1 );
 $mp = t_add_post( array( 'post_author' => 1 ) ); t_add_meta( $mp, '_edit_lock', '1:2' ); t_add_meta( $mp, 'color', 'red' );
 $r = call( 'meta-get', array( 'post_id' => $mp ) );
@@ -390,7 +401,7 @@ $GLOBALS['T_menu_items'][8] = array(
 	(object) array( 'ID' => 82, 'title' => 'Shop', 'url' => 'https://shop.example', 'type' => 'custom', 'object' => 'custom', 'object_id' => 82, 'menu_item_parent' => 0, 'menu_order' => 2 ),
 );
 $mi = call( 'menus-items', array( 'menu' => 'side' ) )['items'];
-check( 'menus-items: a link to a post of an off category keeps its slot but loses title and url; other items are untouched', 2 === count( $mi ) && '' === $mi[0]['title'] && '' === $mi[0]['url'] && 81 === $mi[0]['id'] && 'Shop' === $mi[1]['title'] );
+check( 'menus-items: a link to a post of an off category keeps its slot as type hidden with only id and order (no title, url, object or object_id); other items are untouched', 2 === count( $mi ) && array( 'id' => 81, 'type' => 'hidden', 'order' => 1 ) === $mi[0] && 'Shop' === $mi[1]['title'] && false === strpos( json_encode( $mi[0] ), (string) $po ), $mi );
 
 echo "only exposed post types\n";
 site( READER, 3 );
@@ -399,7 +410,7 @@ $ur = t_add_post( array( 'post_type' => 'user_request', 'post_title' => 'victim@
 check( 'meta-get, revisions-list and comments-list refuse a non-public, non-REST type such as user_request', 'FORBIDDEN' === call( 'meta-get', array( 'post_id' => $ur ) ) && 'not_found' === code( handler( 'meta-get', array( 'post_id' => $ur ) ) ) && 'FORBIDDEN' === call( 'comments-list', array( 'post' => $ur ) ) );
 
 echo "output bounds\n";
-site( READER, 3 );
+site( EDITOR, 1 ); // meta-get needs edit_post (break-it Important 3)
 $big = t_add_post();
 t_add_meta( $big, 'huge', str_repeat( 'A', 70000 ) ); t_add_meta( $big, 'small', 'ok' );
 $r = call( 'meta-get', array( 'post_id' => $big ) );
@@ -427,9 +438,23 @@ check( 'the unknown-input error names at most 100 characters of the key', is_wp_
 $ok = true; $P = t_add_post( array( 'post_author' => 1 ) );
 foreach ( array( array( 'posts-list', array( 'page' => PHP_INT_MAX ) ), array( 'posts-list', array( 'page' => '99999999999999999999999' ) ), array( 'taxonomy-list', array( 'page' => PHP_INT_MAX ) ), array( 'revisions-list', array( 'post_id' => $P, 'page' => PHP_INT_MAX ) ), array( 'comments-list', array( 'page' => PHP_INT_MAX ) ) ) as $c ) {
 	$r = d5b_ability_run( 'divi5-builder/' . $c[0], $c[1] );
-	if ( ! is_array( $r ) || 100000 !== $r['page'] ) { $ok = false; }
+	if ( 'page_too_deep' !== code( $r ) ) { $ok = false; }
 }
-check( 'page is clamped to 100000 everywhere (no overflow)', $ok );
+check( 'a huge page (PHP_INT_MAX, a 23-digit string) is refused with page_too_deep everywhere (no overflow)', $ok );
+// Deep paging: refused when (page - 1) * per_page > 10000, in every ability that pages (content, structure and site).
+$deep = array( 'posts-list' => array(), 'pages-list' => array(), 'cpt-list' => array( 'type' => 'book' ), 'media-list' => array(), 'blocks-list' => array(), 'search' => array( 'query' => 'x' ),
+	'taxonomy-list' => array(), 'comments-list' => array(), 'revisions-list' => array( 'post_id' => $P ), 'posts-revisions' => array( 'id' => $P ) );
+t_add_type( 'book', true, true );
+$bad = array();
+foreach ( $deep as $x => $in ) {
+	$edge = handler( $x, $in + array( 'per_page' => 100, 'page' => 101 ) ); // starts at item 10,000: still allowed
+	$past = handler( $x, $in + array( 'per_page' => 100, 'page' => 102 ) );
+	$dflt = handler( $x, $in + array( 'page' => 502 ) );                   // 20 per page: 501 * 20 > 10,000
+	if ( ! is_array( $edge ) || 'page_too_deep' !== code( $past ) || 'page_too_deep' !== code( $dflt ) ) { $bad[] = $x . ':' . json_encode( array( code( $edge ), code( $past ), code( $dflt ) ) ); }
+}
+check( 'deep paging: page 101 x 100 is allowed, page 102 x 100 and page 502 x 20 are refused (page_too_deep) in every paging ability', array() === $bad, $bad );
+$e = handler( 'posts-list', array( 'page' => 1000 ) );
+check( 'the page_too_deep message tells the caller to use search or filters', is_wp_error( $e ) && false !== strpos( $e->get_error_message(), 'search or filters' ) );
 site( array( 'read' ), 3 );
 $GLOBALS['T_menus'][7] = (object) array( 'term_id' => 7, 'name' => 'Main', 'slug' => 'main', 'count' => 0 );
 check( 'menus abilities need edit_theme_options: a subscriber is refused all three, and the handlers refuse too', 'FORBIDDEN' === call( 'menus-list' ) && 'FORBIDDEN' === call( 'menus-items', array( 'menu' => 'main' ) ) && 'FORBIDDEN' === call( 'menus-locations' ) && 'forbidden' === code( handler( 'menus-list', array() ) ) );

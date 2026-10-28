@@ -101,6 +101,10 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 				return $bad;
 			}
 		}
+		if ( isset( $spec['page'] ) ) {
+			$deep = d5b_rc_page_too_deep( $out );
+			if ( null !== $deep ) { return $deep; }
+		}
 		return $out;
 	}
 
@@ -108,6 +112,13 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 	function d5b_rc_paging( array $a ): array {
 		$per = isset( $a['per_page'] ) ? min( 100, max( 1, (int) $a['per_page'] ) ) : 20;
 		return array( $per, min( 100000, max( 1, (int) ( $a['page'] ?? 1 ) ) ) );
+	}
+
+	/** Deep paging makes the database skip rows it still has to read: more than 10,000 items in is refused. */
+	function d5b_rc_page_too_deep( array $a ): ?WP_Error {
+		list( $per, $page ) = d5b_rc_paging( $a );
+		if ( ( $page - 1 ) * $per <= 10000 ) { return null; }
+		return new WP_Error( 'page_too_deep', 'That page starts more than 10,000 items into the list: use search or filters to narrow the list.' );
 	}
 
 	/** The category (switch) that governs a post type: post, page, attachment and wp_block have their own, the rest is cpt. */
@@ -295,7 +306,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 	function d5b_rc_paging_props(): array {
 		return array(
 			'per_page' => array( 'type' => 'integer', 'minimum' => 1, 'maximum' => 100, 'default' => 20, 'description' => 'Items per page, 1 to 100. Larger numbers are lowered to 100.' ),
-			'page'     => array( 'type' => 'integer', 'minimum' => 1, 'default' => 1, 'description' => 'Which page of the results to return, starting at 1.' ),
+			'page'     => array( 'type' => 'integer', 'minimum' => 1, 'default' => 1, 'description' => 'Which page of the results to return, starting at 1. A page that starts more than 10,000 items in is refused (page_too_deep): use search or filters instead.' ),
 		);
 	}
 
@@ -426,10 +437,16 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		return $v;
 	}
 
+	/** The post whose custom fields the caller may read: readable AND editable (edit_post, as the wp-admin Custom Fields box). */
+	function d5b_rc_meta_post( $id ) {
+		$p = d5b_rc_post( $id, null );
+		return ( null !== $p && current_user_can( 'edit_post', $p->ID ) ) ? $p : null;
+	}
+
 	function d5b_rc_h_meta_get( array $in ) {
 		$a = d5b_rc_args( $in, array( 'post_id' => 'id', 'key' => 'key' ), array( 'post_id' ) );
 		if ( is_wp_error( $a ) ) { return $a; }
-		$p = d5b_rc_post( $a['post_id'], null );
+		$p = d5b_rc_meta_post( $a['post_id'] );
 		if ( null === $p ) { return d5b_rc_deny( $a['post_id'], null ); }
 		$can_edit = current_user_can( 'edit_post', $p->ID );
 		$all      = (array) get_post_meta( $p->ID );
@@ -526,9 +543,9 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		$d5b_rc_id_prop( 'media item' ), array( 'id' ), 'd5b_rc_h_media_get', $d5b_rc_get_perm( array( 'attachment' ) ) );
 
 	d5b_rc_def( 'meta-get', 'meta', 'Get custom fields',
-		'Returns the custom fields (post meta) of one item as an object keyed by field name. Refuses an item the caller may not read, and leaves out fields whose name starts with an underscore unless the caller can edit the item.',
+		'Returns the custom fields (post meta) of one item as an object keyed by field name, including the fields whose name starts with an underscore (Divi keeps its layout data there); values under secret-named keys are removed. Refuses an item the caller may not edit (edit_post, the same rule as the Custom Fields box in wp-admin).',
 		array( 'post_id' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The id of the post, page or other item.' ), 'key' => array( 'type' => 'string', 'description' => 'Only this one field. Leave out for all fields.' ) ),
-		array( 'post_id' ), 'd5b_rc_h_meta_get', function ( array $in ) { return current_user_can( 'read' ) && null !== d5b_rc_post( $in['post_id'] ?? 0, null ); } );
+		array( 'post_id' ), 'd5b_rc_h_meta_get', function ( array $in ) { return current_user_can( 'read' ) && null !== d5b_rc_meta_post( $in['post_id'] ?? 0 ); } );
 
 	d5b_rc_def( 'blocks-list', 'blocks', 'List reusable blocks',
 		'Returns one page of reusable blocks (synced patterns): id, title, status and dates. Refuses blocks the caller may not read.',

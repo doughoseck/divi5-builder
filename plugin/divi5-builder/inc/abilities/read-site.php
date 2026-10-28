@@ -29,7 +29,8 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 			'users'    => array( 'list_users', '' ),
 			'plugins'  => array( 'manage_options', 'manage_network_plugins' ),
 			'themes'   => array( 'manage_options', 'manage_network_themes' ),
-			'core'     => array( 'manage_options', 'update_core' ),
+			// manage_network, not update_core: update_core is do_not_allow when DISALLOW_FILE_MODS is set, and reading a version changes nothing.
+			'core'     => array( 'manage_options', 'manage_network' ),
 		);
 	}
 
@@ -207,7 +208,9 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 	function d5b_rs_h_cache_status( array $in ) {
 		$e = d5b_rs_guard( 'cache' ); if ( $e ) { return $e; }
 		$a = d5b_rc_args( $in, array() ); if ( is_wp_error( $a ) ) { return $a; }
-		$found = function_exists( 'wpsu_detect_caches' ) ? wpsu_detect_caches() : array();
+		// Without the updates part's detection there is nothing to report: say so, never an empty list that reads as "no cache".
+		if ( ! function_exists( 'wpsu_detect_caches' ) ) { return array( 'unavailable' => true ); }
+		$found = (array) wpsu_detect_caches();
 		unset( $found['object'] ); // always "present" in WordPress; whether it is a persistent one is reported below
 		return array(
 			'active' => array_values( $found ),
@@ -275,6 +278,7 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$buf = '';
 		if ( 0 === fseek( $h, $from ) ) { $buf = (string) fread( $h, $max ); }
 		fclose( $h );
+		$read = strlen( $buf ); // what was really read, before the cut-off first line is dropped
 		if ( $from > 0 ) { // the first line is probably cut in half
 			$nl  = strpos( $buf, "\n" );
 			$buf = false === $nl ? '' : substr( $buf, $nl + 1 );
@@ -289,7 +293,9 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 			// Free text: key scrubbing cannot protect it, so every line goes through the audit log's masker.
 			$out[] = d5b_audit_mask_secrets( d5b_rc_cut( $line, 2000 ) );
 		}
-		return array( 'lines' => $out, 'line_count' => count( $out ), 'file_bytes' => $size, 'bytes_read' => strlen( $buf ), 'truncated' => $more );
+		$res = array( 'lines' => $out, 'line_count' => count( $out ), 'file_bytes' => $size, 'bytes_read' => $read, 'truncated' => $more );
+		if ( array() === $out && $from > 0 ) { $res['note'] = 'The last 64 KB of the log hold no whole line (one line is longer than that), so no line is shown.'; }
+		return $res;
 	}
 
 	// ---- users
@@ -321,7 +327,8 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$e = d5b_rs_guard( 'users' ); if ( $e ) { return $e; }
 		$a = d5b_rc_args( $in, array( 'id' => 'id' ), array( 'id' ) ); if ( is_wp_error( $a ) ) { return $a; }
 		$u = get_userdata( $a['id'] );
-		if ( ! is_object( $u ) ) { return new WP_Error( 'not_found', 'No user with that id.' ); }
+		// On a network, users of other sites are not this site's to describe (users-list is already limited to this site).
+		if ( ! is_object( $u ) || ( is_multisite() && ! is_user_member_of_blog( (int) $a['id'] ) ) ) { return new WP_Error( 'not_found', 'No user with that id.' ); }
 		return d5b_rs_user_row( $u );
 	}
 
@@ -394,15 +401,15 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$d5b_rs_none, array(), 'd5b_rs_h_global_styles_get', d5b_rs_perm( 'templates' ) );
 
 	d5b_rc_def( 'appearance-get', 'appearance', 'Get theme appearance',
-		'Returns the active theme and its parent, the theme settings (theme mods, secrets removed) and the Custom CSS of the active theme, at most 256 KB with a truncated flag. Refuses callers without manage_options.',
+		'Returns the active theme and its parent, the theme settings (theme mods, values under secret-named keys removed) and the Custom CSS of the active theme, at most 256 KB with a truncated flag. Refuses callers without manage_options.',
 		$d5b_rs_none, array(), 'd5b_rs_h_appearance_get', d5b_rs_perm( 'appearance' ) );
 
 	d5b_rc_def( 'widgets-list', 'widgets', 'List widgets',
-		'Returns every sidebar with its widgets and their settings (secrets removed), up to 500 widgets. Refuses callers without edit_theme_options.',
+		'Returns every sidebar with its widgets and their settings (values under secret-named keys removed), up to 500 widgets. Refuses callers without edit_theme_options.',
 		$d5b_rs_none, array(), 'd5b_rs_h_widgets_list', d5b_rs_perm( 'widgets' ) );
 
 	d5b_rc_def( 'cache-status', 'cache', 'Get cache status',
-		'Returns which known cache plugins are active (Divi, WP Fastest Cache, WP Rocket, W3 Total Cache, WP Super Cache, LiteSpeed Cache) and whether a persistent object cache is in use. Refuses callers without manage_options. Changes nothing.',
+		'Returns which known cache plugins are active (Divi, WP Fastest Cache, WP Rocket, W3 Total Cache, WP Super Cache, LiteSpeed Cache) and whether a persistent object cache is in use; answers { unavailable: true } when the cache detection is not loaded. Refuses callers without manage_options. Changes nothing.',
 		$d5b_rs_none, array(), 'd5b_rs_h_cache_status', d5b_rs_perm( 'cache' ) );
 
 	d5b_rc_def( 'health-status', 'health', 'Get Site Health summary',
@@ -432,7 +439,7 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		'Returns the installed themes: name, version, parent, whether each is active and whether an update is waiting (from the stored update list, without checking). Refuses callers without manage_options, and on a network without manage_network_themes.',
 		$d5b_rs_none, array(), 'd5b_rs_h_themes_list', d5b_rs_perm( 'themes' ) );
 	d5b_rc_def( 'core-version', 'core', 'Get WordPress version',
-		'Returns the WordPress version, the PHP version and whether a WordPress update is waiting (from the stored update list, without checking). Refuses callers without manage_options, and on a network without update_core.',
+		'Returns the WordPress version, the PHP version and whether a WordPress update is waiting (from the stored update list, without checking). Refuses callers without manage_options, and on a network without manage_network.',
 		$d5b_rs_none, array(), 'd5b_rs_h_core_version', d5b_rs_perm( 'core' ) );
 
 	unset( $d5b_rs_none );

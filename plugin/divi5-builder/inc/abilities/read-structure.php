@@ -145,14 +145,13 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 		$items = array();
 		foreach ( (array) wp_get_nav_menu_items( $menu->term_id ) as $i ) {
 			// A link to a page or post the caller may not read does not show its title either.
-			$row_title = (string) $i->title; $row_url = (string) $i->url;
 			if ( 'post_type' === ( $i->type ?? '' ) ) {
 				$linked = d5b_rc_post( $i->object_id, null, false );
 				if ( null === $linked ) { continue; }
-				// The linked content belongs to a category that is switched off: keep the slot, hide what it points at.
-				if ( ! d5b_rc_type_on( (string) $linked->post_type ) ) { $row_title = ''; $row_url = ''; }
+				// The linked content belongs to a category that is switched off: keep the slot, hide everything it points at.
+				if ( ! d5b_rc_type_on( (string) $linked->post_type ) ) { $items[] = array( 'id' => (int) $i->ID, 'type' => 'hidden', 'order' => (int) $i->menu_order ); continue; }
 			}
-			$items[] = array( 'id' => (int) $i->ID, 'title' => $row_title, 'url' => $row_url, 'type' => (string) $i->type, 'object' => (string) $i->object, 'object_id' => (int) $i->object_id, 'parent' => (int) $i->menu_item_parent, 'order' => (int) $i->menu_order );
+			$items[] = array( 'id' => (int) $i->ID, 'title' => (string) $i->title, 'url' => (string) $i->url, 'type' => (string) $i->type, 'object' => (string) $i->object, 'object_id' => (int) $i->object_id, 'parent' => (int) $i->menu_item_parent, 'order' => (int) $i->menu_order );
 		}
 		return array( 'menu' => array( 'id' => (int) $menu->term_id, 'name' => (string) $menu->name, 'slug' => (string) $menu->slug ), 'items' => $items, 'total' => count( $items ) );
 	}
@@ -273,14 +272,14 @@ if ( ! function_exists( 'd5b_rc_h_taxonomy_list' ) ) {
 		array( 'id' ), 'd5b_rc_h_comments_get', function ( array $in ) { return current_user_can( 'read' ) && null !== d5b_rc_comment( $in['id'] ?? 0 ); } );
 
 	d5b_rc_def( 'menus-list', 'menus', 'List menus',
-		'Returns the navigation menus: id, name, slug and how many items each holds. Refuses callers who lack the read capability.',
+		'Returns the navigation menus: id, name, slug and how many items each holds. Refuses callers without edit_theme_options.',
 		array(), array(), 'd5b_rc_h_menus_list', 'd5b_rc_can_menus' );
 	d5b_rc_def( 'menus-items', 'menus', 'List menu items',
-		'Returns the items of one menu in order (title, link, type, parent). Refuses an unknown menu, and leaves out links to pages and posts the caller may not read.',
+		'Returns the items of one menu in order (title, link, type, parent). Refuses callers without edit_theme_options and an unknown menu, leaves out links to pages and posts the caller may not read, and shows a link to content whose category is switched off as type hidden (id and order only).',
 		array( 'menu' => array( 'type' => array( 'integer', 'string' ), 'description' => 'The menu id, slug or name (see menus-list).' ) ),
 		array( 'menu' ), 'd5b_rc_h_menus_items', 'd5b_rc_can_menus' );
 	d5b_rc_def( 'menus-locations', 'menus', 'List menu locations',
-		'Returns the menu locations the theme registers and which menu id each one shows (0 when none). Refuses callers who lack the read capability.',
+		'Returns the menu locations the theme registers and which menu id each one shows (0 when none). Refuses callers without edit_theme_options.',
 		array(), array(), 'd5b_rc_h_menus_locations', 'd5b_rc_can_menus' );
 
 	d5b_rc_def( 'posts-revisions', 'posts', 'List revisions of a post',
