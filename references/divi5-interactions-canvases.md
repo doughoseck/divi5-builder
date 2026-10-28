@@ -14,7 +14,7 @@ hooks; the server's CPU was normal), and with interactions present `DynamicAsset
 `OffCanvasHooks::extract_interaction_target_ids_from_content()`. A second site (Divi 5.9, other host) showed no such cost, so this is
 NOT universal: **measure it.**
 
-1. Time a page 3 times (use the 3rd) before adding the first interaction, and again after. `scripts/hook-profiler.js` names the slow
+1. Time a page 3 times (use the 3rd) before adding the first interaction, and again after. `scripts/site-care/hook-profiler.js` names the slow
    callbacks if it jumps.
 2. If it jumps, do not use interactions on that site. The fallback keeps everything else native:
    - the popup is a normal Divi section (in the page, or in the Theme Builder header for a site-wide one), NOT `disabledOn`;

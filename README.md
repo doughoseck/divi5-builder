@@ -227,119 +227,12 @@ candidates, build, create, assign, restore. Every step is a dry run until `--wri
 every page, before and after. The order, the rules and everything that went wrong the first
 time are in `references/divi5-globalize-site.md`.
 
-## Media and large-file audit: any WordPress site
+## Site care: media audit, updates, go-live, performance
 
-Old sites carry years of uploads nobody uses. This part does not need Divi at all: it works on any WordPress site
-with an administrator's application password.
-
-```bash
-node scripts/media-audit.js scan   <site> --dir audit     # needs the Media audit switch on (read-only)
-node scripts/media-audit.js crawl  <site> --dir audit     # loads every public page: the cross-check
-node scripts/media-audit.js report --dir audit            # REPORT.md + CSV lists, biggest first
-node scripts/media-audit.js db     <site> --dir audit     # what takes the space in the database (read-only)
-```
-
-- **Two findings, kept apart:** media library items nothing refers to, and files on disk that belong to no library
-  item. Plus the biggest files, local video and audio, broken references, and the size of plugins, themes and the
-  site root.
-- **Every library item gets a status:** USED, MAYBE (only a bare number matched; kept as used), BACKGROUND (only
-  revisions, trash or an old builder copy refer to it) or UNUSED. When in doubt, used.
-- **It finds references where they hide:** escaped JSON, serialized PHP, shortcode attributes, block attributes,
-  custom fields, options, theme files, every plugin table. A size, a `-scaled` copy or a `.webp` copy counts for
-  its image.
-- **The crawl is the cross-check.** A file a public page loads can never be on the unused list, and the report says
-  how many such files the database scan alone would have missed. On the first real run that number exposed a form
-  of reference the scan did not know (Divi 5's nested gallery IDs), which is now covered.
-
-**Nothing deletes.** To remove files, quarantine them:
-
-```bash
-node scripts/media-quarantine.js verify  <site> --dir audit                 # baseline: what is already missing
-node scripts/media-quarantine.js plan    --dir audit --batch unused --status UNUSED
-node scripts/media-quarantine.js move    <site> --dir audit --batch unused  # dry run; add --write
-node scripts/media-quarantine.js verify  <site> --dir audit                 # newly missing files, and on which page
-node scripts/media-quarantine.js restore <site> --dir audit --batch unused --needed --write
-```
-
-With the **Media clean-up** switch on, the plugin moves the named files to `wp-content/media-audit-quarantine-<random>/<batch>/` (an unguessable name, closed to
-the web, with a manifest) and can move them back. It has no delete and does not touch the database. The permanent
-step, deleting the quarantine folder, is the site owner's. First real run: a 2.78 GB uploads folder went to 0.8 GB
-with no file missing on any public page. Playbook: `references/wp-media-audit.md`.
-
-## Updating plugins, themes and WordPress: any WordPress site
-
-`scripts/site-updates.js` with the **Updates** switch of the plugin (off by default; an administrator turns it on in Settings > Divi 5 Builder). It runs
-WordPress's own updater, the code behind the Updates screen, one update per request.
-
-```bash
-node scripts/site-updates.js status <site>                       # what is out of date (asks the update servers first)
-node scripts/site-updates.js update <site> --all                 # the plan only; nothing changes without --write
-node scripts/site-updates.js update <site> --all --write         # careful: one at a time, pages checked after each
-node scripts/site-updates.js update <site> --all --fast --write  # small brochure site: all in one go
-node scripts/site-updates.js clear  <site>                       # Divi's generated CSS and the page cache
-```
-
-- **Careful mode** (the default) loads a set of pages before the run and again after every update, and stops at the
-  first update that fails or the first page that got worse (an error page, a printed PHP error, a page cut off or one
-  that lost more than half its content). **Fast mode** runs everything and compares once at the end.
-- After every update the site clears Divi's generated CSS and the page cache by itself. On Divi 5, stale static CSS
-  after a plugin, theme or WordPress update is the usual reason a site looks broken afterwards.
-- A new WordPress release (6.8 to 6.9) needs `--major`; maintenance releases are taken. Premium items with no
-  download on offer (no active licence) are listed as blocked and never tried.
-- An update counts as done only when the installed version, read back from disk, is the new one.
-- There is no rollback: a bad update is undone from a backup. The page check sees errors and broken pages, not a
-  layout that shifted. Playbook: `references/wp-site-updates.md`.
-
-Status when published: plugin updates, the plan, the forced fresh check and the cache clearing have run on a real
-site. Theme updates, WordPress core updates, translations, fast mode and multisite are covered by the tests against a
-fake WordPress only; try them first on a site where a failure does not matter.
-
-## Going live: moving the rebuilt site over the old one
-
-Two scripts and a checklist for the day a rebuilt staging site replaces the live one (`references/wp-go-live.md`):
-
-```bash
-node assets/content-delta.js https://live.example.com https://staging.example.com 2026-09-18T12:31:00 posts pages media
-node assets/site-check.js https://staging.example.com --pages pages.json               # baseline before the move
-node assets/site-check.js https://live.example.com --pages pages.json --old-host staging.example.com   # after it
-```
-
-`content-delta.js` lists what was created or edited on the live site since the staging copy was taken, and whether
-staging has it (public REST, no login). `site-check.js` fetches every listed page and reports missing pages, leftover
-staging-host references, leaked block markup, a `noindex` left on, failed per-page expectations (a grid's card
-count, a form, a link) and redirect rules (removed pages, popup-only post types). The reference covers the rest: what
-to keep from the old root, the wp-config constants a copy loses (such as a form plugin's encryption key), the
-settings to flip, and the same-day checks.
-
-Two small WPCode snippets that came out of the same build: `assets/wpcode-no-single-page.php` (a post type that only
-lives in a grid popup: direct visits redirect, the popup request passes with `noindex`) and
-`assets/wpcode-open-revealed-section.js` (a `#hash` link that opens a section hidden behind a click Interaction).
-
-Two more checks from a real go-live day: `node assets/tracking-compare.js <live> <staging>` (GA4, GTM and Meta pixel ids
-on both homepages, including the official Meta plugin's own loader) and `assets/phone-headings-scan.js`, a console snippet
-that lists only the headings that break at phone width. The reference's last section is the day itself: migration
-tools behind Cloudflare, proving which folder serves a site, what to keep from the old root, expectations drift.
-
-## When a Divi page is slow: measure, don't guess
-
-`scripts/hook-profiler.js` generates a small, temporary, **key-gated, read-only** mu-plugin that times every callback on the
-hooks a front-end request goes through and prints the slowest as one HTML comment. It also compares WordPress core's block
-parser with the parser the site actually runs, on the page's real content, and runs raw CPU benchmarks so you can tell a slow
-server from slow code.
-
-```bash
-node scripts/hook-profiler.js gen ./prof           # d5b-profiler.php + a random key (both git-ignored)
-php  scripts/hook-profiler-test.php ./prof         # 9 local checks, no WordPress needed
-# upload d5b-profiler.php to wp-content/mu-plugins/, then:
-node scripts/hook-profiler.js run https://example.com/some-page/ --key-file ./prof/d5b-profiler.key
-# delete the file from the site when you are done
-```
-
-Why it exists: on one converted Divi 4 site, any Divi **interaction** took pages from ~5 s to 14–17 s. Three plausible theories
-(a slow query, run-time content migrations, OPcache) were each wrong; the profiler found it in a few runs — a per-block cost in
-the theme's own front-end block parser, multiplied by the extra passes interactions trigger. Another site showed no such cost,
-so the advice in `references/divi5-interactions-canvases.md` is simply: time a page before and after your first interaction,
-and there is a native-section + tiny-script fallback if it jumps.
+Separate from page building, and for any WordPress site (Divi or not). Four tools: a read-only media audit, a reversible
+media clean-up (never deletes), a plugin/theme/WordPress updater with page checks, and a go-live kit plus a slow-page
+profiler. The first three need their switch on in Settings > Divi 5 Builder (off by default). Start at
+[`references/site-care/README.md`](references/site-care/README.md).
 
 ## Extending it to new modules
 
@@ -367,10 +260,10 @@ node scripts/blocks-test.js           # block-level edits leave the rest of the 
 php  scripts/permissions-test.php     # who may call each page-building route
 php  scripts/double-load-test.php     # the plugin loaded twice (must-use + normal, two folders) never fatals
 php  scripts/media-audit-test.php     # media audit: what counts as a reference to a file or an attachment ID
-node scripts/media-audit-test.js      # media audit: the classification, the quarantine plan, the report files
+node scripts/site-care/media-audit-test.js      # media audit: the classification, the quarantine plan, the report files
 php  scripts/media-quarantine-test.php   # the quarantine plugin: moves real files in a temp folder and back
 php  scripts/site-updates-test.php    # the updates plugin against a fake WordPress: who may, what it refuses, each kind of update
-node scripts/site-updates-test.js     # the update plan and the before/after page comparison
+node scripts/site-care/site-updates-test.js     # the update plan and the before/after page comparison
 php  scripts/plugin-switches-test.php   # the three switches: off by default, who may flip them, routes absent while off
 php  scripts/plugin-takeover-test.php   # old copies of the four plugins: deactivated, or a notice naming the file to delete
 php  scripts/plugin-settings-test.php   # the Settings > Divi 5 Builder page (and Network Admin)

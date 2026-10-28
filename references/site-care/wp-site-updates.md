@@ -1,6 +1,6 @@
 # Updating plugins, themes and WordPress (any WordPress site)
 
-`scripts/site-updates.js` + the **Updates** part of the `divi5-builder` plugin (`plugin/divi5-builder/parts/`). The plugin runs WordPress's own updater (the code behind the
+`scripts/site-care/site-updates.js` + the **Updates** part of the `divi5-builder` plugin (`plugin/divi5-builder/parts/`). The plugin runs WordPress's own updater (the code behind the
 Updates screen), one update per request; the client decides the order, checks pages, and stops when something breaks.
 
 ## Set-up, once per site
@@ -15,12 +15,12 @@ user who may update: an administrator, on a multisite a network administrator.
 ## The commands
 
 ```bash
-node scripts/site-updates.js status <site>                 # what is out of date (asks the update servers first)
-node scripts/site-updates.js update <site> --all           # the plan only: nothing changes without --write
-node scripts/site-updates.js update <site> --all --write   # careful: one at a time, pages checked after each
-node scripts/site-updates.js update <site> --all --fast --write    # small brochure site: all in one go
-node scripts/site-updates.js update <site> --plugin akismet/akismet.php --write
-node scripts/site-updates.js clear  <site>                 # Divi's generated CSS + the page cache
+node scripts/site-care/site-updates.js status <site>                 # what is out of date (asks the update servers first)
+node scripts/site-care/site-updates.js update <site> --all           # the plan only: nothing changes without --write
+node scripts/site-care/site-updates.js update <site> --all --write   # careful: one at a time, pages checked after each
+node scripts/site-care/site-updates.js update <site> --all --fast --write    # small brochure site: all in one go
+node scripts/site-care/site-updates.js update <site> --plugin akismet/akismet.php --write
+node scripts/site-care/site-updates.js clear  <site>                 # Divi's generated CSS + the page cache
 ```
 
 `<what>` is `--all`, `--plugins`, `--themes`, `--plugin a/a.php[,b/b.php]`, `--theme folder`, `--core`, `--translations`.
@@ -77,5 +77,5 @@ on or off, updates that need FTP credentials (reported as the updater's error).
 ## Tests
 
 `php scripts/site-updates-test.php` (the plugin against a fake WordPress: who may, what it refuses, dry run, each
-kind of update, the lying updater, cache clearing) and `node scripts/site-updates-test.js` (the plan and the page
+kind of update, the lying updater, cache clearing) and `node scripts/site-care/site-updates-test.js` (the plan and the page
 comparison). Both were mutation-tested when written.
