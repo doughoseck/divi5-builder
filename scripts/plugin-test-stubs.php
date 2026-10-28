@@ -40,8 +40,28 @@ function t_set_caps( array $caps ) { $GLOBALS['T_caps'] = $caps; }
 function t_set_multisite( $on ) { $GLOBALS['T_multisite'] = (bool) $on; }
 t_reset(); t_set_caps( array() ); t_set_multisite( false );
 
+// WP_Error as core has it (class-wp-error.php): several codes, several messages per code, data per code (older data kept
+// in additional_data). The plugin may use only these methods. The read-only ->code, ->message and ->data are a test
+// convenience (the first code, its first message, its data) that core does NOT have; a source check in the gate test
+// makes sure no plugin file uses them.
 if ( ! class_exists( 'WP_Error' ) ) {
-	class WP_Error { public $code; public $message; public $data; function __construct( $c = '', $m = '', $d = null ) { $this->code = $c; $this->message = $m; $this->data = $d; } function get_error_message() { return $this->message; } function get_error_code() { return $this->code; } }
+	class WP_Error {
+		public $errors = array(); public $error_data = array(); protected $additional_data = array();
+		function __construct( $code = '', $message = '', $data = '' ) { if ( empty( $code ) ) { return; } $this->add( $code, $message, $data ); }
+		function get_error_codes() { return $this->has_errors() ? array_keys( $this->errors ) : array(); }
+		function get_error_code() { $c = $this->get_error_codes(); return empty( $c ) ? '' : $c[0]; }
+		function get_error_messages( $code = '' ) {
+			if ( empty( $code ) ) { $all = array(); foreach ( (array) $this->errors as $m ) { $all = array_merge( $all, $m ); } return $all; }
+			return $this->errors[ $code ] ?? array();
+		}
+		function get_error_message( $code = '' ) { if ( empty( $code ) ) { $code = $this->get_error_code(); } $m = $this->get_error_messages( $code ); return empty( $m ) ? '' : $m[0]; }
+		function get_error_data( $code = '' ) { if ( empty( $code ) ) { $code = $this->get_error_code(); } return $this->error_data[ $code ] ?? null; }
+		function has_errors() { return ! empty( $this->errors ); }
+		function add( $code, $message, $data = '' ) { $this->errors[ $code ][] = $message; if ( ! empty( $data ) ) { $this->add_data( $data, $code ); } }
+		function add_data( $data, $code = '' ) { if ( empty( $code ) ) { $code = $this->get_error_code(); } if ( isset( $this->error_data[ $code ] ) ) { $this->additional_data[ $code ][] = $this->error_data[ $code ]; } $this->error_data[ $code ] = $data; }
+		function get_all_error_data( $code = '' ) { if ( empty( $code ) ) { $code = $this->get_error_code(); } $d = $this->additional_data[ $code ] ?? array(); if ( isset( $this->error_data[ $code ] ) ) { $d[] = $this->error_data[ $code ]; } return $d; }
+		function __get( $k ) { if ( 'code' === $k ) { return $this->get_error_code(); } if ( 'message' === $k ) { return $this->get_error_message(); } if ( 'data' === $k ) { return $this->get_error_data(); } return null; }
+	}
 }
 // $method and $route as WP_REST_Request::get_method() / get_route() give them (only rest_pre_dispatch tests need them).
 class T_Request { private $p; private $m; private $r; function __construct( array $p = array(), $method = 'GET', $route = '' ) { $this->p = $p; $this->m = $method; $this->r = $route; } function get_param( $k ) { return $this->p[ $k ] ?? null; } function get_params() { return $this->p; } function get_json_params() { return $this->p; } function get_method() { return $this->m; } function get_route() { return $this->r; } }
@@ -150,13 +170,14 @@ function wp_unslash( $v ) { return is_array( $v ) ? array_map( 'wp_unslash', $v 
 //                      ORDER BY id DESC LIMIT n OFFSET m, SHOW TABLES LIKE 'x', DROP TABLE IF EXISTS `x`.
 //   $wpdb->queries     every SQL string sent to query / get_results / get_var, in order
 //   $wpdb->unprepared  those of them that did not come out of $wpdb->prepare() (the audit code must leave this empty)
-//   $wpdb->tables      table name => rows;  $wpdb->fail_insert  true = insert() throws
+//   $wpdb->tables      table name => rows;  $wpdb->fail_insert / fail_update  true = insert() / update() throws
+//   insert() returns 1 and sets insert_id; update() returns the number of rows whose values changed, or false (no table)
 //   T_dbdelta          list of the SQL strings given to dbDelta (which creates an empty table named in its CREATE TABLE)
 //   T_cron             hook => next timestamp   (wp_schedule_event / wp_next_scheduled / wp_clear_scheduled_hook)
 //   T_user_id          what get_current_user_id returns
 if ( ! defined( 'ARRAY_A' ) ) { define( 'ARRAY_A', 'ARRAY_A' ); }
 class T_Wpdb {
-	public $prefix = 'wp_'; public $tables = array(); public $queries = array(); public $unprepared = array(); public $fail_insert = false; public $insert_id = 0; public $suppress_now = false; public $suppress_log = array();
+	public $prefix = 'wp_'; public $tables = array(); public $queries = array(); public $unprepared = array(); public $fail_insert = false; public $fail_update = false; public $insert_id = 0; public $suppress_now = false; public $suppress_log = array();
 	private $prepared = array(); private $next_id = 1;
 	function get_blog_prefix( $id = null ) { return 'wp_' . ( ( null === $id || 1 === (int) $id ) ? '' : (int) $id . '_' ); }
 	function get_charset_collate() { return 'DEFAULT CHARACTER SET utf8mb4'; }
@@ -180,6 +201,21 @@ class T_Wpdb {
 		$data['id'] = $this->next_id++; $this->insert_id = $data['id'];
 		$this->tables[ $table ][] = $data;
 		return 1;
+	}
+	// Like wpdb::update: false on an error (no such table, empty data or where), else the number of rows MySQL reports as
+	// affected, which counts only rows whose values really changed (wpdb does not set CLIENT_FOUND_ROWS).
+	function update( $table, $data, $where, $format = null, $where_format = null ) {
+		if ( $this->fail_update ) { throw new RuntimeException( 'update exploded' ); }
+		if ( ! isset( $this->tables[ $table ] ) || ! is_array( $data ) || ! is_array( $where ) || array() === $data || array() === $where ) { return false; }
+		$changed = 0;
+		foreach ( $this->tables[ $table ] as &$row ) {
+			foreach ( $where as $k => $v ) { if ( ! array_key_exists( $k, $row ) || (string) $row[ $k ] !== (string) $v ) { continue 2; } }
+			$before = $row;
+			foreach ( $data as $k => $v ) { $row[ $k ] = $v; }
+			if ( $before != $row ) { $changed++; }
+		}
+		unset( $row );
+		return $changed;
 	}
 	function get_var( $sql ) {
 		$this->note( $sql );

@@ -4,8 +4,9 @@
  * the hooks (admin_init -> d5b_audit_maybe_install, the daily d5b_audit_prune event, activation and deactivation).
  *
  * The table is {prefix}d5b_audit, one per site. Arguments are stored redacted (secret-looking keys, long strings,
- * a thrown handler's exception text) and capped at 8 KB. Nothing here throws: a log that cannot be written must
- * never break the call it describes.
+ * a thrown handler's exception text) and capped at 8 KB (1 KB for a refused call). Nothing here throws. The run
+ * wrapper writes a row with status 'started' before a handler runs and updates it afterwards; when that first row
+ * cannot be written the wrapper refuses the call (fail closed), so no ability runs unaudited.
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
@@ -156,15 +157,60 @@ if ( ! function_exists( 'd5b_audit_redact' ) ) {
 	}
 }
 
-if ( ! function_exists( 'd5b_audit_write' ) ) {
-	/** One row. Never throws; false when nothing was written (no table, no database, a database error). */
-	function d5b_audit_write( string $ability, array $args, string $status, int $duration_ms ): bool {
+if ( ! function_exists( 'd5b_audit_args_cap' ) ) {
+	/** Bytes of encoded args a row may hold: 1 KB for a refused call (forbidden, bad input), which damps flooding; else 8 KB. */
+	function d5b_audit_args_cap( string $status ): int {
+		return in_array( $status, array( 'forbidden', 'invalid_input' ), true ) ? 1024 : 8192;
+	}
+}
+
+if ( ! function_exists( 'd5b_audit_args_json' ) ) {
+	/** The args column: redacted JSON, or a small valid JSON placeholder when it is over the cap for $status. */
+	function d5b_audit_args_json( array $args, string $status ): string {
+		$json = json_encode( d5b_audit_redact( $args ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR );
+		if ( ! is_string( $json ) ) { $json = '{"_unencodable":true}'; }
+		if ( strlen( $json ) > d5b_audit_args_cap( $status ) ) { $json = '{"_truncated":true,"bytes":' . strlen( $json ) . '}'; }
+		return $json;
+	}
+}
+
+if ( ! function_exists( 'd5b_audit_update' ) ) {
+	/**
+	 * Puts the final status and duration on a row written earlier (status 'started'). With $args the args column is
+	 * written again too (a thrown handler's _exception, or the smaller cap of a refusal). Never throws.
+	 * @return bool true when the row was changed
+	 */
+	function d5b_audit_update( int $id, string $status, int $duration_ms, ?array $args = null ): bool {
 		try {
 			global $wpdb;
-			if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return false; }
-			$json = json_encode( d5b_audit_redact( $args ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR );
-			if ( ! is_string( $json ) ) { $json = '{"_unencodable":true}'; }
-			if ( strlen( $json ) > 8192 ) { $json = '{"_truncated":true,"bytes":' . strlen( $json ) . '}'; }
+			if ( $id < 1 || ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return false; }
+			$status = d5b_audit_str_cut( function_exists( 'wp_check_invalid_utf8' ) ? (string) wp_check_invalid_utf8( $status, true ) : $status, 64 );
+			$data   = array( 'status' => $status, 'duration_ms' => max( 0, $duration_ms ) );
+			$fmt    = array( '%s', '%d' );
+			if ( null !== $args ) { $data['args'] = d5b_audit_args_json( $args, $status ); $fmt[] = '%s'; }
+			$quiet = method_exists( $wpdb, 'suppress_errors' ) ? $wpdb->suppress_errors( true ) : null;
+			try {
+				$n = $wpdb->update( d5b_audit_table(), $data, array( 'id' => $id ), $fmt, array( '%d' ) );
+			} finally {
+				if ( null !== $quiet ) { $wpdb->suppress_errors( $quiet ); }
+			}
+			return is_int( $n ) && $n > 0;
+		} catch ( Throwable $e ) {
+			return false;
+		}
+	}
+}
+
+if ( ! function_exists( 'd5b_audit_write' ) ) {
+	/**
+	 * One row. Never throws.
+	 * @return int the new row's id; 0 when nothing was written (no table, no database, a database error)
+	 */
+	function d5b_audit_write( string $ability, array $args, string $status, int $duration_ms ): int {
+		try {
+			global $wpdb;
+			if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return 0; }
+			$json = d5b_audit_args_json( $args, $status );
 			$ip = isset( $_SERVER['REMOTE_ADDR'] ) && is_string( $_SERVER['REMOTE_ADDR'] ) ? $_SERVER['REMOTE_ADDR'] : '';
 			if ( false === filter_var( $ip, FILTER_VALIDATE_IP ) ) { $ip = ''; }
 			// A real wpdb::insert drops the whole row on invalid UTF-8; the args are JSON already, so only these two need it.
@@ -193,9 +239,10 @@ if ( ! function_exists( 'd5b_audit_write' ) ) {
 			} finally {
 				if ( null !== $quiet ) { $wpdb->suppress_errors( $quiet ); }
 			}
-			return false !== $done && 0 !== $done;
+			if ( false === $done || 0 === $done ) { return 0; }
+			return max( 0, (int) $wpdb->insert_id );
 		} catch ( Throwable $e ) {
-			return false;
+			return 0;
 		}
 	}
 }

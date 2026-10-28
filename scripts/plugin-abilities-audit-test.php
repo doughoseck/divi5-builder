@@ -8,8 +8,10 @@
  * Set D5B_PLUGIN_DIR to test another copy of plugin/divi5-builder (used for mutation testing).
  *
  * The promises under test: every ability call writes exactly one row; secrets, long strings and a thrown handler's
- * exception text are masked before they are stored; the args column is valid JSON of at most 8 KB; rows older than
- * 30 days (and only those) are pruned; a missing table never breaks a call; every SQL value goes through prepare();
+ * exception text are masked before they are stored; the args column is valid JSON of at most 8 KB (1 KB for a refused
+ * call); the row is written (status started) before the handler runs, so a fatal leaves it; a table that is missing is
+ * repaired, and one that cannot be made refuses the call (audit_unavailable); rows older than
+ * 30 days (and only those) are pruned; the audit writer never throws; every SQL value goes through prepare();
  * the admin list needs the settings capability and escapes every field. (Uninstall is in plugin-uninstall-test.php.)
  */
 $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
@@ -21,6 +23,18 @@ require $dir . '/inc/abilities/categories.php';
 require $dir . '/inc/abilities/register.php';
 require $dir . '/inc/abilities/audit.php';
 require $dir . '/inc/settings.php';
+
+// ---- child: a handler that dies for real (memory exhausted, or exit). The shutdown function prints what the table holds.
+if ( isset( $argv[1] ) && in_array( $argv[1], array( '--fatal', '--exit' ), true ) ) {
+	ini_set( 'memory_limit', '64M' );
+	d5b_audit_maybe_install(); d5b_abilities_set_master( true, 't' ); $GLOBALS['T_user_id'] = 1;
+	$die = '--fatal' === $argv[1] ? function () { $a = array(); while ( true ) { $a[] = str_repeat( 'x', 1 << 20 ); } } : function () { exit( 0 ); };
+	d5b_ability_add( array( 'name' => 'divi5-builder/posts-die', 'category' => 'posts', 'label' => 'd', 'description' => 'x', 'handler' => $die, 'permission' => function () { return true; } ) );
+	register_shutdown_function( function () { $r = $GLOBALS['wpdb']->tables[ d5b_audit_table() ] ?? array(); echo 'ROWS=' . count( $r ) . ' STATUS=' . implode( ',', array_column( $r, 'status' ) ) . "\n"; } );
+	d5b_ability_run( 'divi5-builder/posts-die', array( 'q' => 1 ) );
+	echo "NOT REACHED\n";
+	exit( 0 );
+}
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . ( is_string( $detail ) ? $detail : json_encode( $detail ) ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
@@ -54,7 +68,7 @@ installed();
 $GLOBALS['T_user_id'] = 7;
 $ok = d5b_audit_write( 'divi5-builder/posts-list', array( 'search' => 'hello', 'password' => 'hunter2', 'application_password' => 'abcd efgh', 'token' => 't0k', 'api_key' => 'k', 'Authorization' => 'x', 'cookie' => 'c', 'nonce' => 'n', 'secret' => 's', 'nested' => array( 'user_pass' => 'p', 'keep' => 'me', 'deeper' => array( 'access_token' => 'zzz', 'ok' => 1 ) ) ), 'ok', 12 );
 $a = last_args(); $r = rows()[0];
-check( 'write returns true and stores one row', true === $ok && 1 === count( rows() ) );
+check( 'write returns the new row id (an int) and stores one row', is_int( $ok ) && $ok > 0 && 1 === count( rows() ) && $ok === rows()[0]['id'], $ok );
 check( 'row fields: ability, user, status, duration, UTC time, ip', 'divi5-builder/posts-list' === $r['ability'] && 7 === $r['user_id'] && 'ok' === $r['status'] && 12 === $r['duration_ms'] && '203.0.113.9' === $r['ip'] && 1 === preg_match( '/^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/', $r['created_at'] ) && abs( strtotime( $r['created_at'] . ' UTC' ) - time() ) < 5, $r );
 check( 'write stores redacted args: password, application_password, token and the other secret keys show [redacted]', '[redacted]' === $a['password'] && '[redacted]' === $a['application_password'] && '[redacted]' === $a['token'] && '[redacted]' === $a['api_key'] && '[redacted]' === $a['Authorization'] && '[redacted]' === $a['cookie'] && '[redacted]' === $a['nonce'] && '[redacted]' === $a['secret'], $a );
 check( 'other values are kept', 'hello' === $a['search'] && 'me' === $a['nested']['keep'] && 1 === $a['nested']['deeper']['ok'] );
@@ -150,19 +164,19 @@ check( 'list with no table: empty array', array() === d5b_audit_list( array() ) 
 $GLOBALS['T_dbdelta_fail'] = true; // the table cannot be made at all
 $ok = true; $threw = false;
 try { $ok = d5b_audit_write( 'a/b', array( 'x' => 1 ), 'ok', 1 ); } catch ( Throwable $t ) { $threw = true; }
-check( 'write with no table that cannot be made: false, no exception, nothing stored, version not set', false === $ok && ! $threw && array() === $wpdb->tables && false === get_option( 'd5b_db_version' ) );
+check( 'write with no table that cannot be made: 0, no exception, nothing stored, version not set', 0 === $ok && ! $threw && array() === $wpdb->tables && false === get_option( 'd5b_db_version' ) );
 $wpdb->fail_insert = true;
-check( 'a database that throws on insert: write returns false, never throws', false === d5b_audit_write( 'a/b', array(), 'ok', 1 ) );
+check( 'a database that throws on insert: write returns 0, never throws', 0 === d5b_audit_write( 'a/b', array(), 'ok', 1 ) );
 $wpdb->fail_insert = false; $GLOBALS['T_dbdelta_fail'] = false;
 delete_transient( 'd5b_audit_install_failed' ); d5b_audit_install_state( 'reset' ); // the back-off has passed, a later request
-check( 'write with no table: the table is made on the spot and the row stored', true === d5b_audit_write( 'a/b', array(), 'ok', 1 ) && 1 === count( rows() ) && '1' === get_option( 'd5b_db_version' ) );
+check( 'write with no table: the table is made on the spot and the row stored', d5b_audit_write( 'a/b', array(), 'ok', 1 ) > 0 && 1 === count( rows() ) && '1' === get_option( 'd5b_db_version' ) );
 echo "self-repair: table dropped, version still says installed\n";
 installed();
 unset( $wpdb->tables['wp_d5b_audit'] ); d5b_audit_install_state( 'reset' ); // a later request
 d5b_audit_maybe_install();
 check( 'maybe_install alone does not notice (version matches), as designed', array() === $wpdb->tables );
 $ok = d5b_audit_write( 'a/b', array( 'x' => 1 ), 'ok', 1 );
-check( 'the next write repairs the table and stores the row', true === $ok && 1 === count( rows() ) && '1' === get_option( 'd5b_db_version' ), array( $ok, $wpdb->tables ) );
+check( 'the next write repairs the table and stores the row', $ok > 0 && 1 === count( rows() ) && '1' === get_option( 'd5b_db_version' ), array( $ok, $wpdb->tables ) );
 check( 'the repair retried the insert only once (no loop) and used prepared SHOW TABLES with an escaped name', array() === $wpdb->unprepared && false !== strpos( implode( "\n", $wpdb->queries ), 'wp' . str_repeat( chr( 92 ), 2 ) . '_d5b' ), $wpdb->queries );
 echo "subsite: switches are network-wide, no admin_init ever ran there\n";
 installed(); t_set_multisite( true );
@@ -178,7 +192,7 @@ t_set_multisite( false );
 echo "install bounded: CREATE denied\n";
 fresh(); $GLOBALS['T_dbdelta_fail'] = true;
 for ( $i = 0; $i < 5; $i++ ) { $r5 = d5b_audit_write( 'a/b', array(), 'ok', 1 ); }
-check( 'CREATE denied: 5 writes in one request run dbDelta exactly once, all return false', 1 === count( $GLOBALS['T_dbdelta'] ) && false === $r5 && array() === $wpdb->tables, count( $GLOBALS['T_dbdelta'] ) );
+check( 'CREATE denied: 5 writes in one request run dbDelta exactly once, all return 0', 1 === count( $GLOBALS['T_dbdelta'] ) && 0 === $r5 && array() === $wpdb->tables, count( $GLOBALS['T_dbdelta'] ) );
 d5b_audit_maybe_install(); d5b_audit_maybe_install();
 check( '... and maybe_install in the same request adds none', 1 === count( $GLOBALS['T_dbdelta'] ) );
 $saved_t = $GLOBALS['T_transients']; $GLOBALS['T_transients'] = array(); // transient storage that does not persist: the per-request flag alone must hold
@@ -208,7 +222,7 @@ installed(); unset( $wpdb->tables['wp_d5b_audit'] ); d5b_audit_install_state( 'r
 $GLOBALS['T_dbdelta_throw'] = true;
 $r = d5b_audit_write( 'a/b', array(), 'ok', 1 );
 $GLOBALS['T_dbdelta_throw'] = false;
-check( 'maybe_install throwing inside the repair: write returns false, never throws', false === $r );
+check( 'maybe_install throwing inside the repair: write returns 0, never throws', 0 === $r );
 check( 'suppress_errors is back to its prior value afterwards (not left suppressed)', false === $wpdb->suppress_now && array( true, false ) === array_slice( $wpdb->suppress_log, -2 ), $wpdb->suppress_log );
 
 echo "utf-8\n";
@@ -216,7 +230,7 @@ installed();
 d5b_audit_write( "ab\xB1c", array(), "st\xB1atus", 1 );
 check( 'invalid UTF-8 in ability and status is stripped before insert (a real wpdb would drop the row)', 1 === count( rows() ) && 'abc' === rows()[0]['ability'] && 'status' === rows()[0]['status'], rows() );
 fresh(); unset( $GLOBALS['wpdb'] );
-check( 'no $wpdb at all: write false, list empty, prune 0, install quiet', false === d5b_audit_write( 'a/b', array(), 'ok', 1 ) && array() === d5b_audit_list( array() ) && 0 === d5b_audit_prune() && null === d5b_audit_maybe_install() );
+check( 'no $wpdb at all: write 0, list empty, prune 0, install quiet', 0 === d5b_audit_write( 'a/b', array(), 'ok', 1 ) && array() === d5b_audit_list( array() ) && 0 === d5b_audit_prune() && null === d5b_audit_maybe_install() );
 t_wpdb_reset();
 fresh(); $wpdb = $GLOBALS['wpdb'];
 $wpdb->tables = array(); update_option( 'd5b_db_version', '1' ); // version says installed, table is gone (dropped by hand)
@@ -243,6 +257,53 @@ check( 'throwing handler: one more row, status internal_error, caller gets the f
 check( 'that row holds the exception class, capped at 300 and with the URL password and token masked', 0 === strpos( $ex, 'RuntimeException: cannot reach' ) && mb_strlen( $ex, 'UTF-8' ) <= 300 && false === strpos( $ex, 'topsecret' ) && false === strpos( $ex, 'abc999' ) && false === strpos( $res->get_error_message(), 'topsecret' ), $ex );
 d5b_ability_run( 'divi5-builder/nothing-here', array() );
 check( 'an unknown ability is logged once too (not_found)', 4 === count( rows() ) && 'not_found' === rows()[3]['status'] );
+
+echo "write-ahead and fail closed (break-it Important 4)\n";
+installed(); d5b_abilities_set_master( true, 'tester' ); $GLOBALS['T_user_id'] = 3; $GLOBALS['T_seen'] = null;
+d5b_ability_add( array( 'name' => 'divi5-builder/posts-peek', 'category' => 'posts', 'label' => 'a', 'description' => 'x', 'permission' => function ( array $i ) { return true; },
+	'handler' => function ( array $i ) { $GLOBALS['T_seen'] = rows(); throw new Error( 'simulated fatal' ); } ) );
+$res = d5b_ability_run( 'divi5-builder/posts-peek', array( 'id' => 2 ) );
+check( 'inside the handler the row already exists, status started, args stored (so a fatal leaves it)', is_array( $GLOBALS['T_seen'] ) && 1 === count( $GLOBALS['T_seen'] ) && 'started' === $GLOBALS['T_seen'][0]['status'] && '{"id":2}' === $GLOBALS['T_seen'][0]['args'], $GLOBALS['T_seen'] );
+check( 'a handler that throws (an Error too): the same row becomes internal_error with the _exception, still one row', 1 === count( rows() ) && 'internal_error' === rows()[0]['status'] && 0 === strpos( last_args()['_exception'], 'Error: simulated fatal' ) && is_wp_error( $res ), rows() );
+$php = escapeshellarg( PHP_BINARY ); $self = escapeshellarg( __FILE__ );
+foreach ( array( '--fatal' => 'memory exhausted', '--exit' => 'exit()' ) as $flag => $what ) {
+	$out = array(); exec( $php . ' -d max_execution_time=30 ' . $self . ' ' . $flag . ' 2>&1', $out ); $line = implode( ' ', $out );
+	check( "a handler that ends the request ($what) leaves one row with status started", false !== strpos( $line, 'ROWS=1 STATUS=started' ) && false === strpos( $line, 'NOT REACHED' ), $line );
+}
+fresh(); $GLOBALS['T_dbdelta_fail'] = true; d5b_abilities_set_master( true, 'tester' ); $GLOBALS['T_ran'] = 0;
+d5b_ability_add( array( 'name' => 'divi5-builder/posts-served', 'category' => 'posts', 'label' => 'a', 'description' => 'x', 'permission' => function ( array $i ) { return true; }, 'handler' => function ( array $i ) { $GLOBALS['T_ran']++; return array( 'data' => 'served' ); } ) );
+$r1 = d5b_ability_run( 'divi5-builder/posts-served', array() ); $r2 = d5b_ability_run( 'divi5-builder/posts-served', array() );
+check( 'CREATE denied (no table, repair impossible): every call is refused with audit_unavailable and the handler never runs', is_wp_error( $r1 ) && 'audit_unavailable' === $r1->get_error_code() && is_wp_error( $r2 ) && 'audit_unavailable' === $r2->get_error_code() && 0 === $GLOBALS['T_ran'] && array() === $wpdb->tables, array( $r1, $r2 ) );
+$GLOBALS['T_dbdelta_fail'] = false;
+installed();
+$id = d5b_audit_write( 'a/b', array( 'x' => 1 ), 'started', 0 );
+check( 'd5b_audit_update sets status and duration on that row and leaves the args when none are given', true === d5b_audit_update( $id, 'ok', 42 ) && 'ok' === rows()[0]['status'] && 42 === rows()[0]['duration_ms'] && '{"x":1}' === rows()[0]['args'] );
+check( 'd5b_audit_update on an id that does not exist, or id 0: false', false === d5b_audit_update( 999, 'ok', 1 ) && false === d5b_audit_update( 0, 'ok', 1 ) );
+$wpdb->fail_update = true; $threw = false;
+try { $u = d5b_audit_update( $id, 'x', 1 ); } catch ( Throwable $t ) { $threw = true; }
+$wpdb->fail_update = false;
+check( 'd5b_audit_update never throws (a database that throws: false)', ! $threw && false === $u );
+fresh();
+check( 'd5b_audit_update with no table: false, no exception', false === d5b_audit_update( 1, 'ok', 1 ) );
+
+echo "flood cap: refused calls store at most 1 KB of args\n";
+installed(); d5b_abilities_set_master( true, 'tester' );
+$pad = array(); for ( $i = 1; $i <= 7; $i++ ) { $pad[ 'p' . $i ] = str_repeat( 'z', 1000 ); }
+d5b_ability_add( array( 'name' => 'divi5-builder/posts-nope', 'category' => 'posts', 'label' => 'a', 'description' => 'x', 'permission' => function ( array $i ) { return false; }, 'handler' => function ( array $i ) { return 1; } ) );
+d5b_ability_add( array( 'name' => 'divi5-builder/posts-bad', 'category' => 'posts', 'label' => 'a', 'description' => 'x', 'permission' => function ( array $i ) { return true; }, 'handler' => function ( array $i ) { return new WP_Error( 'invalid_input', 'no' ); } ) );
+d5b_ability_add( array( 'name' => 'divi5-builder/posts-fine', 'category' => 'posts', 'label' => 'a', 'description' => 'x', 'permission' => function ( array $i ) { return true; }, 'handler' => function ( array $i ) { return 1; } ) );
+for ( $i = 0; $i < 50; $i++ ) { d5b_ability_permit( 'divi5-builder/posts-nope', $pad ); }
+$sizes = array_map( function ( $r ) { return strlen( $r['args'] ); }, rows() );
+check( '50 refused permission checks with 7 KB of input each: every row holds a placeholder of at most 1 KB', 50 === count( rows() ) && max( $sizes ) <= 1024 && true === last_args()['_truncated'], max( $sizes ) );
+d5b_ability_run( 'divi5-builder/posts-nope', $pad );
+check( 'the same through a direct run: forbidden, at most 1 KB', 'forbidden' === rows()[50]['status'] && strlen( rows()[50]['args'] ) <= 1024 );
+d5b_ability_run( 'divi5-builder/posts-bad', $pad );
+check( 'bad input (invalid_input from the handler): the started row is rewritten to at most 1 KB', 'invalid_input' === rows()[51]['status'] && strlen( rows()[51]['args'] ) <= 1024, rows()[51] );
+d5b_ability_run( 'divi5-builder/posts-fine', $pad );
+check( 'a successful call keeps the 8 KB cap (the same 7 KB input is stored whole)', 'ok' === rows()[52]['status'] && strlen( rows()[52]['args'] ) > 7000 && 7 === count( last_args() ), strlen( rows()[52]['args'] ) );
+$small = array( 'q' => 'short' );
+d5b_ability_permit( 'divi5-builder/posts-nope', $small );
+check( 'a small refused input is stored as it is', array( 'q' => 'short' ) === last_args() );
 
 echo "the admin list\n";
 installed();

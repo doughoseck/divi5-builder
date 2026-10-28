@@ -101,31 +101,75 @@ if ( ! function_exists( 'd5b_ability_audit' ) ) {
 	}
 }
 
-if ( ! function_exists( 'd5b_ability_permit' ) ) {
-	/** @return bool|WP_Error true to let the call run; a refusal is logged with status 'forbidden'. */
-	function d5b_ability_permit( string $name, $input ) {
-		$start = microtime( true );
-		$args  = is_array( $input ) ? $input : array();
-		$defs  = d5b_ability_defs();
-		$ok    = false;
-		$out   = false;
-		if ( isset( $defs[ $name ] ) && d5b_abilities_master_on() && d5b_abilities_category_on( $defs[ $name ]['category'] ) && is_callable( $defs[ $name ]['permission'] ?? null ) ) {
-			try {
-				$out = call_user_func( $defs[ $name ]['permission'], $args );
-				$ok  = true === $out;
-			} catch ( Throwable $e ) {
-				$out = false;
-				$ok  = false;
-			}
+if ( ! function_exists( 'd5b_ability_ms_since' ) ) {
+	function d5b_ability_ms_since( float $start ): int { return (int) round( ( microtime( true ) - $start ) * 1000 ); }
+}
+
+if ( ! function_exists( 'd5b_ability_check' ) ) {
+	/**
+	 * The one gate: the master switch, the ability's category switch and its permission callback. Writes no audit row
+	 * and never throws. Both the permission callback core calls and the run wrapper ask it, so a direct PHP call to the
+	 * wrapper meets the same switches and capabilities as a call through core.
+	 *
+	 * @return true|false|WP_Error true only when the call may run
+	 */
+	function d5b_ability_check( string $name, array $args ) {
+		$defs = d5b_ability_defs();
+		if ( ! isset( $defs[ $name ] ) || ! d5b_abilities_master_on() || ! d5b_abilities_category_on( (string) ( $defs[ $name ]['category'] ?? '' ) ) ) { return false; }
+		if ( ! is_callable( $defs[ $name ]['permission'] ?? null ) ) { return false; }
+		try {
+			$out = call_user_func( $defs[ $name ]['permission'], $args );
+		} catch ( Throwable $e ) {
+			return false;
 		}
-		if ( $ok ) { return true; }
-		d5b_ability_audit( $name, $args, 'forbidden', (int) round( ( microtime( true ) - $start ) * 1000 ) );
+		if ( true === $out ) { return true; }
 		return is_wp_error( $out ) ? $out : false;
 	}
 }
 
+if ( ! function_exists( 'd5b_ability_clean_error' ) ) {
+	/** A WP_Error on its way out: messages and data go through the scrubber when it is loaded. */
+	function d5b_ability_clean_error( WP_Error $e ): WP_Error {
+		return function_exists( 'd5b_ability_scrub_error' ) ? d5b_ability_scrub_error( $e ) : $e;
+	}
+}
+
+if ( ! function_exists( 'd5b_ability_permit' ) ) {
+	/** @return bool|WP_Error true to let the call run; a refusal is logged with status 'forbidden' (one row). */
+	function d5b_ability_permit( string $name, $input ) {
+		$start = microtime( true );
+		$args  = is_array( $input ) ? $input : array();
+		$out   = d5b_ability_check( $name, $args );
+		if ( true === $out ) { return true; }
+		d5b_ability_audit( $name, $args, 'forbidden', d5b_ability_ms_since( $start ) );
+		return is_wp_error( $out ) ? d5b_ability_clean_error( $out ) : false;
+	}
+}
+
+if ( ! function_exists( 'd5b_ability_audit_start' ) ) {
+	/** Writes the 'started' row before a handler runs. @return int its id, 0 when it could not be written */
+	function d5b_ability_audit_start( string $name, array $args ): int {
+		if ( ! function_exists( 'd5b_audit_write' ) ) { return 0; }
+		try { return max( 0, (int) d5b_audit_write( $name, $args, 'started', 0 ) ); } catch ( Throwable $e ) { return 0; }
+	}
+}
+
+if ( ! function_exists( 'd5b_ability_audit_finish' ) ) {
+	/** Puts the final status and duration on the 'started' row; args (when given) replace the stored ones. Never throws. */
+	function d5b_ability_audit_finish( int $id, string $status, int $ms, ?array $args ): void {
+		if ( ! function_exists( 'd5b_audit_update' ) ) { return; }
+		try { d5b_audit_update( $id, $status, $ms, $args ); } catch ( Throwable $e ) { unset( $e ); }
+	}
+}
+
 if ( ! function_exists( 'd5b_ability_run' ) ) {
-	/** @return mixed the handler's result (secrets removed) or a WP_Error; one audit row either way. */
+	/**
+	 * Runs one ability: the gate again (a direct PHP call skips core's permission callback), then the audit row with
+	 * status 'started', then the handler, then the row gets its final status. A fatal error or exit inside the handler
+	 * leaves the 'started' row. When that row cannot be written the handler does not run (audit_unavailable).
+	 *
+	 * @return mixed the handler's result (secrets removed) or a WP_Error; one audit row either way.
+	 */
 	function d5b_ability_run( string $name, $input ) {
 		$start = microtime( true );
 		$args  = is_array( $input ) ? $input : array();
@@ -134,10 +178,20 @@ if ( ! function_exists( 'd5b_ability_run' ) ) {
 			d5b_ability_audit( $name, $args, 'not_found', 0 );
 			return new WP_Error( 'ability_not_found', 'This ability is not available.' );
 		}
+		$gate = d5b_ability_check( $name, $args );
+		if ( true !== $gate ) {
+			d5b_ability_audit( $name, $args, 'forbidden', d5b_ability_ms_since( $start ) );
+			return d5b_ability_clean_error( is_wp_error( $gate ) ? $gate : new WP_Error( 'forbidden', 'You do not have permission to use this ability, or it is switched off.' ) );
+		}
+		$id = d5b_ability_audit_start( $name, $args );
+		if ( $id < 1 ) {
+			return new WP_Error( 'audit_unavailable', 'The activity log cannot be written on this site, so the ability was not run.' );
+		}
 		$audit_args = $args;
 		try {
 			$result = call_user_func( $defs[ $name ]['handler'], $args );
-			if ( function_exists( 'd5b_ability_scrub' ) && ! is_wp_error( $result ) ) { $result = d5b_ability_scrub( $result ); }
+			if ( is_wp_error( $result ) ) { $result = d5b_ability_clean_error( $result ); }
+			elseif ( function_exists( 'd5b_ability_scrub' ) ) { $result = d5b_ability_scrub( $result ); }
 			$status = is_wp_error( $result ) ? (string) $result->get_error_code() : 'ok';
 		} catch ( Throwable $e ) {
 			// The class and message go to the audit row only; the caller gets a fixed message.
@@ -145,7 +199,8 @@ if ( ! function_exists( 'd5b_ability_run' ) ) {
 			$result = new WP_Error( 'internal_error', 'Something went wrong on the site. The details are in the activity log.' );
 			$status = 'internal_error';
 		}
-		d5b_ability_audit( $name, $audit_args, $status, (int) round( ( microtime( true ) - $start ) * 1000 ) );
+		// The stored args are written again only when they change (_exception) or a refusal caps them smaller.
+		d5b_ability_audit_finish( $id, $status, d5b_ability_ms_since( $start ), 'ok' === $status ? null : $audit_args );
 		return $result;
 	}
 }

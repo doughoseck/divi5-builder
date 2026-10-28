@@ -21,10 +21,13 @@ if ( isset( $argv[1] ) && '--bare' === $argv[1] ) {
 	require $dir . '/inc/parts.php'; require $dir . '/inc/switches.php'; require $dir . '/inc/abilities/categories.php'; require $dir . '/inc/abilities/register.php';
 	if ( function_exists( 'd5b_audit_write' ) || function_exists( 'd5b_ability_scrub' ) ) { echo "BARE_NOT_BARE\n"; exit( 1 ); }
 	d5b_abilities_set_master( true, 't' );
-	d5b_ability_add( array( 'name' => 'divi5-builder/posts-a', 'category' => 'posts', 'label' => 'a', 'description' => 'x', 'handler' => function ( array $i ) { return array( 'user_pass' => 'kept-without-scrubber' ); }, 'permission' => function ( array $i ) { return false; } ) );
+	// No audit writer: the handler must not run unaudited (fail closed), and nothing is fatal.
+	$GLOBALS['T_ran'] = 0;
+	d5b_ability_add( array( 'name' => 'divi5-builder/posts-a', 'category' => 'posts', 'label' => 'a', 'description' => 'x', 'handler' => function ( array $i ) { $GLOBALS['T_ran']++; return array( 'user_pass' => 'kept-without-scrubber' ); }, 'permission' => function ( array $i ) { return true; } ) );
+	d5b_ability_add( array( 'name' => 'divi5-builder/posts-b', 'category' => 'posts', 'label' => 'b', 'description' => 'x', 'handler' => function ( array $i ) { $GLOBALS['T_ran']++; return 1; }, 'permission' => function ( array $i ) { return false; } ) );
 	$r = d5b_ability_run( 'divi5-builder/posts-a', array() );
-	$p = d5b_ability_permit( 'divi5-builder/posts-a', array() );
-	echo ( array( 'user_pass' => 'kept-without-scrubber' ) === $r && false === $p ) ? "BARE_OK\n" : "BARE_BAD\n";
+	$p = d5b_ability_permit( 'divi5-builder/posts-b', array() );
+	echo ( is_wp_error( $r ) && 'audit_unavailable' === $r->get_error_code() && 0 === $GLOBALS['T_ran'] && false === $p ) ? "BARE_OK\n" : "BARE_BAD\n";
 	exit( 0 );
 }
 
@@ -108,9 +111,18 @@ function fresh( $master, array $cats_off = array() ) {
 function fire_both() { t_fire( 'wp_abilities_api_categories_init' ); t_fire( 'wp_abilities_api_init' ); }
 
 // audit and scrub doubles (the real ones arrive in Tasks 3 and 5): the wrapper must call them with the right arguments
-$GLOBALS['T_audit'] = array(); $GLOBALS['T_scrub'] = array();
-if ( true ) { function d5b_audit_write( string $ability, array $args, string $status, int $duration_ms ): bool { $GLOBALS['T_audit'][] = compact( 'ability', 'args', 'status', 'duration_ms' ); return true; }
+// The writer returns the row id (its place in T_audit, from 1) and d5b_audit_update changes that row, as the real ones do.
+$GLOBALS['T_audit'] = array(); $GLOBALS['T_scrub'] = array(); $GLOBALS['T_audit_fail'] = false;
+if ( true ) { function d5b_audit_write( string $ability, array $args, string $status, int $duration_ms ): int { if ( $GLOBALS['T_audit_fail'] ) { return 0; } $GLOBALS['T_audit'][] = compact( 'ability', 'args', 'status', 'duration_ms' ); return count( $GLOBALS['T_audit'] ); }
+function d5b_audit_update( int $id, string $status, int $duration_ms, ?array $args = null ): bool {
+	if ( ! isset( $GLOBALS['T_audit'][ $id - 1 ] ) ) { return false; }
+	$GLOBALS['T_audit'][ $id - 1 ]['status'] = $status; $GLOBALS['T_audit'][ $id - 1 ]['duration_ms'] = $duration_ms;
+	if ( null !== $args ) { $GLOBALS['T_audit'][ $id - 1 ]['args'] = $args; }
+	return true;
+}
 function d5b_ability_scrub( $value ) { $GLOBALS['T_scrub'][] = $value; if ( is_array( $value ) ) { unset( $value['user_pass'] ); } return $value; } }
+
+$GLOBALS['T_real_defs'] = d5b_ability_defs(); // the shipped definitions, for the direct-run checks below
 
 echo "the test definitions\n";
 load_test_defs();
@@ -242,13 +254,73 @@ check( 'a permission callback that returns a truthy non-true value is a refusal'
 fresh( false );
 check( 'master off: permit refuses even a def whose permission says yes', false === d5b_ability_permit( 'divi5-builder/posts-list', array() ) );
 
+// ---- the run wrapper gates itself (break-it Important 1): a direct PHP call meets the same switches and capabilities
+echo "direct run: the wrapper asks the same gate as the permission callback\n";
+if ( ! function_exists( 'get_bloginfo' ) ) { function get_bloginfo( $k = '' ) { return '6.9'; } }
+if ( ! function_exists( 'get_site_transient' ) ) { function get_site_transient( $k ) { return false; } }
+const ADMIN_CAPS = array( 'read', 'manage_options', 'edit_theme_options', 'list_users' );
+function real_site( bool $master, array $off = array(), array $caps = ADMIN_CAPS ) {
+	t_reset(); t_set_multisite( false ); t_set_caps( $caps ); $GLOBALS['T_user_id'] = 1; $GLOBALS['T_audit'] = array(); $GLOBALS['T_scrub'] = array();
+	d5b_ability_registry( $GLOBALS['T_real_defs'] );
+	if ( $master ) { d5b_abilities_set_master( true, 'tester' ); }
+	foreach ( $off as $c ) { d5b_abilities_set_category( $c, false, false, 'tester' ); }
+	t_add_term( 'category', 'Secret plans' );
+	$GLOBALS['T_menus'][7] = (object) array( 'term_id' => 7, 'name' => 'Main', 'slug' => 'main', 'count' => 1 );
+}
+function refused_once( $r ): bool {
+	return is_wp_error( $r ) && 'forbidden' === $r->get_error_code() && 1 === count( $GLOBALS['T_audit'] ) && 'forbidden' === $GLOBALS['T_audit'][0]['status']
+		&& false === strpos( json_encode( $GLOBALS['T_scrub'] ), 'Secret plans' );
+}
+$direct = array( 'taxonomy-list' => 'taxonomy', 'menus-list' => 'menus', 'core-version' => 'core' );
+foreach ( $direct as $short => $cat ) {
+	real_site( true );
+	$ok = d5b_ability_run( 'divi5-builder/' . $short, array() );
+	check( "control: $short runs directly for an admin with everything on (one row, ok)", is_array( $ok ) && 1 === count( $GLOBALS['T_audit'] ) && 'ok' === $GLOBALS['T_audit'][0]['status'], array( $ok, $GLOBALS['T_audit'] ) );
+	real_site( false );
+	check( "master off: a direct d5b_ability_run of $short is refused (forbidden) and audited once", refused_once( d5b_ability_run( 'divi5-builder/' . $short, array() ) ), $GLOBALS['T_audit'] );
+	real_site( true, array( $cat ) );
+	check( "category $cat off: a direct run of $short is refused and audited once", refused_once( d5b_ability_run( 'divi5-builder/' . $short, array() ) ), $GLOBALS['T_audit'] );
+	real_site( true, array(), array() );
+	check( "no capability: a direct run of $short is refused and audited once", refused_once( d5b_ability_run( 'divi5-builder/' . $short, array() ) ), $GLOBALS['T_audit'] );
+}
+real_site( true, array(), array() );
+$r = d5b_ability_run( 'divi5-builder/taxonomy-list', array() );
+check( 'the refusal does not carry the data (no term name in the error)', is_wp_error( $r ) && false === strpos( json_encode( array( $r->get_error_message(), $r->get_error_data() ) ), 'Secret plans' ) );
+
+echo "one accepted call, one row\n";
+fresh( true ); fire_both(); $GLOBALS['T_audit'] = array();
+$pc = $GLOBALS['T_abilities']['divi5-builder/posts-list']['permission_callback'];
+$ec = $GLOBALS['T_abilities']['divi5-builder/posts-list']['execute_callback'];
+$r  = true === call_user_func( $pc, array( 'id' => 1 ) ) ? call_user_func( $ec, array( 'id' => 1 ) ) : null;
+check( 'core order (permission callback, then execute): exactly one audit row, status ok (the double check adds none)', is_array( $r ) && 1 === count( $GLOBALS['T_audit'] ) && 'ok' === $GLOBALS['T_audit'][0]['status'], $GLOBALS['T_audit'] );
+fresh( true ); d5b_ability_add( mk( 'divi5-builder/users-list', 'users', array( 'permission' => function ( array $in ) { return false; } ) ) ); fire_both(); $GLOBALS['T_audit'] = array();
+call_user_func( $GLOBALS['T_abilities']['divi5-builder/users-list']['permission_callback'], array() );
+check( 'a refusal through core\'s permission callback is audited once (core does not call execute after it)', 1 === count( $GLOBALS['T_audit'] ) && 'forbidden' === $GLOBALS['T_audit'][0]['status'] );
+
+echo "write-ahead\n";
+fresh( true ); $GLOBALS['T_audit'] = array(); $GLOBALS['T_seen'] = null;
+d5b_ability_add( mk( 'divi5-builder/media-get', 'media', array( 'handler' => function ( array $in ) { $GLOBALS['T_seen'] = $GLOBALS['T_audit']; return array( 'ok' => 1 ); } ) ) );
+d5b_ability_run( 'divi5-builder/media-get', array( 'id' => 4 ) );
+check( 'the row exists with status started before the handler runs, and is then updated to ok (still one row)', is_array( $GLOBALS['T_seen'] ) && 1 === count( $GLOBALS['T_seen'] ) && 'started' === $GLOBALS['T_seen'][0]['status'] && 1 === count( $GLOBALS['T_audit'] ) && 'ok' === $GLOBALS['T_audit'][0]['status'], array( $GLOBALS['T_seen'], $GLOBALS['T_audit'] ) );
+$GLOBALS['T_audit'] = array(); $GLOBALS['T_audit_fail'] = true; $GLOBALS['T_ran'] = 0;
+d5b_ability_add( mk( 'divi5-builder/media-list', 'media', array( 'handler' => function ( array $in ) { $GLOBALS['T_ran']++; return array( 'ok' => 1 ); } ) ) );
+$r = d5b_ability_run( 'divi5-builder/media-list', array() );
+$GLOBALS['T_audit_fail'] = false;
+check( 'the started row cannot be written: audit_unavailable, the handler is not called', is_wp_error( $r ) && 'audit_unavailable' === $r->get_error_code() && 0 === $GLOBALS['T_ran'], $r );
+
+// The stand-in WP_Error has ->code / ->message / ->data for the tests; core's has not, so the plugin must use the methods.
+$uses = array();
+$it = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir, FilesystemIterator::SKIP_DOTS ) );
+foreach ( $it as $f ) { if ( 'php' === $f->getExtension() && preg_match( '/->(code|message|data)\b(?!\s*\()/', (string) file_get_contents( (string) $f ) ) ) { $uses[] = basename( (string) $f ); } }
+check( 'no plugin file reads ->code, ->message or ->data (only the WP_Error methods, which core has)', array() === $uses, $uses );
+
 // ---- audit and scrub absent: the wrapper still works
 echo "wrapper without the audit writer and scrubber\n";
 $php = escapeshellarg( PHP_BINARY );
 $self = escapeshellarg( __FILE__ );
 $out = array(); exec( $php . ' ' . $self . ' --bare 2>&1', $out, $code );
 $line = implode( ' ', $out );
-check( 'audit writer and scrubber absent: run and permit work, no fatal', 0 === $code && false !== strpos( $line, 'BARE_OK' ), $line );
+check( 'audit writer absent: run refuses with audit_unavailable and never calls the handler; permit still refuses; no fatal', 0 === $code && false !== strpos( $line, 'BARE_OK' ), $line );
 
 // ---- children: the real loader
 echo "the real loader\n";

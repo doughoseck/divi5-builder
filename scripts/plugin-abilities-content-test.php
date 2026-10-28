@@ -22,7 +22,8 @@ function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $o
 
 // audit and scrub doubles: the audit writer records, the scrubber masks values by KEY the way Task 5's will
 $GLOBALS['T_audit'] = array();
-function d5b_audit_write( string $ability, array $args, string $status, int $duration_ms ): bool { $GLOBALS['T_audit'][] = compact( 'ability', 'args', 'status' ); return true; }
+function d5b_audit_write( string $ability, array $args, string $status, int $duration_ms ): int { $GLOBALS['T_audit'][] = compact( 'ability', 'args', 'status' ); return count( $GLOBALS['T_audit'] ); }
+function d5b_audit_update( int $id, string $status, int $duration_ms, ?array $args = null ): bool { if ( ! isset( $GLOBALS['T_audit'][ $id - 1 ] ) ) { return false; } $GLOBALS['T_audit'][ $id - 1 ]['status'] = $status; return true; }
 function d5b_ability_scrub( $v ) {
 	if ( ! is_array( $v ) ) { return $v; }
 	$o = array();
@@ -41,6 +42,8 @@ function call( $name, $in = array() ) {
 	$p = d5b_ability_permit( 'divi5-builder/' . $name, $in );
 	return true === $p ? d5b_ability_run( 'divi5-builder/' . $name, $in ) : 'FORBIDDEN';
 }
+/** The handler alone, without the wrapper's gate: what the handler's own defence in depth answers. */
+function handler( $name, $in = array() ) { return call_user_func( d5b_ability_defs()[ 'divi5-builder/' . $name ]['handler'], is_array( $in ) ? $in : array() ); }
 function code( $r ) { return is_wp_error( $r ) ? $r->code : ( 'FORBIDDEN' === $r ? 'FORBIDDEN' : null ); }
 function ids( $r ) { return is_array( $r ) && isset( $r['items'] ) ? array_map( function ( $i ) { return $i['id']; }, $r['items'] ) : array(); }
 function last_audit() { return $GLOBALS['T_audit'] ? $GLOBALS['T_audit'][ count( $GLOBALS['T_audit'] ) - 1 ] : null; }
@@ -92,7 +95,7 @@ check( 'posts-get returns categories and tags', is_array( $r ) && array( array( 
 $json = json_encode( $r );
 check( 'posts-get: no secrets (no post_password, no password key at all)', false === stripos( $json, 'password' ), $json );
 $pw = t_add_post( array( 'post_password' => 'letmein', 'post_content' => 'secret text' ) );
-check( 'a password-protected post is refused to a reader, and its text is never returned', 'FORBIDDEN' === call( 'posts-get', array( 'id' => $pw ) ) && 'not_found' === code( d5b_ability_run( 'divi5-builder/posts-get', array( 'id' => $pw ) ) ) );
+check( 'a password-protected post is refused to a reader, and its text is never returned', 'FORBIDDEN' === call( 'posts-get', array( 'id' => $pw ) ) && 'not_found' === code( handler( 'posts-get', array( 'id' => $pw ) ) ) );
 site( EDITOR, 1 );
 $pw = t_add_post( array( 'post_password' => 'letmein', 'post_content' => 'secret text', 'post_author' => 1 ) );
 $r = call( 'posts-get', array( 'id' => $pw ) );
@@ -110,7 +113,7 @@ check( "posts-get: a contributor reading another user's draft is refused", 'FORB
 $a = last_audit();
 check( 'the refusal is logged as forbidden with the id', $a && 'forbidden' === $a['status'] && 'divi5-builder/posts-get' === $a['ability'] && array( 'id' => $other ) === $a['args'], $GLOBALS['T_audit'] );
 check( 'the same contributor reads their own draft', is_array( call( 'posts-get', array( 'id' => $own ) ) ) && 'my draft' === call( 'posts-get', array( 'id' => $own ) )['content'] );
-check( 'defence in depth: the handler alone also refuses the other draft (not_found, no content)', 'not_found' === code( d5b_ability_run( 'divi5-builder/posts-get', array( 'id' => $other ) ) ) );
+check( 'defence in depth: the handler alone also refuses the other draft (not_found, no content)', 'not_found' === code( handler( 'posts-get', array( 'id' => $other ) ) ) );
 site( array(), 3 );
 check( 'with no capabilities every list is refused', 'FORBIDDEN' === call( 'posts-list' ) && 'FORBIDDEN' === call( 'media-list' ) && 'FORBIDDEN' === call( 'search', array( 'query' => 'x' ) ) );
 
@@ -213,8 +216,8 @@ $onpriv = t_add_comment( array( 'comment_post_ID' => $privp ) );
 $r = call( 'comments-list' );
 check( 'comments-list: a reader sees approved comments on readable posts only', array( $ok ) === ids( $r ), ids( $r ) );
 check( 'comments never carry the IP address, and a reader gets no email address', false === strpos( json_encode( $r ), '203.0.113.9' ) && ! isset( $r['items'][0]['author_email'] ) );
-check( 'a reader may not ask for held, spam or all comments', 'FORBIDDEN' === call( 'comments-list', array( 'status' => 'hold' ) ) && 'FORBIDDEN' === call( 'comments-list', array( 'status' => 'all' ) ) && 'forbidden_status' === code( d5b_ability_run( 'divi5-builder/comments-list', array( 'status' => 'hold' ) ) ) );
-check( 'comments-get: approved is returned; held and the one on a private post are refused', 'Good read' === call( 'comments-get', array( 'id' => $ok ) )['content'] && 'FORBIDDEN' === call( 'comments-get', array( 'id' => $hold ) ) && 'FORBIDDEN' === call( 'comments-get', array( 'id' => $onpriv ) ) && 'not_found' === code( d5b_ability_run( 'divi5-builder/comments-get', array( 'id' => $hold ) ) ) );
+check( 'a reader may not ask for held, spam or all comments', 'FORBIDDEN' === call( 'comments-list', array( 'status' => 'hold' ) ) && 'FORBIDDEN' === call( 'comments-list', array( 'status' => 'all' ) ) && 'forbidden_status' === code( handler( 'comments-list', array( 'status' => 'hold' ) ) ) );
+check( 'comments-get: approved is returned; held and the one on a private post are refused', 'Good read' === call( 'comments-get', array( 'id' => $ok ) )['content'] && 'FORBIDDEN' === call( 'comments-get', array( 'id' => $hold ) ) && 'FORBIDDEN' === call( 'comments-get', array( 'id' => $onpriv ) ) && 'not_found' === code( handler( 'comments-get', array( 'id' => $hold ) ) ) );
 check( 'comments-list for a post the caller cannot read is refused', 'FORBIDDEN' === call( 'comments-list', array( 'post' => $privp ) ) );
 check( 'comments-list with a post gives totals; without one it gives none (a site-wide total would count unreadable posts)', 1 === call( 'comments-list', array( 'post' => $cp ) )['total'] && ! array_key_exists( 'total', call( 'comments-list' ) ) );
 site( array( 'read', 'moderate_comments' ), 3 );
@@ -300,14 +303,14 @@ echo "input checks\n";
 site( array_merge( EDITOR, array( 'edit_theme_options' ) ), 1 );
 $bad = array();
 foreach ( $names as $x ) {
-	if ( 'invalid_input' !== code( d5b_ability_run( 'divi5-builder/' . $x, array( 'bogus' => 1 ) ) ) ) { $bad[] = "$x accepts an unknown input"; }
+	if ( 'invalid_input' !== code( handler( $x, array( 'bogus' => 1 ) ) ) ) { $bad[] = "$x accepts an unknown input"; }
 }
 foreach ( array( 'posts-get' => 'id', 'pages-get' => 'id', 'media-get' => 'id', 'comments-get' => 'id', 'blocks-get' => 'id', 'revisions-get' => 'id', 'meta-get' => 'post_id', 'revisions-list' => 'post_id', 'posts-revisions' => 'id' ) as $x => $k ) {
 	foreach ( array( -5, '12abc', array( 3 ), 0, 1.5, true ) as $v ) {
-		$rr = d5b_ability_run( 'divi5-builder/' . $x, array( $k => $v ) );
+		$rr = handler( $x, array( $k => $v ) );
 		if ( 'invalid_input' !== code( $rr ) ) { $bad[] = "$x $k=" . json_encode( $v ) . ' gave ' . ( is_wp_error( $rr ) ? $rr->code : 'a result' ); }
 	}
-	if ( 'invalid_input' !== code( d5b_ability_run( 'divi5-builder/' . $x, array() ) ) ) { $bad[] = "$x without $k"; }
+	if ( 'invalid_input' !== code( handler( $x, array() ) ) ) { $bad[] = "$x without $k"; }
 }
 check( 'every ability refuses an unknown input; every id input refuses -5, "12abc", an array, 0, a float, true and a missing value', array() === $bad, $bad );
 check( 'a string of digits is a good id', is_array( call( 'posts-get', array( 'id' => (string) $pub ) ) ) || 'FORBIDDEN' !== call( 'posts-get', array( 'id' => (string) t_add_post() ) ) );
@@ -365,14 +368,14 @@ $pg = t_add_post( array( 'post_type' => 'page', 'post_content' => 'PAGE BODY', '
 $po = t_add_post( array( 'post_content' => 'POST BODY', 'post_author' => 1 ) );
 $pg_rev = t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $pg, 'post_content' => 'old page' ) );
 $po_rev = t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $po, 'post_content' => 'old post' ) );
-check( 'pages and posts off: revisions-compare on a page (live/live, rev/live) returns nothing', 'FORBIDDEN' === call( 'revisions-compare', array( 'from' => $pg, 'to' => $pg ) ) && 'FORBIDDEN' === call( 'revisions-compare', array( 'from' => $pg_rev, 'to' => $pg ) ) && 'not_allowed' === code( d5b_ability_run( 'divi5-builder/revisions-compare', array( 'from' => $pg, 'to' => $pg ) ) ) );
-check( 'revisions-list / revisions-get / posts-revisions on content of an off category: refused, not_allowed from the handler', 'FORBIDDEN' === call( 'revisions-list', array( 'post_id' => $po ) ) && 'FORBIDDEN' === call( 'revisions-get', array( 'id' => $po_rev ) ) && 'FORBIDDEN' === call( 'posts-revisions', array( 'id' => $po ) ) && 'not_allowed' === code( d5b_ability_run( 'divi5-builder/revisions-list', array( 'post_id' => $po ) ) ) && 'not_allowed' === code( d5b_ability_run( 'divi5-builder/revisions-get', array( 'id' => $po_rev ) ) ) );
+check( 'pages and posts off: revisions-compare on a page (live/live, rev/live) returns nothing', 'FORBIDDEN' === call( 'revisions-compare', array( 'from' => $pg, 'to' => $pg ) ) && 'FORBIDDEN' === call( 'revisions-compare', array( 'from' => $pg_rev, 'to' => $pg ) ) && 'not_allowed' === code( handler( 'revisions-compare', array( 'from' => $pg, 'to' => $pg ) ) ) );
+check( 'revisions-list / revisions-get / posts-revisions on content of an off category: refused, not_allowed from the handler', 'FORBIDDEN' === call( 'revisions-list', array( 'post_id' => $po ) ) && 'FORBIDDEN' === call( 'revisions-get', array( 'id' => $po_rev ) ) && 'FORBIDDEN' === call( 'posts-revisions', array( 'id' => $po ) ) && 'not_allowed' === code( handler( 'revisions-list', array( 'post_id' => $po ) ) ) && 'not_allowed' === code( handler( 'revisions-get', array( 'id' => $po_rev ) ) ) );
 $nq = count( $GLOBALS['T_queries'] );
 check( 'search with types [page] returns nothing; the default search leaves posts and pages out', array() === ids( call( 'search', array( 'query' => 'BODY', 'types' => array( 'page' ) ) ) ) && array() === ids( call( 'search', array( 'query' => 'BODY' ) ) ) );
 check( 'search does not even query a type whose category is off', ( function () use ( $nq ) { foreach ( array_slice( $GLOBALS['T_queries'], $nq ) as $q ) { if ( array_intersect( (array) $q['post_type'], array( 'page', 'post' ) ) ) { return false; } } return true; } )() );
-check( 'meta-get on a post of an off category: refused, not_allowed from the handler', 'FORBIDDEN' === call( 'meta-get', array( 'post_id' => $po ) ) && 'not_allowed' === code( d5b_ability_run( 'divi5-builder/meta-get', array( 'post_id' => $po ) ) ) );
+check( 'meta-get on a post of an off category: refused, not_allowed from the handler', 'FORBIDDEN' === call( 'meta-get', array( 'post_id' => $po ) ) && 'not_allowed' === code( handler( 'meta-get', array( 'post_id' => $po ) ) ) );
 $cm = t_add_comment( array( 'comment_post_ID' => $po ) );
-check( 'comments on content of an off category are not listed or returned, and the post filter is refused', array() === ids( call( 'comments-list' ) ) && 'FORBIDDEN' === call( 'comments-get', array( 'id' => $cm ) ) && 'FORBIDDEN' === call( 'comments-list', array( 'post' => $po ) ) && 'not_allowed' === code( d5b_ability_run( 'divi5-builder/comments-list', array( 'post' => $po ) ) ) );
+check( 'comments on content of an off category are not listed or returned, and the post filter is refused', array() === ids( call( 'comments-list' ) ) && 'FORBIDDEN' === call( 'comments-get', array( 'id' => $cm ) ) && 'FORBIDDEN' === call( 'comments-list', array( 'post' => $po ) ) && 'not_allowed' === code( handler( 'comments-list', array( 'post' => $po ) ) ) );
 t_add_type( 'book', true, true ); $bk = t_add_post( array( 'post_type' => 'book' ) ); $bk_rev = t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $bk ) );
 check( 'categories that are on still work (a custom item, its meta and revisions)', is_array( call( 'meta-get', array( 'post_id' => $bk ) ) ) && is_array( call( 'revisions-get', array( 'id' => $bk_rev ) ) ) );
 d5b_abilities_set_category( 'cpt', false, false, 'tester' );
@@ -393,7 +396,7 @@ echo "only exposed post types\n";
 site( READER, 3 );
 t_add_type( 'user_request', false, false );
 $ur = t_add_post( array( 'post_type' => 'user_request', 'post_title' => 'victim@example.org' ) ); t_add_meta( $ur, 'note', 'visible?' );
-check( 'meta-get, revisions-list and comments-list refuse a non-public, non-REST type such as user_request', 'FORBIDDEN' === call( 'meta-get', array( 'post_id' => $ur ) ) && 'not_found' === code( d5b_ability_run( 'divi5-builder/meta-get', array( 'post_id' => $ur ) ) ) && 'FORBIDDEN' === call( 'comments-list', array( 'post' => $ur ) ) );
+check( 'meta-get, revisions-list and comments-list refuse a non-public, non-REST type such as user_request', 'FORBIDDEN' === call( 'meta-get', array( 'post_id' => $ur ) ) && 'not_found' === code( handler( 'meta-get', array( 'post_id' => $ur ) ) ) && 'FORBIDDEN' === call( 'comments-list', array( 'post' => $ur ) ) );
 
 echo "output bounds\n";
 site( READER, 3 );
@@ -429,7 +432,7 @@ foreach ( array( array( 'posts-list', array( 'page' => PHP_INT_MAX ) ), array( '
 check( 'page is clamped to 100000 everywhere (no overflow)', $ok );
 site( array( 'read' ), 3 );
 $GLOBALS['T_menus'][7] = (object) array( 'term_id' => 7, 'name' => 'Main', 'slug' => 'main', 'count' => 0 );
-check( 'menus abilities need edit_theme_options: a subscriber is refused all three, and the handlers refuse too', 'FORBIDDEN' === call( 'menus-list' ) && 'FORBIDDEN' === call( 'menus-items', array( 'menu' => 'main' ) ) && 'FORBIDDEN' === call( 'menus-locations' ) && 'forbidden' === code( d5b_ability_run( 'divi5-builder/menus-list', array() ) ) );
+check( 'menus abilities need edit_theme_options: a subscriber is refused all three, and the handlers refuse too', 'FORBIDDEN' === call( 'menus-list' ) && 'FORBIDDEN' === call( 'menus-items', array( 'menu' => 'main' ) ) && 'FORBIDDEN' === call( 'menus-locations' ) && 'forbidden' === code( handler( 'menus-list', array() ) ) );
 $cp = t_add_post();
 $note = t_add_comment( array( 'comment_post_ID' => $cp, 'comment_type' => 'note', 'comment_content' => 'block note' ) ); $ord = t_add_comment( array( 'comment_post_ID' => $cp, 'comment_type' => 'order_note', 'comment_content' => 'order note' ) );
 $ping = t_add_comment( array( 'comment_post_ID' => $cp, 'comment_type' => 'pingback' ) ); $legacy = t_add_comment( array( 'comment_post_ID' => $cp, 'comment_type' => '' ) ); $norm = t_add_comment( array( 'comment_post_ID' => $cp ) );

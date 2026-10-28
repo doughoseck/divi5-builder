@@ -70,7 +70,8 @@ function wp_json_encode( $v ) { return json_encode( $v ); }
 
 // Audit double: the writer records. The real audit.php (for the masker) is loaded after it, and its writer steps aside.
 $GLOBALS['T_audit'] = array();
-function d5b_audit_write( string $ability, array $args, string $status, int $duration_ms ): bool { $GLOBALS['T_audit'][] = compact( 'ability', 'args', 'status' ); return true; }
+function d5b_audit_write( string $ability, array $args, string $status, int $duration_ms ): int { $GLOBALS['T_audit'][] = compact( 'ability', 'args', 'status' ); return count( $GLOBALS['T_audit'] ); }
+function d5b_audit_update( int $id, string $status, int $duration_ms, ?array $args = null ): bool { if ( ! isset( $GLOBALS['T_audit'][ $id - 1 ] ) ) { return false; } $GLOBALS['T_audit'][ $id - 1 ]['status'] = $status; return true; }
 foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/read-content', 'inc/abilities/read-structure', 'inc/abilities/read-site', 'parts/updates' ) as $f ) { require $dir . '/' . $f . '.php'; }
 
 $failed = 0; $n = 0;
@@ -96,6 +97,8 @@ function call( $name, $in = array() ) {
 	$p = d5b_ability_permit( 'divi5-builder/' . $name, $in );
 	return true === $p ? d5b_ability_run( 'divi5-builder/' . $name, $in ) : 'FORBIDDEN';
 }
+/** The handler alone, without the wrapper's gate: what the handler's own defence in depth answers. */
+function handler( $name, $in = array() ) { return call_user_func( d5b_ability_defs()[ 'divi5-builder/' . $name ]['handler'], $in ); }
 function code( $r ) { return is_wp_error( $r ) ? $r->code : ( 'FORBIDDEN' === $r ? 'FORBIDDEN' : null ); }
 function last_audit() { return $GLOBALS['T_audit'] ? $GLOBALS['T_audit'][ count( $GLOBALS['T_audit'] ) - 1 ] : null; }
 function mkuser( $id, $login, array $roles ) {
@@ -247,7 +250,7 @@ check( 'settings-get: mailserver_pass, auth_key and other options are not return
 check( 'settings-get takes no input', 'invalid_input' === code( call( 'settings-get', array( 'name' => 'mailserver_pass' ) ) ) );
 site( EDITOR );
 check( 'settings-get as an editor: refused and logged', 'FORBIDDEN' === call( 'settings-get' ) && 'forbidden' === last_audit()['status'] );
-check( 'defence in depth: the handler alone also refuses an editor', 'forbidden' === code( d5b_ability_run( 'divi5-builder/settings-get', array() ) ) );
+check( 'defence in depth: the handler alone also refuses an editor', 'forbidden' === code( handler( 'settings-get', array() ) ) );
 
 // ---- error-log
 echo "error-log\n";
@@ -329,7 +332,7 @@ site( EDITOR, 2 );
 $GLOBALS['T_users'] = array( 2 => mkuser( 2, 'bob', array( 'editor' ) ) );
 check( 'users-get: an editor (no list_users) is refused at the gate, and logged', 'FORBIDDEN' === call( 'users-get', array( 'id' => 2 ) ) && 'forbidden' === last_audit()['status'] );
 check( 'users-list: an editor is refused', 'FORBIDDEN' === call( 'users-list' ) );
-$r = d5b_ability_run( 'divi5-builder/users-get', array( 'id' => 2 ) );
+$r = handler( 'users-get', array( 'id' => 2 ) );
 check( 'users-get: even a direct handler call by an editor returns an error and no email', 'forbidden' === code( $r ) && false === strpos( json_encode( $r ), 'example.org' ), $r );
 check( 'the email field itself checks list_users (a row built for a caller without it has no email)', ! array_key_exists( 'email', d5b_rs_user_row( $GLOBALS['T_users'][2] ) ) );
 
@@ -356,7 +359,7 @@ $GLOBALS['T_plugins'] = array( 'a/a.php' => array( 'Name' => 'Alpha', 'Version' 
 $GLOBALS['T_audit'] = array();
 check( 'plugins-list as editor: refused and logged', 'FORBIDDEN' === call( 'plugins-list' ) && 1 === count( $GLOBALS['T_audit'] ) && 'forbidden' === last_audit()['status'] && 'divi5-builder/plugins-list' === last_audit()['ability'], $GLOBALS['T_audit'] );
 check( 'themes-list and core-version as editor: refused', 'FORBIDDEN' === call( 'themes-list' ) && 'FORBIDDEN' === call( 'core-version' ) );
-check( 'defence in depth: the plugins-list handler alone also refuses an editor', 'forbidden' === code( d5b_ability_run( 'divi5-builder/plugins-list', array() ) ) );
+check( 'defence in depth: the plugins-list handler alone also refuses an editor', 'forbidden' === code( handler( 'plugins-list', array() ) ) );
 // multisite: the network capability too
 foreach ( array( 'plugins-list' => 'manage_network_plugins', 'themes-list' => 'manage_network_themes', 'core-version' => 'update_core' ) as $ab => $netcap ) {
 	site( ADMIN ); t_set_multisite( true ); d5b_abilities_set_master( true, 'tester' );
