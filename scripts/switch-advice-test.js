@@ -27,7 +27,7 @@ check('a status with the inactive list gives the same advice as without it', adv
 check('an unknown part throws', (() => { try { adviceFor('nope', null); return false; } catch (e) { return true; } })());
 
 console.log('--- no script writes the switch');
-for (const f of ['switch-advice.js', 'media-audit.js', 'media-quarantine.js', 'site-updates.js']) {
+for (const f of ['switch-advice.js', 'site-care/media-audit.js', 'site-care/media-quarantine.js', 'site-care/site-updates.js']) {
   const src = fs.readFileSync(path.join(__dirname, f), 'utf8');
   check(`${f} never touches the settings/switch option`, !/divi5_builder_(settings|switches)|update_option|options\/|wp\/v2\/settings/.test(src.replace(/^\s*(\/\/|\*|\/\*).*$/gm, '')), f);
 }

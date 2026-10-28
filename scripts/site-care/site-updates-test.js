@@ -1,5 +1,5 @@
 // site-updates-test.js: the pure parts of site-updates.js (the plan, the page checks).
-//   node scripts/site-updates-test.js
+//   node scripts/site-care/site-updates-test.js
 // Set SITE_UPDATES_FILE to test another copy (used for mutation testing).
 const path = require('path');
 const { planUpdates, compareHealth, pageHealth } = require(process.env.SITE_UPDATES_FILE || path.join(__dirname, 'site-updates.js'));

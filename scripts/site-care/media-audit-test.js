@@ -2,7 +2,7 @@
 /*
  * media-audit-test.js: the classification of media-audit.js on a made-up site. No site needed.
  *
- *   node scripts/media-audit-test.js
+ *   node scripts/site-care/media-audit-test.js
  *
  * Set MEDIA_AUDIT_FILE to test another copy of media-audit.js (used for mutation testing).
  */

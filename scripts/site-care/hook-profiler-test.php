@@ -1,6 +1,6 @@
 <?php
 // Local self-test of a GENERATED profiler, no WordPress needed. Exits non-zero on failure.
-//   node scripts/hook-profiler.js gen <dir>   then   php scripts/hook-profiler-test.php <dir>
+//   node scripts/site-care/hook-profiler.js gen <dir>   then   php scripts/site-care/hook-profiler-test.php <dir>
 // Checks the wrapper against a fake hook table: the filter chain still returns the right value, a PHP built-in gets no extra
 // arguments, nothing is wrapped twice, a deliberately slow callback is measured, and the report is one well-formed HTML comment.
 $DIR = rtrim( $argv[1] ?? getcwd(), '/\\' );
