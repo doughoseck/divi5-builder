@@ -9,12 +9,12 @@ the old database.
 ## Before the move (dev)
 
 1. **Content delta.** What did the owner's client change on live since the dev copy was taken?
-   `node assets/content-delta.js <live> <dev> <since-ISO> posts pages media <cpt...>` (public REST, no login) lists
+   `node assets/site-care/content-delta.js <live> <dev> <since-ISO> posts pages media <cpt...>` (public REST, no login) lists
    new and edited items and whether dev has them by slug. Carry them to dev by hand: fetch the live post's
    rendered content and featured picture over public REST, upload the picture, create the post with the same slug
    and date (plain hyphens for the client's dashes). Not visible over public REST: menus, widgets, settings, form
    entries, drafts. Re-run right before the move.
-2. **Baseline check:** `node assets/site-check.js <dev> --pages pages.json` all clear, with `pages.json` listing
+2. **Baseline check:** `node assets/site-care/site-check.js <dev> --pages pages.json` all clear, with `pages.json` listing
    every important path, per-page expectations (grid card counts, links, a form) and the rules (old URLs 404/301,
    popup-only post types 301, the popup request 200, the 404 template, the sitemap, site search).
 3. **Dev-only leftovers:** draft test pages, unused layouts and media, debug variants of snippets, test flags
@@ -49,7 +49,7 @@ and a renamed config copy is downloadable. Mind disk space (old uploads can be g
 
 ## Verify the same day
 
-`node assets/site-check.js <live> --pages pages.json --old-host <dev host>`, then by hand: sticky header, menu
+`node assets/site-care/site-check.js <live> --pages pages.json --old-host <dev host>`, then by hand: sticky header, menu
 popup, search, every popup type (video, grid item), both forms (inbox + integration), phone width, speed (3 loads,
 use the 3rd) against dev, Search Console (sitemap, redirect of removed pages). Keep dev as staging only with
 "discourage search engines" ON.
@@ -89,7 +89,7 @@ noindex meta until the page cache is cleared (check a fresh AND a cached copy). 
 not survive the new `.htaccess`, and Cloudflare caches images without `Vary: Accept`, so switch EWWW to "Picture
 WebP" and test by counting `<picture>` + `<source type="image/webp">` in the page, not by the Accept header.
 Changes to a canvas's Custom CSS over REST do not show until Divi's static CSS is cleared (`site-updates.js clear`).
-A tracking comparison (`assets/tracking-compare.js`) is worth running before and after; the official Meta plugin 5.x
+A tracking comparison (`assets/site-care/tracking-compare.js`) is worth running before and after; the official Meta plugin 5.x
 starts the pixel through `FacebookSignal.initPixel("id")`, not `fbq('init')`, which fooled the first comparison.
 
 **Expectations drift.** The owner and the client kept editing staging in the last week (packages set to draft, a
@@ -142,7 +142,7 @@ the orders. The method that worked, rehearsed on a local MySQL before touching e
 
 - **Tracking that lives in the old theme disappears.** A gtag and a Facebook pixel typed into the old theme's header
   setting were not on the rebuilt dev. Compare the homepage tags of live and dev before go-live
-  (`assets/tracking-compare.js`). Rebuild them in a GTM container whose tags fire only on the live hostname (Page
+  (`assets/site-care/tracking-compare.js`). Rebuild them in a GTM container whose tags fire only on the live hostname (Page
   Hostname regex), so the dev copy carries the setup and sends nothing. GTM4WP gives WooCommerce cart, checkout and
   purchase events; a food-ordering plugin's own AJAX add-to-cart does not fire `add_to_cart`.
 - **The SEO plugin's sitemap can list client documents.** An invoices/quotes plugin's 500+ documents were readable

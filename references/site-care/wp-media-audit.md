@@ -12,14 +12,14 @@ First run: a 5-year-old site converted from Divi 4. Uploads 2.78 GB in 36,207 fi
 | File | What it is |
 |---|---|
 | `plugin/divi5-builder/` (Media audit part) | read-only REST routes, administrators only. The USER installs `divi5-builder.zip`, turns the **Media audit** switch on in Settings > Divi 5 Builder (off by default) and turns it off afterwards. Old sites can still run `assets/legacy/wp-media-audit.php` (security fixes only until 2027-01-31). Stores nothing. Returns file names, sizes, IDs and the place of a reference, never content. PHP 7.0+. |
-| `scripts/media-audit.js` | `scan`, `crawl`, `report`. No command in it changes the site. |
+| `scripts/site-care/media-audit.js` | `scan`, `crawl`, `report`. No command in it changes the site. |
 | `scripts/media-audit-test.php` | the reference finder, no WordPress needed |
-| `scripts/media-audit-test.js` | the classification and the report files, on a made-up site |
+| `scripts/site-care/media-audit-test.js` | the classification and the report files, on a made-up site |
 
 ```bash
-node scripts/media-audit.js scan   <site> --dir <work-folder>     # a few minutes
-node scripts/media-audit.js crawl  <site> --dir <work-folder>     # loads every public page
-node scripts/media-audit.js report --dir <work-folder> [--ignore-tables a,b]
+node scripts/site-care/media-audit.js scan   <site> --dir <work-folder>     # a few minutes
+node scripts/site-care/media-audit.js crawl  <site> --dir <work-folder>     # loads every public page
+node scripts/site-care/media-audit.js report --dir <work-folder> [--ignore-tables a,b]
 ```
 
 Output in the work folder: `REPORT.md`, `review-unused.csv`, `review-background.csv`, `attachments.csv` (every item,
@@ -107,7 +107,7 @@ Further checks that were run and are worth repeating on a new kind of site:
 
 ## The database: measure, then the owner cleans
 
-`node scripts/media-audit.js db <site> --dir D` (plugin 1.1.0+) writes `DB-REPORT.md`: every table with rows and
+`node scripts/site-care/media-audit.js db <site> --dir D` (plugin 1.1.0+) writes `DB-REPORT.md`: every table with rows and
 size, posts by type and status, revisions (and which posts have the most), the heaviest meta keys and options,
 transients, spam, orphaned meta. Read-only: counts and sizes, never content.
 
@@ -129,7 +129,7 @@ submissions kept on purpose.
 
 ## Removing: quarantine first, delete later
 
-Nothing in the skill deletes. `scripts/media-quarantine.js` MOVES files out of `uploads/` into
+Nothing in the skill deletes. `scripts/site-care/media-quarantine.js` MOVES files out of `uploads/` into
 `wp-content/media-audit-quarantine-<random>/<batch>/` (an unguessable name since plugin 1.0.1, so it is not served even
 where the `.htaccess` deny rule does not apply, e.g. nginx; `status` prints the exact folder; dot files such as
 `uploads/.htaccess` are never moved) and can move them back. It needs a
@@ -137,15 +137,15 @@ separate **Media clean-up** switch (off by default, also in Settings > Divi 5 Bu
 no delete and does not touch the database (tests: `php scripts/media-quarantine-test.php`).
 
 ```bash
-node scripts/media-quarantine.js verify  <site> --dir D                # 1. BEFORE: what is already missing (baseline)
-node scripts/media-quarantine.js plan    --dir D --batch old-folders --orphan-folders 2017,2018,2019
-node scripts/media-quarantine.js plan    --dir D --batch unused --status UNUSED [--csv reviewed-list.csv]
-node scripts/media-quarantine.js move    <site> --dir D --batch unused             # dry run; add --write
-node scripts/media-quarantine.js verify  <site> --dir D                # 2. AFTER: newly missing files, and on which page
-node scripts/media-quarantine.js restore <site> --dir D --batch unused --needed --write   # what verify found
-node scripts/media-quarantine.js restore <site> --dir D --batch unused --ids 123,456 --write
-node scripts/media-quarantine.js restore <site> --dir D --batch unused --all --write
-node scripts/media-quarantine.js status  <site>
+node scripts/site-care/media-quarantine.js verify  <site> --dir D                # 1. BEFORE: what is already missing (baseline)
+node scripts/site-care/media-quarantine.js plan    --dir D --batch old-folders --orphan-folders 2017,2018,2019
+node scripts/site-care/media-quarantine.js plan    --dir D --batch unused --status UNUSED [--csv reviewed-list.csv]
+node scripts/site-care/media-quarantine.js move    <site> --dir D --batch unused             # dry run; add --write
+node scripts/site-care/media-quarantine.js verify  <site> --dir D                # 2. AFTER: newly missing files, and on which page
+node scripts/site-care/media-quarantine.js restore <site> --dir D --batch unused --needed --write   # what verify found
+node scripts/site-care/media-quarantine.js restore <site> --dir D --batch unused --ids 123,456 --write
+node scripts/site-care/media-quarantine.js restore <site> --dir D --batch unused --all --write
+node scripts/site-care/media-quarantine.js status  <site>
 ```
 
 - **One batch per decision** (the old folders; the unused library items; later the BACKGROUND ones), so each can be

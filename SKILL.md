@@ -10,7 +10,7 @@ description: >
   library, or "build a page from this design brief". Handles credentials from
   the shared .web-creds.txt securely. Trigger even if the user just says "add a
   section to the site", "update the homepage", or names a site + a page change.
-  Also audits the media library and uploads folder of ANY WordPress site (Divi
+  Secondary, site care (read references/site-care/README.md first): audits the media library and uploads folder of ANY WordPress site (Divi
   or not): unused media, orphan files, what is taking disk space. Use for "clean
   up the media library", "the site is too big", "what can we delete before the move".
   Also updates plugins, themes and WordPress itself on ANY WordPress site, with page
@@ -404,25 +404,14 @@ id is the layout's id), and it only reaches the front end when something in the 
 being rendered targets an element inside it. A canvas on a header is on every page
 that header serves: get a nod before writing to it.
 
-## Speed check before you rely on interactions (and the profiler)
+## Speed check before you rely on interactions
 
 Interactions are the native way, but on one converted Divi 4 site ANY interaction took every page from ~5s to 14-17s,
 because of a per-block cost in Divi 5.13's own front-end block parser (details and the measurements:
 `references/divi5-interactions-canvases.md`). Another site showed nothing of the kind. So: time a page (3 loads, use the
 3rd) before the first interaction and again after. If it jumps, build popups and toggles on that site as native hidden
 sections driven by a few lines of script in a code module inside them (pattern in the same reference), not with interactions.
-
-When a Divi/WordPress page is slow and you do not know why, do not theorise, measure:
-```bash
-node scripts/hook-profiler.js gen <dir>            # writes d5b-profiler.php + a random key
-php  scripts/hook-profiler-test.php <dir>          # 9 local checks, no WordPress needed
-# the USER uploads d5b-profiler.php to wp-content/mu-plugins/ (you cannot), then:
-node scripts/hook-profiler.js run <page-url> --key-file <dir>/d5b-profiler.key
-```
-It is read-only, does nothing without the key, and reports the slowest hook callbacks, who is attached to Divi's per-block
-parser hooks, raw CPU benchmarks, and WordPress core's parser versus the site's `parse_blocks()` on the page's real content.
-Have the user DELETE the file afterwards. Query Monitor first is a good split: if its "Database Queries" total is small and
-"HTTP API Calls" is none, the time is PHP, and this profiler is the next step.
+A page that is slow for a reason you cannot name: the hook profiler, see Site care below.
 
 ## Visibility toggles (monthly/annual pricing, "show more", etc.)
 
@@ -738,74 +727,12 @@ no cache to clear here, unlike a page/Theme-Builder write).
 element/form/page you're styling (an id like `#gform_wrapper_9`), not bare tag
 selectors that would leak onto the rest of the site.
 
-## Media and large-file audit: any WordPress site (read `references/wp-media-audit.md`)
+## Background video and other field notes
 
-"The site is too big", "clean up the media library", "what can go before we move it": use this. It does not need
-Divi 5 (or Divi at all), only an administrator's application password and the `divi5-builder` plugin with its **Media audit** switch on. The USER
-installs `divi5-builder.zip` from the GitHub release (Plugins → Add New → Upload Plugin) and turns the switch on in
-Settings > Divi 5 Builder (off by default; only an administrator can flip it). The audit stores nothing; the user
-turns the switch off afterwards.
-
-```bash
-node scripts/media-audit.js scan   <site> --dir <work-folder>   # library items, files on disk, where each is referred to
-node scripts/media-audit.js crawl  <site> --dir <work-folder>   # every public page: the cross-check
-node scripts/media-audit.js report --dir <work-folder>          # REPORT.md + CSV lists, biggest first
-```
-
-- Two findings, kept apart: library items nothing refers to, and files on disk with no library item. Plus the
-  biggest files, local video and audio, broken references, and the size of plugins, themes and the site root.
-- Every library item is USED, MAYBE (kept as used), BACKGROUND (only revisions, trash, old builder copies) or
-  UNUSED. When in doubt, used.
-- **Always run the crawl and read the cross-check line in the report.** It counts items the public pages use that
-  the database scan missed; it must be 0 or understood. It is how a new kind of reference gets noticed.
-- Tables of plugins the site no longer uses still count as uses until you say so: `report --ignore-tables <table>`.
-  The report names every table that alone keeps items used.
-- **Nothing here deletes, and neither do you.** To remove, quarantine: `scripts/media-quarantine.js` (needs the **Media clean-up**
-  switch, also off by default) moves the files to a holding folder outside `uploads/`, `verify`
-  checks every public page for newly missing files, `restore` puts back what is needed. Order: `verify` (baseline),
-  `plan`, `move` (dry run, then `--write`), `verify`, the user lives with it for some days, then the USER deletes the
-  quarantine folder and the library rows. One batch per decision.
-- **MAYBE never moves by default.** On a shop, image IDs collide with ordinary numbers (customer ids on orders, quote
-  numbers, prices), and the scan keeps only 3 places per reference. To move MAYBE items the owner chose, check EVERY
-  hit on the full database (a local copy of a dump: exact values and `id="N"` patterns per table and key), write the
-  ids that only sit in fields that cannot hold an image to a file, then `plan --csv <reviewed list> --maybe-cleared
-  <file>`: an item moves only when it is on both. First used on a WooCommerce site 2026-10-14: 59 of 59 cleared.
-- **Crawls come from the user's own IP** (scripts run on their PC): two full crawls in a row got the site owner
-  locked out by Wordfence's rate limiting (and the "unlock" e-mail cannot arrive on a dev site that blocks mail).
-  Ask for the IP to be allowlisted in Wordfence BEFORE crawling a site with Wordfence; without it product pages also
-  answer 503 and the crawl silently covers fewer pages.
-- Tests: `php scripts/media-audit-test.php`, `node scripts/media-audit-test.js`, `php scripts/media-quarantine-test.php`.
-
-## Updating plugins, themes and WordPress: any WordPress site (read `references/wp-site-updates.md`)
-
-`scripts/site-updates.js` with the **Updates** switch of the `divi5-builder` plugin (the user installs `divi5-builder.zip`
-from the GitHub release in Plugins → Add New → Upload Plugin and turns the switch on in Settings > Divi 5 Builder; it is
-off by default and only an administrator can flip it).
-
-```bash
-node scripts/site-updates.js status <site>                       # what is out of date
-node scripts/site-updates.js update <site> --all                 # the plan; nothing changes without --write
-node scripts/site-updates.js update <site> --all --write         # careful: one at a time, pages checked after each, stops at the first problem
-node scripts/site-updates.js update <site> --all --fast --write  # small brochure site: all in one go, pages checked at the end
-```
-
-- Show the user the plan first and get a go for the run: it changes a live site and there is NO rollback (a bad
-  update is undone from a backup). Careful mode for sites that matter, fast for small brochure sites.
-- After every update the site clears Divi's generated CSS and the page cache by itself: on Divi 5 stale CSS after any
-  plugin, theme or WordPress update is the classic "the site looks broken". `site-updates.js clear <site>` does only that.
-- A new WordPress release (6.8 -> 6.9) needs `--major`; maintenance releases are taken. Premium items without an
-  active licence are listed as blocked, never tried.
-- The page check sees errors and broken pages, not shifted layouts: say what was and was not checked.
-
-## Site search, background video, page cache (field notes)
-
-- **Site search** (search field, a results template that really shows the results, pages before posts, a FAQs page
-  that comes first when a FAQ answers the search, filter-as-you-type): `references/wp-site-search.md`. Start by
-  fetching `/?s=<word>` and `/?s=<nonsense>`: if both list the same posts, the results template ignores the search.
 - **Background video**: one file per breakpoint, plays on phones, always centre-cropped; and a header dropdown that
   closes on a click elsewhere: `references/divi5-modules-verified.md` and `references/divi5-interactions-canvases.md`.
-- **Page cache**: what helped and what did not, and why writes need a cache clear afterwards:
-  `references/wp-page-cache-notes.md`.
+- **Page cache**: writes need a cache clear afterwards. What helped and what did not:
+  `references/site-care/wp-page-cache-notes.md`. Site search: `references/site-care/wp-site-search.md`.
 - **Tool limits**: `upload-media` can be refused (HTTP 413) for files of a few MB, and Theme Builder templates cannot
   be created, only their layouts edited. In both cases the user does that one step in wp-admin.
 - **A post grid with a popup per post, and a single-post template built from custom fields** (third-party Divi
@@ -814,8 +741,8 @@ node scripts/site-updates.js update <site> --all --fast --write  # small brochur
   Writing to a custom post type, its ACF fields or a taxonomy: `wp.js rest-post wp/v2/<route> --data-file body.json`.
 - **Restoring deleted sections and bringing old Divi 4 markup in line** (lint snapshots as the oldest copies, the
   passes re-run on one page, the leftovers to look for, the `"` quoting trap, header writes that did not
-  stick): the end of `references/divi5-globalize-site.md`. **A graphics size guide for a client's designer** and
-  **form entries as database weight**: the end of `references/wp-media-audit.md`, with `assets/image-slots-measure.js`.
+  stick): the end of `references/divi5-globalize-site.md`. **A graphics size guide for a client's designer**
+  (`assets/image-slots-measure.js`): the end of `references/site-care/wp-media-audit.md`.
 - **Removing a page and everything that points at it** (snapshot first, the reference sweep over layouts, menus,
   canvases, content, CSS; what the tool trashes and what the owner deletes; a Theme Builder template "deleted" in
   the UI stays in the database for 7 days; menu entries set to a new tab over core REST):
@@ -827,11 +754,18 @@ node scripts/site-updates.js update <site> --all --fast --write  # small brochur
 - **A popup-only post type with no single page** (`assets/wpcode-no-single-page.php`) and **opening an
   Interaction-revealed section from a `#hash` link** (`assets/wpcode-open-revealed-section.js`): the end of
   `references/divi5-interactions-canvases.md`.
-- **Go-live (dev over live):** `references/wp-go-live.md` with `assets/content-delta.js` (what live gained since the
-  copy) and `assets/site-check.js` (page sweep + rules, before and after), the old-site folder route, wp-config
-  constants such as Forminator's encryption key; its last section is what a real go-live day taught (migration tools
-  behind Cloudflare, which folder serves the site, what to keep from the old root, expectations drift). Also
-  `assets/tracking-compare.js <url-a> <url-b>` and `assets/phone-headings-scan.js` (headings that break on a phone).
+- **Headings that break on a phone:** `assets/phone-headings-scan.js` (paste into the browser console at 375px).
+
+## Site care (any WordPress site): media audit and clean-up, updates, go-live, performance
+
+Maintenance tools, not page building. **Read `references/site-care/README.md` before using any of them.**
+
+- Media audit (unused media, orphan files, disk space): `node scripts/site-care/media-audit.js scan|crawl|report <site> --dir D`
+- Media clean-up (quarantine, reversible): `node scripts/site-care/media-quarantine.js verify|plan|move|restore <site> --dir D`
+- Updates (plugins, themes, WordPress): `node scripts/site-care/site-updates.js status|update|clear <site>`
+- Go-live (dev over live) and slow-page profiling: `references/site-care/wp-go-live.md`, `node scripts/site-care/hook-profiler.js gen <dir>` (the USER uploads d5b-profiler.php to wp-content/mu-plugins/ and deletes it afterwards, never you)
+- Media audit, Media clean-up and Updates need their switch on in Settings > Divi 5 Builder (off by default, only an administrator flips it; the USER does it, never a script).
+- Never hard-delete: you audit and quarantine, the USER deletes. Updates: show the plan and get a go first, they change a live site with NO rollback, and pages are checked before and after each one. On STALE (exit 3) stop and ask, as in the Workflow.
 
 ## Reference
 

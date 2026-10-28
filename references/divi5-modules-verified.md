@@ -275,7 +275,7 @@ a block with a max-width. Add `margin-left: auto; margin-right: auto;` to the mo
 
 ## Search module, Blog module as a search results grid
 
-See `references/wp-site-search.md`.
+See `references/site-care/wp-site-search.md`.
 
 ## Tool limits met on shared hosting
 

@@ -204,7 +204,7 @@ console.log('--- globalize.js passes the hash of what it read (a bulk writer on 
 
 console.log('--- site-updates.js: reading the status is a GET, refreshing it is a POST (issue #22)');
 {
-  const SU = process.env.SITE_UPDATES_FILE || path.join(path.dirname(WPJS), 'site-updates.js');
+  const SU = process.env.SITE_UPDATES_FILE || path.join(path.dirname(WPJS), 'site-care', 'site-updates.js');
   const su = (version, ...a) => {
     fs.writeFileSync(STATE, JSON.stringify({ pages: {}, posts: {}, et_pb_canvas: {}, su: { version } }));
     const r = spawnSync(process.execPath, [SU, ...a], { encoding: 'utf8', env: Object.assign({}, process.env, { FAKE_WP_STATE: STATE, WEB_CREDS_PATH: CREDS, NODE_OPTIONS: `--require ${__filename.replace(/\\/g, '/')}` }) });
@@ -228,22 +228,22 @@ console.log('--- the scripts say which switch to flip, and never flip one (issue
   };
   const sentence = l => new RegExp('Switch ' + l + ' on in Settings > Divi 5 Builder \\(an administrator must do it in wp-admin\\)\\.');
   const old = /mu-plugins|assets\//;
-  let r = run('site-updates.js', { d5: d5({}) }, 'status', 'fake', '--dir', path.join(tmp, 'su6'));
+  let r = run('site-care/site-updates.js', { d5: d5({}) }, 'status', 'fake', '--dir', path.join(tmp, 'su6'));
   check('site-updates.js, Updates switch off: prints the Updates switch sentence, exit 1', r.code === 1 && sentence('Updates').test(r.out) && !old.test(r.out), [r.code, r.out.slice(-300)]);
-  r = run('site-updates.js', {}, 'status', 'fake', '--dir', path.join(tmp, 'su6'));
+  r = run('site-care/site-updates.js', {}, 'status', 'fake', '--dir', path.join(tmp, 'su6'));
   check('site-updates.js, no plugin at all: prints the install-the-zip sentence', r.code === 1 && r.out.includes('Install divi5-builder.zip from the latest release (Plugins > Add New > Upload Plugin), then switch Updates on in Settings > Divi 5 Builder.'), [r.code, r.out.slice(-300)]);
-  r = run('media-audit.js', { d5: d5({ updates: true }) }, 'scan', 'fake', '--dir', path.join(tmp, 'ma6'));
+  r = run('site-care/media-audit.js', { d5: d5({ updates: true }) }, 'scan', 'fake', '--dir', path.join(tmp, 'ma6'));
   check('media-audit.js scan, Media audit switch off: prints the Media audit switch sentence', r.code === 1 && sentence('Media audit').test(r.out) && !old.test(r.out), [r.code, r.out.slice(-300)]);
-  r = run('media-audit.js', { d5: d5({}) }, 'db', 'fake', '--dir', path.join(tmp, 'ma6'));
+  r = run('site-care/media-audit.js', { d5: d5({}) }, 'db', 'fake', '--dir', path.join(tmp, 'ma6'));
   check('media-audit.js db, Media audit switch off: prints the Media audit switch sentence', r.code === 1 && sentence('Media audit').test(r.out) && !old.test(r.out), [r.code, r.out.slice(-300)]);
-  r = run('media-quarantine.js', { d5: d5({}) }, 'status', 'fake', '--dir', path.join(tmp, 'mq6'));
+  r = run('site-care/media-quarantine.js', { d5: d5({}) }, 'status', 'fake', '--dir', path.join(tmp, 'mq6'));
   check('media-quarantine.js status, Media clean-up switch off: prints the Media clean-up switch sentence', r.code === 1 && sentence('Media clean-up').test(r.out) && !old.test(r.out), [r.code, r.out.slice(-300)]);
-  r = run('media-quarantine.js', {}, 'status', 'fake', '--dir', path.join(tmp, 'mq6'));
+  r = run('site-care/media-quarantine.js', {}, 'status', 'fake', '--dir', path.join(tmp, 'mq6'));
   check('media-quarantine.js status, no plugin: install-the-zip sentence', r.out.includes('Install divi5-builder.zip') && r.out.includes('switch Media clean-up on'), r.out.slice(-300));
   fs.writeFileSync(STATE, JSON.stringify({ d5: d5({ updates: true }) }));
   r = wp('status');
   check('wp.js status prints the status route as JSON', r.code === 0 && r.json && r.json.switches && r.json.switches.updates === true && r.json.version === '2.0.0', [r.code, r.out, r.err]);
-  run('site-updates.js', { d5: d5({}) }, 'status', 'fake', '--dir', path.join(tmp, 'su6'));
+  run('site-care/site-updates.js', { d5: d5({}) }, 'status', 'fake', '--dir', path.join(tmp, 'su6'));
   check("a run with the switch off flips nothing (the fake site's switches and writes unchanged)", st().d5 && st().d5.switches.updates === false && !st().writes, st());
 }
 

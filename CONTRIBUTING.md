@@ -66,12 +66,13 @@ Before opening a PR:
    node scripts/stale-guard-test.js   # page/post/canvas writes refuse when the content changed since the read
    node scripts/spec-check-test.js    # unknown spec keys are reported; every documented example checks clean
    node scripts/blocks-test.js        # block-level edits leave the rest of the page byte for byte
-   node scripts/media-audit-test.js && node scripts/site-updates-test.js
+   node scripts/site-care/media-audit-test.js && node scripts/site-care/site-updates-test.js
    node scripts/switch-advice-test.js    # what the scripts say when a switch is off
    node scripts/plugin-live-check-test.js    # the read-only live check (plugin-live-check.js <site>): GET only, exit 0/1/2
    node scripts/build-plugin-zips-test.js
    php scripts/permissions-test.php && php scripts/double-load-test.php && php scripts/media-quarantine-test.php && php scripts/media-audit-test.php
    php scripts/site-updates-test.php
+   node scripts/site-care/hook-profiler.js gen <empty-dir> && php scripts/site-care/hook-profiler-test.php <empty-dir>   # generate the profiler, then check it
    php scripts/plugin-switches-test.php && php scripts/plugin-takeover-test.php && php scripts/plugin-settings-test.php && php scripts/plugin-anysite-test.php
    php scripts/plugin-uninstall-test.php   # deleting the plugin removes its options (every site of a network too)
    ```
