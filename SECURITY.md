@@ -65,16 +65,23 @@ From 2.1.0 the plugin can offer abilities to AI tools through the WordPress Abil
 - **Off by default.** While the master switch is off, no ability and no category is
   registered. Only an administrator in wp-admin can turn it on (the same Settings page and
   nonce as the other switches). There is no ability and no REST route that changes a switch.
-  Each category has its own switch, and anything risky has a further switch of its own.
+  Each category has its own switch. Risky actions (writes) arrive in later releases, each
+  with a switch of its own.
 - **Read only in 2.1.0.** Nothing an ability does can change the site. Each call is checked
   against the signed-in user's own capabilities, per object (a Contributor cannot read
-  another user's draft through an ability).
+  another user's draft through an ability). A caller who is not logged in is refused before
+  anything runs. On a multisite network the site health abilities (debug log, scheduled
+  tasks) need the network capability, as plugins, themes and core do.
 - **Audit log.** Every call is written to a table before it runs and updated afterwards,
   with the user, the ability, the arguments with secrets removed, the outcome and the time.
-  Rows are kept for 30 days. Deleting the plugin drops the table.
+  Rows are kept for 30 days. Deleting the plugin drops the table. Refusals of callers who are
+  not logged in are logged at most once per IP address per 10 minutes, so they cannot flood
+  the table. A call that WordPress itself rejects before the plugin's code runs (input that
+  does not match the ability's schema, answered with HTTP 400 by core) leaves no row.
 - **Secrets are filtered, best effort.** Password hashes, activation keys, Application
-  Passwords, session tokens and options outside a short list never leave the site, and
-  values are hidden by the name they are stored under, by the name beside them and by a few
+  Passwords, session tokens and site settings outside a short list never leave the site.
+  Theme mods, widget options and Divi design data are returned with secrets filtered: values
+  are hidden by the name they are stored under, by the name beside them and by a few
   certain shapes (private keys, payment keys, JSON Web Tokens, bearer tokens).
 
 **What the secret filter cannot catch.** Names are a heuristic, built to hide when in doubt,
