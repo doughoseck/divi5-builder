@@ -138,20 +138,31 @@ if ( ! function_exists( 'wpsu_kind' ) ) :
 	// checks that follow see the updated site. Returns the names of what was cleared.
 	function wpsu_clear_caches() {
 		$cleared = array();
-		if ( class_exists( 'ET_Core_PageResource' ) && method_exists( 'ET_Core_PageResource', 'remove_static_resources' ) ) {
-			ET_Core_PageResource::remove_static_resources( 'all', 'all' );
-			$cleared[] = 'Divi static CSS';
+		foreach ( wpsu_detect_caches() as $key => $name ) {
+			if ( 'divi' === $key ) { ET_Core_PageResource::remove_static_resources( 'all', 'all' ); }
+			elseif ( 'wpfc' === $key ) { $GLOBALS['wp_fastest_cache']->deleteCache( true ); }
+			elseif ( 'rocket' === $key ) { rocket_clean_domain(); }
+			elseif ( 'w3tc' === $key ) { w3tc_flush_all(); }
+			elseif ( 'wpsc' === $key ) { wp_cache_clear_cache(); }
+			elseif ( 'litespeed' === $key ) { LiteSpeed\Purge::purge_all(); }
+			elseif ( 'object' === $key ) { wp_cache_flush(); }
+			$cleared[] = $name;
 		}
-		if ( isset( $GLOBALS['wp_fastest_cache'] ) && is_object( $GLOBALS['wp_fastest_cache'] ) && method_exists( $GLOBALS['wp_fastest_cache'], 'deleteCache' ) ) {
-			$GLOBALS['wp_fastest_cache']->deleteCache( true );
-			$cleared[] = 'WP Fastest Cache';
-		}
-		if ( function_exists( 'rocket_clean_domain' ) ) { rocket_clean_domain(); $cleared[] = 'WP Rocket'; }
-		if ( function_exists( 'w3tc_flush_all' ) ) { w3tc_flush_all(); $cleared[] = 'W3 Total Cache'; }
-		if ( function_exists( 'wp_cache_clear_cache' ) ) { wp_cache_clear_cache(); $cleared[] = 'WP Super Cache'; }
-		if ( class_exists( 'LiteSpeed\Purge' ) && method_exists( 'LiteSpeed\Purge', 'purge_all' ) ) { LiteSpeed\Purge::purge_all(); $cleared[] = 'LiteSpeed Cache'; }
-		if ( function_exists( 'wp_cache_flush' ) ) { wp_cache_flush(); $cleared[] = 'object cache'; }
 		return $cleared;
+	}
+
+	// Which caches this site has (key => name), in the order wpsu_clear_caches() empties them. Changes nothing; the
+	// cache-status ability reads it. The same tests decide whether a cache is emptied, so the two cannot drift apart.
+	function wpsu_detect_caches() {
+		$found = array();
+		if ( class_exists( 'ET_Core_PageResource' ) && method_exists( 'ET_Core_PageResource', 'remove_static_resources' ) ) { $found['divi'] = 'Divi static CSS'; }
+		if ( isset( $GLOBALS['wp_fastest_cache'] ) && is_object( $GLOBALS['wp_fastest_cache'] ) && method_exists( $GLOBALS['wp_fastest_cache'], 'deleteCache' ) ) { $found['wpfc'] = 'WP Fastest Cache'; }
+		if ( function_exists( 'rocket_clean_domain' ) ) { $found['rocket'] = 'WP Rocket'; }
+		if ( function_exists( 'w3tc_flush_all' ) ) { $found['w3tc'] = 'W3 Total Cache'; }
+		if ( function_exists( 'wp_cache_clear_cache' ) ) { $found['wpsc'] = 'WP Super Cache'; }
+		if ( class_exists( 'LiteSpeed\Purge' ) && method_exists( 'LiteSpeed\Purge', 'purge_all' ) ) { $found['litespeed'] = 'LiteSpeed Cache'; }
+		if ( function_exists( 'wp_cache_flush' ) ) { $found['object'] = 'object cache'; }
+		return $found;
 	}
 
 	// Runs one update. Returns an array, or WP_Error for a request that makes no sense.
