@@ -160,6 +160,7 @@ class T_Wpdb {
 	function get_blog_prefix( $id = null ) { return 'wp_' . ( ( null === $id || 1 === (int) $id ) ? '' : (int) $id . '_' ); }
 	function get_charset_collate() { return 'DEFAULT CHARACTER SET utf8mb4'; }
 	function suppress_errors( $on = true ) { return false; }
+	function esc_like( $t ) { return addcslashes( $t, '_%' . chr( 92 ) ); }
 	function prepare( $q, ...$args ) {
 		if ( 1 === count( $args ) && is_array( $args[0] ) ) { $args = $args[0]; }
 		$i = 0;
@@ -181,7 +182,7 @@ class T_Wpdb {
 	}
 	function get_var( $sql ) {
 		$this->note( $sql );
-		if ( preg_match( "/^SHOW TABLES LIKE '(.*)'$/", $sql, $m ) ) { $t = stripslashes( $m[1] ); return isset( $this->tables[ $t ] ) ? $t : null; }
+		if ( preg_match( "/^SHOW TABLES LIKE '(.*)'$/", $sql, $m ) ) { $t = stripslashes( stripslashes( $m[1] ) ); return isset( $this->tables[ $t ] ) ? $t : null; }
 		return null;
 	}
 	function query( $sql ) {
@@ -210,14 +211,15 @@ class T_Wpdb {
 		return array_values( array_slice( array_values( $rows ), (int) $m[4], (int) $m[3] ) );
 	}
 }
-function t_wpdb_reset() { $GLOBALS['wpdb'] = new T_Wpdb(); $GLOBALS['T_dbdelta'] = array(); $GLOBALS['T_cron'] = array(); $GLOBALS['T_user_id'] = 0; }
+function t_wpdb_reset() { $GLOBALS['wpdb'] = new T_Wpdb(); $GLOBALS['T_dbdelta'] = array(); $GLOBALS['T_cron'] = array(); $GLOBALS['T_user_id'] = 0; $GLOBALS['T_dbdelta_fail'] = false; }
 t_wpdb_reset();
-function dbDelta( $sql ) { $GLOBALS['T_dbdelta'][] = $sql; if ( preg_match( '/CREATE TABLE (\S+)/', $sql, $m ) && ! isset( $GLOBALS['wpdb']->tables[ $m[1] ] ) ) { $GLOBALS['wpdb']->tables[ $m[1] ] = array(); } return array(); }
+function dbDelta( $sql ) { $GLOBALS['T_dbdelta'][] = $sql; if ( preg_match( '/CREATE TABLE (\S+)/', $sql, $m ) && empty( $GLOBALS['T_dbdelta_fail'] ) && ! isset( $GLOBALS['wpdb']->tables[ $m[1] ] ) ) { $GLOBALS['wpdb']->tables[ $m[1] ] = array(); } return array(); }
 function wp_next_scheduled( $hook ) { return $GLOBALS['T_cron'][ $hook ] ?? false; }
 function wp_schedule_event( $ts, $recurrence, $hook ) { $GLOBALS['T_cron'][ $hook ] = $ts; return true; }
 function wp_clear_scheduled_hook( $hook ) { unset( $GLOBALS['T_cron'][ $hook ] ); return 1; }
 function register_deactivation_hook( $file, $cb ) { $GLOBALS['T_deactivation'][] = array( $file, $cb ); }
 function get_current_user_id() { return $GLOBALS['T_user_id']; }
+function wp_check_invalid_utf8( $s, $strip = false ) { return preg_match( '//u', (string) $s ) ? $s : ( $strip ? (string) iconv( 'UTF-8', 'UTF-8//IGNORE', (string) $s ) : '' ); }
 function absint( $n ) { return abs( (int) $n ); }
 function switch_to_blog( $id ) { $GLOBALS['T_blog_stack'][] = $GLOBALS['T_blog_id']; $GLOBALS['T_blog_id'] = (int) $id; return true; }
 function restore_current_blog() { $GLOBALS['T_blog_id'] = array_pop( $GLOBALS['T_blog_stack'] ); return true; }

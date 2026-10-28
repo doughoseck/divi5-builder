@@ -120,7 +120,9 @@ if ( ! function_exists( 'd5b_settings_render_audit' ) ) {
 		if ( ! current_user_can( d5b_settings_cap() ) || ! function_exists( 'd5b_audit_list' ) ) { return; }
 		$ability = isset( $_GET['d5b_audit_ability'] ) && is_string( $_GET['d5b_audit_ability'] ) ? sanitize_text_field( wp_unslash( $_GET['d5b_audit_ability'] ) ) : '';
 		$user    = isset( $_GET['d5b_audit_user'] ) ? absint( is_scalar( $_GET['d5b_audit_user'] ) ? $_GET['d5b_audit_user'] : 0 ) : 0;
-		$rows    = d5b_audit_list( array( 'ability' => $ability, 'user_id' => $user ), 50, 0 );
+		$day     = isset( $_GET['d5b_audit_since'] ) && is_string( $_GET['d5b_audit_since'] ) ? sanitize_text_field( wp_unslash( $_GET['d5b_audit_since'] ) ) : '';
+		if ( 1 !== preg_match( '/^(\d{4})-(\d{2})-(\d{2})$/', $day, $dm ) || ! checkdate( (int) $dm[2], (int) $dm[3], (int) $dm[1] ) ) { $day = ''; }
+		$rows    = d5b_audit_list( array( 'ability' => $ability, 'user_id' => $user, 'since' => '' === $day ? '' : $day . ' 00:00:00' ), 50, 0 );
 		$base    = is_multisite() ? network_admin_url( 'settings.php' ) : admin_url( 'options-general.php' );
 		echo '<h2>Audit log</h2>';
 		echo '<p class="description">' . esc_html( 'The newest 50 AI ability calls on this site, kept for 30 days. Times are UTC. Secrets are masked before they are stored.' ) . '</p>';
@@ -128,6 +130,7 @@ if ( ! function_exists( 'd5b_settings_render_audit' ) ) {
 		echo '<input type="hidden" name="page" value="divi5-builder" />';
 		echo '<label>Ability <input type="text" name="d5b_audit_ability" value="' . esc_attr( $ability ) . '" /></label> ';
 		echo '<label>User ID <input type="number" min="0" name="d5b_audit_user" value="' . esc_attr( $user > 0 ? (string) $user : '' ) . '" /></label> ';
+		echo '<label>Since (UTC) <input type="date" name="d5b_audit_since" value="' . esc_attr( $day ) . '" /></label> ';
 		echo '<input type="submit" class="button" value="Filter" />';
 		echo '</form>';
 		echo '<table class="widefat striped"><thead><tr><th>Time (UTC)</th><th>User</th><th>Ability</th><th>Status</th><th>Ms</th><th>IP</th><th>Arguments</th></tr></thead><tbody>';

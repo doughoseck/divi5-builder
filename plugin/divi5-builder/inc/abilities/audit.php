@@ -18,6 +18,14 @@ if ( ! function_exists( 'd5b_audit_table' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_audit_table_exists' ) ) {
+	function d5b_audit_table_exists(): bool {
+		global $wpdb;
+		$table = d5b_audit_table();
+		return $table === $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $wpdb->esc_like( $table ) ) );
+	}
+}
+
 if ( ! function_exists( 'd5b_audit_schedule' ) ) {
 	/** The daily clean-up event, once per site. */
 	function d5b_audit_schedule(): void {
@@ -55,7 +63,7 @@ if ( ! function_exists( 'd5b_audit_maybe_install' ) ) {
   KEY ability (ability)
 ) {$charset};" );
 		// Only remember the version when the table is really there, so a failed create is tried again.
-		if ( $table === $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ) ) {
+		if ( d5b_audit_table_exists() ) {
 			update_option( 'd5b_db_version', D5B_DB_VERSION, false );
 		}
 	}
@@ -86,8 +94,9 @@ if ( ! function_exists( 'd5b_audit_mask_secrets' ) ) {
 		// Authorization: <anything to the end of the line>, and a bare Bearer token
 		$s = (string) preg_replace( '/\bAuthorization\s*:[^\r\n]*/i', 'Authorization: [redacted]', $s );
 		$s = (string) preg_replace( '/\bBearer\s+[A-Za-z0-9\-._~+\/]+=*/i', 'Bearer [redacted]', $s );
-		// password=..., pass=..., token=..., secret=..., key=... (also api_key, quoted, or with a colon)
-		$s = (string) preg_replace( '/((?:pass(?:word|wd)?|pwd|token|secret|[a-z_\-]*key)["\']?\s*[=:]\s*["\']?)[^\s&;,"\']+/i', '$1[redacted]', $s );
+		$s = (string) preg_replace( '/\bBasic\s+[A-Za-z0-9+\/]{8,}=*/', 'Basic [redacted]', $s );
+		// password=..., pass=..., token=..., secret=..., key=... (also api_key, a colon, %3D, or a quoted value that holds spaces)
+		$s = (string) preg_replace( '/((?:pass(?:word|wd)?|pwd|token|secret|[a-z_\-]*key)["\']?\s*(?:=|:|%3D)\s*)(?:"[^"]*"|\'[^\']*\'|[^\s&;,"\']+)/i', '$1[redacted]', $s );
 		return $s;
 	}
 }
@@ -131,6 +140,9 @@ if ( ! function_exists( 'd5b_audit_write' ) ) {
 			if ( strlen( $json ) > 8192 ) { $json = '{"_truncated":true,"bytes":' . strlen( $json ) . '}'; }
 			$ip = isset( $_SERVER['REMOTE_ADDR'] ) && is_string( $_SERVER['REMOTE_ADDR'] ) ? $_SERVER['REMOTE_ADDR'] : '';
 			if ( false === filter_var( $ip, FILTER_VALIDATE_IP ) ) { $ip = ''; }
+			// A real wpdb::insert drops the whole row on invalid UTF-8; the args are JSON already, so only these two need it.
+			$ability = function_exists( 'wp_check_invalid_utf8' ) ? (string) wp_check_invalid_utf8( $ability, true ) : $ability;
+			$status  = function_exists( 'wp_check_invalid_utf8' ) ? (string) wp_check_invalid_utf8( $status, true ) : $status;
 			$row = array(
 				'created_at'  => gmdate( 'Y-m-d H:i:s' ),
 				'user_id'     => function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0,
@@ -141,7 +153,14 @@ if ( ! function_exists( 'd5b_audit_write' ) ) {
 				'ip'          => substr( $ip, 0, 45 ),
 			);
 			$quiet = method_exists( $wpdb, 'suppress_errors' ) ? $wpdb->suppress_errors( true ) : null;
-			$done  = $wpdb->insert( d5b_audit_table(), $row, array( '%s', '%d', '%s', '%s', '%s', '%d', '%s' ) );
+			$fmt   = array( '%s', '%d', '%s', '%s', '%s', '%d', '%s' );
+			$done  = $wpdb->insert( d5b_audit_table(), $row, $fmt );
+			if ( ( false === $done || 0 === $done ) && ! d5b_audit_table_exists() ) {
+				// The table is gone (dropped by hand, or this site never ran admin_init): make it again and try once more.
+				delete_option( 'd5b_db_version' );
+				d5b_audit_maybe_install();
+				$done = $wpdb->insert( d5b_audit_table(), $row, $fmt );
+			}
 			if ( null !== $quiet ) { $wpdb->suppress_errors( $quiet ); }
 			return false !== $done && 0 !== $done;
 		} catch ( Throwable $e ) {

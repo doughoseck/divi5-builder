@@ -146,15 +146,38 @@ check( 'prune goes through prepare() too', array() === $wpdb->unprepared );
 
 echo "missing table\n";
 fresh();
+check( 'list with no table: empty array', array() === d5b_audit_list( array() ) );
+$GLOBALS['T_dbdelta_fail'] = true; // the table cannot be made at all
 $ok = true; $threw = false;
 try { $ok = d5b_audit_write( 'a/b', array( 'x' => 1 ), 'ok', 1 ); } catch ( Throwable $t ) { $threw = true; }
-check( 'write with no table: false, no exception, nothing stored', false === $ok && ! $threw && array() === $wpdb->tables );
-check( 'list with no table: empty array', array() === d5b_audit_list( array() ) );
+check( 'write with no table that cannot be made: false, no exception, nothing stored, version not set', false === $ok && ! $threw && array() === $wpdb->tables && false === get_option( 'd5b_db_version' ) );
 $wpdb->fail_insert = true;
 check( 'a database that throws on insert: write returns false, never throws', false === d5b_audit_write( 'a/b', array(), 'ok', 1 ) );
-$wpdb->fail_insert = false;
+$wpdb->fail_insert = false; $GLOBALS['T_dbdelta_fail'] = false;
+check( 'write with no table: the table is made on the spot and the row stored', true === d5b_audit_write( 'a/b', array(), 'ok', 1 ) && 1 === count( rows() ) && '1' === get_option( 'd5b_db_version' ) );
+echo "self-repair: table dropped, version still says installed\n";
+installed();
+unset( $wpdb->tables['wp_d5b_audit'] );
 d5b_audit_maybe_install();
-check( 'the table is created on the next d5b_audit_maybe_install and writes work again', true === d5b_audit_write( 'a/b', array(), 'ok', 1 ) && 1 === count( rows() ) );
+check( 'maybe_install alone does not notice (version matches), as designed', array() === $wpdb->tables );
+$ok = d5b_audit_write( 'a/b', array( 'x' => 1 ), 'ok', 1 );
+check( 'the next write repairs the table and stores the row', true === $ok && 1 === count( rows() ) && '1' === get_option( 'd5b_db_version' ), array( $ok, $wpdb->tables ) );
+check( 'the repair retried the insert only once (no loop) and used prepared SHOW TABLES with an escaped name', array() === $wpdb->unprepared && false !== strpos( implode( "\n", $wpdb->queries ), 'wp' . str_repeat( chr( 92 ), 2 ) . '_d5b' ), $wpdb->queries );
+echo "subsite: switches are network-wide, no admin_init ever ran there\n";
+installed(); t_set_multisite( true );
+$wpdb->prefix = 'wp_2_'; unset( $GLOBALS['T_options']['d5b_db_version'] ); // this site's own option: never installed
+d5b_abilities_set_master( true, 'net' );
+d5b_ability_add( array( 'name' => 'divi5-builder/posts-a', 'category' => 'posts', 'label' => 'a', 'description' => 'x', 'handler' => function ( array $i ) { return array( 'v' => 1 ); }, 'permission' => function ( array $i ) { return true; } ) );
+add_action( 'wp_abilities_api_categories_init', 'd5b_abilities_register_categories' ); add_action( 'wp_abilities_api_init', 'd5b_abilities_register' );
+t_fire( 'wp_abilities_api_categories_init' ); t_fire( 'wp_abilities_api_init' );
+check( 'registering abilities on a subsite creates that site\'s audit table', isset( $wpdb->tables['wp_2_d5b_audit'] ) && '1' === get_option( 'd5b_db_version' ), array_keys( $wpdb->tables ) );
+$res = d5b_ability_run( 'divi5-builder/posts-a', array( 'id' => 1 ) );
+check( 'one ability run on the subsite makes exactly one row in that subsite\'s table, none on the main site', array( 'v' => 1 ) === $res && 1 === count( $wpdb->tables['wp_2_d5b_audit'] ) && 0 === count( $wpdb->tables['wp_d5b_audit'] ), array_map( 'count', $wpdb->tables ) );
+t_set_multisite( false );
+echo "utf-8\n";
+installed();
+d5b_audit_write( "ab\xB1c", array(), "st\xB1atus", 1 );
+check( 'invalid UTF-8 in ability and status is stripped before insert (a real wpdb would drop the row)', 1 === count( rows() ) && 'abc' === rows()[0]['ability'] && 'status' === rows()[0]['status'], rows() );
 fresh(); unset( $GLOBALS['wpdb'] );
 check( 'no $wpdb at all: write false, list empty, prune 0, install quiet', false === d5b_audit_write( 'a/b', array(), 'ok', 1 ) && array() === d5b_audit_list( array() ) && 0 === d5b_audit_prune() && null === d5b_audit_maybe_install() );
 t_wpdb_reset();
@@ -213,6 +236,33 @@ check( 'multisite: manage_options is not enough, network capability required', '
 t_set_caps( array( 'manage_network_options' ) );
 check( 'multisite: the network capability sees it', false !== strpos( html( 'd5b_settings_render_audit' ), 'Audit log' ) );
 t_set_multisite( false );
+
+echo "date filter\n";
+installed(); t_set_caps( array( 'manage_options' ) );
+stored_row_at( 20 * 86400, 'old/twenty' ); stored_row_at( 60, 'new/now' );
+$day = gmdate( 'Y-m-d', time() - 5 * 86400 );
+$_GET = array( 'd5b_audit_since' => $day ); $out = html( 'd5b_settings_render_audit' );
+check( 'since date: shows only rows from that day on; the input keeps the value', false !== strpos( $out, 'new/now' ) && false === strpos( $out, 'old/twenty' ) && false !== strpos( $out, 'name="d5b_audit_since" value="' . $day . '"' ) && false !== strpos( $out, 'type="date"' ), $out );
+foreach ( array( '2026-13-45', '2026-1-1', 'yesterday', '"><script>x</script>', '2026-02-30', '2026-01-01 00:00:00' ) as $bad ) {
+	$_GET = array( 'd5b_audit_since' => $bad ); $out = html( 'd5b_settings_render_audit' );
+	check( "a date that is not a real YYYY-MM-DD is ignored and never echoed: $bad", false !== strpos( $out, 'old/twenty' ) && false === strpos( $out, '<script>' ) && false !== strpos( $out, 'name="d5b_audit_since" value=""' ), $out );
+}
+$_GET = array( 'd5b_audit_since' => array( '2026-01-01' ) ); check( 'an array-valued date does not break the page', false !== strpos( html( 'd5b_settings_render_audit' ), 'old/twenty' ) );
+$_GET = array();
+
+echo "more free-text masking\n";
+installed();
+$cap2 = function ( $s ) { d5b_audit_write( 'a/b', array( '_exception' => $s ), 'x', 1 ); return last_args()['_exception']; };
+$o = $cap2( 'login failed: password="my secret phrase" for user' );
+check( '_exception masks a quoted value that holds spaces, up to the closing quote', false === strpos( $o, 'secret phrase' ) && false === strpos( $o, 'phrase' ) && false !== strpos( $o, 'for user' ), $o );
+$o = $cap2( "bad: token='a b c d' end" );
+check( '_exception masks a single-quoted value with spaces', false === strpos( $o, 'a b c d' ) && false !== strpos( $o, ' end' ), $o );
+$o = $cap2( 'GET /x?a=1%26token%3Dabc123def%26b=2' );
+check( '_exception masks token%3Dvalue (URL-encoded equals)', false === strpos( $o, 'abc123def' ), $o );
+$o = $cap2( 'sent Basic dXNlcjpwYXNzd29yZA== to proxy' );
+check( '_exception masks a bare Basic credential', false === strpos( $o, 'dXNlcjpwYXNz' ) && false !== strpos( $o, 'Basic [redacted]' ), $o );
+$o = $cap2( 'json {"password":"p w d","ok":1}' );
+check( '_exception masks a JSON "password":"..." value', false === strpos( $o, 'p w d' ) && false !== strpos( $o, '"ok":1' ), $o );
 
 echo "source checks\n";
 $src = file_get_contents( $dir . '/inc/abilities/audit.php' );

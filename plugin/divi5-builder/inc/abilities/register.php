@@ -70,6 +70,8 @@ if ( ! function_exists( 'd5b_abilities_register' ) ) {
 	/** Runs on wp_abilities_api_init. Every definition whose category is on, once. */
 	function d5b_abilities_register(): void {
 		if ( ! function_exists( 'wp_register_ability' ) || ! d5b_abilities_master_on() ) { return; }
+		// The switches are network-wide: every site that registers abilities needs its own audit table, admin_init or not.
+		if ( function_exists( 'd5b_audit_maybe_install' ) ) { d5b_audit_maybe_install(); }
 		$cats = d5b_ability_categories();
 		foreach ( d5b_ability_defs() as $name => $def ) {
 			if ( ! d5b_abilities_category_on( $def['category'] ) ) { continue; }
