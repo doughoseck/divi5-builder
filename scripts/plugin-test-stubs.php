@@ -32,6 +32,7 @@ function t_reset() {
 	if ( function_exists( 't_blogs_reset' ) ) { t_blogs_reset(); }
 	if ( function_exists( 't_abilities_reset' ) ) { t_abilities_reset(); }
 	if ( function_exists( 't_wpdb_reset' ) ) { t_wpdb_reset(); }
+	if ( function_exists( 't_content_reset' ) ) { t_content_reset(); }
 }
 // A new request: WordPress starts a request with the gate not yet run.
 function t_new_request() { unset( $GLOBALS['d5b_gate_ran'] ); }
@@ -52,7 +53,7 @@ function t_new_server() { $s = new T_Server(); $s->routes = array(); $GLOBALS['T
 
 function is_wp_error( $x ) { return $x instanceof WP_Error; }
 function is_multisite() { return $GLOBALS['T_multisite']; }
-function current_user_can( $cap, $id = null ) { return in_array( $cap, $GLOBALS['T_caps'], true ); }
+// current_user_can: defined in the content stand-ins at the end of this file (it understands read_post and edit_post).
 function add_action( $h, $cb = null, $p = 10, $a = 1 ) { $GLOBALS['T_actions'][ $h ][] = $cb; $GLOBALS['T_priorities'][ $h ][] = $p; }
 function register_activation_hook( $file, $cb ) { $GLOBALS['T_activation'][] = array( $file, $cb ); }
 function add_filter( $h, $cb = null, $p = 10, $a = 1 ) { $GLOBALS['T_filters'][ $h ][] = $cb; }
@@ -111,9 +112,9 @@ function sanitize_text_field( $s ) { return trim( strip_tags( (string) $s ) ); }
 function sanitize_key( $s ) { return preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $s ) ); }
 function wp_generate_uuid4() { return '00000000-0000-4000-8000-000000000000'; }
 function update_post_meta( $id, $k, $v ) { return true; }
-function get_post_meta( $id, $k = '', $single = false ) { return ''; }
+// get_post_meta: see the content stand-ins at the end of this file.
 function is_protected_meta( $k, $t = null ) { return '_' === $k[0]; }
-function get_post( $id ) { return null; }
+// get_post: see the content stand-ins at the end of this file.
 function wp_upload_dir() { return array( 'basedir' => ABSPATH . 'wp-content/uploads', 'baseurl' => 'https://x.example/wp-content/uploads' ); }
 
 // ---- admin page stand-ins (Task 4). t_reset() does not clear these; t_admin_reset() does.
@@ -262,5 +263,139 @@ if ( ! getenv( 'D5B_NO_ABILITIES_API' ) ) {
 		if ( '' !== $why ) { $GLOBALS['T_ability_errors'][] = "category $slug refused: $why"; return null; }
 		$GLOBALS['T_ability_categories'][ $slug ] = $args;
 		return (object) array( 'slug' => $slug );
+	}
+}
+
+// ---- content stand-ins for the read abilities (#32, Task 4). t_reset() clears them.
+//   T_posts         id => post object (posts, pages, attachments, revisions, blocks ...); add with t_add_post( array )
+//   T_meta          id => key => list of values; add with t_add_meta( id, key, value )
+//   T_post_types    name => type object;  t_add_type( name, public, show_in_rest, hierarchical )
+//   T_taxonomies    name => taxonomy object;  t_add_taxonomy( name, public, show_in_rest )
+//   T_terms         id => term object;  t_add_term( taxonomy, name, parent );  T_object_terms  post id => taxonomy => term ids
+//   T_comments      id => comment object;  t_add_comment( array )
+//   T_menus         id => menu object;  T_menu_items  menu id => list of items;  T_menu_locations  slug => menu id;  T_registered_menus  slug => label
+//   T_queries       every argument array WP_Query was built with
+// The signed-in user is T_user_id (0 = nobody) and the capabilities are T_caps, as before. current_user_can understands
+// read_post and edit_post for a post id the way core's map_meta_cap does, in a simplified form: the author needs
+// edit_posts, other people's posts need edit_others_posts, a private post needs read_private_posts from a stranger,
+// a published post needs 'read', an inherited one (attachment, revision) follows its parent.
+function t_content_reset() {
+	$GLOBALS['T_posts'] = array(); $GLOBALS['T_meta'] = array(); $GLOBALS['T_terms'] = array(); $GLOBALS['T_object_terms'] = array(); $GLOBALS['T_comments'] = array(); $GLOBALS['T_next_id'] = 100; $GLOBALS['T_queries'] = array();
+	$GLOBALS['T_menus'] = array(); $GLOBALS['T_menu_items'] = array(); $GLOBALS['T_menu_locations'] = array(); $GLOBALS['T_registered_menus'] = array();
+	$GLOBALS['T_post_types'] = array(); $GLOBALS['T_taxonomies'] = array();
+	foreach ( array( 'post' => array( 1, 1, 0 ), 'page' => array( 1, 1, 1 ), 'attachment' => array( 1, 0, 0 ), 'revision' => array( 0, 0, 0 ), 'nav_menu_item' => array( 0, 0, 0 ), 'wp_block' => array( 0, 1, 0 ), 'wp_template' => array( 0, 1, 0 ), 'et_pb_layout' => array( 1, 1, 0 ) ) as $n => $f ) { t_add_type( $n, (bool) $f[0], (bool) $f[1], (bool) $f[2] ); }
+	foreach ( array( 'category' => array( 1, 1 ), 'post_tag' => array( 1, 1 ), 'nav_menu' => array( 0, 1 ), 'wp_theme' => array( 0, 0 ) ) as $n => $f ) { t_add_taxonomy( $n, (bool) $f[0], (bool) $f[1] ); }
+}
+function t_add_type( $name, $public = true, $rest = true, $hier = false ) { $GLOBALS['T_post_types'][ $name ] = (object) array( 'name' => $name, 'label' => ucfirst( $name ), 'public' => $public, 'show_in_rest' => $rest, 'hierarchical' => $hier ); }
+function t_add_taxonomy( $name, $public = true, $rest = true ) { $GLOBALS['T_taxonomies'][ $name ] = (object) array( 'name' => $name, 'label' => ucfirst( $name ), 'public' => $public, 'show_in_rest' => $rest, 'hierarchical' => 'category' === $name ); }
+function t_add_post( array $f = array() ) {
+	$id = isset( $f['ID'] ) ? (int) $f['ID'] : $GLOBALS['T_next_id']++;
+	$GLOBALS['T_posts'][ $id ] = (object) array_merge( array(
+		'ID' => $id, 'post_type' => 'post', 'post_status' => 'publish', 'post_author' => 1, 'post_title' => 'Title ' . $id, 'post_name' => 'title-' . $id,
+		'post_content' => 'Content ' . $id, 'post_excerpt' => '', 'post_date_gmt' => '2026-10-01 10:00:00', 'post_modified_gmt' => '2026-10-02 10:00:00',
+		'post_parent' => 0, 'post_password' => '', 'post_mime_type' => '', 'menu_order' => 0,
+	), $f, array( 'ID' => $id ) );
+	return $id;
+}
+function t_add_meta( $id, $k, $v ) { $GLOBALS['T_meta'][ (int) $id ][ $k ][] = $v; }
+function t_add_term( $tax, $name, $parent = 0 ) { $id = $GLOBALS['T_next_id']++; $GLOBALS['T_terms'][ $id ] = (object) array( 'term_id' => $id, 'name' => $name, 'slug' => strtolower( $name ), 'description' => 'About ' . $name, 'parent' => $parent, 'count' => 0, 'taxonomy' => $tax ); return $id; }
+function t_add_comment( array $f = array() ) {
+	$id = $GLOBALS['T_next_id']++;
+	$GLOBALS['T_comments'][ $id ] = (object) array_merge( array( 'comment_ID' => $id, 'comment_post_ID' => 0, 'comment_author' => 'Visitor', 'comment_author_email' => 'visitor@example.org', 'comment_author_url' => '', 'comment_author_IP' => '203.0.113.9',
+		'comment_date_gmt' => '2026-10-03 10:00:00', 'comment_content' => 'Nice.', 'comment_approved' => '1', 'comment_parent' => 0, 'user_id' => 0, 'comment_type' => 'comment' ), $f, array( 'comment_ID' => $id ) );
+	return $id;
+}
+t_content_reset();
+
+function t_has_cap( $c ) { return in_array( $c, $GLOBALS['T_caps'], true ); }
+function t_post_cap( $cap, $id ) {
+	$p = $GLOBALS['T_posts'][ $id ] ?? null;
+	if ( null === $p ) { return false; }
+	$own = (int) $p->post_author === (int) $GLOBALS['T_user_id'];
+	if ( 'edit_post' === $cap ) {
+		if ( 'revision' === $p->post_type ) { return t_post_cap( 'edit_post', (int) $p->post_parent ); }
+		if ( ! $own ) { return t_has_cap( 'edit_others_posts' ); }
+		return t_has_cap( 'edit_posts' ) && ( 'publish' !== $p->post_status || t_has_cap( 'edit_published_posts' ) );
+	}
+	if ( 'publish' === $p->post_status ) { return t_has_cap( 'read' ); }
+	if ( 'private' === $p->post_status ) { return $own ? t_has_cap( 'read' ) : t_has_cap( 'read_private_posts' ); }
+	if ( 'inherit' === $p->post_status ) { return $p->post_parent && isset( $GLOBALS['T_posts'][ (int) $p->post_parent ] ) ? t_post_cap( 'read_post', (int) $p->post_parent ) : t_has_cap( 'read' ); }
+	return t_post_cap( 'edit_post', $id );
+}
+function current_user_can( $cap, $id = null ) {
+	if ( null !== $id && ( 'read_post' === $cap || 'edit_post' === $cap ) ) { return t_post_cap( $cap, (int) $id ); }
+	return t_has_cap( $cap );
+}
+function get_post( $id = null ) { return is_object( $id ) ? $id : ( $GLOBALS['T_posts'][ (int) $id ] ?? null ); }
+function get_post_meta( $id, $k = '', $single = false ) {
+	$all = $GLOBALS['T_meta'][ (int) $id ] ?? array();
+	if ( '' === $k ) { return $all; }
+	$vals = $all[ $k ] ?? array();
+	return $single ? ( $vals[0] ?? '' ) : $vals;
+}
+function get_permalink( $id = 0 ) { return 'https://x.example/?p=' . (int) ( is_object( $id ) ? $id->ID : $id ); }
+function wp_get_attachment_url( $id ) { $f = get_post_meta( $id, '_wp_attached_file', true ); return '' === $f ? false : 'https://x.example/wp-content/uploads/' . $f; }
+function wp_get_attachment_metadata( $id ) { $m = get_post_meta( $id, '_wp_attachment_metadata', true ); return '' === $m ? false : $m; }
+function get_post_type_object( $t ) { return $GLOBALS['T_post_types'][ $t ] ?? null; }
+function get_post_types( $args = array(), $output = 'names' ) { return 'objects' === $output ? $GLOBALS['T_post_types'] : array_combine( array_keys( $GLOBALS['T_post_types'] ), array_keys( $GLOBALS['T_post_types'] ) ); }
+function get_taxonomy( $t ) { return $GLOBALS['T_taxonomies'][ $t ] ?? false; }
+// 'the_content' wraps its input, so a hash taken from filtered content cannot equal one taken from the raw content.
+function apply_filters( $tag, $value, ...$args ) { return 'the_content' === $tag ? '<div class="filtered">' . $value . '</div>' : $value; }
+function wp_strip_all_tags( $s ) { return trim( strip_tags( (string) $s ) ); }
+function get_the_terms( $id, $tax ) {
+	$ids = $GLOBALS['T_object_terms'][ (int) $id ][ $tax ] ?? array();
+	return array() === $ids ? false : array_values( array_map( function ( $t ) { return $GLOBALS['T_terms'][ $t ]; }, $ids ) );
+}
+function get_term( $id, $tax = '' ) { $t = $GLOBALS['T_terms'][ (int) $id ] ?? null; return ( null !== $t && ( '' === $tax || $t->taxonomy === $tax ) ) ? $t : null; }
+function get_terms( $args = array() ) {
+	$rows = array_values( array_filter( $GLOBALS['T_terms'], function ( $t ) use ( $args ) {
+		return $t->taxonomy === ( $args['taxonomy'] ?? '' ) && ( empty( $args['search'] ) || false !== stripos( $t->name, $args['search'] ) );
+	} ) );
+	if ( 'count' === ( $args['fields'] ?? '' ) ) { return (string) count( $rows ); }
+	return array_slice( $rows, (int) ( $args['offset'] ?? 0 ), isset( $args['number'] ) ? (int) $args['number'] : null );
+}
+function get_comment( $id ) { return $GLOBALS['T_comments'][ (int) $id ] ?? null; }
+function get_comments( $args = array() ) {
+	$map = array( 'approve' => '1', 'hold' => '0', 'spam' => 'spam', 'trash' => 'trash' );
+	$st = $args['status'] ?? 'approve';
+	$rows = array_values( array_filter( $GLOBALS['T_comments'], function ( $c ) use ( $args, $st, $map ) {
+		if ( ! empty( $args['post_id'] ) && (int) $c->comment_post_ID !== (int) $args['post_id'] ) { return false; }
+		return 'all' === $st ? in_array( (string) $c->comment_approved, array( '0', '1' ), true ) : (string) $c->comment_approved === ( $map[ $st ] ?? $st );
+	} ) );
+	if ( ! empty( $args['count'] ) ) { return count( $rows ); }
+	return array_slice( $rows, (int) ( $args['offset'] ?? 0 ), isset( $args['number'] ) ? (int) $args['number'] : null );
+}
+function wp_get_nav_menus() { return array_values( $GLOBALS['T_menus'] ); }
+function wp_get_nav_menu_object( $m ) { foreach ( $GLOBALS['T_menus'] as $o ) { if ( (string) $o->term_id === (string) $m || $o->slug === $m || $o->name === $m ) { return $o; } } return false; }
+function wp_get_nav_menu_items( $m ) { $o = wp_get_nav_menu_object( $m ); return $o ? ( $GLOBALS['T_menu_items'][ $o->term_id ] ?? array() ) : false; }
+function get_nav_menu_locations() { return $GLOBALS['T_menu_locations']; }
+function get_registered_nav_menus() { return $GLOBALS['T_registered_menus']; }
+function wp_get_post_revisions( $id, $args = array() ) {
+	$rows = array_filter( $GLOBALS['T_posts'], function ( $p ) use ( $id ) { return 'revision' === $p->post_type && (int) $p->post_parent === (int) $id; } );
+	krsort( $rows );
+	return $rows;
+}
+// WordPress's query, reduced to what the read abilities send: type, status, search, author, parent, category, tag, mime, paging.
+// Every post that matches comes back whoever is asking: filtering by permission is the code under test's job.
+class WP_Query {
+	public $posts = array(); public $found_posts = 0; public $max_num_pages = 0; public $query_args = array();
+	function __construct( $a = array() ) {
+		$GLOBALS['T_queries'][] = $a; $this->query_args = $a;
+		$types = (array) ( $a['post_type'] ?? 'post' ); $st = $a['post_status'] ?? 'publish'; $rows = array();
+		foreach ( $GLOBALS['T_posts'] as $p ) {
+			if ( ! in_array( $p->post_type, $types, true ) || 'auto-draft' === $p->post_status ) { continue; }
+			if ( 'any' === $st ? 'trash' === $p->post_status : ! in_array( $p->post_status, (array) $st, true ) ) { continue; }
+			if ( isset( $a['s'] ) && '' !== $a['s'] && false === stripos( $p->post_title . ' ' . $p->post_content, $a['s'] ) ) { continue; }
+			if ( ! empty( $a['author'] ) && (int) $p->post_author !== (int) $a['author'] ) { continue; }
+			if ( isset( $a['post_parent'] ) && (int) $p->post_parent !== (int) $a['post_parent'] ) { continue; }
+			if ( ! empty( $a['cat'] ) && ! in_array( (int) $a['cat'], $GLOBALS['T_object_terms'][ $p->ID ]['category'] ?? array(), true ) ) { continue; }
+			if ( ! empty( $a['tag_id'] ) && ! in_array( (int) $a['tag_id'], $GLOBALS['T_object_terms'][ $p->ID ]['post_tag'] ?? array(), true ) ) { continue; }
+			if ( ! empty( $a['post_mime_type'] ) && 0 !== strpos( $p->post_mime_type, $a['post_mime_type'] ) ) { continue; }
+			$rows[] = $p;
+		}
+		usort( $rows, function ( $x, $y ) { return $y->ID <=> $x->ID; } );
+		$this->found_posts = count( $rows );
+		$per = max( 1, (int) ( $a['posts_per_page'] ?? 10 ) ); $this->max_num_pages = (int) ceil( $this->found_posts / $per );
+		$this->posts = array_slice( $rows, ( max( 1, (int) ( $a['paged'] ?? 1 ) ) - 1 ) * $per, $per );
 	}
 }

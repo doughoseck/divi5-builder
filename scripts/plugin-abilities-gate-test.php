@@ -34,6 +34,7 @@ if ( isset( $argv[1] ) && '--child' === $argv[1] ) {
 	define( 'WPMU_PLUGIN_DIR', sys_get_temp_dir() . '/d5b-gate-mu-' . getmypid() );
 	define( 'WP_PLUGIN_DIR', sys_get_temp_dir() . '/d5b-gate-plugins-' . getmypid() );
 	require $dir . '/divi5-builder.php';
+	d5b_ability_registry( array() ); // the shipped definitions are covered elsewhere; this child counts only its own one
 	$wired_cat = in_array( 'd5b_abilities_register_categories', $GLOBALS['T_actions']['wp_abilities_api_categories_init'] ?? array(), true );
 	$wired_reg = in_array( 'd5b_abilities_register', $GLOBALS['T_actions']['wp_abilities_api_init'] ?? array(), true );
 	d5b_ability_add( array( 'name' => 'divi5-builder/posts-a', 'category' => 'posts', 'label' => 'a', 'description' => 'Returns a. Refuses nothing.', 'handler' => function ( array $i ) { return 1; }, 'permission' => function ( array $i ) { return true; } ) );

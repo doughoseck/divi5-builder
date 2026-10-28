@@ -39,6 +39,8 @@ foreach ( array(
 	'inc/abilities/categories.php',
 	'inc/abilities/register.php',
 	'inc/abilities/audit.php',
+	'inc/abilities/read-content.php',
+	'inc/abilities/read-structure.php',
 	'inc/settings.php',
 	'parts/page-building.php',
 	'parts/media-audit.php',
