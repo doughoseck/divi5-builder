@@ -26,6 +26,29 @@ if ( ! function_exists( 'd5b_audit_table_exists' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_audit_install_state' ) ) {
+	/**
+	 * Which sites (by table prefix) already tried to create their table during this request. 'tried' records the
+	 * current site, 'is_tried' asks, 'reset' forgets all (tests only: a new PHP request starts empty anyway).
+	 */
+	function d5b_audit_install_state( string $op ): bool {
+		static $tried = array();
+		global $wpdb;
+		$key = is_object( $wpdb ) ? (string) $wpdb->prefix : '';
+		if ( 'reset' === $op ) { $tried = array(); return true; }
+		if ( 'tried' === $op ) { $tried[ $key ] = true; return true; }
+		return isset( $tried[ $key ] );
+	}
+}
+
+if ( ! function_exists( 'd5b_audit_install_allowed' ) ) {
+	/** False when this site already tried in this request, or a failed attempt less than an hour ago left the transient. */
+	function d5b_audit_install_allowed(): bool {
+		if ( d5b_audit_install_state( 'is_tried' ) ) { return false; }
+		return ! ( function_exists( 'get_transient' ) && false !== get_transient( 'd5b_audit_install_failed' ) );
+	}
+}
+
 if ( ! function_exists( 'd5b_audit_schedule' ) ) {
 	/** The daily clean-up event, once per site. */
 	function d5b_audit_schedule(): void {
@@ -46,7 +69,8 @@ if ( ! function_exists( 'd5b_audit_maybe_install' ) ) {
 			$file = ABSPATH . 'wp-admin/includes/upgrade.php';
 			if ( is_readable( $file ) ) { require_once $file; }
 		}
-		if ( ! function_exists( 'dbDelta' ) ) { return; }
+		if ( ! function_exists( 'dbDelta' ) || ! d5b_audit_install_allowed() ) { return; }
+		d5b_audit_install_state( 'tried' );
 		$table   = d5b_audit_table();
 		$charset = method_exists( $wpdb, 'get_charset_collate' ) ? $wpdb->get_charset_collate() : '';
 		dbDelta( "CREATE TABLE {$table} (
@@ -65,6 +89,9 @@ if ( ! function_exists( 'd5b_audit_maybe_install' ) ) {
 		// Only remember the version when the table is really there, so a failed create is tried again.
 		if ( d5b_audit_table_exists() ) {
 			update_option( 'd5b_db_version', D5B_DB_VERSION, false );
+			if ( function_exists( 'delete_transient' ) ) { delete_transient( 'd5b_audit_install_failed' ); }
+		} elseif ( function_exists( 'set_transient' ) ) {
+			set_transient( 'd5b_audit_install_failed', 1, 3600 ); // CREATE denied: do not try again for an hour
 		}
 	}
 }
@@ -154,14 +181,18 @@ if ( ! function_exists( 'd5b_audit_write' ) ) {
 			);
 			$quiet = method_exists( $wpdb, 'suppress_errors' ) ? $wpdb->suppress_errors( true ) : null;
 			$fmt   = array( '%s', '%d', '%s', '%s', '%s', '%d', '%s' );
-			$done  = $wpdb->insert( d5b_audit_table(), $row, $fmt );
-			if ( ( false === $done || 0 === $done ) && ! d5b_audit_table_exists() ) {
-				// The table is gone (dropped by hand, or this site never ran admin_init): make it again and try once more.
-				delete_option( 'd5b_db_version' );
-				d5b_audit_maybe_install();
+			try {
 				$done = $wpdb->insert( d5b_audit_table(), $row, $fmt );
+				if ( ( false === $done || 0 === $done ) && d5b_audit_install_allowed() && ! d5b_audit_table_exists() ) {
+					// The table is gone (dropped by hand, or this site never ran admin_init): make it again and try once more.
+					// Bounded: once per request and site, and not at all for an hour after a failed attempt.
+					delete_option( 'd5b_db_version' );
+					d5b_audit_maybe_install();
+					$done = $wpdb->insert( d5b_audit_table(), $row, $fmt );
+				}
+			} finally {
+				if ( null !== $quiet ) { $wpdb->suppress_errors( $quiet ); }
 			}
-			if ( null !== $quiet ) { $wpdb->suppress_errors( $quiet ); }
 			return false !== $done && 0 !== $done;
 		} catch ( Throwable $e ) {
 			return false;

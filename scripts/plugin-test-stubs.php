@@ -155,11 +155,11 @@ function wp_unslash( $v ) { return is_array( $v ) ? array_map( 'wp_unslash', $v 
 //   T_user_id          what get_current_user_id returns
 if ( ! defined( 'ARRAY_A' ) ) { define( 'ARRAY_A', 'ARRAY_A' ); }
 class T_Wpdb {
-	public $prefix = 'wp_'; public $tables = array(); public $queries = array(); public $unprepared = array(); public $fail_insert = false; public $insert_id = 0;
+	public $prefix = 'wp_'; public $tables = array(); public $queries = array(); public $unprepared = array(); public $fail_insert = false; public $insert_id = 0; public $suppress_now = false; public $suppress_log = array();
 	private $prepared = array(); private $next_id = 1;
 	function get_blog_prefix( $id = null ) { return 'wp_' . ( ( null === $id || 1 === (int) $id ) ? '' : (int) $id . '_' ); }
 	function get_charset_collate() { return 'DEFAULT CHARACTER SET utf8mb4'; }
-	function suppress_errors( $on = true ) { return false; }
+	function suppress_errors( $on = true ) { $prev = $this->suppress_now; $this->suppress_now = $on; $this->suppress_log[] = $on; return $prev; }
 	function esc_like( $t ) { return addcslashes( $t, '_%' . chr( 92 ) ); }
 	function prepare( $q, ...$args ) {
 		if ( 1 === count( $args ) && is_array( $args[0] ) ) { $args = $args[0]; }
@@ -211,15 +211,19 @@ class T_Wpdb {
 		return array_values( array_slice( array_values( $rows ), (int) $m[4], (int) $m[3] ) );
 	}
 }
-function t_wpdb_reset() { $GLOBALS['wpdb'] = new T_Wpdb(); $GLOBALS['T_dbdelta'] = array(); $GLOBALS['T_cron'] = array(); $GLOBALS['T_user_id'] = 0; $GLOBALS['T_dbdelta_fail'] = false; }
+function t_wpdb_reset() { $GLOBALS['wpdb'] = new T_Wpdb(); $GLOBALS['T_dbdelta'] = array(); $GLOBALS['T_cron'] = array(); $GLOBALS['T_user_id'] = 0; $GLOBALS['T_dbdelta_fail'] = false; $GLOBALS['T_transients'] = array(); }
 t_wpdb_reset();
-function dbDelta( $sql ) { $GLOBALS['T_dbdelta'][] = $sql; if ( preg_match( '/CREATE TABLE (\S+)/', $sql, $m ) && empty( $GLOBALS['T_dbdelta_fail'] ) && ! isset( $GLOBALS['wpdb']->tables[ $m[1] ] ) ) { $GLOBALS['wpdb']->tables[ $m[1] ] = array(); } return array(); }
+function dbDelta( $sql ) { $GLOBALS['T_dbdelta'][] = $sql; if ( ! empty( $GLOBALS['T_dbdelta_throw'] ) ) { throw new RuntimeException( 'dbDelta exploded' ); } if ( preg_match( '/CREATE TABLE (\S+)/', $sql, $m ) && empty( $GLOBALS['T_dbdelta_fail'] ) && ! isset( $GLOBALS['wpdb']->tables[ $m[1] ] ) ) { $GLOBALS['wpdb']->tables[ $m[1] ] = array(); } return array(); }
 function wp_next_scheduled( $hook ) { return $GLOBALS['T_cron'][ $hook ] ?? false; }
 function wp_schedule_event( $ts, $recurrence, $hook ) { $GLOBALS['T_cron'][ $hook ] = $ts; return true; }
 function wp_clear_scheduled_hook( $hook ) { unset( $GLOBALS['T_cron'][ $hook ] ); return 1; }
 function register_deactivation_hook( $file, $cb ) { $GLOBALS['T_deactivation'][] = array( $file, $cb ); }
 function get_current_user_id() { return $GLOBALS['T_user_id']; }
 function wp_check_invalid_utf8( $s, $strip = false ) { return preg_match( '//u', (string) $s ) ? $s : ( $strip ? (string) iconv( 'UTF-8', 'UTF-8//IGNORE', (string) $s ) : '' ); }
+// T_transients: name => array( value, expires at, ttl ); a test expires one by lowering its expires-at.
+function set_transient( $n, $v, $ttl = 0 ) { $GLOBALS['T_transients'][ $n ] = array( $v, time() + $ttl, $ttl ); return true; }
+function get_transient( $n ) { $t = $GLOBALS['T_transients'][ $n ] ?? null; return ( null === $t || $t[1] < time() ) ? false : $t[0]; }
+function delete_transient( $n ) { unset( $GLOBALS['T_transients'][ $n ] ); return true; }
 function absint( $n ) { return abs( (int) $n ); }
 function switch_to_blog( $id ) { $GLOBALS['T_blog_stack'][] = $GLOBALS['T_blog_id']; $GLOBALS['T_blog_id'] = (int) $id; return true; }
 function restore_current_blog() { $GLOBALS['T_blog_id'] = array_pop( $GLOBALS['T_blog_stack'] ); return true; }

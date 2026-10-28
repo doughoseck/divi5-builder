@@ -25,7 +25,7 @@ require $dir . '/inc/settings.php';
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . ( is_string( $detail ) ? $detail : json_encode( $detail ) ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
 
-function fresh() { t_reset(); t_admin_reset(); t_set_caps( array() ); t_set_multisite( false ); $_GET = array(); $_SERVER['REMOTE_ADDR'] = '203.0.113.9'; unset( $_SERVER['HTTP_X_FORWARDED_FOR'] ); d5b_ability_registry( array() ); }
+function fresh() { t_reset(); d5b_audit_install_state( 'reset' ); t_admin_reset(); t_set_caps( array() ); t_set_multisite( false ); $_GET = array(); $_SERVER['REMOTE_ADDR'] = '203.0.113.9'; unset( $_SERVER['HTTP_X_FORWARDED_FOR'] ); d5b_ability_registry( array() ); }
 function installed() { fresh(); d5b_audit_maybe_install(); }
 function rows() { global $wpdb; return $wpdb->tables[ d5b_audit_table() ] ?? array(); }
 function last_args() { $r = rows(); return json_decode( $r[ count( $r ) - 1 ]['args'], true ); }
@@ -154,10 +154,11 @@ check( 'write with no table that cannot be made: false, no exception, nothing st
 $wpdb->fail_insert = true;
 check( 'a database that throws on insert: write returns false, never throws', false === d5b_audit_write( 'a/b', array(), 'ok', 1 ) );
 $wpdb->fail_insert = false; $GLOBALS['T_dbdelta_fail'] = false;
+delete_transient( 'd5b_audit_install_failed' ); d5b_audit_install_state( 'reset' ); // the back-off has passed, a later request
 check( 'write with no table: the table is made on the spot and the row stored', true === d5b_audit_write( 'a/b', array(), 'ok', 1 ) && 1 === count( rows() ) && '1' === get_option( 'd5b_db_version' ) );
 echo "self-repair: table dropped, version still says installed\n";
 installed();
-unset( $wpdb->tables['wp_d5b_audit'] );
+unset( $wpdb->tables['wp_d5b_audit'] ); d5b_audit_install_state( 'reset' ); // a later request
 d5b_audit_maybe_install();
 check( 'maybe_install alone does not notice (version matches), as designed', array() === $wpdb->tables );
 $ok = d5b_audit_write( 'a/b', array( 'x' => 1 ), 'ok', 1 );
@@ -174,6 +175,42 @@ check( 'registering abilities on a subsite creates that site\'s audit table', is
 $res = d5b_ability_run( 'divi5-builder/posts-a', array( 'id' => 1 ) );
 check( 'one ability run on the subsite makes exactly one row in that subsite\'s table, none on the main site', array( 'v' => 1 ) === $res && 1 === count( $wpdb->tables['wp_2_d5b_audit'] ) && 0 === count( $wpdb->tables['wp_d5b_audit'] ), array_map( 'count', $wpdb->tables ) );
 t_set_multisite( false );
+echo "install bounded: CREATE denied\n";
+fresh(); $GLOBALS['T_dbdelta_fail'] = true;
+for ( $i = 0; $i < 5; $i++ ) { $r5 = d5b_audit_write( 'a/b', array(), 'ok', 1 ); }
+check( 'CREATE denied: 5 writes in one request run dbDelta exactly once, all return false', 1 === count( $GLOBALS['T_dbdelta'] ) && false === $r5 && array() === $wpdb->tables, count( $GLOBALS['T_dbdelta'] ) );
+d5b_audit_maybe_install(); d5b_audit_maybe_install();
+check( '... and maybe_install in the same request adds none', 1 === count( $GLOBALS['T_dbdelta'] ) );
+$saved_t = $GLOBALS['T_transients']; $GLOBALS['T_transients'] = array(); // transient storage that does not persist: the per-request flag alone must hold
+d5b_audit_write( 'a/b', array(), 'ok', 1 ); d5b_audit_maybe_install();
+check( 'the per-request flag holds on its own (transient missing): still one dbDelta', 1 === count( $GLOBALS['T_dbdelta'] ) );
+$GLOBALS['T_transients'] = $saved_t;
+check( 'the failure left the 1-hour transient d5b_audit_install_failed', false !== get_transient( 'd5b_audit_install_failed' ) && 3600 === $GLOBALS['T_transients']['d5b_audit_install_failed'][2] );
+$before_queries = count( $wpdb->queries );
+d5b_audit_install_state( 'reset' ); // a second request within the hour
+d5b_audit_write( 'a/b', array(), 'ok', 1 ); d5b_audit_write( 'a/b', array(), 'ok', 1 ); d5b_audit_maybe_install();
+check( 'a second request within the hour: dbDelta runs 0 more times, and no repair SHOW TABLES is sent', 1 === count( $GLOBALS['T_dbdelta'] ) && $before_queries === count( $wpdb->queries ), count( $GLOBALS['T_dbdelta'] ) );
+$GLOBALS['T_transients']['d5b_audit_install_failed'][1] = time() - 1; d5b_audit_install_state( 'reset' ); // the hour has passed
+d5b_audit_maybe_install();
+check( 'once the transient has expired the next attempt runs dbDelta again', 2 === count( $GLOBALS['T_dbdelta'] ) );
+$GLOBALS['T_dbdelta_fail'] = false; $GLOBALS['T_transients']['d5b_audit_install_failed'][1] = time() - 1; d5b_audit_install_state( 'reset' );
+d5b_audit_maybe_install();
+check( 'a successful install clears the transient and stores the version', isset( $wpdb->tables['wp_d5b_audit'] ) && ! isset( $GLOBALS['T_transients']['d5b_audit_install_failed'] ) && '1' === get_option( 'd5b_db_version' ) );
+fresh(); $GLOBALS['T_dbdelta_fail'] = true; d5b_audit_write( 'a/b', array(), 'ok', 1 );
+$GLOBALS['T_dbdelta_fail'] = false; delete_transient( 'd5b_audit_install_failed' );
+$wpdb->prefix = 'wp_3_'; delete_option( 'd5b_db_version' ); d5b_audit_maybe_install();
+check( 'a subsite switch in the same request still installs its own table (the flag is per site)', isset( $wpdb->tables['wp_3_d5b_audit'] ), array_keys( $wpdb->tables ) );
+$wpdb->prefix = 'wp_4_'; delete_option( 'd5b_db_version' ); d5b_audit_maybe_install(); d5b_audit_maybe_install();
+check( 'each site installs once: two calls on wp_4_ make one more dbDelta', isset( $wpdb->tables['wp_4_d5b_audit'] ) && 3 === count( $GLOBALS['T_dbdelta'] ), count( $GLOBALS['T_dbdelta'] ) );
+
+echo "errors restored when the repair throws\n";
+installed(); unset( $wpdb->tables['wp_d5b_audit'] ); d5b_audit_install_state( 'reset' );
+$GLOBALS['T_dbdelta_throw'] = true;
+$r = d5b_audit_write( 'a/b', array(), 'ok', 1 );
+$GLOBALS['T_dbdelta_throw'] = false;
+check( 'maybe_install throwing inside the repair: write returns false, never throws', false === $r );
+check( 'suppress_errors is back to its prior value afterwards (not left suppressed)', false === $wpdb->suppress_now && array( true, false ) === array_slice( $wpdb->suppress_log, -2 ), $wpdb->suppress_log );
+
 echo "utf-8\n";
 installed();
 d5b_audit_write( "ab\xB1c", array(), "st\xB1atus", 1 );
