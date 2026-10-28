@@ -44,7 +44,7 @@ $loaderA = "$copyA/divi5-builder.php"; $loaderB = "$copyB/divi5-builder.php";
 // ---- the loader file itself
 echo "the loader file\n";
 $head = file_get_contents( $loaderA );
-check( 'header: plugin name, slug version, update URI, description', false !== strpos( $head, 'Plugin Name: Divi 5 Builder' ) && 1 === preg_match( '/^\s*\*\s*Version:\s*2\.0\.0\s*$/m', $head ) && false !== strpos( $head, 'Update URI: https://github.com/doughoseck/divi5-builder' ) && false !== strpos( $head, 'Description: Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.' ) );
+check( 'header: plugin name, slug version, update URI, description', false !== strpos( $head, 'Plugin Name: Divi 5 Builder' ) && 1 === preg_match( '/^\s*\*\s*Version:\s*2\.0\.1\s*$/m', $head ) && false !== strpos( $head, 'Update URI: https://github.com/doughoseck/divi5-builder' ) && false !== strpos( $head, 'Description: Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.' ) );
 check( 'the header Version: equals D5B_VERSION as defined by the loader', 1 === preg_match( "/define\(\s*'D5B_VERSION',\s*'(\d+\.\d+\.\d+)'\s*\)/", $head, $m ) && 1 === preg_match( '/^\s*\*\s*Version:\s*(\S+)/m', $head, $h ) && $m[1] === $h[1], array( $m ?? null, $h ?? null ) );
 check( 'the old constants are never defined by the loader', 1 !== preg_match( "/define\(\s*'(D5B_REST_VERSION|WPMA_VERSION|WPMQ_VERSION|WPSU_VERSION)'/", $head ) );
 check( 'the loader lists exactly the .php files under inc/ and parts/ (no glob)', loader_list( $head ) === disk_list( $src ) && false === strpos( $head, 'glob(' ), array( loader_list( $head ), disk_list( $src ) ) );
@@ -58,7 +58,7 @@ check( 'header: Requires PHP 7.4 and Requires at least 6.0, the same as readme.t
 echo "no Divi: loads, status divi5 false\n";
 check( 'no ET_BUILDER_5_DIR in this process', ! defined( 'ET_BUILDER_5_DIR' ) );
 require $loaderA;
-check( 'D5B_VERSION and D5B_FILE are defined, D5B_FILE is the loader path', defined( 'D5B_VERSION' ) && '2.0.0' === D5B_VERSION && defined( 'D5B_FILE' ) && norm( D5B_FILE ) === norm( $loaderA ), defined( 'D5B_FILE' ) ? D5B_FILE : 'unset' );
+check( 'D5B_VERSION and D5B_FILE are defined, D5B_FILE is the loader path', defined( 'D5B_VERSION' ) && '2.0.1' === D5B_VERSION && defined( 'D5B_FILE' ) && norm( D5B_FILE ) === norm( $loaderA ), defined( 'D5B_FILE' ) ? D5B_FILE : 'unset' );
 check( 'no old constant defined', ! defined( 'D5B_REST_VERSION' ) && ! defined( 'WPMA_VERSION' ) && ! defined( 'WPMQ_VERSION' ) && ! defined( 'WPSU_VERSION' ) );
 check( 'loading raised no PHP warning', array() === $PHP_WARNINGS, $PHP_WARNINGS );
 check( 'all the plugin functions exist after loading', function_exists( 'd5b_gate' ) && function_exists( 'd5b_settings_menu' ) && function_exists( 'd5b_takeover_on_activation' ) && function_exists( 'd5b_routes_updates' ) && function_exists( 'd5b_init_page_building' ) );
@@ -66,7 +66,7 @@ fire( 'init' );
 check( 'init registered the page building meta (2 post types x 6 keys)', 12 === count( $GLOBALS['T_post_meta'] ), $GLOBALS['T_post_meta'] );
 fire( 'rest_api_init' );
 $st = status();
-check( 'status: divi5 false, version 2.0.0', false === $st['divi5'] && '2.0.0' === $st['version'], $st );
+check( 'status: divi5 false, version 2.0.1', false === $st['divi5'] && '2.0.1' === $st['version'], $st );
 check( 'status: the three optional parts are off', array( 'media_audit' => false, 'media_clean_up' => false, 'updates' => false ) === $st['switches'], $st['switches'] );
 check( 'page building routes exist, the optional ones do not', count( routes_in( 'divi5-builder/v1' ) ) > 10 && array() === routes_in( 'wp-media-audit/v1' ) && array() === routes_in( 'wp-media-quarantine/v1' ) && array() === routes_in( 'wp-site-updates/v1' ) );
 check( 'nothing stood aside, no stand-aside saved', array() === $st['stood_aside'] && null === get_option( 'd5b_legacy_seen', null ), array( $st['stood_aside'], get_option( 'd5b_legacy_seen', null ) ) );

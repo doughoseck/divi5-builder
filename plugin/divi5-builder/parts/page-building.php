@@ -60,6 +60,11 @@ function d5b_init_page_building(): void {
  *      tag in the module's definition. /design-system/selftest re-splits
  *      every preset already on the site and compares, which proves the split
  *      against presets the Visual Builder wrote, without writing anything.
+ *   7. Nested variables (Divi 5.18, 2.0.1): a variable value may reference
+ *      other variables. Each reference must exist, be active, be of the same
+ *      type and not lead back to the variable (400 bad_references). A variable
+ *      another active variable uses cannot be archived, by the archive route or
+ *      by a restore (409 variable_in_use). Nothing is written on a refusal.
  *
  * The functions are global (not closures) so scripts/ds-write-test.php can
  * test the file that ships.
@@ -266,7 +271,14 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 		if ( is_wp_error( $current ) ) { return $current; }
 		$value    = $target['value'];
 		$archived = array();
-		if ( 'variables' === $store ) { list( $value, $archived ) = d5b_ds_variables_restore_target( $current, $value ); }
+		if ( 'variables' === $store ) {
+			list( $value, $archived ) = d5b_ds_variables_restore_target( $current, $value );
+			// The restore archives the variables made since the backup: refuse when an active one still uses one of them.
+			foreach ( $archived as $gone ) {
+				$in_use = d5b_ds_variable_in_use( $value, $gone );
+				if ( $in_use ) { return $in_use; }
+			}
+		}
 		d5b_ds_backup( $store, $current );
 		$w = d5b_ds_write( $store, $value, $current );
 		if ( is_wp_error( $w ) ) { return $w; }
@@ -362,6 +374,116 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 		return $out;
 	}
 
+	// ---- Nested variables (Divi 5.18, issue #45) ----
+	// A variable's value may hold references to other variables: the token
+	// $variable({"type":"content","value":{"name":"gvid-…","settings":{}}})$ (as the builder stores it) or var(--gvid-…).
+	// Divi's server does not check them: a missing or cyclic reference resolves EMPTY
+	// (GlobalData::resolve_inline_global_variables, 5.18). So every variable write is checked here first.
+
+	// The variable ids a value references. Divi 5.18+: its own GlobalData::get_global_variable_references(). Older Divi:
+	// the same patterns, the token through DynamicData::get_variable_values() when it exists.
+	function d5b_ds_variable_refs( $value ) {
+		$value = (string) $value;
+		$g     = 'ET\\Builder\\Packages\\GlobalData\\GlobalData';
+		if ( class_exists( $g ) && method_exists( $g, 'get_global_variable_references' ) ) {
+			return array_values( array_unique( array_map( 'strval', (array) $g::get_global_variable_references( $value ) ) ) );
+		}
+		$ids = array();
+		if ( preg_match( '/^gvid-[a-zA-Z0-9_-]+$/D', $value ) ) { $ids[ $value ] = true; }
+		if ( preg_match_all( '/var\(\s*--(gvid-[a-zA-Z0-9_-]+)(?=\s*[,)])/', $value, $m ) ) { foreach ( $m[1] as $id ) { $ids[ $id ] = true; } }
+		$dd = 'ET\\Builder\\Packages\\Module\\Layout\\Components\\DynamicData\\DynamicData';
+		if ( class_exists( $dd ) && method_exists( $dd, 'get_variable_values' ) ) {
+			$jsons = (array) $dd::get_variable_values( $value );
+		} else {
+			preg_match_all( '/\$variable\((.+?)\)\$/', $value, $m );
+			$jsons = $m[1];
+		}
+		foreach ( $jsons as $json ) {
+			$p    = json_decode( (string) $json, true );
+			$name = is_array( $p ) ? ( $p['value']['name'] ?? '' ) : '';
+			if ( is_array( $p ) && in_array( $p['type'] ?? '', array( 'content', 'color', 'gradient' ), true ) && is_string( $name ) && preg_match( '/^gvid-[a-zA-Z0-9_-]+$/D', $name ) ) { $ids[ $name ] = true; }
+		}
+		return array_keys( $ids );
+	}
+
+	// id => array( type, item ) for every variable in a store, archived ones included.
+	function d5b_ds_variable_index( $store ) {
+		$index = array();
+		foreach ( (array) $store as $type => $items ) {
+			if ( ! is_array( $items ) ) { continue; }
+			foreach ( $items as $id => $item ) {
+				if ( is_array( $item ) && 0 === strpos( (string) $id, 'gvid-' ) ) { $index[ (string) $id ] = array( (string) $type, $item ); }
+			}
+		}
+		return $index;
+	}
+
+	// Breadth-first through references, archived variables included (Divi still resolves them, and
+	// collect_global_variable_dependencies() follows "archived bases" too). Returns id => the id it was reached from.
+	function d5b_ds_variable_reach( $index, $start, $values = array() ) {
+		$from  = array();
+		$queue = array();
+		foreach ( (array) $start as $s ) { if ( ! isset( $from[ $s ] ) ) { $from[ $s ] = ''; $queue[] = $s; } }
+		for ( $i = 0; $i < count( $queue ); $i++ ) {
+			$id    = $queue[ $i ];
+			$value = array_key_exists( $id, $values ) ? $values[ $id ] : ( isset( $index[ $id ] ) ? ( $index[ $id ][1]['value'] ?? '' ) : '' );
+			foreach ( d5b_ds_variable_refs( is_scalar( $value ) ? (string) $value : '' ) as $r ) {
+				if ( ! isset( $from[ $r ] ) ) { $from[ $r ] = $id; $queue[] = $r; }
+			}
+		}
+		return $from;
+	}
+
+	// The references of a variable about to be written, checked against the store it will be written into: each one
+	// must exist, be active, be of the same type (the builder's variable manager only offers numbers inside a number
+	// variable and strings inside a string variable), not be the variable itself, and not lead back to it (a cycle).
+	// null when all is well, else a WP_Error 400 listing every bad reference.
+	function d5b_ds_variable_check_refs( $store, $type, $id, $value ) {
+		$refs = d5b_ds_variable_refs( $value );
+		if ( ! $refs ) { return null; }
+		$index = d5b_ds_variable_index( $store );
+		$bad   = array();
+		foreach ( $refs as $r ) {
+			if ( $r === $id ) { $bad[] = array( 'id' => $r, 'problem' => 'self', 'message' => "$r is this variable itself" ); continue; }
+			if ( ! isset( $index[ $r ] ) ) { $bad[] = array( 'id' => $r, 'problem' => 'missing', 'message' => "$r does not exist on this site" ); continue; }
+			list( $rtype, $ritem ) = $index[ $r ];
+			$rlabel                = (string) ( $ritem['label'] ?? '' );
+			if ( 'archived' === ( $ritem['status'] ?? '' ) ) { $bad[] = array( 'id' => $r, 'problem' => 'archived', 'message' => "$r (\"$rlabel\") is archived (deleted)" ); continue; }
+			if ( $rtype !== $type ) { $bad[] = array( 'id' => $r, 'problem' => 'type', 'message' => "$r (\"$rlabel\") is a $rtype variable; a $type variable may only use $type variables" ); continue; }
+		}
+		if ( ! $bad ) {
+			$from = d5b_ds_variable_reach( $index, $refs, array( $id => (string) $value ) );
+			if ( isset( $from[ $id ] ) ) {
+				$path = array( $id );
+				for ( $at = $from[ $id ]; '' !== $at && count( $path ) < 64; $at = $from[ $at ] ) { array_unshift( $path, $at ); }
+				array_unshift( $path, $id );
+				$bad[] = array( 'id' => $path[1], 'problem' => 'cycle', 'path' => $path, 'message' => 'a cycle: ' . implode( ' -> ', $path ) . ' (Divi renders a cyclic reference as nothing)' );
+			}
+		}
+		if ( ! $bad ) { return null; }
+		return new WP_Error( 'bad_references', 'this value references variables it may not use, nothing was written: ' . implode( '; ', array_column( $bad, 'message' ) ), array( 'status' => 400, 'references' => $bad ) );
+	}
+
+	// The ACTIVE variables (other than $id) that use $id, directly or through other variables.
+	function d5b_ds_variable_dependents( $store, $id ) {
+		$index = d5b_ds_variable_index( $store );
+		$out   = array();
+		foreach ( $index as $vid => $entry ) {
+			if ( $vid === $id || 'archived' === ( $entry[1]['status'] ?? '' ) ) { continue; }
+			$from = d5b_ds_variable_reach( $index, d5b_ds_variable_refs( (string) ( $entry[1]['value'] ?? '' ) ) );
+			if ( isset( $from[ $id ] ) ) { $out[] = array( 'id' => $vid, 'label' => (string) ( $entry[1]['label'] ?? '' ), 'type' => $entry[0], 'direct' => '' === $from[ $id ] ); }
+		}
+		return $out;
+	}
+
+	// A WP_Error 409 when $id may not be archived because active variables still use it, else null. No force flag.
+	function d5b_ds_variable_in_use( $store, $id ) {
+		$deps = d5b_ds_variable_dependents( $store, $id );
+		if ( ! $deps ) { return null; }
+		$names = array_map( function ( $d ) { return $d['id'] . ' ("' . $d['label'] . '")' . ( $d['direct'] ? '' : ' (indirectly)' ); }, $deps );
+		return new WP_Error( 'variable_in_use', "$id is used by other active variables: " . implode( ', ', $names ) . '. Change or archive those first; nothing was written.', array( 'status' => 409, 'id' => $id, 'dependents' => $deps ) );
+	}
+
 	// { type: numbers|strings|images|links|fonts|gradients, label, value, id? }
 	function d5b_ds_variable_upsert( $in, $dry ) {
 		$d = d5b_ds_class( 'data' );
@@ -386,6 +508,8 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 		$action = '' !== $found ? 'updated' : 'created';
 		if ( '' === $found ) { $found = '' !== $id ? $id : d5b_ds_new_id( 'gvid-', $taken ); }
 		if ( 'created' === $action && isset( $taken[ $found ] ) ) { return d5b_ds_err( 'id_taken', 'that id belongs to a variable of another type' ); }
+		$refs_err = d5b_ds_variable_check_refs( $store, $type, $found, $value ); // nested variables (5.18): checked before anything, dry run included
+		if ( $refs_err ) { return $refs_err; }
 		$old  = isset( $items[ $found ] ) && is_array( $items[ $found ] ) ? $items[ $found ] : array();
 		if ( '' === ( $old['order'] ?? null ) ) { unset( $old['order'] ); } // archived: the builder empties its order, a revived one goes last
 		// Same fields, in the same order, as a variable made in the builder (compared 2026-09-29, Divi 5.13):
@@ -429,6 +553,8 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 		$item    = (array) $store[ $type ][ $id ];
 		$out     = array( 'ok' => true, 'id' => $id, 'type' => $type, 'label' => (string) ( $item['label'] ?? '' ), 'dryRun' => (bool) $dry );
 		if ( $archive && 'archived' === ( $item['status'] ?? '' ) ) { return $out + array( 'action' => 'unchanged', 'note' => 'already archived' ); }
+		$in_use = d5b_ds_variable_in_use( $store, $id ); // another active variable still uses it: refuse, dry run included
+		if ( $in_use ) { return $in_use; }
 		$out['action'] = $archive ? 'archived' : 'removed';
 		if ( $dry ) { return $out; }
 		$next = $store;
