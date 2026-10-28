@@ -676,8 +676,8 @@ and `order: ""`, value and label kept. The plugin's archive does the same; a var
 still renders it today, by the source (read from source, not yet seen live): the front end prints the CSS variable of
 every variable a page references "regardless of status" (`FrontEnd/FrontEnd.php` 802-846 in 5.15.1 and 5.18,
 `FrontEnd/Module/Style.php` 1475 in 5.15.1, 1480 in 5.18), and a string variable's value is looked up with no status
-check (`DynamicContentGlobalVariableOptions::get_variable_value_by_id()`, 5.15.1 ~line 82; the 5.18 inline resolver,
-`GlobalData.php` 1519+). Do not rely on it: the builder hides an archived variable, so nobody can see or edit what the
+check (`DynamicContentGlobalVariableOptions::get_variable_value_by_id()`, 5.15.1 ~line 82; in 5.18 the inline resolver
+`GlobalData::_resolve_inline_global_variables()`, line 1519, looks the name up in lines 1565-1587). Do not rely on it: the builder hides an archived variable, so nobody can see or edit what the
 module uses, and a later Divi may stop printing it. Look before you archive a variable a page might use.
 
 `ds-live-test.js variables` on 5.15+ therefore ends with the two test variables archived, and checks that, plus that
@@ -805,7 +805,7 @@ a `gvid-` id for a variable or a dynamic-content name (`post_author`). In block 
   `strings` group), and greys out the variable itself and everything that already depends on it
   (`collectGlobalVariableDependents`, `global-data.js`). The plugin applies the same rules on the server (6.4).
 - Archived variables still resolve (read from source, not yet seen live): the inline resolver looks a name up in the
-  whole store with no status check (line 1565+), and the front end prints the CSS variable of every variable a page
+  whole store with no status check (`_resolve_inline_global_variables()`, line 1519; the lookup is lines 1565-1587), and the front end prints the CSS variable of every variable a page
   references, and of what they depend on, "regardless of status" (`FrontEnd/FrontEnd.php` 802-846,
   `FrontEnd/Module/Style.php` 1480). Archiving a base therefore does not blank the parent today, but do not rely on it:
   the builder hides the archived base, so nobody can see or change what the parent is made of (section 5.0).

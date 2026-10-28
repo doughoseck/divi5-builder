@@ -59,7 +59,7 @@ require "$divi/includes/builder-5/server/vendor/autoload.php";
 require getenv( 'D5B_PLUGIN_FILE' ) ?: __DIR__ . '/../plugin/divi5-builder/parts/page-building.php'; // the env override is for mutation runs
 
 $failed = 0;
-$check  = function ( $name, $ok, $detail = '' ) use ( &$failed ) { echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ( ! $ok && $detail ) ? "\n          $detail" : '' ) . "\n"; if ( ! $ok ) { $failed++; } };
+$check  = function ( $name, $ok, $detail = '' ) use ( &$failed ) { echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ( ! $ok && $detail ) ? "\n          $detail" : '' ) . "\n"; if ( ! $ok ) { $failed++; } return $ok; };
 $canon  = function ( $v ) { return json_encode( d5b_ds_ksort( $v ) ); };
 
 // =====================================================================================================
@@ -295,6 +295,23 @@ foreach ( array( 'with Divi\'s DynamicData' => array( 'refs' => '' ), 'with our 
 		$got = d5b_ds_variable_refs( $val ); sort( $got );
 		$check( "fallback finder ($how): $what", $want === $got, json_encode( $got ) );
 	}
+	// Hostile input, 1 MB (the largest value the size check lets through): the search must stay linear. The old scanner
+	// restarted after every unclosed opener: 64 KB of "$variable({" took 26 s, 1 MB would take hours.
+	// 64 KB first: a quadratic scanner fails this one in seconds (by assertion) instead of hanging for hours on 1 MB.
+	$adv = substr( str_repeat( '$variable({', 6000 ), 0, 65536 );
+	$t0  = microtime( true ); d5b_ds_variable_refs( $adv ); $dt = microtime( true ) - $t0;
+	if ( ! $check( sprintf( 'fallback finder (%s): 64 KB of "$variable({" repeated finishes in %.3f s (< 0.5 s)', $how, $dt ), $dt < 0.5 ) ) { $GLOBALS['d5b_test_classes'] = $keep; continue; }
+	foreach ( array( '$variable({', '$variable({"', '$variable({"a":"' ) as $unit ) {
+		$adv = substr( str_repeat( $unit, intdiv( 1048576, strlen( $unit ) ) + 1 ), 0, 1048576 );
+		$t0  = microtime( true ); d5b_ds_variable_refs( $adv ); $dt = microtime( true ) - $t0;
+		$check( sprintf( 'fallback finder (%s): 1 MB of %s repeated finishes in %.3f s (< 2 s)', $how, json_encode( $unit ), $dt ), $dt < 2.0 );
+	}
+	$deep = '$variable(' . str_repeat( '{', 1048576 - 10 );
+	$t0   = microtime( true ); d5b_ds_variable_refs( $deep ); $dt = microtime( true ) - $t0;
+	$check( sprintf( 'fallback finder (%s): 1 MB of nested "{" finishes in %.3f s (< 2 s)', $how, $dt ), $dt < 2.0 );
+	$many = str_repeat( '$variable({})x', 74898 ) . $tok( 'gvid-last000001' ); // closed but not tokens, then a real one
+	$t0   = microtime( true ); $got = d5b_ds_variable_refs( $many ); $dt = microtime( true ) - $t0;
+	$check( sprintf( 'fallback finder (%s): 1 MB of closed non-tokens, then a real token: found, in %.3f s (< 2 s)', $how, $dt ), array( 'gvid-last000001' ) === $got && $dt < 2.0, json_encode( $got ) );
 	$GLOBALS['d5b_test_classes'] = $keep;
 }
 $fluid = 'clamp( ' . $tok( 'gvid-k1iggz3omp' ) . ', 4vw, ' . $tok( 'gvid-4az4m3i650' ) . ')';

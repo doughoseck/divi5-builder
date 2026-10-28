@@ -402,10 +402,15 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 		if ( $is_id( $value ) ) { $ids[ $value ] = true; }
 		$pending = array( $value );
 		$seen    = array();
+		// A work budget, so the whole search stays linear in the value: every text searched (the value, then strings
+		// decoded from token settings, each shorter than the text it came from) is paid for in bytes.
+		$budget = 4 * strlen( $value ) + 65536;
 		for ( $i = 0; $i < count( $pending ) && $i < 4096; $i++ ) {
 			$text = $pending[ $i ];
 			if ( isset( $seen[ $text ] ) ) { continue; }
 			$seen[ $text ] = true;
+			$budget       -= strlen( $text );
+			if ( $budget < 0 ) { break; }
 			$plain = d5b_ds_plain_quotes( $text );
 			if ( preg_match_all( '/var\(\s*--(gvid-[a-zA-Z0-9_-]+)(?=\s*[,)])/', $plain, $m ) ) { foreach ( $m[1] as $id ) { $ids[ $id ] = true; } }
 			$payloads = array();
@@ -438,24 +443,32 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 
 	// Every $variable( <JSON> )$ payload in a text, found by balancing braces outside JSON strings, so a ")$" inside a
 	// settings string does not end the token early.
+	// LINEAR in the text: every character is looked at once. After a balanced payload the search goes on from its end
+	// (a token inside it sits in a JSON string and is found when that string is decoded and searched in turn), and an
+	// opener that never closes ends the search: nothing after it can close either (it would close THAT payload). Any
+	// restart from the opener instead is quadratic on hostile input (64 KB of "$variable({" took 26 s).
 	function d5b_ds_token_jsons( $text ) {
 		$out = array();
 		$len = strlen( $text );
-		for ( $at = strpos( $text, '$variable(' ); false !== $at; $at = strpos( $text, '$variable(', $at + 1 ) ) {
+		$bs  = chr( 92 );
+		$at  = strpos( $text, '$variable(' );
+		while ( false !== $at ) {
 			$start = $at + 10;
-			if ( '{' !== ( $text[ $start ] ?? '' ) ) { continue; }
+			if ( '{' !== ( $text[ $start ] ?? '' ) ) { $at = strpos( $text, '$variable(', $start ); continue; }
 			$depth  = 0;
 			$quoted = false;
 			$esc    = false;
 			for ( $j = $start; $j < $len; $j++ ) {
 				$c = $text[ $j ];
 				if ( $quoted ) {
-					if ( $esc ) { $esc = false; } elseif ( chr( 92 ) === $c ) { $esc = true; } elseif ( '"' === $c ) { $quoted = false; }
+					if ( $esc ) { $esc = false; } elseif ( $bs === $c ) { $esc = true; } elseif ( '"' === $c ) { $quoted = false; }
 					continue;
 				}
 				if ( '"' === $c ) { $quoted = true; } elseif ( '{' === $c ) { $depth++; } elseif ( '}' === $c && 0 === --$depth ) { break; }
 			}
-			if ( $j < $len && ')$' === substr( $text, $j + 1, 2 ) ) { $out[] = substr( $text, $start, $j - $start + 1 ); }
+			if ( $j >= $len ) { break; } // never closes: stop, do not rescan
+			if ( ')$' === substr( $text, $j + 1, 2 ) ) { $out[] = substr( $text, $start, $j - $start + 1 ); }
+			$at = strpos( $text, '$variable(', $j + 1 );
 		}
 		return $out;
 	}
