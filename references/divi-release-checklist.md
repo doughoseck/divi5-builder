@@ -16,8 +16,12 @@ Divi release (a minor, `5.16`, always; a patch only if its changelog touches the
    write guard have drifted from what the new Divi stores.
 4. **Visual Builder re-save**: does opening a page in the builder and saving it, with no changes, change it?
    Needs a person at the builder, once:
-   1. Build a draft from `examples/spec.json` plus `assets/roundtrip-spec.json` (the two `sections` lists in one
-      spec, `builderVersion` set to the new version) with `divi.js compile` and `wp.js <site> create-page --status draft`.
+   1. Build a draft from the example plus the round-trip spec in one page:
+      ```bash
+      node scripts/make-resave-spec.js 5.16.0 --out resave-spec.json     # the new Divi version
+      node scripts/divi.js compile resave-spec.json --out resave.html
+      node scripts/wp.js <site> create-page --title "VB re-save test" --content-file resave.html --status draft
+      ```
    2. `node scripts/vb-resave-check.js snapshot <site> <draft_id> --dir vb --as before`
    3. The person opens the draft in the Visual Builder and clicks **Save** without touching anything.
    4. `node scripts/vb-resave-check.js snapshot <site> <draft_id> --dir vb --as after`
