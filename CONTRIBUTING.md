@@ -63,6 +63,7 @@ Before opening a PR:
 2. **Offline suites** (no site needed), all must pass:
    ```bash
    node scripts/compile-test.js && node scripts/preset-spec-test.js && node scripts/catalog-test.js
+   node scripts/variable-refs-test.js   # Divi 5.18 variables in values, byte for byte vs a builder-saved page; the math-operator warning
    node scripts/stale-guard-test.js   # page/post/canvas writes refuse when the content changed since the read
    node scripts/spec-check-test.js    # unknown spec keys are reported; every documented example checks clean
    node scripts/blocks-test.js        # block-level edits leave the rest of the page byte for byte
@@ -79,6 +80,8 @@ Before opening a PR:
    ```
    Two more need arguments (a WordPress `wp-includes` folder, a Divi 5 theme folder) and are optional:
    `php scripts/tree-guard-test.php <wp-includes> <sent.html> <stored.html>` and `php scripts/ds-write-test.php "<Divi theme folder>"`.
+   A change to the design-system writes runs `ds-write-test.php` against BOTH a Divi 5.18 and a 5.15 copy (nested variables
+   need 5.18 for Divi's own reference finder; 5.15 proves the fallback).
    Anything that changes a write path in `wp.js` needs a case in `stale-guard-test.js`, which runs `wp.js`
    against a fake WordPress (state in a JSON file) so a "save in the builder" can be simulated.
 3. **Live round-trip** for anything new — create a draft, flip Divi mode, verify it

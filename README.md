@@ -271,7 +271,8 @@ None of these needs a site, except the last one.
 node scripts/catalog-test.js          # the module catalogue and its lint
 node scripts/preset-spec-test.js      # modulePreset in a page spec
 node scripts/compile-test.js          # link, swiper-posts, buildModule()
-node scripts/stale-guard-test.js      # page/post/canvas writes refuse when the content changed since the read
+node scripts/variable-refs-test.js    # Divi 5.18 variables in values: {{gvid-}} and {{dc:}} byte for byte vs a builder-saved page; the math-operator warning
+node scripts/stale-guard-test.js      # page/post/canvas writes refuse when the content changed since the read; nested-variable placeholders and refusals
 node scripts/spec-check-test.js       # unknown spec keys are reported; every documented example checks clean
 node scripts/blocks-test.js           # block-level edits leave the rest of the page byte for byte
 node scripts/vb-resave-check-test.js  # the Visual Builder re-save comparison, on a real Divi 5.15.1 before/after pair
@@ -290,14 +291,14 @@ php  scripts/plugin-uninstall-test.php  # deleting the plugin removes its option
 node scripts/switch-advice-test.js    # what the scripts say when a switch is off
 node scripts/plugin-live-check-test.js  # the read-only live check (plugin-live-check.js <site>): GET only, exit 0/1/2
 node scripts/build-plugin-zips-test.js  # the zip build and the must-use loader next to it
-php  scripts/ds-write-test.php "<path to a Divi 5 theme folder>"   # the plugin's design-system writes
-node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts every store back
+php  scripts/ds-write-test.php "<path to a Divi 5 theme folder>"   # the plugin's design-system writes, nested variables included: run it against a 5.18 AND a 5.15 copy
+node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts every store back (plugin >= 2.0.1; the "nested" part needs Divi 5.18)
 ```
 
 ## Security
 
 - **Found a vulnerability? Report it privately** - see [SECURITY.md](SECURITY.md).
-  Run the latest plugin (**divi5-builder 2.0.0**; the old single-file 1.8.3 and newer already fixed a Contributor-level option read).
+  Run the latest plugin (**divi5-builder 2.0.1**; the old single-file 1.8.3 and newer already fixed a Contributor-level option read).
 - Use the lowest role that works: page building needs an **Editor** Application Password.
 - Never commit `~/.web-creds.txt` or any Application Password.
 - The plugin exposes existing Divi meta keys, the global colour palette and (1.5+)
