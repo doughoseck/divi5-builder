@@ -8,7 +8,8 @@
       ] },
       { "modules": [
         { "type": "button", "text": "Caps \"test\"", "url": "https://example.com/?x=1&y=2", "caps": "uppercase" },
-        { "type": "code", "html": "<style>.x > .y:before { content: \"\\f082\"; } /* -- */</style>" }
+        { "type": "code", "html": "<style>.x > .y:before { content: \"\\f082\"; } /* -- */</style>" },
+        { "type": "blurb", "title": "Icon blurb \"quoted\"", "text": "A blurb with an icon (issue #21: it used to be written with an empty module group, stored back as []).", "icon": { "unicode": "&#xf00c;", "type": "fa" }, "titleLevel": "h4" }
       ] }
     ] } ] }
   ]

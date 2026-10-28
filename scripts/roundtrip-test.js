@@ -34,6 +34,8 @@ check('compiled output has no raw \\" or \\\\ inside block comments', !/\\"|\\\\
 const blocks = [...sent.matchAll(/<!-- wp:\S+ (\{.*?\}) \/?-->/gs)].map(m => m[1]);
 check(`found the block JSON to inspect (${blocks.length} blocks)`, blocks.length >= 5);
 check('compiled output has no raw -- inside block JSON', !blocks.some(j => j.includes('--')));
+// WordPress stores an empty object as [] ("module":{} -> "module":[]), so the page would not come back as sent (issue #21).
+check('compiled output has no empty-object attribute value', !blocks.some(j => /:\{\}/.test(j.replace(/"(?:[^"\\]|\\.)*"/g, '""'))));
 run('wp.js', [site, 'update-page', id, '--content-file', tmp, '--expect-hash', info.hash]);
 const stored = run('wp.js', [site, 'get-page', id, '--raw']);   // byte for byte
 fs.unlinkSync(tmp);

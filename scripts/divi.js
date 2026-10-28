@@ -77,8 +77,24 @@ let BV = '5.9.0'; // overwritten from spec.builderVersion
 // apostrophes and non-ASCII left raw. Emitting that form means what we send is byte-for-byte what gets stored
 // (measured 2026-09-21 on Divi 5.9 and 5.13; the Theme Builder write guard depends on it). Order matters:
 // backslash pairs are parked first so the quote pass cannot split them.
+// An empty object as an attribute value is never stored as sent: WordPress's save turns PHP-empty `{}` into `[]`
+// ("module":{} comes back as "module":[]), so the page would not round-trip byte for byte, and the Theme Builder
+// write guard would reject it (issue #21, measured on Divi 5.15.1). An empty group carries no setting, so it is
+// dropped, bottom-up (a group that only held empty groups goes too). The block's own top level is kept as given.
+// Empty ARRAYS are left alone: they are stored as `[]` and survive the round trip.
+function dropEmpty(v) {
+  if (Array.isArray(v)) return v.map(dropEmpty);
+  if (!v || typeof v !== 'object') return v;
+  const out = {};
+  for (const k of Object.keys(v)) {
+    const x = dropEmpty(v[k]);
+    if (x && typeof x === 'object' && !Array.isArray(x) && !Object.keys(x).length) continue;
+    out[k] = x;
+  }
+  return out;
+}
 function attrJSON(obj) {
-  return JSON.stringify(obj)
+  return JSON.stringify(dropEmpty(obj))
     .replace(/\\\\/g, '\u0000BS\u0000')
     .replace(/\\"/g, '\\u0022')
     .replace(/\u0000BS\u0000/g, '\\u005c')
@@ -454,13 +470,11 @@ function mBlurb(m) {
   if (m.titleLevel) title.decoration = { font: { font: { desktop: { value: { headingLevel: m.titleLevel } } } } };
   const attrs = {
     imageIcon,
-    module: {},   // (an empty object; kept for byte-identical output without a preset, dropped below with one)
     title,
     content: { innerContent: { desktop: { value: m.html || (m.text ? `<p>${m.text}</p>` : '') } } },
     builderVersion: BV,
   };
   if (m.chip) attrs.css = { desktop: { value: { blurbImage: `padding:${m.chip.padding || '6px'};border-radius:${m.chip.radius || '8px'};background:${colorVal(m.chip.bg) || 'rgba(15,77,42,.08)'};` } } };
-  if (onPreset(m)) delete attrs.module;
   return [open('divi/blurb', attrs), close('divi/blurb')];
 }
 // Invisible spacer / height-holder. A common Divi trick: put an off divider in a
