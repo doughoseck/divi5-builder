@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /*
- * ds-live-test.js: prove the design-system WRITES on a real site (divi5-builder plugin >= 2.0.1, as a plugin or
- * must-use), and leave no trace.
+ * ds-live-test.js: prove the design-system WRITES on a real site, and leave no trace. colors, variables and presets
+ * need the plugin >= 1.8.4; nested needs divi5-builder >= 2.0.1 (as a plugin or must-use), and "all" skips it, saying
+ * so, on an older plugin.
  * (One trace on Divi 5.15+: Divi never drops a variable, it archives it, so the test variables stay in the store
  * with status "archived", which is exactly what deleting them in the Variable Manager leaves behind.)
  *
@@ -17,7 +18,6 @@
  */
 const path = require('path'); const fs = require('fs'); const os = require('os'); const { execFileSync } = require('child_process');
 const [site, what] = process.argv.slice(2);
-if (!site || !['colors', 'variables', 'nested', 'presets', 'all'].includes(what)) { console.error('usage: node ds-live-test.js <site> colors|variables|nested|presets|all'); process.exit(1); }
 const WP = path.join(__dirname, 'wp.js');
 const run = a => { try { return { ok: true, out: execFileSync('node', [WP, site, ...a], { encoding: 'utf8', maxBuffer: 64e6, stdio: ['ignore', 'pipe', 'pipe'] }) }; } catch (e) { return { ok: false, out: String(e.stderr || e.message) }; } };
 const J = a => { const r = run(a); if (!r.ok) return { __error: r.out.replace(/\s+/g, ' ').slice(0, 220) }; try { return JSON.parse(r.out); } catch (e) { return { __error: 'not json: ' + r.out.slice(0, 120) }; } };
@@ -138,10 +138,24 @@ const tests = {
     try { fs.unlinkSync(f); } catch (e) { /* */ }
   },
 };
-const v = J(['plugin-version']); const ver = String(v.version || '0').split('.').map(Number);
-// 2.0.1: the nested-variable checks and the archive guard (issue #45) are what the "nested" part proves.
-const atLeast = (want) => { for (let i = 0; i < want.length; i++) { const a = ver[i] || 0; if (a !== want[i]) return a > want[i]; } return true; };
-if (v.__error || !atLeast([2, 0, 1])) { console.error('STOP: this test needs the divi5-builder plugin >= 2.0.1 on the site (found ' + (v.version || 'none') + ')'); process.exit(1); }
-for (const t of what === 'all' ? ['colors', 'variables', 'nested', 'presets'] : [what]) { console.log('--- ' + t + ' ---'); try { tests[t](); } catch (e) { check(t + ' ran to the end', false, e.message); } }
-console.log(failed ? '\n' + failed + ' FAILED. Check the stores with `wp.js <site> design-system`; `wp.js <site> ds-backups` lists what can be restored.' : '\nall passed, nothing left behind');
+// Which parts run on a plugin version. colors, variables and presets need 1.8.4 (the archive-aware restore); nested
+// needs 2.0.1 (the nested-variable checks and the archive guard, issue #45). "all" runs what the version allows and
+// says what it skipped. -> { run: [...], skipped: [{ part, why }], stop: message | null }
+const MIN = { colors: [1, 8, 4], variables: [1, 8, 4], presets: [1, 8, 4], nested: [2, 0, 1] };
+function plan(part, version) {
+  const ver = String(version || '0').split('.').map((x) => parseInt(x, 10) || 0);
+  const atLeast = (want) => { for (let i = 0; i < want.length; i++) { const a = ver[i] || 0; if (a !== want[i]) return a > want[i]; } return true; };
+  const parts = part === 'all' ? ['colors', 'variables', 'nested', 'presets'] : [part];
+  const run = parts.filter((p) => atLeast(MIN[p])), skipped = parts.filter((p) => !run.includes(p)).map((p) => ({ part: p, why: `needs the divi5-builder plugin >= ${MIN[p].join('.')} (found ${version || 'none'})` }));
+  const stop = !run.length ? `STOP: ${parts.length === 1 ? `"${part}"` : 'this test'} ${skipped[0].why}` : null;
+  return { run, skipped, stop };
+}
+if (require.main !== module) { module.exports = { plan }; return; }
+if (!site || !['colors', 'variables', 'nested', 'presets', 'all'].includes(what)) { console.error('usage: node ds-live-test.js <site> colors|variables|nested|presets|all'); process.exit(1); }
+const v = J(['plugin-version']);
+const p = plan(what, v.__error ? '' : v.version);
+if (p.stop) { console.error(p.stop); process.exit(1); }
+for (const s of p.skipped) console.log(`--- ${s.part} --- SKIPPED: ${s.why}`);
+for (const t of p.run) { console.log('--- ' + t + ' ---'); try { tests[t](); } catch (e) { check(t + ' ran to the end', false, e.message); } }
+console.log(failed ? '\n' + failed + ' FAILED. Check the stores with `wp.js <site> design-system`; `wp.js <site> ds-backups` lists what can be restored.' : '\nall passed, nothing left behind' + (p.skipped.length ? ` (skipped: ${p.skipped.map((s) => s.part).join(', ')})` : ''));
 process.exit(failed ? 1 : 0);

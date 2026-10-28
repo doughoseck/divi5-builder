@@ -346,6 +346,24 @@ console.log('--- nested variables: {{gvid-…}} placeholders, --site, and the pl
   check('--site: an archived variable in a calculation and a missing one in a mixed text are each reported; exit 1', r.code === 1 && /design variable gvid-old0000001 \("Old gap"\) is archived/.test(r.err) && /design variable gvid-nosuchvar1 does not exist/.test(r.err) && !/post_author/.test(r.err), r.err);
 }
 
+console.log('--- ds-live-test.js: which parts run on which plugin version (no site touched)');
+{
+  const { plan } = require(path.join(path.dirname(WPJS), 'ds-live-test.js'));
+  let p = plan('all', '1.8.4');
+  check('all on 1.8.4: colors, variables, presets run; nested is skipped and says it needs 2.0.1', JSON.stringify(p.run) === '["colors","variables","presets"]' && p.skipped.length === 1 && p.skipped[0].part === 'nested' && /2\.0\.1/.test(p.skipped[0].why) && !p.stop, p);
+  p = plan('all', '2.0.1');
+  check('all on 2.0.1: every part runs, nested included', JSON.stringify(p.run) === '["colors","variables","nested","presets"]' && !p.skipped.length && !p.stop, p);
+  p = plan('nested', '2.0.0');
+  check('nested on 2.0.0: STOP, needs 2.0.1', !p.run.length && /STOP: "nested" needs the divi5-builder plugin >= 2\.0\.1/.test(p.stop || ''), p);
+  p = plan('colors', '1.8.4');
+  check('colors on 1.8.4: runs (the minimum stays 1.8.4)', JSON.stringify(p.run) === '["colors"]' && !p.stop, p);
+  p = plan('variables', '1.8.3');
+  check('variables on 1.8.3: STOP, needs 1.8.4', !p.run.length && /1\.8\.4/.test(p.stop || ''), p);
+  p = plan('all', '');
+  check('all with no plugin found: STOP', !p.run.length && !!p.stop, p);
+  check('2.10.0 counts as newer than 2.0.1 (numeric, not text, compare)', plan('nested', '2.10.0').run.length === 1 && plan('nested', '10.0.0').run.length === 1);
+}
+
 console.log('--- secrets');
 const all = backups().map(f => fs.readFileSync(f, 'utf8')).join('\n') + JSON.stringify(st());
 check('the application password never appears in output or backups', !/aaaa ?bbbb/.test(all), 'password found');
