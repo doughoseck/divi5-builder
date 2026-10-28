@@ -62,7 +62,9 @@ function d5b_init_page_building(): void {
  *      against presets the Visual Builder wrote, without writing anything.
  *   7. Nested variables (Divi 5.18, 2.0.1): a variable value may reference
  *      other variables. Each reference must exist, be active, be of the same
- *      type and not lead back to the variable (400 bad_references). A variable
+ *      type and not lead back to the variable (400 bad_references); only
+ *      numbers and strings may hold references, and a value over 1 MB is
+ *      refused (400 value_too_large). A variable
  *      another active variable uses cannot be archived, by the archive route or
  *      by a restore (409 variable_in_use). Nothing is written on a refusal.
  *
@@ -82,6 +84,8 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 			'preset'     => 'ET\\Builder\\Packages\\GlobalData\\GlobalPreset',
 			'data'       => 'ET\\Builder\\Packages\\GlobalData\\GlobalData',
 			'conversion' => 'ET\\Builder\\Packages\\Conversion\\Conversion',
+			'refs'       => 'ET\\Builder\\Packages\\GlobalData\\GlobalData', // get_global_variable_references (5.18+)
+			'dynamic'    => 'ET\\Builder\\Packages\\Module\\Layout\\Components\\DynamicData\\DynamicData',
 		);
 		$class = apply_filters( 'd5b_ds_class', isset( $map[ $short ] ) ? $map[ $short ] : '', $short );
 		return ( is_string( $class ) && '' !== $class && class_exists( $class ) ) ? $class : '';
@@ -381,29 +385,79 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 	// (GlobalData::resolve_inline_global_variables, 5.18). So every variable write is checked here first.
 
 	// The variable ids a value references. Divi 5.18+: its own GlobalData::get_global_variable_references(). Older Divi:
-	// the same patterns, the token through DynamicData::get_variable_values() when it exists.
+	// the same rules (var(--gvid-...), a bare id, content/color/gradient tokens naming a gvid-, also inside a token's
+	// settings), with DynamicData::get_variable_values() / get_data_value() when they exist (5.15.1 has both) PLUS our
+	// own balanced scanner, which also reads tokens whose quotes are &quot; or block-encoded (backslash-u0022) and
+	// settings holding ")$". Finding more than Divi would only makes the checks stricter. The classes come through
+	// d5b_ds_class() ('refs', 'dynamic') so a test can switch each one off.
 	function d5b_ds_variable_refs( $value ) {
 		$value = (string) $value;
-		$g     = 'ET\\Builder\\Packages\\GlobalData\\GlobalData';
-		if ( class_exists( $g ) && method_exists( $g, 'get_global_variable_references' ) ) {
+		$g     = d5b_ds_class( 'refs' );
+		if ( $g && method_exists( $g, 'get_global_variable_references' ) ) {
 			return array_values( array_unique( array_map( 'strval', (array) $g::get_global_variable_references( $value ) ) ) );
 		}
-		$ids = array();
-		if ( preg_match( '/^gvid-[a-zA-Z0-9_-]+$/D', $value ) ) { $ids[ $value ] = true; }
-		if ( preg_match_all( '/var\(\s*--(gvid-[a-zA-Z0-9_-]+)(?=\s*[,)])/', $value, $m ) ) { foreach ( $m[1] as $id ) { $ids[ $id ] = true; } }
-		$dd = 'ET\\Builder\\Packages\\Module\\Layout\\Components\\DynamicData\\DynamicData';
-		if ( class_exists( $dd ) && method_exists( $dd, 'get_variable_values' ) ) {
-			$jsons = (array) $dd::get_variable_values( $value );
-		} else {
-			preg_match_all( '/\$variable\((.+?)\)\$/', $value, $m );
-			$jsons = $m[1];
-		}
-		foreach ( $jsons as $json ) {
-			$p    = json_decode( (string) $json, true );
-			$name = is_array( $p ) ? ( $p['value']['name'] ?? '' ) : '';
-			if ( is_array( $p ) && in_array( $p['type'] ?? '', array( 'content', 'color', 'gradient' ), true ) && is_string( $name ) && preg_match( '/^gvid-[a-zA-Z0-9_-]+$/D', $name ) ) { $ids[ $name ] = true; }
+		$dd      = d5b_ds_class( 'dynamic' );
+		$is_id   = function ( $s ) { return is_string( $s ) && 1 === preg_match( '/^gvid-[a-zA-Z0-9_-]+$/D', $s ); };
+		$ids     = array();
+		if ( $is_id( $value ) ) { $ids[ $value ] = true; }
+		$pending = array( $value );
+		$seen    = array();
+		for ( $i = 0; $i < count( $pending ) && $i < 4096; $i++ ) {
+			$text = $pending[ $i ];
+			if ( isset( $seen[ $text ] ) ) { continue; }
+			$seen[ $text ] = true;
+			$plain = d5b_ds_plain_quotes( $text );
+			if ( preg_match_all( '/var\(\s*--(gvid-[a-zA-Z0-9_-]+)(?=\s*[,)])/', $plain, $m ) ) { foreach ( $m[1] as $id ) { $ids[ $id ] = true; } }
+			$payloads = array();
+			if ( $dd && method_exists( $dd, 'get_variable_values' ) ) {
+				foreach ( (array) $dd::get_variable_values( $text ) as $json ) {
+					$payloads[] = method_exists( $dd, 'get_data_value' ) ? $dd::get_data_value( (string) $json ) : json_decode( (string) $json, true );
+				}
+			}
+			foreach ( d5b_ds_token_jsons( $plain ) as $json ) { $payloads[] = json_decode( $json, true ); }
+			foreach ( $payloads as $p ) {
+				if ( ! is_array( $p ) ) { continue; }
+				$name = $p['value']['name'] ?? '';
+				if ( in_array( $p['type'] ?? '', array( 'content', 'color', 'gradient' ), true ) && $is_id( $name ) ) { $ids[ $name ] = true; }
+				$nodes = array( $p );
+				for ( $n = 0; $n < count( $nodes ) && $n < 4096; $n++ ) {
+					if ( is_array( $nodes[ $n ] ) ) { foreach ( $nodes[ $n ] as $child ) { $nodes[] = $child; } }
+					elseif ( is_string( $nodes[ $n ] ) && ( false !== strpos( $nodes[ $n ], '$variable(' ) || false !== strpos( $nodes[ $n ], 'var(--' ) ) ) { $pending[] = $nodes[ $n ]; }
+				}
+			}
 		}
 		return array_keys( $ids );
+	}
+
+	// The text with block-encoded quotes and backslashes (backslash-u0022, backslash-u005c) and HTML-encoded quotes
+	// made plain, for finding references only (never stored).
+	function d5b_ds_plain_quotes( $text ) {
+		$bs = chr( 92 );
+		return str_replace( array( $bs . 'u005c', $bs . 'u0022', '&quot;', '&#34;' ), array( $bs, '"', '"', '"' ), (string) $text );
+	}
+
+	// Every $variable( <JSON> )$ payload in a text, found by balancing braces outside JSON strings, so a ")$" inside a
+	// settings string does not end the token early.
+	function d5b_ds_token_jsons( $text ) {
+		$out = array();
+		$len = strlen( $text );
+		for ( $at = strpos( $text, '$variable(' ); false !== $at; $at = strpos( $text, '$variable(', $at + 1 ) ) {
+			$start = $at + 10;
+			if ( '{' !== ( $text[ $start ] ?? '' ) ) { continue; }
+			$depth  = 0;
+			$quoted = false;
+			$esc    = false;
+			for ( $j = $start; $j < $len; $j++ ) {
+				$c = $text[ $j ];
+				if ( $quoted ) {
+					if ( $esc ) { $esc = false; } elseif ( chr( 92 ) === $c ) { $esc = true; } elseif ( '"' === $c ) { $quoted = false; }
+					continue;
+				}
+				if ( '"' === $c ) { $quoted = true; } elseif ( '{' === $c ) { $depth++; } elseif ( '}' === $c && 0 === --$depth ) { break; }
+			}
+			if ( $j < $len && ')$' === substr( $text, $j + 1, 2 ) ) { $out[] = substr( $text, $start, $j - $start + 1 ); }
+		}
+		return $out;
 	}
 
 	// id => array( type, item ) for every variable in a store, archived ones included.
@@ -441,6 +495,12 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 	function d5b_ds_variable_check_refs( $store, $type, $id, $value ) {
 		$refs = d5b_ds_variable_refs( $value );
 		if ( ! $refs ) { return null; }
+		// Only number and string variables can be made of others: the builder's variable editor offers the picker for
+		// those two types alone (modal-library.js, 5.18). Links, images, fonts, gradients: no references at all.
+		if ( ! in_array( $type, array( 'numbers', 'strings' ), true ) ) {
+			$bad = array_map( function ( $r ) use ( $type ) { return array( 'id' => $r, 'problem' => 'not_allowed', 'message' => "$r: a $type variable cannot reference other variables (only numbers and strings can)" ); }, $refs );
+			return new WP_Error( 'bad_references', 'this value references variables it may not use, nothing was written: ' . implode( '; ', array_column( $bad, 'message' ) ), array( 'status' => 400, 'references' => $bad ) );
+		}
 		$index = d5b_ds_variable_index( $store );
 		$bad   = array();
 		foreach ( $refs as $r ) {
@@ -495,6 +555,8 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 		if ( ! in_array( $type, array( 'numbers', 'strings', 'images', 'links', 'fonts', 'gradients' ), true ) ) { return d5b_ds_err( 'bad_type', 'type must be one of: numbers, strings, images, links, fonts, gradients (colours have their own route)' ); }
 		if ( '' === $label ) { return d5b_ds_err( 'no_label', 'label is required' ); }
 		if ( '' === trim( $value ) ) { return d5b_ds_err( 'no_value', 'value is required' ); }
+		// Divi 5.18 resolves a value over 1 MB as empty (GlobalData::_resolve_inline_global_variables): refuse it here.
+		if ( strlen( $value ) > 1048576 ) { return d5b_ds_err( 'value_too_large', 'value is over 1 MB (' . strlen( $value ) . ' bytes); Divi would render it as nothing. Nothing was written.' ); }
 		if ( '' !== $id && ! preg_match( '/^gvid-[0-9a-z-]{3,40}$/', $id ) ) { return d5b_ds_err( 'bad_id', 'a variable id is gvid- followed by lowercase letters, digits or hyphens' ); }
 		$store = d5b_ds_read( 'variables' );
 		if ( is_wp_error( $store ) ) { return $store; }

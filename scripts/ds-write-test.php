@@ -278,6 +278,25 @@ et_update_option( 'global_variables', array(
 $refs = d5b_ds_variable_refs( 'clamp( ' . $tok( 'gvid-k1iggz3omp' ) . ', 4vw, ' . $tok( 'gvid-4az4m3i650' ) . ')' );
 $check( 'references are read from a nested value (' . ( method_exists( 'ET\\Builder\\Packages\\GlobalData\\GlobalData', 'get_global_variable_references' ) ? 'Divi\'s own get_global_variable_references' : 'the fallback patterns: this Divi has no get_global_variable_references' ) . ')', array( 'gvid-4az4m3i650', 'gvid-k1iggz3omp' ) === ( function ( $r ) { sort( $r ); return $r; } )( $refs ), json_encode( $refs ) );
 $check( 'var(--gvid-…) counts as a reference too; a dynamic-content token (post_author) and a colour id do not', array( 'gvid-xdtsp8ywr8' ) === d5b_ds_variable_refs( 'calc(var(--gvid-xdtsp8ywr8) * -1) ' . $tok( 'post_author' ) . ' var(--gcid-primary-color)' ) );
+// The fallback finder (Divi before 5.18), with DynamicData and then with nothing of Divi's at all (our scanner only).
+$bsl  = chr( 92 );
+$enc  = array(
+	'a plain token'                                         => array( $tok( 'gvid-plain00001' ), array( 'gvid-plain00001' ) ),
+	'a token with &quot; quotes'                            => array( str_replace( '"', '&quot;', $tok( 'gvid-quot000001' ) ), array( 'gvid-quot000001' ) ),
+	'a block-encoded token (backslash-u0022 quotes)'        => array( str_replace( '"', $bsl . 'u0022', $tok( 'gvid-uenc000001' ) ), array( 'gvid-uenc000001' ) ),
+	'a token whose settings string holds ")$", then another' => array( '$variable({"type":"content","value":{"name":"gvid-sett000001","settings":{"before":"a)$b"}}})$ ' . $tok( 'gvid-next000001' ), array( 'gvid-next000001', 'gvid-sett000001' ) ),
+	'a token inside another token\'s settings'              => array( '$variable({"type":"content","value":{"name":"post_title","settings":{"after":' . json_encode( $tok( 'gvid-inner00001' ) ) . '}}})$', array( 'gvid-inner00001' ) ),
+	'a colour token naming a gcid (not a variable)'         => array( '$variable({"type":"color","value":{"name":"gcid-x","settings":{}}})$', array() ),
+);
+foreach ( array( 'with Divi\'s DynamicData' => array( 'refs' => '' ), 'with our scanner only' => array( 'refs' => '', 'dynamic' => '' ) ) as $how => $off ) {
+	$keep = $GLOBALS['d5b_test_classes'];
+	$GLOBALS['d5b_test_classes'] = $off + $keep;
+	foreach ( $enc as $what => list( $val, $want ) ) {
+		$got = d5b_ds_variable_refs( $val ); sort( $got );
+		$check( "fallback finder ($how): $what", $want === $got, json_encode( $got ) );
+	}
+	$GLOBALS['d5b_test_classes'] = $keep;
+}
 $fluid = 'clamp( ' . $tok( 'gvid-k1iggz3omp' ) . ', 4vw, ' . $tok( 'gvid-4az4m3i650' ) . ')';
 $f     = d5b_ds_variable_upsert( array( 'type' => 'numbers', 'label' => 'Fluid Heading', 'value' => $fluid ), false );
 $check( 'nested number variable (Fluid Heading = clamp( Min, 4vw, Max )) is accepted and stored exactly', ! is_wp_error( $f ) && $fluid === ( $vars()['numbers'][ $f['id'] ]['value'] ?? '' ), is_wp_error( $f ) ? $f->get_error_message() : '' );
@@ -302,6 +321,13 @@ $refused( 'a reference to an archived variable', array( 'type' => 'strings', 'la
 $refused( 'a reference to the variable itself', array( 'type' => 'numbers', 'id' => 'gvid-xdtsp8ywr8', 'label' => 'Space', 'value' => $tok( 'gvid-xdtsp8ywr8' ) . ' * 2' ), 'self' );
 $refused( 'a number variable using a string variable', array( 'type' => 'numbers', 'label' => 'Bad', 'value' => $tok( 'gvid-n7rq1b1o9w' ) ), 'type' );
 $refused( 'a string variable using a number variable', array( 'type' => 'strings', 'label' => 'Bad', 'value' => 'size ' . $tok( 'gvid-xdtsp8ywr8' ) ), 'type' );
+$refused( 'a links variable holding a reference (only numbers and strings may)', array( 'type' => 'links', 'label' => 'Bad', 'value' => 'https://example.com/' . $tok( 'gvid-n7rq1b1o9w' ) ), 'not_allowed' );
+$refused( 'a gradients variable holding a var(--gvid-…) reference', array( 'type' => 'gradients', 'label' => 'Bad', 'value' => 'linear-gradient(var(--gvid-xdtsp8ywr8), red)' ), 'not_allowed' );
+$check( 'a links variable without references is still fine', ! is_wp_error( $lk = d5b_ds_variable_upsert( array( 'type' => 'links', 'label' => 'Home', 'value' => 'https://example.com/' ), true ) ), is_wp_error( $lk ) ? $lk->get_error_message() : '' );
+$before = json_encode( $vars() );
+$big    = d5b_ds_variable_upsert( array( 'type' => 'strings', 'label' => 'Huge', 'value' => str_repeat( 'a', 1048577 ) ), false );
+$check( 'a value over 1 MB is refused (400 value_too_large), nothing written', is_wp_error( $big ) && 'value_too_large' === $big->get_error_code() && 400 === $big->get_error_data()['status'] && json_encode( $vars() ) === $before );
+$check( 'a value of exactly 1 MB is accepted (dry run)', ! is_wp_error( d5b_ds_variable_upsert( array( 'type' => 'strings', 'label' => 'Big', 'value' => str_repeat( 'a', 1048576 ) ), true ) ) );
 $va = d5b_ds_variable_upsert( array( 'type' => 'numbers', 'label' => 'ZZ A', 'value' => '10px' ), false );
 $vb = d5b_ds_variable_upsert( array( 'type' => 'numbers', 'label' => 'ZZ B', 'value' => $tok( $va['id'] ) . ' * 2' ), false );
 $check( 'A, then B uses A: accepted', ! is_wp_error( $va ) && ! is_wp_error( $vb ), is_wp_error( $vb ) ? $vb->get_error_message() : '' );
