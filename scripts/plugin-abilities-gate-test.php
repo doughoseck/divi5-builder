@@ -214,7 +214,7 @@ check( 'the scrubbed value is what is returned', array( 'title' => 'x' ) === d5b
 d5b_ability_add( mk( 'divi5-builder/menus-list', 'menus', array( 'handler' => function ( array $in ) { usleep( 30000 ); return new WP_Error( 'bad_thing', 'Nope.' ); } ) ) );
 $GLOBALS['T_audit'] = array(); $GLOBALS['T_scrub'] = array();
 $r = d5b_ability_run( 'divi5-builder/menus-list', array() );
-check( 'WP_Error from the handler is passed through, audited with its code, not scrubbed', is_wp_error( $r ) && 'bad_thing' === $r->code && 'bad_thing' === $GLOBALS['T_audit'][0]['status'] && array() === $GLOBALS['T_scrub'], $GLOBALS['T_audit'] );
+check( 'WP_Error from the handler is passed through, audited as error:<code>, not scrubbed here (no scrub.php in this test)', is_wp_error( $r ) && 'bad_thing' === $r->code && 'error:bad_thing' === $GLOBALS['T_audit'][0]['status'] && array() === $GLOBALS['T_scrub'], $GLOBALS['T_audit'] );
 check( 'the duration is measured (a 30 ms handler logs at least 25 ms)', $GLOBALS['T_audit'][0]['duration_ms'] >= 25, $GLOBALS['T_audit'][0]['duration_ms'] );
 
 d5b_ability_add( mk( 'divi5-builder/cache-status', 'cache', array( 'handler' => function ( array $in ) { throw new RuntimeException( 'secret db host db.internal:3306' ); } ) ) );

@@ -130,12 +130,13 @@ if ( ! function_exists( 'd5b_audit_mask_after_keys' ) ) {
 	 * $pattern captures the key as (?<k>...) and the value as (?<v>...) inside a lookahead, so a value is never consumed
 	 * and a key hidden inside another key's value is still found.
 	 */
-	function d5b_audit_mask_after_keys( string $s, string $pattern, callable $is_secret ): string {
+	function d5b_audit_mask_after_keys( string $s, string $pattern, callable $is_secret, ?callable $value_ok = null ): string {
 		if ( ! preg_match_all( $pattern, $s, $all, PREG_SET_ORDER | PREG_OFFSET_CAPTURE ) ) { return $s; }
 		$cuts = array(); $end = -1;
 		foreach ( $all as $m ) {
 			if ( ! isset( $m['v'] ) || $m['v'][1] < 0 || '' === $m['v'][0] || $m['k'][1] < $end ) { continue; }
 			if ( ! call_user_func( $is_secret, $m['k'][0] ) ) { continue; }
+			if ( null !== $value_ok && ! call_user_func( $value_ok, $m['v'][0] ) ) { continue; }
 			$cuts[] = array( $m['v'][1], strlen( $m['v'][0] ) );
 			$end    = $m['v'][1] + strlen( $m['v'][0] );
 		}
@@ -152,13 +153,30 @@ if ( ! function_exists( 'd5b_audit_is_secret' ) ) {
 }
 
 if ( ! function_exists( 'd5b_audit_is_secret_word' ) ) {
-	/** For "word value" with only a space between: the word must END in one of these nouns (password hunter2, API key sk_...). */
+	/** For "word value" with only a space between: the word's LAST token is one of these nouns (password hunter2, API key x, get_key). */
 	function d5b_audit_is_secret_word( $word ): bool {
-		$k = function_exists( 'd5b_secret_key_norm' ) ? d5b_secret_key_norm( $word ) : strtolower( (string) $word );
-		foreach ( array( 'pass', 'passwd', 'password', 'passphrase', 'pwd', 'secret', 'token', 'tokens', 'key', 'apikey', 'bearer', 'credential', 'credentials', 'salt', 'nonce', 'jwt' ) as $w ) {
-			if ( '' !== $k && substr( $k, -strlen( $w ) ) === $w ) { return true; }
-		}
-		return false;
+		$tokens = function_exists( 'd5b_secret_key_tokens' ) ? d5b_secret_key_tokens( $word ) : preg_split( '/[^a-z0-9]+/', strtolower( (string) $word ), -1, PREG_SPLIT_NO_EMPTY );
+		$last   = is_array( $tokens ) && $tokens ? end( $tokens ) : '';
+		// No "bearer": "Bearer <token>" has its own rule, which needs a digit or punctuation in the token.
+		return in_array( $last, array( 'pass', 'passwd', 'password', 'passphrase', 'pwd', 'pw', 'secret', 'token', 'tokens', 'key', 'apikey', 'credential', 'credentials', 'creds', 'salt', 'nonce', 'jwt' ), true );
+	}
+}
+
+if ( ! function_exists( 'd5b_audit_looks_secret' ) ) {
+	/**
+	 * For the "word value" form only: does the value look like a secret? 6+ characters of [A-Za-z0-9._~+/=!@#$%^&*-]
+	 * (so a quoted identifier such as "title" or 'PRIMARY', or meta key _price, never does) and not an ordinary word
+	 * ("Token expired", "Invalid nonce for", "password reset", "get_key is deprecated ... instead").
+	 */
+	function d5b_audit_looks_secret( string $v ): bool {
+		if ( 1 !== preg_match( '/^[A-Za-z0-9._~+\/=!@#$%^&*\-]{6,}$/', $v ) ) { return false; }
+		// a snake_case identifier (_price, save_post): a name in a message, not a secret
+		if ( false !== strpos( $v, '_' ) && 1 === preg_match( '/^_*[a-z]+(?:_+[a-z]+)*_*$/', $v ) ) { return false; }
+		$word = strtolower( rtrim( $v, '.,;:!?' ) );
+		return ! in_array( $word, array( 'in', 'is', 'to', 'for', 'at', 'on', 'of', 'has', 'was', 'reset', 'expired', 'deprecated', 'instead', 'failed', 'not', 'required',
+			'missing', 'invalid', 'link', 'field', 'value', 'should', 'cannot', 'changed', 'updated', 'created', 'removed', 'provided', 'mismatch', 'received',
+			'verification', 'validation', 'generated', 'expires', 'length', 'format', 'string', 'number', 'please', 'before', 'after', 'during', 'without',
+			'because', 'header', 'parameter', 'argument', 'manager', 'storage', 'option', 'settings', 'exists', 'already', 'rejected', 'accepted', 'refreshed' ), true );
 	}
 }
 
@@ -176,8 +194,10 @@ if ( ! function_exists( 'd5b_audit_mask_secrets' ) ) {
 		// whole header lines
 		$s = (string) preg_replace( '/\b(Set-Cookie|Cookie)\s*:[^\r\n]*/i', '$1: [redacted]', $s );
 		$s = (string) preg_replace( '/\bAuthorization\s*:[^\r\n]*/i', 'Authorization: [redacted]', $s );
-		$s = (string) preg_replace( '/\bBearer\s+[A-Za-z0-9\-._~+\/]+=*/i', 'Bearer [redacted]', $s );
+		$s = (string) preg_replace( '/\bBearer\s+(?=[A-Za-z0-9\-._~+\/]*[0-9._\-~+\/])[A-Za-z0-9\-._~+\/]{8,}=*/i', 'Bearer [redacted]', $s );
 		$s = (string) preg_replace( '/\bBasic\s+[A-Za-z0-9+\/]{8,}=*/', 'Basic [redacted]', $s );
+		// curl -u user:pass, --user user:pass
+		$s = (string) preg_replace( '/(?<![A-Za-z0-9_\-])(?:-u|--user)(?:\s+|=)[^\s:]+:\K[^\s]+/', '[redacted]', $s );
 		// value shapes: the shared ones, a JWT with any signature, an AWS access key id
 		if ( function_exists( 'd5b_secret_mask_values' ) ) { $s = d5b_secret_mask_values( $s ); }
 		$s = (string) preg_replace( '/(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*)?/', '[redacted]', $s );
@@ -186,10 +206,10 @@ if ( ! function_exists( 'd5b_audit_mask_secrets' ) ) {
 		$s = d5b_audit_mask_after_keys( $s, '/\bdefine\s*\(\s*(["\'])(?<k>[A-Za-z0-9_]{1,100})\1\s*,\s*(?=' . $value . ')/i', 'd5b_audit_is_secret' );
 		// print_r: [user_pass] => value (to the end of the line or the next [key] =>)
 		$s = d5b_audit_mask_after_keys( $s, '/\[(?<k>[^\]\r\n]{1,100})\]\s*=>\s*(?=(?<v>(?:(?!\s+\[[^\]\r\n]{1,100}\]\s*=>)[^\r\n])+))/', 'd5b_audit_is_secret' );
-		// key=value, key: value, key%3Dvalue, 'key' => 'value', "key": "value", key -> value
-		$s = d5b_audit_mask_after_keys( $s, '/(["\']?)' . $key . '\1\s*(?:=>|->|=|:|%3D)\s*(?=' . $value . ')/i', 'd5b_audit_is_secret' );
-		// password hunter2, token abc, password is hunter2, API key sk_...
-		$s = d5b_audit_mask_after_keys( $s, '/' . $key . '(?:\s+(?:is|was))?\s+(?![=:>\-])(?=' . $value . ')/i', 'd5b_audit_is_secret_word' );
+		// key=value, key: value, key%3Dvalue, 'key' => 'value', "key": "value", key -> value, [PHP_AUTH_PW] = value: any value
+		$s = d5b_audit_mask_after_keys( $s, '/[\["\']?' . $key . '["\'\]]?\s*(?:=>|->|=|:|%3D)\s*(?=' . $value . ')/i', 'd5b_audit_is_secret' );
+		// password hunter2, token abc, password is hunter2, API key is x: only when the value looks like a secret
+		$s = d5b_audit_mask_after_keys( $s, '/' . $key . '(?:\s+(?:is|was))?\s+(?![=:>\-])(?=' . $value . ')/i', 'd5b_audit_is_secret_word', 'd5b_audit_looks_secret' );
 		return $s;
 	}
 }
@@ -227,7 +247,7 @@ if ( ! function_exists( 'd5b_audit_redact' ) ) {
 if ( ! function_exists( 'd5b_audit_args_cap' ) ) {
 	/** Bytes of encoded args a row may hold: 1 KB for a refused call (forbidden, bad input), which damps flooding; else 8 KB. */
 	function d5b_audit_args_cap( string $status ): int {
-		return in_array( $status, array( 'forbidden', 'invalid_input' ), true ) ? 1024 : 8192;
+		return in_array( $status, array( 'forbidden', 'invalid_input', 'error:invalid_input' ), true ) ? 1024 : 8192;
 	}
 }
 

@@ -299,7 +299,7 @@ check( '50 refused permission checks with 7 KB of input each: every row holds a 
 d5b_ability_run( 'divi5-builder/posts-nope', $pad );
 check( 'the same through a direct run: forbidden, at most 1 KB', 'forbidden' === rows()[50]['status'] && strlen( rows()[50]['args'] ) <= 1024 );
 d5b_ability_run( 'divi5-builder/posts-bad', $pad );
-check( 'bad input (invalid_input from the handler): the started row is rewritten to at most 1 KB', 'invalid_input' === rows()[51]['status'] && strlen( rows()[51]['args'] ) <= 1024, rows()[51] );
+check( 'bad input (invalid_input from the handler): the started row is rewritten to at most 1 KB', 'error:invalid_input' === rows()[51]['status'] && strlen( rows()[51]['args'] ) <= 1024, rows()[51] );
 d5b_ability_run( 'divi5-builder/posts-fine', $pad );
 check( 'a successful call keeps the 8 KB cap (the same 7 KB input is stored whole)', 'ok' === rows()[52]['status'] && strlen( rows()[52]['args'] ) > 7000 && 7 === count( last_args() ), strlen( rows()[52]['args'] ) );
 $small = array( 'q' => 'short' );
@@ -410,6 +410,72 @@ check( 'masker: the same rule as the scrubber decides (a key it calls secret is 
 $o = $cap2( "RuntimeException: define('DB_PASSWORD', 'S3CR3T-VALUE');" );
 check( 'the _exception of a thrown handler goes through it (break-it a4 "throws w/ secret")', false === strpos( $o, 'S3CR3T' ) && 0 === strpos( $o, 'RuntimeException: define(' ), $o );
 check( 'input args: secret value shapes are masked in stored strings, ordinary ones are not', ( function () { d5b_audit_write( 'a/b', array( 'q' => 'see sk_live_ABCDEFGH12345 now', 'r' => 'plain' ), 'ok', 1 ); $a = last_args(); return false === strpos( $a['q'], 'ABCDEFGH' ) && 'plain' === $a['r']; } )() );
+
+echo "round 2: ordinary debug.log lines come through unchanged (re-review N-1, probe3)\n";
+$keep_lines = array(
+	'PHP Warning:  Undefined array key "title" in /x/Divi/includes/builder/module/Blurb.php on line 12',
+	'PHP Notice:  Undefined index: key in /x/y.php on line 3',
+	'get_key is deprecated since version 5.0! Use et_builder_get_key instead.',
+	"WordPress database error Duplicate entry '5' for key 'PRIMARY' for query ...",
+	'meta key _price not found',
+	'Invalid nonce for action save_post',
+	'The password reset link has expired',
+	'Token expired at 2026-10-28',
+	'The key to success',
+	'[28-Oct-2026 10:00:00 UTC] PHP Notice:  Undefined index: key in /home/site/public_html/wp-content/plugins/foo/foo.php on line 42',
+	'[28-Oct-2026 10:00:00 UTC] PHP Warning:  Undefined array key "title" in /var/www/wp-content/themes/Divi/includes/builder/module/Blurb.php on line 210',
+	'[28-Oct-2026 10:00:00 UTC] PHP Deprecated:  Function ET_Builder_Element::get_key is deprecated since version 5.0.0! Use et_builder_get_key instead. in /var/www/wp-includes/functions.php on line 6114',
+	'[28-Oct-2026 10:00:00 UTC] PHP Deprecated:  Creation of dynamic property ET_Core_API_Email_Mailchimp::$token_url is deprecated in /x/core/components/api/email/MailChimp.php on line 50',
+	'[28-Oct-2026 10:00:00 UTC] PHP Fatal error:  Uncaught TypeError: array_key_exists(): Argument #2 ($array) must be of type array, null given in /x/a.php:12',
+	'[28-Oct-2026 10:00:00 UTC] PHP Warning:  Cannot modify header information - headers already sent by (output started at /x/wp-config.php:1) in /x/wp-includes/pluggable.php on line 1450',
+	'Cron reschedule event error for hook: wp_privacy_delete_old_export_files, Error code: invalid_schedule, Error message: Event schedule does not exist., Data: {"schedule":"hourly","args":[],"interval":3600}',
+	'The key to success is a primary key on the table.',
+	'Test passed. Authentication failed for user bob.',
+	"WordPress database error Duplicate entry '5-foo' for key 'PRIMARY' for query INSERT INTO wp_postmeta (post_id, meta_key, meta_value) VALUES (5, 'foo', 'bar') made by do_action",
+	'PHP Notice:  Function _load_textdomain_just_in_time was called incorrectly. Translation loading for the divi domain was triggered too early.',
+	'Sorting by meta key _price failed',
+	'https://example.com/wp-json/wp/v2/posts?per_page=10&page=2',
+	'The password reset link has expired.',
+	'Token expired at 10:00',
+);
+foreach ( $keep_lines as $l ) { $o = d5b_audit_mask_secrets( $l ); check( 'unchanged: ' . substr( $l, 0, 70 ), $o === $l, $o ); }
+
+echo "round 2: still masked\n";
+$r2_mask = array(
+	'secret sk_live_'          => array( 'Stripe error: secret sk_' . 'live_4eC39HqLyjWDarjtT1zdp7dc', '4eC39HqLy' ),
+	'define()'                 => array( "define( 'DB_PASSWORD', 'hunter2-define' );", 'hunter2' ),
+	'JSON "password":'         => array( '{"user":"bob","password":"hunter2-json"}', 'hunter2' ),
+	'curl -u user:pass'        => array( 'curl -u admin:hunter2-curl https://x', 'hunter2' ),
+	'--user user:pass'         => array( 'wget --user=admin:hunter2-wget https://x', 'hunter2' ),
+	'api key: x'               => array( 'api key: abcd1234efgh', 'abcd1234' ),
+	'API key is <value>'       => array( 'Mailchimp API key is 0123456789abcdef0123456789abcdef-' . 'us21', '0123456789abcdef' ),
+	'API key is abc123def456'  => array( 'Mailchimp API key is abc123def456', 'abc123def456' ),
+	'JWT'                      => array( 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc', 'eyJzdWIiOiIxIn0' ),
+	'Set-Cookie'               => array( 'Set-Cookie: wordpress_logged_in_abc=admin%7C1700000000%7Ctoken; path=/', '1700000000' ),
+	'[PHP_AUTH_PW] = x'        => array( '$_SERVER[PHP_AUTH_PW] = hunter2-server', 'hunter2' ),
+	'password hunter2'         => array( 'login failed with password hunter2', 'hunter2' ),
+	'print_r'                  => array( '    [user_pass] => hunter2-printr', 'hunter2' ),
+	'var_export'               => array( "array ( 'password' => 'hunter2-varexport', )", 'hunter2' ),
+	'INSERT hash'              => array( "INSERT INTO wp_users (user_login, user_pass) VALUES ('bob', '\$wp\$2y\$10\$INSERTHASH')", 'INSERTHASH' ),
+	'smtp_pw=x (token pw)'     => array( 'smtp_pw=hunter2-pw', 'hunter2' ),
+	'Bearer with digits'       => array( 'sent Bearer abc123def456 to x', 'abc123def456' ),
+);
+foreach ( $r2_mask as $label => $c ) { $o = d5b_audit_mask_secrets( $c[0] ); check( "masked: $label", false === strpos( $o, $c[1] ), $o ); }
+check( 'Bearer followed by an ordinary word is prose, not a token', 'Bearer instrumentalisation of bonds' === d5b_audit_mask_secrets( 'Bearer instrumentalisation of bonds' ) );
+$t = microtime( true );
+d5b_audit_mask_secrets( str_repeat( 'key key ', 250 ) ); d5b_audit_mask_secrets( str_repeat( '[a] => ', 285 ) ); d5b_audit_mask_secrets( str_repeat( 'password=', 222 ) );
+for ( $i = 0; $i < 200; $i++ ) { d5b_audit_mask_secrets( str_repeat( 'token is x ', 181 ) ); }
+check( 'hostile 2000-character lines (200 of them) mask in well under 2 seconds', microtime( true ) - $t < 2.0, round( ( microtime( true ) - $t ) * 1000 ) . ' ms' );
+
+echo "round 2: audit status of a handler's own error (break-it Minor 7)\n";
+installed(); d5b_abilities_set_master( true, 'tester' );
+foreach ( array( 'ok', 'started', 'forbidden', str_repeat( 'x', 100 ) ) as $i => $code ) {
+	d5b_ability_add( array( 'name' => 'divi5-builder/posts-code' . $i, 'category' => 'posts', 'label' => 'a', 'description' => 'x', 'permission' => function ( array $in ) { return true; }, 'handler' => function ( array $in ) use ( $code ) { return new WP_Error( $code, 'forged' ); } ) );
+	d5b_ability_run( 'divi5-builder/posts-code' . $i, array() );
+}
+$sts = array_column( rows(), 'status' );
+check( 'a handler WP_Error is stored as error:<code>: code ok -> error:ok, started -> error:started, forbidden -> error:forbidden', array( 'error:ok', 'error:started', 'error:forbidden' ) === array_slice( $sts, 0, 3 ), $sts );
+check( '... capped at 64 characters (in the wrapper, not only by the column cut)', 64 === strlen( $sts[3] ) && 0 === strpos( $sts[3], 'error:xxx' ) && 64 === strlen( d5b_ability_error_status( str_repeat( 'y', 100 ) ) ), $sts[3] );
 
 echo "source checks\n";
 $src = file_get_contents( $dir . '/inc/abilities/audit.php' );

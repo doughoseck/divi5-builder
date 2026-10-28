@@ -155,12 +155,12 @@ check( 'the loader lists scrub.php and read-site.php, and secrets.php before aud
 echo "the scrubber\n";
 $k_each = array( 'user_pass', 'user_activation_key', 'session_tokens', '_application_passwords', 'smtp_password', 'mailserver_pass', 'my_secret', 'x_apikey', 'x_api_key', 'API_KEY', 'x_token', 'access_tokens', 'x_salt', 'x_auth_key', 'x_nonce', 'USER_PASS' );
 $in = array(); foreach ( $k_each as $k ) { $in[ $k ] = 'v'; }
-// passenger and compass_dir contain "pass": the shared rule removes them on purpose (a harmless field may go; a secret may not stay).
+// passenger and compass_dir hold "pass" inside a word, not as a token: the tokenised rule keeps them (round 2).
 $in += array( 'title' => 'Keep', 'author' => 'Keep', 'hash' => 'Keep', 'passenger' => 'v', 'compass_dir' => 'v', 7 => 'Keep', 'nested' => array( 'ok' => 1, 'api_key' => 'v', 'deeper' => array( array( 'token' => 'v', 'name' => 'Keep' ) ) ) );
 $out = d5b_ability_scrub( $in );
 $left = array_keys( $out );
 sort( $left );
-$want = array( 7, 'author', 'hash', 'nested', 'title' ); sort( $want );
+$want = array( 7, 'author', 'compass_dir', 'hash', 'nested', 'passenger', 'title' ); sort( $want );
 check( 'every alternative of the key rule removes its key (and nothing else goes)', $left === $want, $left );
 check( 'the scrubber recurses through nested arrays and lists', array( 'ok' => 1, 'deeper' => array( array( 'name' => 'Keep' ) ) ) === $out['nested'], $out['nested'] );
 foreach ( array( 'pass$ (smtp_password)' => 'smtp_password', 'secret' => 'my_secret', 'api_?key' => 'x_apikey', 'token' => 'x_token', 'salt' => 'x_salt', 'auth_key' => 'x_auth_key', 'nonce' => 'x_nonce', 'user_pass' => 'user_pass', 'user_activation_key' => 'user_activation_key', 'session_tokens' => 'session_tokens', '_application_passwords' => '_application_passwords' ) as $why => $key ) {
@@ -246,6 +246,77 @@ check( 'the WP_Error a permission callback returns is scrubbed too (permit)', is
 $r = d5b_ability_run( 'divi5-builder/posts-perr', array() );
 check( '... and the same refusal through a direct run', is_wp_error( $r ) && 'nope' === $r->get_error_code() && false === strpos( json_encode( $r->get_error_data() ), 'S3CR3T' ) );
 d5b_ability_registry( $snapshot );
+
+// ---- round 2: the key rule tokenises (break-it 2 and 5)
+echo "round 2: tokenised key rule\n";
+$must2 = array_merge( $must, array( 'basic_auth', 'http_auth', 'proxy_authorization', 'Proxy-Authorization', 'x_auth', 'smtp_auth', 'oauth', 'creds', 'db_creds', 'pw', 'smtp_pw', 'pword', 'seed', 'mnemonic', 'mfa_code', 'PHP_AUTH_PW',
+	'smtpPassword', 'apiKey', 'oauth2_token', 'access_key', 'secretKey' ) );
+$missed = array_values( array_filter( $must2, function ( $k ) { return ! d5b_is_secret_key( $k ); } ) );
+check( 'must-scrub (round 1 list + 21 more): every key is a secret', array() === $missed, $missed );
+$should_keep = array( 'compass', 'bypass_cache', 'passenger', 'footprint', 'hotpink', 'screenshot_path', 'basalt', 'monkey', 'turkey', 'hotkey', 'layout_key', 'module_key', 'author', 'author_id', 'authority', 'authorized' );
+$eaten2 = array_values( array_filter( $should_keep, 'd5b_is_secret_key' ) );
+check( 'should-keep: ordinary keys with a secret word inside another word stay', array() === $eaten2, $eaten2 );
+check( 'tokens: split at separators, camelCase and digits', array( 'smtp', 'pw' ) === d5b_secret_key_tokens( 'smtp_pw' ) && array( 'api', 'key' ) === d5b_secret_key_tokens( 'apiKey' ) && array( 'proxy', 'authorization' ) === d5b_secret_key_tokens( 'Proxy-Authorization' ) && array( 'oauth', '2' ) === d5b_secret_key_tokens( 'oauth2' ) );
+check( 'a lone "key" token: the whole key, or after api/private/secret/...; not after layout or module', d5b_is_secret_key( 'key' ) && d5b_is_secret_key( 'x-key' ) && d5b_is_secret_key( 'stripe_key' ) && ! d5b_is_secret_key( 'layout_key' ) && ! d5b_is_secret_key( 'sort_key' ) );
+
+echo "round 2: name/value pairs (break-it a9 section 4)\n";
+$S = 'S3CR3T-VALUE';
+$pairs2 = array(
+	'key/value'                 => array( 'key' => 'smtp_password', 'value' => $S ),
+	'Key/Value capitals'        => array( 'Key' => 'smtp_password', 'Value' => $S ),
+	'NAME/VALUE'                => array( 'NAME' => 'api_key', 'VALUE' => $S ),
+	'option_name/option_value'  => array( 'option_name' => 'smtp_password', 'option_value' => $S ),
+	'meta_key/meta_value'       => array( 'meta_key' => 'pwd', 'meta_value' => $S ),
+	'name/values (plural)'      => array( 'name' => 'password', 'values' => array( $S ) ),
+	'name/data'                 => array( 'name' => 'password', 'data' => $S ),
+	'id/value'                  => array( 'id' => 'smtp_password', 'value' => $S ),
+	'label/value'               => array( 'label' => 'Password', 'value' => $S ),
+	'field/val'                 => array( 'field' => 'password', 'val' => $S ),
+	'setting/value'             => array( 'setting' => 'api_key', 'value' => $S ),
+	'title/value'               => array( 'title' => 'SMTP password', 'value' => $S ),
+	'name nested in sub-array'  => array( 'field' => array( 'name' => 'password' ), 'value' => $S ),
+	'value nested under pair'   => array( 'name' => 'password', 'value' => array( 'deep' => array( 'x' => $S ) ) ),
+	'pair inside numeric list'  => array( array( array( 'name' => 'password', 'value' => $S ) ) ),
+	'name as array'             => array( 'name' => array( 'password' ), 'value' => $S ),
+	'name with whitespace'      => array( 'name' => ' PASS WORD ', 'value' => $S ),
+	'parallel names/values'     => array( 'names' => array( 'color', 'password' ), 'values' => array( 'red', $S ) ),
+	'parallel keys/values'      => array( 'keys' => array( 'api_key' ), 'values' => array( $S ) ),
+	'[ name, value ] list'      => array( array( 'password', $S ) ),
+	'stdClass pair'             => (object) array( 'name' => 'password', 'value' => $S ),
+);
+$leaked = array(); foreach ( $pairs2 as $label => $v ) { if ( false !== strpos( (string) json_encode( d5b_ability_scrub( array( 'x' => $v ) ) ), 'S3CR3T' ) ) { $leaked[] = $label; } }
+check( 'every a9 pair case holds (' . count( $pairs2 ) . ' cases)', array() === $leaked, $leaked );
+$o = d5b_ability_scrub( array( 'names' => array( 'color', 'password' ), 'values' => array( 'red', $S ) ) );
+check( 'parallel lists: only the secret index goes, the rest stays', array( 'color', 'password' ) === $o['names'] && array( 0 => 'red' ) === $o['values'], $o );
+$plainp = array( array( 'name' => 'color', 'value' => 'red' ), array( 'Label' => 'Size', 'Data' => 'XL' ), array( 'title', 'Home' ), array( 'names' => array( 'a' ), 'values' => array( 'b' ) ) );
+check( 'ordinary pairs, two-item lists and parallel lists keep their values', $plainp === d5b_ability_scrub( $plainp ), d5b_ability_scrub( $plainp ) );
+
+echo "round 2: WP_Error free text (break-it a9 section 5)\n";
+$e = new WP_Error( 'one', 'first token=' . $S, array( 'status' => 400, 'api_key' => $S ) );
+$e->add( 'two', 'second eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.c2lnbmF0dXJlMTIz', array( 'user' => (object) array( 'user_pass' => $S ) ) );
+$e->add_data( array( 'nested' => array( array( 'name' => 'password', 'value' => $S ) ) ), 'two' );
+$e->add_data( array( 'list' => array( 'password=' . $S ) ), 'one' );
+$e->add( 'three', 'third', new WP_Error( 'inner', 'inner msg', array( 'secret' => $S ) ) );
+$e->add( 'four', "mysqli: Access denied for user 'wp'@'localhost' (using password: YES) password=$S" );
+$c = d5b_ability_scrub_error( $e );
+$dump = json_encode( array_map( function ( $code ) use ( $c ) { return array( $c->get_error_messages( $code ), $c->get_all_error_data( $code ) ); }, $c->get_error_codes() ) );
+check( 'every message and every string in the data go through the free-text masker; codes and ordinary data kept', array( 'one', 'two', 'three', 'four' ) === $c->get_error_codes() && false === strpos( $dump, 'S3CR3T' ) && false === strpos( $dump, 'c2lnbmF0' ) && 400 === ( $c->get_all_error_data( 'one' )[0]['status'] ?? null ), $dump );
+check( '... the ordinary parts of the messages stay readable', 'third' === $c->get_error_message( 'three' ) && 0 === strpos( $c->get_error_message( 'one' ), 'first token=' ) && false !== strpos( $c->get_error_message( 'four' ), "Access denied for user 'wp'" ) );
+check( 'our own refusal messages are not mangled by the masker', 'key is not valid.' === d5b_ability_scrub_text( 'key is not valid.' ) && 'key must be text of at most 255 characters.' === d5b_ability_scrub_text( 'key must be text of at most 255 characters.' ) );
+
+echo "round 2: value shapes (break-it Minor 6)\n";
+$pem10 = 'ok $ text ' . str_repeat( '-----BEGIN PRIVATE KEY-----' . str_repeat( 'x', 2000 ) . "\n", 10 ) . 'TAIL';
+$o = d5b_secret_mask_values( $pem10 );
+check( 'PEM without END, 10 blocks: each BEGIN line goes, the text before and TAIL after survive', false !== strpos( $o, 'TAIL' ) && 0 === strpos( $o, 'ok $ text ' ) && false === strpos( $o, 'xxxx' ) && 10 === substr_count( $o, '[redacted]' ), substr( $o, 0, 200 ) );
+$b64 = str_repeat( 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC', 2 );
+$o = d5b_secret_mask_values( "before\n-----BEGIN PRIVATE KEY-----\n$b64\n$b64\nAB==\nafter line\nmore" );
+check( 'PEM without END: the base64 lines after BEGIN go too, the first ordinary line stays', "before\n[redacted]\nafter line\nmore" === $o, $o );
+$o = d5b_secret_mask_values( "a -----BEGIN RSA PRIVATE KEY-----\n$b64\n-----END RSA PRIVATE KEY----- b -----BEGIN PRIVATE KEY-----\n$b64\n-----END PRIVATE KEY----- c" );
+check( 'PEM with END: BEGIN to its own END, each block separately, text between kept', 'a [redacted] b [redacted] c' === $o, $o );
+check( 'Bearer: "Bearer instrumentalisation" stays; a 20+ token with a digit or ._-~+/ goes; a short one stays', 'Bearer instrumentalisation of bonds' === d5b_secret_mask_values( 'Bearer instrumentalisation of bonds' )
+	&& 'Bearer [redacted] x' === d5b_secret_mask_values( 'Bearer abcdefghij0123456789xyz x' ) && 'Bearer abc.def x' === d5b_secret_mask_values( 'Bearer abc.def x' ), d5b_secret_mask_values( 'Bearer abcdefghij0123456789xyz x' ) );
+$t = microtime( true ); d5b_secret_mask_values( '-----BEGIN PRIVATE KEY-----' . str_repeat( "MIIabc\n", 150000 ) ); d5b_secret_mask_values( str_repeat( '-----BEGIN ' . str_repeat( 'A ', 30 ) . 'X', 900 ) . 'PRIVATE KEY' );
+check( 'PEM masking stays fast on a 1 MB unterminated block and on BEGIN near-misses', microtime( true ) - $t < 1.0, round( ( microtime( true ) - $t ) * 1000 ) . ' ms' );
 
 // ---- the wrapper applies it
 echo "the wrapper applies the scrubber\n";
@@ -570,6 +641,34 @@ $defs = d5b_ability_defs();
 $d = function ( $x ) use ( $defs ) { return (string) $defs[ 'divi5-builder/' . $x ]['description']; };
 check( 'descriptions: appearance-get and widgets-list say "values under secret-named keys removed", never "secrets removed"', false !== strpos( $d( 'appearance-get' ), 'values under secret-named keys removed' ) && false !== strpos( $d( 'widgets-list' ), 'values under secret-named keys removed' ) && false === strpos( json_encode( array_column( $defs, 'description' ) ), 'secrets removed' ) );
 check( 'descriptions: menus-list and menus-locations name edit_theme_options; core-version names manage_network; meta-get names edit_post', false !== strpos( $d( 'menus-list' ), 'edit_theme_options' ) && false !== strpos( $d( 'menus-locations' ), 'edit_theme_options' ) && false !== strpos( $d( 'core-version' ), 'manage_network' ) && false === strpos( $d( 'core-version' ), 'update_core' ) && false !== strpos( $d( 'meta-get' ), 'edit_post' ) );
+
+// ---- round 2: get abilities say when the scrubber masked something (break-it Minor 6)
+echo "round 2: masked flag on gets of post-like content\n";
+$flagged = array_keys( array_filter( d5b_ability_defs(), function ( $x ) { return ! empty( $x['report_masked'] ); } ) ); sort( $flagged );
+$want_flag = array_map( function ( $x ) { return 'divi5-builder/' . $x; }, array( 'blocks-get', 'cpt-get', 'media-get', 'pages-get', 'posts-get', 'revisions-compare', 'revisions-get', 'templates-get' ) );
+check( 'exactly the gets of post-like content report masking', $want_flag === $flagged, $flagged );
+site( ADMIN, 1 );
+$hashy = 'Price $2y$10$abcdefghijklmnopqrstuv end';
+t_add_type( 'book' );
+$mpost = t_add_post( array( 'post_content' => $hashy ) ); $plain = t_add_post( array( 'post_content' => 'Nothing secret, $5 only.' ) );
+$mpage = t_add_post( array( 'post_type' => 'page', 'post_content' => $hashy ) ); $mblk = t_add_post( array( 'post_type' => 'wp_block', 'post_content' => $hashy ) );
+$mbook = t_add_post( array( 'post_type' => 'book', 'post_content' => $hashy ) );
+$mrev = t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $plain, 'post_content' => $hashy ) );
+$matt = t_add_post( array( 'post_type' => 'attachment', 'post_status' => 'inherit', 'post_content' => $hashy ) );
+$GLOBALS['T_block_theme'] = true; $GLOBALS['T_block_templates'] = array( (object) array( 'id' => 'theme//home', 'slug' => 'home', 'theme' => 'theme', 'type' => 'wp_template', 'title' => 'Home', 'source' => 'theme', 'status' => 'publish', 'has_theme_file' => true, 'is_custom' => false, 'content' => $hashy ) );
+$bad = array();
+foreach ( array( array( 'posts-get', array( 'id' => $mpost ) ), array( 'pages-get', array( 'id' => $mpage ) ), array( 'blocks-get', array( 'id' => $mblk ) ), array( 'cpt-get', array( 'type' => 'book', 'id' => $mbook ) ),
+	array( 'revisions-get', array( 'id' => $mrev ) ), array( 'revisions-compare', array( 'from' => $mrev, 'to' => $plain ) ), array( 'media-get', array( 'id' => $matt ) ), array( 'templates-get', array( 'id' => 'theme//home' ) ) ) as $c ) {
+	$r = call( $c[0], $c[1] );
+	if ( ! is_array( $r ) || true !== ( $r['masked'] ?? null ) || false !== strpos( json_encode( $r ), 'abcdefghijklmnop' ) ) { $bad[] = $c[0] . ':' . json_encode( is_array( $r ) ? ( $r['masked'] ?? 'absent' ) : code( $r ) ); }
+}
+check( 'a masked secret shape in the content: every get of post-like content returns "masked": true', array() === $bad, $bad );
+$r = call( 'posts-get', array( 'id' => $plain ) );
+check( 'nothing masked: no "masked" key at all', is_array( $r ) && ! array_key_exists( 'masked', $r ), $r );
+$r = call( 'search', array( 'query' => 'Price' ) );
+check( 'a list ability never carries "masked", even when a snippet in it was masked (only the gets that a write can build on)', is_array( $r ) && ! array_key_exists( 'masked', $r ) && false !== strpos( json_encode( $r ), '[redacted]' ), $r );
+$r = call( 'posts-get', array( 'id' => $mpost ) ); $r2 = call( 'posts-get', array( 'id' => $plain ) );
+check( 'the flag is per call (a masked read before does not flag the next clean one)', true === $r['masked'] && ! array_key_exists( 'masked', $r2 ) );
 
 // ---- the keep list is built from reality: every ability, as an administrator, over ordinary data (no secrets planted)
 echo "keep list: no field our abilities return is called a secret\n";

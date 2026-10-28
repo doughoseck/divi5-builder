@@ -395,7 +395,7 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		'Returns one block template or template part with its raw block markup (at most 256 KB, with a truncated flag) and a hash. Refuses callers without manage_options, a bad id, and an id that does not exist.',
 		array( 'id' => array( 'type' => 'string', 'description' => 'The template id as templates-list shows it, like twentytwentyfive//home.' ),
 			'type' => array( 'type' => 'string', 'enum' => array( 'wp_template', 'wp_template_part' ), 'default' => 'wp_template', 'description' => 'Whether the id is a template or a template part.' ) ),
-		array( 'id' ), 'd5b_rs_h_templates_get', d5b_rs_perm( 'templates' ) );
+		array( 'id' ), 'd5b_rs_h_templates_get', d5b_rs_perm( 'templates' ), true );
 	d5b_rc_def( 'global-styles-get', 'templates', 'Get global styles',
 		'Returns the merged global styles (theme.json plus the site owner\'s changes) of a block theme as JSON text, at most 256 KB with a truncated flag. Refuses callers without manage_options. A classic theme returns a note.',
 		$d5b_rs_none, array(), 'd5b_rs_h_global_styles_get', d5b_rs_perm( 'templates' ) );

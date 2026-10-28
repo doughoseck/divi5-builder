@@ -162,6 +162,34 @@ if ( ! function_exists( 'd5b_ability_audit_finish' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_ability_error_status' ) ) {
+	/**
+	 * The audit status of a handler's own WP_Error: error:<code>, at most 64 characters. The plain statuses (started, ok,
+	 * forbidden, internal_error, audit_unavailable, not_found) are written by the wrapper only, so a handler cannot forge them.
+	 */
+	function d5b_ability_error_status( string $code ): string {
+		$s = 'error:' . $code;
+		return function_exists( 'mb_substr' ) ? mb_substr( $s, 0, 64, 'UTF-8' ) : substr( $s, 0, 64 );
+	}
+}
+
+if ( ! function_exists( 'd5b_ability_scrub_result' ) ) {
+	/**
+	 * A successful result through the scrubber. A definition with 'report_masked' (the get abilities that return post-like
+	 * content) gets "masked": true when a secret shape was masked in any of its strings, so a later write can refuse to
+	 * build on a masked read (the hash is of the raw content).
+	 */
+	function d5b_ability_scrub_result( array $def, $result ) {
+		if ( ! function_exists( 'd5b_ability_scrub' ) ) { return $result; }
+		if ( function_exists( 'd5b_secret_masked_count' ) ) { d5b_secret_masked_count( true ); }
+		$result = d5b_ability_scrub( $result );
+		if ( ! empty( $def['report_masked'] ) && is_array( $result ) && function_exists( 'd5b_secret_masked_count' ) && d5b_secret_masked_count() > 0 ) {
+			$result['masked'] = true;
+		}
+		return $result;
+	}
+}
+
 if ( ! function_exists( 'd5b_ability_run' ) ) {
 	/**
 	 * Runs one ability: the gate again (a direct PHP call skips core's permission callback), then the audit row with
@@ -191,8 +219,8 @@ if ( ! function_exists( 'd5b_ability_run' ) ) {
 		try {
 			$result = call_user_func( $defs[ $name ]['handler'], $args );
 			if ( is_wp_error( $result ) ) { $result = d5b_ability_clean_error( $result ); }
-			elseif ( function_exists( 'd5b_ability_scrub' ) ) { $result = d5b_ability_scrub( $result ); }
-			$status = is_wp_error( $result ) ? (string) $result->get_error_code() : 'ok';
+			else { $result = d5b_ability_scrub_result( $defs[ $name ], $result ); }
+			$status = is_wp_error( $result ) ? d5b_ability_error_status( (string) $result->get_error_code() ) : 'ok';
 		} catch ( Throwable $e ) {
 			// The class and message go to the audit row only; the caller gets a fixed message.
 			$audit_args['_exception'] = get_class( $e ) . ': ' . $e->getMessage();
