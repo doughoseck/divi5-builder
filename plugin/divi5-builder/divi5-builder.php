@@ -44,6 +44,8 @@ foreach ( array(
 	'inc/abilities/read-content.php',
 	'inc/abilities/read-structure.php',
 	'inc/abilities/read-site.php',
+	'inc/abilities/read-divi.php',
+	'inc/abilities/read-history.php',
 	'inc/settings.php',
 	'parts/page-building.php',
 	'parts/media-audit.php',
