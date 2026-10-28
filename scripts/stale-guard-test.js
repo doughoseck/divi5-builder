@@ -333,6 +333,9 @@ console.log('--- nested variables: {{gvid-…}} placeholders, --site, and the pl
   fs.writeFileSync(STATE, JSON.stringify({ pages: {}, dsReply: { status: 400, body: { code: 'bad_references', message: 'x', data: { status: 400, references: [{ id: 'gvid-nope', problem: 'missing', message: 'gvid-nope does not exist on this site' }, { id: 'gvid-a', problem: 'cycle', message: 'a cycle: gvid-a -> gvid-b -> gvid-a' }] } } } }));
   r = wp('ds-variable-set', '--type', 'numbers', '--label', 'A', '--id', 'gvid-a', '--value', '{{gvid-b}} + {{gvid-nope}}');
   check('ds-variable-set: a 400 bad_references lists each bad reference and why; exit 1', r.code === 1 && /400 bad_references/.test(r.err) && /gvid-nope: missing/.test(r.err) && /gvid-a -> gvid-b -> gvid-a/.test(r.err), [r.code, r.err]);
+  fs.writeFileSync(STATE, JSON.stringify({ pages: {}, dsReply: { status: 400, body: { code: 'value_too_complex', message: 'x', data: { status: 400, ids: ['gvid-hostile0001'] } } } }));
+  r = wp('ds-variable-archive', '--id', 'gvid-plain000009');
+  check('ds-variable-archive: a 400 value_too_complex is one readable line naming the variable; exit 1', r.code === 1 && /400 value_too_complex: the value of gvid-hostile0001 is too convoluted to check for variable references; simplify it\. Nothing was written\./.test(r.err) && !/\{"code"/.test(r.err), [r.code, r.err]);
   // divi.js compile --site: placeholders become tokens, so the site check sees the ids inside a calculation and a mixed text
   const DIVI = path.join(path.dirname(WPJS), 'divi.js');
   const dv = (spec) => { const f = file('spec45.json', JSON.stringify(spec)); const r = spawnSync(process.execPath, [DIVI, 'compile', f, '--out', path.join(tmp, 'out45.html'), '--site', 'fake', '--no-lint'], { encoding: 'utf8',

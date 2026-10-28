@@ -27,6 +27,7 @@ One plugin for the divi5-builder skill.
 
 = 2.0.1 =
 * Design variables can hold other variables (Divi 5.18). A variable write is refused (400) when a reference is missing, archived, of another type, the variable itself, or makes a cycle; only number and string variables may hold references, and a value over 1 MB is refused. A variable that another active variable uses cannot be archived (409), by the archive route or by a restore. Nothing is written on a refusal.
+* Very convoluted variable values are refused (400 value_too_complex) rather than half-checked.
 
 = 2.0.0 =
 * The four plugins in one, with a switch for each optional part, off by default.

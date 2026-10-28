@@ -155,6 +155,10 @@ async function dsWrite(url, c, payload) {
     const deps = (d.dependents || []).map((x) => `  ${x.id}  "${x.label}"  (${x.type}${x.direct === false ? ', indirectly' : ''})`);
     die(`HTTP ${r.status} variable_in_use: ${d.id || payload.id} is still used by ${deps.length} active variable(s); nothing was written.\n${deps.join('\n')}\nChange or archive those first (wp.js <site> design-system lists them).`);
   }
+  if (json && json.code === 'value_too_complex') {
+    const ids = (d.ids || []).join(', ') || (payload.id || payload.label || 'this value');
+    die(`HTTP ${r.status} value_too_complex: the value of ${ids} is too convoluted to check for variable references; simplify it. Nothing was written.`);
+  }
   if (json && json.code === 'bad_references') {
     die(`HTTP ${r.status} bad_references: nothing was written.\n${(d.references || []).map((x) => `  ${x.id}: ${x.problem}: ${x.message}`).join('\n')}`);
   }
