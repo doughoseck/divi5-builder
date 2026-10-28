@@ -254,8 +254,8 @@ function flags(argv) {
     case 'global-colors': {
       // NOTE: this only reports gcids ALREADY USED by a page — it scrapes page
       // content, it does not read Divi's palette. On a site with no Divi pages
-      // yet it returns [] whether or not a palette exists. Use `palette-get`
-      // for the real answer (needs divi5-builder-rest.php >= 1.3).
+      // yet it returns [] whether or not a palette exists. Use `design-system`
+      // for the real answer on Divi 5 (every global colour, with its id and value).
       const arr = await jreq('GET', `${api}/pages?per_page=50&status=any&_fields=id`, c);
       const gcids = new Set();
       for (const p of arr) {
@@ -300,26 +300,20 @@ function flags(argv) {
       break;
     }
     case 'palette-get': {
-      // Divi's actual global-colour palette, read from the wp_option it lives
-      // in. Requires divi5-builder-rest.php >= 1.3.
+      // Reads three wp_options: the Divi 4 palette (et_global_colors, divi_global_colors) and et_divi_global_variables.
+      // On Divi 5 the global colours are in none of them (they sit under et_global_data inside the et_divi option),
+      // so use `design-system` there. Kept for Divi 4 sites. Requires divi5-builder-rest.php >= 1.3.
       const r = await jreq('GET', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/global-colors`, c);
       console.log(JSON.stringify(r, null, 2));
       break;
     }
     case 'palette-set': {
-      // usage: palette-set --colors-file palette.json [--option et_global_colors] [--replace]
-      // palette.json: { "gcid-primary-color": "#2B5C7A", ... } or
-      //               { "gcid-primary-color": {"color":"#2B5C7A","active":"yes"}, ... }
-      // Merges into the existing palette unless --replace is passed, so colours
-      // added by hand in the Visual Builder are never silently dropped.
-      if (!f['colors-file']) die('palette-set needs --colors-file <path to json>');
-      const colors = JSON.parse(fs.readFileSync(f['colors-file'], 'utf8'));
-      const body = { colors };
-      if (f.option) body.option = f.option;
-      if (f.replace) body.replace = 1;
-      const r = await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/global-colors`, c, body);
-      console.log(JSON.stringify(r, null, 2));
-      break;
+      // Retired (issue #20). It wrote the Divi 4 option et_global_colors, which Divi 5 ignores once it has its own
+      // store (et_global_data): the colours were saved and never used. Nothing is sent to the site.
+      die('palette-set is retired: it wrote the Divi 4 option et_global_colors, which Divi 5 ignores (a section bound to the gcid kept the factory colour). ' +
+        'Create or update a global colour with: wp.js <site> ds-color-set --label "Brand" --color "#112233" [--dry-run]   (plugin 1.8 or newer). ' +
+        'See what the site has with: wp.js <site> design-system. ' +
+        'On a Divi 4 site the palette option can still be written with: wp.js <site> option-set et_global_colors --value-file palette.json (replaces the whole option).');
     }
     case 'css-get': {
       // Divi's Theme Options -> Custom CSS field. Requires divi5-builder-rest.php >= 1.7.

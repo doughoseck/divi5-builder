@@ -29,7 +29,7 @@
  * STYLING RULE — NO INLINE CSS. Content is semantic HTML only (no style="").
  * Typography/colour come from module SETTINGS + GLOBAL variables: pass a gcid
  * name for any colour (rendered as a global-colour token) and a global font family
- * name. Columns are always 100%; control layout with row flexWrap (see below).
+ * name. Column widths come from the row layout (fractional flex by default; see COLUMNS/LAYOUT below).
  *
  * MODULE SPECS (all styling via settings — colours accept "gcid-*" names):
  *   {"type":"heading","level":"h1","text":"Hi","family":"Outfit","size":"44px","weight":"800","color":"gcid-heading-color","align":"center"}
@@ -165,7 +165,8 @@ function colorToken(spec) {
 // clean SEMANTIC html (<h1>, <h2>, <p>, <ul>…) with NO style attributes.
 
 // Resolve a colour to a Divi global-variable token when a gcid name is given,
-// else a literal. Prefer gcid names — discover them with `wp.js global-colors`.
+// else a literal. Prefer gcid names: take them from `wp.js <site> design-system`
+// (`wp.js global-colors` only lists the gcids pages already use).
 function colorVal(c) {
   if (c == null) return undefined;
   if (typeof c === 'string') return c.startsWith('gcid-') ? colorToken({ colorVar: c }) : c;
@@ -311,8 +312,9 @@ function mHeading(m) {
   return [open('divi/text', presetAttr(m, attrs)), close('divi/text')];
 }
 // Body text: semantic html (<p>, <ul>…), styled via bodyFont SETTINGS. No inline CSS.
-// NOTE: text modules cannot be popup/interaction TRIGGERS (Divi renders none) — but they
-// CAN be toggle TARGETS (toggleId/hidden). Use a button for triggers.
+// NOTE: on Divi 5.9 text modules could not be interaction TRIGGERS (Divi rendered none), only toggle
+// TARGETS (toggleId/hidden). Since Divi 5.13 any module can be a trigger ("interactions" on the spec,
+// see above); on a site older than 5.13 use a button for triggers.
 function mText(m) {
   const attrs = { content: { innerContent: { desktop: { value: m.html || '' } } }, builderVersion: BV };
   const fv = fontValue(m);

@@ -292,6 +292,17 @@ console.log('--- the creds file: warn when other users can read it (issue #22)')
   else console.log('  SKIP  "chmod 600 gives no warning" (cannot make a 600 file on Windows)');
 }
 
+console.log('--- wp.js palette-set is retired: it refuses, points at ds-color-set, and sends nothing (issue #20)');
+{
+  fs.writeFileSync(STATE, JSON.stringify({ pages: {}, recordMethods: true }));
+  const colorsFile = file('palette.json', JSON.stringify({ 'gcid-primary-color': '#2B5C7A' }));
+  let r = wp('palette-set', '--colors-file', colorsFile);
+  check('palette-set exits 1 and names ds-color-set and design-system', r.code === 1 && /ds-color-set/.test(r.err) && /design-system/.test(r.err) && /retired/.test(r.err), [r.code, r.err]);
+  r = wp('palette-set', '--colors-file', colorsFile, '--option', 'et_global_colors', '--replace');
+  check('... also with the old flags (--option, --replace)', r.code === 1 && /ds-color-set/.test(r.err), [r.code, r.err]);
+  check('... and no request reached the site (nothing was written)', !(st().requests || []).length && !st().writes, st().requests);
+}
+
 console.log('--- secrets');
 const all = backups().map(f => fs.readFileSync(f, 'utf8')).join('\n') + JSON.stringify(st());
 check('the application password never appears in output or backups', !/aaaa ?bbbb/.test(all), 'password found');

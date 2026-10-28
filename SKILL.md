@@ -107,7 +107,7 @@ CSS and hard-coded per-module values destroy that.
 2. **Type & colour come from GLOBAL variables/presets, not literals — and DON'T
    set what you don't need to.** Reference global colours by gcid name
    (`{"color":"gcid-heading-color"}`, `bg:"gcid-secondary-color"`) and global font
-   families by name (`"Outfit"`). Discover gcids with `wp.js global-colors`.
+   families by name (`"Outfit"`). `wp.js <site> design-system` lists the site's palette (colours, variables, presets); `global-colors` only scans which gcids pages already use.
    **Critical:** only set a typography prop when it must DEVIATE from the module's
    default/preset. Assigning a value — *even one equal to the global default* —
    pins it on the module, so when the global/preset changes later, that module
@@ -220,7 +220,7 @@ with `url`/`user`/`pass`; `pass` is a WordPress **Application Password**).
    node scripts/wp.js <site> check-plugin      # prereq 2: pluginActive:true = Divi mode possible
    node scripts/wp.js <site> list-pages        # find target page ids/status
    node scripts/wp.js <site> builder-version   # use this builderVersion in the spec
-   node scripts/wp.js <site> global-colors     # discover gcid global-color IDs
+   node scripts/wp.js <site> global-colors     # only scans which gcids pages already use (palette: design-system)
    ```
    If `whoami` fails → creds missing/wrong (see Prerequisites). If `check-plugin`
    reports `pluginActive:false` → stop and have the user install

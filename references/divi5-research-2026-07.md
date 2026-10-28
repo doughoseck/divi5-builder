@@ -27,14 +27,19 @@ periodically.
 - ET's **documented** native responsive method = **fractional Column Class per
   breakpoint** (e.g. `1/3` desktop → `1/2` tablet → `1/1` phone) + Layout Wrapping.
   Notably the author's own VB-edited Starter card used fractional `flexType` per breakpoint
-  (`8_24` desktop → `24_24` phone), matching this — not our "100%+flexWrap" default. [confirmed/observed]
+  (`8_24` desktop → `24_24` phone), matching this — not our "100%+flexWrap" default (at the time of this research; the default was changed, see "Decided" below). [confirmed/observed]
 - **NEW: CSS Grid Editor (5.9)** on Section/Row/Column/Group. **Container-level and
   child-agnostic** → add/remove/duplicate/**loop** items freely; true 2-D (span,
   overlap, dense). Responsive = change **Number of Columns per breakpoint**
   (e.g. 4/2/1). Best tool for **card grids, pricing tiers, galleries, loops**. [confirmed]
 - Guidance for the skill: equal content rows → fractional Column Class per breakpoint;
   structured/2-D/looped grids (our pricing!) → **CSS Grid**; keep 100%+flexWrap only
-  for dynamic-count auto-reflow. (Decision pending with the author.)
+  for dynamic-count auto-reflow.
+- **Decided (resolves the former "Decision pending").** The guidance above was adopted as written:
+  fractional flex is the compiler default for content rows (`FRACTION` map in `scripts/divi.js`),
+  `grid: {...}` on a row gives CSS Grid for card grids, and `mode: "flexwrap"` keeps the old
+  100% columns for dynamic-count reflow. Documented now in SKILL.md ("Layout") and
+  `divi5-format.md` ("Columns"), and the layout sentence in the `divi.js` header.
 
 ## Breakpoints — up to 7, default 3
 Order: phone, phoneWide, tablet, tabletWide, **desktop (base, no media query)**,
@@ -65,9 +70,12 @@ the target site has enabled**; never hard-code pixel widths (site-configurable).
   as dynamic-content `$variable({...gcid-...})$` tokens (what we already write). Managed
   in the Variable Manager; a Variable Generator can build relative palettes / fluid
   `clamp()` scales. [confirmed]
-- **REST: reference-only.** No documented route/option to CREATE or map gcid→hex via
-  REST; storage key unconfirmed. Keep referencing existing gcid tokens; do NOT try to
-  create palettes via REST — set them in the builder. [likely / verify-live]
+- **REST: reference-only (as of this July 2026 research; since superseded).** No documented
+  route/option to CREATE or map gcid→hex via REST; storage key unconfirmed. This was
+  later settled: colours live under `et_global_data` in the `et_divi` option and variables
+  in `et_divi_global_variables` (`divi5-presets-variables.md`, sections 0 and 2.1), and the
+  plugin (1.8+) creates and updates colours with `wp.js <site> ds-color-set` and reads them
+  with `design-system`. Divi's own `/divi/v1/*` routes still need a cookie nonce.
 
 ## Native modules we don't emit yet (add; verify keys live before trusting)
 Highest value: **`divi/pricing-tables`** (native pricing — we hand-built it!), **`divi/tabs`**,
