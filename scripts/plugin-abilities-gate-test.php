@@ -16,7 +16,7 @@ $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
 
 // ---- child: no audit writer and no scrubber exist (Tasks 3 and 5 come later)
 if ( isset( $argv[1] ) && '--bare' === $argv[1] ) {
-	define( 'D5B_VERSION', '2.1.0' );
+	define( 'D5B_VERSION', '2.2.0' );
 	require __DIR__ . '/plugin-test-stubs.php';
 	require $dir . '/inc/parts.php'; require $dir . '/inc/switches.php'; require $dir . '/inc/abilities/categories.php'; require $dir . '/inc/abilities/register.php';
 	if ( function_exists( 'd5b_audit_write' ) || function_exists( 'd5b_ability_scrub' ) ) { echo "BARE_NOT_BARE\n"; exit( 1 ); }
@@ -49,7 +49,7 @@ if ( isset( $argv[1] ) && '--child' === $argv[1] ) {
 	exit( 0 );
 }
 
-define( 'D5B_VERSION', '2.1.0' );
+define( 'D5B_VERSION', '2.2.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 require $dir . '/inc/parts.php';
 require $dir . '/inc/switches.php';

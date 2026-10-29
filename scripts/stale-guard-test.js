@@ -69,7 +69,13 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
       else if (/^\/wp-json\/wp-abilities\/v1\/abilities\/(.+)\/run$/.test(p)) {
         const name = p.match(/\/v1\/abilities\/(.+)\/run$/)[1];
         const auth = !!(opts.headers && (opts.headers.Authorization || opts.headers.authorization || opts.headers.Cookie || opts.headers.cookie));
-        if (opts.method !== 'GET') { status = 405; out = { code: 'rest_ability_invalid_method' }; }
+        if (opts.method === 'POST' && name !== 'divi5-builder/history-audit-list') {
+          // A write ability takes a POST with {"input":{...}} (st.abilityPosts records every one); st.abilityReplies[name] = { status, body } answers.
+          st.abilityPosts = st.abilityPosts || []; st.abilityPosts.push({ name, body: JSON.parse(body || '{}'), auth, type: opts.headers['Content-Type'] });
+          const rep = (st.abilityReplies || {})[name]; if (rep) { status = rep.status; out = rep.body; } else out = { ok: true };
+          fs.writeFileSync(STATE, JSON.stringify(st));
+        }
+        else if (opts.method !== 'GET') { status = 405; out = { code: 'rest_ability_invalid_method' }; }
         else {
           st.abilityRuns = st.abilityRuns || []; st.abilityRuns.push({ name, query: q, auth });
           const rep = (st.abilityReplies || {})[name];
@@ -402,6 +408,25 @@ console.log('--- ds-live-test.js: which parts run on which plugin version (no si
   p = plan('all', '');
   check('all with no plugin found: STOP', !p.run.length && !!p.stop, p);
   check('2.10.0 counts as newer than 2.0.1 (numeric, not text, compare)', plan('nested', '2.10.0').run.length === 1 && plan('nested', '10.0.0').run.length === 1);
+}
+
+console.log('--- rest-post: the run route of a write ability');
+{
+  const body = file('ability-body.json', JSON.stringify({ input: { id: 12, title: 'New title', expect_hash: 'abc' } }));
+  let r = wp('rest-post', 'wp-abilities/v1/abilities/divi5-builder/posts-update/run', '--data-file', body);
+  const posts = (st().abilityPosts || []);
+  check('rest-post sends one POST to the ability run route with the {input} body as JSON, with credentials', r.code === 0 && posts.length === 1 && posts[0].name === 'divi5-builder/posts-update' && posts[0].body.input.id === 12 && posts[0].body.input.expect_hash === 'abc' && posts[0].auth === true && /json/.test(posts[0].type), r.out || r.err);
+  check('the answer is printed as the site gave it', r.json && r.json.ok === true, r.out);
+  const s0 = st(); s0.abilityReplies = { 'divi5-builder/posts-update': { status: 409, body: { code: 'stale', message: 'The content changed since you read it.' } } }; fs.writeFileSync(STATE, JSON.stringify(s0));
+  r = wp('rest-post', 'wp-abilities/v1/abilities/divi5-builder/posts-update/run', '--data-file', body);
+  check('a refusal from the site is shown and exits non-zero', r.code !== 0 && /409/.test(r.err) && /stale/.test(r.err), r.err);
+  const before = (st().abilityPosts || []).length;
+  for (const bad of ['wp-abilities/v1/abilities', 'wp-abilities/v1/abilities/divi5-builder/posts-update', 'wp-abilities/v1/abilities/divi5-builder/posts-update/run/extra', 'wp-abilities/v1/abilities/a/b/c/run', 'wp-abilities/v1/abilities/../x/y/run', 'wp/v1/abilities/a/b/run', 'wp-json/wp-abilities/v1/abilities/a/b/run']) {
+    r = wp('rest-post', bad, '--data-file', body);
+    check('rest-post refuses the path ' + bad, r.code !== 0 && /rest-post needs/.test(r.err) && (st().abilityPosts || []).length === before, r.err);
+  }
+  r = wp('rest-post', 'wp/v2/posts', '--data-file', file('p.json', '{"title":"T"}'));
+  check('a wp/v2 route still works', r.code === 0, r.err);
 }
 
 console.log('--- secrets');

@@ -22,7 +22,7 @@ plugin (the version is in its header and in `GET /wp-json/divi5-builder/v1/versi
 
 | Plugin | Latest | Notes |
 |---|---|---|
-| `divi5-builder` (`divi5-builder.zip`) | 2.1.0 | One plugin: page building (always on), plus Media audit, Media clean-up and Updates, each a switch in Settings > Divi 5 Builder, **off by default**. Only an administrator in wp-admin can flip a switch. 2.1.0 adds read-only AI abilities through the WordPress Abilities API, behind a master switch that is **off by default** (see "AI abilities" below). 2.0.1 checks nested design variables on the server (a missing, archived, other-type, self or cyclic reference is refused) and refuses to archive a variable that another active variable uses. |
+| `divi5-builder` (`divi5-builder.zip`) | 2.2.0 | One plugin: page building (always on), plus Media audit, Media clean-up and Updates, each a switch in Settings > Divi 5 Builder, **off by default**. Only an administrator in wp-admin can flip a switch. 2.2.0 adds abilities that change content, each category behind its switch, with a 30-day change history (see "Writes" below). 2.1.0 added read-only AI abilities through the WordPress Abilities API, behind a master switch that is **off by default** (see "AI abilities" below). 2.0.1 checks nested design variables on the server (a missing, archived, other-type, self or cyclic reference is refused) and refuses to archive a variable that another active variable uses. |
 | `divi5-builder-rest.php` | 1.8.5 | Replaced by `divi5-builder` 2.0.0. Security fixes only until 2027-01-31. In `assets/legacy/`. |
 | `wp-media-audit.php` | 1.1.2 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
 | `wp-media-quarantine.php` | 1.0.1 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
@@ -94,6 +94,19 @@ no word such as password, token or key before it and no known shape; serialized 
 which are not unpacked. Post content is checked for value shapes only, so that it stays
 editable. Do not rely on the filter alone: leave the master switch off on a site where you
 do not trust the account that will call the abilities, and use the lowest role that works.
+
+### Writes (2.2.0)
+
+From 2.2.0 an ability can change the site. They are behind the same master switch (off by default) and the same category switches as the reads, and each one is checked against the signed-in user's own capabilities, per object. Callers who are not logged in are refused before anything runs.
+
+- **The one rule: everything can be undone.** Content goes to the trash, never straight to deletion, and there is no empty-trash ability. A permanent delete exists only for things WordPress cannot trash (a term, a menu, a custom field, a media file) and always takes two steps: a preview that changes nothing and returns a confirmation code, then the delete with that code. A code works once, only for the same user, the same ability and the same object, and expires after 10 minutes.
+- **The change history keeps the full "before".** Every change writes a row to a table kept for 30 days, holding a full copy of the object as it was, so a person can put it back from WordPress's own revisions or from the copy. A value stored under a secret-named key (a password, a token, an API key) is not kept in the copy, so a write that would overwrite or delete such a value is refused instead (the history could not put it back). The copy is therefore never a place secrets pile up. The copies are masked again when shown. A side over 8 MB is replaced by a marker that says how big it was; the change is still made and the row still written. A permanent delete writes its row first: if the row cannot be written, nothing is deleted. For any other change, if the row cannot be written, the change stands and the audit log marks the call `ok_no_history`; the settings page warns for 24 hours.
+- **`expect_hash` on every content update.** The update names the hash of the content it was based on; if the content changed since, nothing is written (409). The hash comes from the matching get.
+- **A masked read is never written back.** If the read that produced the content had secrets hidden (`masked: true`), an update built on it is refused with `masked_read`, so a hidden value is never overwritten by the placeholder.
+- **Media upload.** Only http and https addresses, with the address resolved once and pinned for the request, so a name cannot be pointed at a private address after the check. If the pin cannot be set (a proxy, or a transport that is not curl) the upload is refused. Loopback, private, link-local and reserved ranges are refused, redirects are checked the same way, only ports 80 and 443 are used, SVG is refused, and size and type are capped. The real file type is read from the bytes, never from what the server says.
+- **Divi content needs `unfiltered_html`.** Content that contains Divi blocks is only written for a user who may post unfiltered HTML.
+
+**What this does not cover.** The change history is a safety net for mistakes, not a backup: it is kept 30 days, per site, and a site where the table cannot be created refuses the calls. The address pinning narrows DNS tricks but a resolver that answers differently within one request is not something the plugin can see. Two writes in the same second can share a design-system backup time, so a restore by time may refuse. The secret filter has the limits listed under "What the secret filter cannot catch": it is a heuristic, so a secret it does not recognise can be stored in a copy. As before, leave the master switch off on a site where you do not trust the account that calls the abilities, and tick only the categories you need.
 
 ## Hardening advice for users
 

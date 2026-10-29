@@ -11,7 +11,7 @@
  * never bypass the master, the 2.0.0 part switches and the abilities switches survive each other's writes, and
  * only a request with a valid nonce and the right capability changes anything.
  */
-define( 'D5B_VERSION', '2.1.0' );
+define( 'D5B_VERSION', '2.2.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 $GLOBALS['T_exits'] = 0;
 function d5b_settings_exit() { $GLOBALS['T_exits']++; }
@@ -208,7 +208,7 @@ check( 'array/junk posted values do not throw', null === $e, null === $e ? '' : 
 echo "the settings page\n";
 fresh(); t_set_caps( array( 'manage_options' ) );
 $h = html( 'd5b_settings_render' );
-$risk = 'Lets AI clients connected to this site (over the REST API) read site content and settings through this plugin. Nothing is shared until you switch this on. Every call is logged for 30 days. Secrets are filtered out by name and shape; the filter is careful but not perfect, so switch on only what you need.';
+$risk = 'Lets AI clients connected to this site (over the REST API) read site content and settings through this plugin. Nothing is shared until you switch this on. Every call is logged for 30 days. Secrets are filtered out by name and shape; the filter is careful but not perfect, so switch on only what you need. With this on, connected AI clients can also create and change content in the categories you tick. Every change is kept in the change history for 30 days.';
 check( 'has an "AI abilities" section and the master checkbox', false !== strpos( $h, 'AI abilities' ) && false !== strpos( $h, 'name="d5b_abilities_master"' ) );
 check( 'the risk note is printed verbatim', false !== strpos( $h, esc_html( $risk ) ) );
 check( 'one checkbox per category, named d5b_abilities_cat[<slug>]', 23 === substr_count( $h, 'name="d5b_abilities_cat[' ), substr_count( $h, 'name="d5b_abilities_cat[' ) );

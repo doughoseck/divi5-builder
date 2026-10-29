@@ -15,7 +15,7 @@
  * the plugin, theme and core abilities need the network capability too.
  */
 $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
-define( 'D5B_VERSION', '2.1.0' );
+define( 'D5B_VERSION', '2.2.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 $logdir = sys_get_temp_dir() . '/d5b-site-test-' . getmypid();
 @mkdir( $logdir, 0777, true );
