@@ -50,6 +50,7 @@ foreach ( array(
 	'inc/abilities/read-history.php',
 	'inc/abilities/write-common.php',
 	'inc/abilities/write-posts.php',
+	'inc/abilities/write-comments.php',
 	'inc/settings.php',
 	'parts/page-building.php',
 	'parts/media-audit.php',

@@ -504,5 +504,101 @@ foreach ( array( 'create', 'update', 'trash', 'restore' ) as $shape ) {
 	check( "probe: $shape with the history table gone: the write stands, no _history_failed in the response, audit ok_no_history", is_array( $r ) && $did && ! array_key_exists( '_history_failed', $r ) && 'ok_no_history' === end( $GLOBALS['wpdb']->tables['wp_d5b_audit'] )['status'] );
 }
 
+echo "revisions-restore\n";
+$d = d5b_ability_defs()['divi5-builder/revisions-restore'] ?? null;
+$an = $d['annotations'] ?? array();
+check( 'revisions-restore is defined in the revisions category: readonly false, destructive false, not idempotent; post_id, revision_id and expect_hash required; says what it returns and refuses',
+	null !== $d && 'revisions' === $d['category'] && false === $an['readonly'] && false === $an['destructive'] && false === $an['idempotent'] && array( 'post_id', 'revision_id', 'expect_hash' ) === $d['input_schema']['required']
+	&& 'd5b_wp_h_revisions_restore' === $d['handler'] && is_callable( $d['permission'] ) && preg_match( '/return/i', $d['description'] ) && preg_match( '/refus/i', $d['description'] ) && d5b_ability_post_content_keys() === $d['content_keys'] );
+site();
+$P = t_add_post( array( 'post_author' => 3, 'post_title' => 'T0', 'post_content' => 'A' ) );
+call( 'posts-update', array( 'id' => $P, 'title' => 'T1', 'content' => 'B', 'expect_hash' => md5( 'A' ) ) );
+call( 'posts-update', array( 'id' => $P, 'title' => 'T2', 'content' => 'C', 'expect_hash' => md5( 'B' ) ) );
+$rv = revs( $P ); $rB = $rv[0]->ID; $rC = $rv[1]->ID;
+$Q = t_add_post( array( 'post_author' => 3, 'post_content' => 'Q0' ) );
+call( 'posts-update', array( 'id' => $Q, 'content' => 'Q1', 'expect_hash' => md5( 'Q0' ) ) );
+$rQ = revs( $Q )[0]->ID;
+check( 'setup: the post is C with revisions B and C; the stand-in saves the revision of the NEW content, as core', 'C' === post( $P )->post_content && 'B' === post( $rB )->post_content && 'C' === post( $rC )->post_content && 2 === count( revs( $P ) ) );
+$h0 = count( hrows() ); $u0 = count( $GLOBALS['T_updates'] ); $a0 = count( arows() );
+$r = call( 'revisions-restore', array( 'post_id' => $P, 'revision_id' => $rB ) );
+check( 'no expect_hash is invalid_input (the handler; the gate lets it through to say why)', 'invalid_input' === code( $r ), $r );
+$r = call( 'revisions-restore', array( 'post_id' => $P, 'revision_id' => $rB, 'expect_hash' => md5( 'A' ) ) );
+check( 'a stale hash is refused stale with last_saved and the current hash; nothing written, no history row', 'stale' === code( $r ) && md5( 'C' ) === ( $r->get_error_data()['hash'] ?? null ) && 'C' === post( $P )->post_content && $u0 === count( $GLOBALS['T_updates'] ) && $h0 === count( hrows() ), $r );
+$h0 = count( hrows() );
+$before = raw_state( $P ); $nrev = count( revs( $P ) ); $a0 = count( arows() );
+$r = call( 'revisions-restore', array( 'post_id' => $P, 'revision_id' => $rB, 'expect_hash' => md5( 'C' ) ) );
+check( 'with the current hash the revision\'s title, content and excerpt are put back; the answer has the new hash, the revision restored and the revision of the replaced content',
+	is_array( $r ) && 'B' === post( $P )->post_content && 'T1' === post( $P )->post_title && md5( 'B' ) === $r['hash'] && $rB === $r['restored_revision'] && $rC === $r['previous_revision'] && true === $r['changed'] && 1 === count( $GLOBALS['T_comment_calls'] ), $r );
+$h = hlast();
+check( 'one history row (action update, ability revisions-restore, object post) whose revision_id is the revision holding the replaced content (C), with that content, the old title and the other fields in before',
+	1 === count( hrows() ) - $h0 && 'update' === $h['action'] && 'divi5-builder/revisions-restore' === $h['ability'] && 'post' === $h['object_type'] && $P === (int) $h['object_id'] && $rC === (int) $h['revision_id']
+	&& 'C' === post( $rC )->post_content && 'C' === $h['before']['content'] && 'T2' === $h['before']['title'] && 'B' === $h['after']['content'] && false !== strpos( $h['summary'], 'revision ' . $rB ), $h );
+check( 'the row alone rebuilds the item as it was before the restore (title, content, status, meta ...)', rebuilt( $h ) === $before, array( rebuilt( $h ), $before ) );
+check( 'WordPress made its own revision of the restored content, as on any save; one audit row, ok', $nrev + 1 === count( revs( $P ) ) && 1 === count( arows() ) - $a0 && 'ok' === end( $GLOBALS['wpdb']->tables[ d5b_audit_table() ] )['status'] );
+$h0 = count( hrows() );
+$r = call( 'revisions-restore', array( 'post_id' => $P, 'revision_id' => $rB, 'expect_hash' => md5( 'B' ) ) );
+check( 'restoring what is already there changes nothing (changed false), writes no history row and no update', is_array( $r ) && false === $r['changed'] && $h0 === count( hrows() ) && 1 === count( $GLOBALS['T_comment_calls'] ) );
+
+echo "revisions-restore: who and which\n";
+$h0 = count( hrows() ); $u0 = count( $GLOBALS['T_updates'] ); $cur = post( $P )->post_content;
+$bad = array();
+$x = call( 'revisions-restore', array( 'post_id' => $P, 'revision_id' => $rQ, 'expect_hash' => md5( $cur ) )); if ( 'FORBIDDEN' !== $x ) { $bad[] = 'foreign revision gate'; }
+$x = handler( 'revisions-restore', array( 'post_id' => $P, 'revision_id' => $rQ, 'expect_hash' => md5( $cur ) )); if ( 'not_found' !== code( $x ) ) { $bad[] = 'foreign revision handler ' . code( $x ); }
+$x = handler( 'revisions-restore', array( 'post_id' => $P, 'revision_id' => $Q, 'expect_hash' => md5( $cur ) )); if ( 'not_found' !== code( $x ) ) { $bad[] = 'a post as revision ' . code( $x ); }
+$x = handler( 'revisions-restore', array( 'post_id' => $P, 'revision_id' => 99999, 'expect_hash' => md5( $cur ) )); if ( 'not_found' !== code( $x ) ) { $bad[] = 'missing revision ' . code( $x ); }
+check( 'a revision of another post, a post id and a missing id are all not_found (the gate says no first); nothing written, no history row', array() === $bad && $cur === post( $P )->post_content && $Q === $Q && 'Q1' === post( $Q )->post_content && $u0 === count( $GLOBALS['T_updates'] ) && $h0 === count( hrows() ), $bad );
+site( CONTRIB, 5 );
+$P2 = t_add_post( array( 'post_author' => 3, 'post_content' => 'one' ) ); $r2 = t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $P2, 'post_content' => 'zero', 'post_title' => 'Title' ) );
+$x1 = call( 'revisions-restore', array( 'post_id' => $P2, 'revision_id' => $r2, 'expect_hash' => md5( 'one' ) )); $x2 = handler( 'revisions-restore', array( 'post_id' => $P2, 'revision_id' => $r2, 'expect_hash' => md5( 'one' ) ) );
+check( 'without edit_post on the item (a contributor on another author\'s post) the gate says no and the handler not_allowed; unchanged, no history row', 'FORBIDDEN' === $x1 && 'not_allowed' === code( $x2 ) && 'one' === post( $P2 )->post_content && array() === hrows() );
+
+echo "revisions-restore: switches\n";
+site();
+$P = t_add_post( array( 'post_author' => 3, 'post_content' => 'A' ) );
+call( 'posts-update', array( 'id' => $P, 'content' => 'B', 'expect_hash' => md5( 'A' ) ) );
+$rB = revs( $P )[0]->ID;
+$G = t_add_post( array( 'post_type' => 'page', 'post_author' => 3, 'post_content' => 'pa' ) );
+call( 'pages-update', array( 'id' => $G, 'content' => 'pb', 'expect_hash' => md5( 'pa' ) ) );
+$rG = revs( $G )[0]->ID;
+t_add_post( array( 'ID' => $rG + 50, 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $G, 'post_content' => 'older' ) );
+$rG2 = $rG + 50;
+d5b_abilities_set_category( 'revisions', false, false, 'tester' );
+$h0 = count( hrows() ); $x1 = call( 'revisions-restore', array( 'post_id' => $P, 'revision_id' => $rB, 'expect_hash' => md5( 'B' ) ) );
+check( 'Revisions off (Posts on): refused by the gate, the post is unchanged, no history row', 'FORBIDDEN' === $x1 && 'B' === post( $P )->post_content && $h0 === count( hrows() ) );
+d5b_abilities_set_category( 'revisions', true, false, 'tester' );
+d5b_abilities_set_category( 'pages', false, false, 'tester' );
+$x1 = call( 'revisions-restore', array( 'post_id' => $G, 'revision_id' => $rG2, 'expect_hash' => md5( 'pb' ) )); $x2 = handler( 'revisions-restore', array( 'post_id' => $G, 'revision_id' => $rG2, 'expect_hash' => md5( 'pb' ) ) );
+check( 'Pages off (Revisions on): a page\'s revision is refused (gate and handler not_allowed); a post\'s revision still restores', 'FORBIDDEN' === $x1 && 'not_allowed' === code( $x2 ) && 'pb' === post( $G )->post_content
+	&& is_array( call( 'revisions-restore', array( 'post_id' => $P, 'revision_id' => $rB, 'expect_hash' => md5( 'B' ) ) ) ) );
+d5b_abilities_set_category( 'pages', true, false, 'tester' );
+check( 'Pages on again: the page restores', is_array( call( 'revisions-restore', array( 'post_id' => $G, 'revision_id' => $rG2, 'expect_hash' => md5( 'pb' ) ) ) ) && 'older' === post( $G )->post_content );
+d5b_abilities_set_category( 'posts', false, false, 'tester' );
+check( 'Posts off (Revisions on): a post\'s revision is refused by the gate and the handler', 'not_allowed' === code( handler( 'revisions-restore', array( 'post_id' => $P, 'revision_id' => $rB, 'expect_hash' => md5( 'A' ) ) ) ) || 'not_found' === code( handler( 'revisions-restore', array( 'post_id' => $P, 'revision_id' => $rB, 'expect_hash' => md5( 'A' ) ) ) ) );
+d5b_abilities_set_category( 'posts', true, false, 'tester' );
+
+echo "revisions-restore: Divi blocks, trash, no revision of the replaced content\n";
+site();
+$dv = '<!-- wp:divi/section {"a":1} --><!-- /wp:divi/section -->';
+$P = t_add_post( array( 'post_author' => 3, 'post_content' => 'plain' ) );
+call( 'posts-update', array( 'id' => $P, 'content' => $dv, 'expect_hash' => md5( 'plain' ) ) );
+call( 'posts-update', array( 'id' => $P, 'content' => 'later', 'expect_hash' => md5( $dv ) ) );
+$rD = revs( $P )[0]->ID;
+t_set_caps( NO_UFH );
+$h0 = count( hrows() );
+$x = call( 'revisions-restore', array( 'post_id' => $P, 'revision_id' => $rD, 'expect_hash' => md5( 'later' ) ) );
+check( 'a revision holding Divi blocks from a user without unfiltered_html is refused needs_unfiltered_html; the post is unchanged, no history row', 'needs_unfiltered_html' === code( $x ) && 'later' === post( $P )->post_content && $h0 === count( hrows() ), $x );
+t_set_caps( ADMIN );
+check( 'with unfiltered_html the same restore works', is_array( call( 'revisions-restore', array( 'post_id' => $P, 'revision_id' => $rD, 'expect_hash' => md5( 'later' ) ) ) ) && $dv === post( $P )->post_content );
+site();
+$P = t_add_post( array( 'post_author' => 3, 'post_content' => 'cur', 'post_title' => 'Now' ) );
+$rO = t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $P, 'post_content' => 'old', 'post_title' => 'Then' ) );
+$r = call( 'revisions-restore', array( 'post_id' => $P, 'revision_id' => $rO, 'expect_hash' => md5( 'cur' ) ) );
+$h = hlast();
+check( 'no revision holds the replaced content (it was never saved as one): revision_id is empty and the row keeps the content itself', is_array( $r ) && 0 === $r['previous_revision'] && 0 === (int) $h['revision_id'] && 'cur' === $h['before']['content'] && 'Now' === $h['before']['title'] && 'old' === post( $P )->post_content );
+$T = t_add_post( array( 'post_author' => 3, 'post_content' => 'cur', 'post_status' => 'trash' ) );
+$rT = t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $T, 'post_content' => 'old' ) );
+$h0 = count( hrows() );
+check( 'an item in the trash is invalid_input (restore it first); nothing written', 'invalid_input' === code( handler( 'revisions-restore', array( 'post_id' => $T, 'revision_id' => $rT, 'expect_hash' => md5( 'cur' ) ) ) ) && 'cur' === post( $T )->post_content && $h0 === count( hrows() ) );
+
 echo "\n" . ( $n - $failed ) . " of $n passed\n";
 exit( $failed ? 1 : 0 );

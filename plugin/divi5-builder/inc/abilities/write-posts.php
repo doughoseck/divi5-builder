@@ -399,8 +399,77 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 	}
 	unset( $d5b_kind, $d5b_w, $d5b_cat, $d5b_word, $d5b_long, $d5b_req, $d5b_div );
 
+	// ---- revisions-restore
+
+	/** The revision $rid when it is a revision of post $p, else null. */
+	function d5b_wp_revision_of( $p, $rid ) {
+		$rid = d5b_rc_id_of( $rid );
+		$r   = $rid > 0 ? get_post( $rid ) : null;
+		return ( is_object( $r ) && 'revision' === $r->post_type && (int) $r->post_parent === (int) $p->ID ) ? $r : null;
+	}
+
+	/**
+	 * Puts a revision's title, content and excerpt back on its post (core's wp_restore_post_revision). Needs edit_post on the
+	 * post, the post's own category on (the ability's category, Revisions, is checked by the gate), the hash of the CURRENT
+	 * content, and, for a revision that holds Divi blocks, unfiltered_html.
+	 *
+	 * What core does: wp_restore_post_revision() updates the post with wp_update_post(), and the revision that update makes holds
+	 * the NEW (restored) content. The content that is replaced is in the revision made at its own last save, when there is one:
+	 * its id goes in the history row (revision_id), and the row keeps the content as well, because revisions can be pruned.
+	 * @return array|WP_Error
+	 */
+	function d5b_wp_revisions_restore( array $in ) {
+		$a = d5b_rc_args( $in, array( 'post_id' => 'id', 'revision_id' => 'id', 'expect_hash' => 'str' ), array( 'post_id', 'revision_id' ) );
+		if ( is_wp_error( $a ) ) { return $a; }
+		$p = d5b_wc_post( $a['post_id'], null, 'edit_post' );
+		if ( null === $p ) { return d5b_wc_deny( $a['post_id'], null ); }
+		if ( 'trash' === $p->post_status ) { return new WP_Error( 'invalid_input', 'This item is in the trash: restore it first.' ); }
+		$rv = d5b_wp_revision_of( $p, $a['revision_id'] );
+		if ( null === $rv ) { return new WP_Error( 'not_found', 'No revision with that id belongs to this item.' ); }
+		$ok = d5b_wc_check_hash( $p, $a['expect_hash'] ?? null );
+		if ( true !== $ok ) { return $ok; }
+		$ok = d5b_wc_check_divi_html( (string) $rv->post_content );
+		if ( true !== $ok ) { return $ok; }
+		if ( (string) $rv->post_title === (string) $p->post_title && (string) $rv->post_content === (string) $p->post_content && (string) $rv->post_excerpt === (string) $p->post_excerpt ) {
+			return d5b_wp_out( $p, true, array(), array( 'changed' => false ) );
+		}
+		$old_content = (string) $p->post_content;
+		$rev    = d5b_wc_matching_revision( $p );
+		$before = d5b_wc_post_before( $p, true );
+		$old    = d5b_wc_state( $p );
+		$r = wp_restore_post_revision( (int) $rv->ID );
+		if ( is_wp_error( $r ) ) { return d5b_wc_core_error( $r ); }
+		if ( ! $r ) { return new WP_Error( 'write_failed', 'WordPress did not restore the revision.' ); }
+		$np = get_post( (int) $p->ID );
+		if ( ! is_object( $np ) || (string) $np->post_content !== (string) $rv->post_content ) { return new WP_Error( 'write_failed', 'WordPress did not restore the revision.' ); }
+		// The new revision can push the old one out (WP_POST_REVISIONS): then the row's own copy of the content is all there is.
+		if ( $rev > 0 ) {
+			$rp = get_post( $rev );
+			if ( ! is_object( $rp ) || 'revision' !== $rp->post_type || (string) $rp->post_content !== $old_content ) { $rev = 0; }
+		}
+		$stored = d5b_wc_history( 'divi5-builder/revisions-restore', $np, 'update', $before, d5b_wc_diff( $old, d5b_wc_state( $np ) ), $rev, d5b_wc_summary( 'Restored revision ' . (int) $rv->ID . ' of', (string) $np->post_type, $np ) );
+		return d5b_wp_out( $np, $stored, array(), array( 'changed' => true, 'restored_revision' => (int) $rv->ID, 'previous_revision' => $rev ) );
+	}
+
+	function d5b_wp_h_revisions_restore( array $in ) { return d5b_wp_revisions_restore( $in ); }
+
+	function d5b_wp_can_revisions_restore( array $in ): bool {
+		if ( ! current_user_can( 'read' ) ) { return false; }
+		$p = d5b_wc_post( $in['post_id'] ?? 0, null, 'edit_post' );
+		return null !== $p && null !== d5b_wp_revision_of( $p, $in['revision_id'] ?? 0 );
+	}
+
+	d5b_wc_def( 'revisions-restore', 'revisions', 'Restore a revision',
+		'Puts the title, content and excerpt of one saved revision back on its post, page or public custom item, and returns the item with its new hash. expect_hash is the hash of the item\'s CURRENT content (its get): a stale hash is refused (stale) and nothing is written. WordPress makes a new revision of the restored content as it saves; the revision that holds the content being replaced (made at its last save) is recorded in the change history, which also keeps the content itself. Refuses a revision that does not belong to the item, an item you may not edit or whose category is switched off, an item in the trash, and a revision holding Divi blocks from a user without unfiltered_html (needs_unfiltered_html). Needs the Revisions category switched on as well as the item\'s own.',
+		array(
+			'post_id'     => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The id of the post, page or custom item.' ),
+			'revision_id' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The id of the revision to restore (see revisions-list). It must be a revision of that item.' ),
+			'expect_hash' => array( 'type' => 'string', 'description' => 'The hash of the item\'s current content, from its last read. A hash that no longer matches is refused with stale.' ),
+		), array( 'post_id', 'revision_id', 'expect_hash' ), 'd5b_wp_h_revisions_restore', 'd5b_wp_can_revisions_restore', array() );
+
 	// Post-like results: their content fields get value-shape masking only, as the reads.
 	d5b_ability_set_content_keys( array(
+		'revisions-restore',
 		'posts-create', 'posts-update', 'posts-trash', 'posts-restore', 'pages-create', 'pages-update', 'pages-trash', 'pages-restore',
 		'cpt-create', 'cpt-update', 'cpt-trash', 'cpt-restore', 'blocks-create', 'blocks-update', 'blocks-trash', 'blocks-restore',
 	) );

@@ -267,13 +267,13 @@ if ( ! function_exists( 'd5b_wc_check_hash' ) ) {
 	/**
 	 * A post of one of $types the caller may read (switch of its type on) AND holds $cap on (edit_post, delete_post), or null.
 	 */
-	function d5b_wc_post( $id, array $types, string $cap = 'edit_post' ) {
+	function d5b_wc_post( $id, ?array $types, string $cap = 'edit_post' ) {
 		$p = d5b_rc_post( $id, $types );
 		return ( null !== $p && current_user_can( $cap, (int) $p->ID ) ) ? $p : null;
 	}
 
 	/** Why d5b_wc_post said no: not_allowed for an item the caller can read but not change, else as d5b_rc_deny. */
-	function d5b_wc_deny( $id, array $types ): WP_Error {
+	function d5b_wc_deny( $id, ?array $types ): WP_Error {
 		if ( null !== d5b_rc_post( $id, $types ) ) { return new WP_Error( 'not_allowed', 'You may not change this item.' ); }
 		return d5b_rc_deny( $id, $types );
 	}

@@ -354,6 +354,7 @@ function t_content_reset() {
 	$GLOBALS['T_post_types'] = array(); $GLOBALS['T_taxonomies'] = array();
 	$GLOBALS['T_inserts'] = array(); $GLOBALS['T_updates'] = array(); $GLOBALS['T_deleted'] = array(); $GLOBALS['T_revisions_keep'] = -1; $GLOBALS['T_insert_fail'] = false; $GLOBALS['T_update_fail'] = false; $GLOBALS['T_trash_blocked'] = false;
 	$GLOBALS['T_meta_auth_denied'] = array(); $GLOBALS['T_untrash_cascade'] = array(); $GLOBALS['T_insert_error'] = null;
+	$GLOBALS['T_cmeta'] = array(); $GLOBALS['T_comment_calls'] = array(); $GLOBALS['T_comment_blocked'] = false; $GLOBALS['T_comments_deleted'] = array(); $GLOBALS['T_new_comment_error'] = null;
 	foreach ( array( 'post' => array( 1, 1, 0 ), 'page' => array( 1, 1, 1 ), 'attachment' => array( 1, 0, 0 ), 'revision' => array( 0, 0, 0 ), 'nav_menu_item' => array( 0, 0, 0 ), 'wp_block' => array( 0, 1, 0 ), 'wp_template' => array( 0, 1, 0 ), 'et_pb_layout' => array( 1, 1, 0 ) ) as $n => $f ) { t_add_type( $n, (bool) $f[0], (bool) $f[1], (bool) $f[2] ); }
 	foreach ( array( 'category' => array( 1, 1 ), 'post_tag' => array( 1, 1 ), 'nav_menu' => array( 0, 1 ), 'wp_theme' => array( 0, 0 ) ) as $n => $f ) { t_add_taxonomy( $n, (bool) $f[0], (bool) $f[1] ); }
 }
@@ -732,4 +733,106 @@ function wp_set_post_terms( $post_id = 0, $terms = '', $taxonomy = 'post_tag', $
 	$had = $GLOBALS['T_object_terms'][ (int) $post_id ][ $taxonomy ] ?? array();
 	$GLOBALS['T_object_terms'][ (int) $post_id ][ $taxonomy ] = $append ? array_values( array_unique( array_merge( $had, $ids ) ) ) : $ids;
 	return array_map( 'strval', $ids );
+}
+
+// ---- comments (Task 4). Behave as core's comment.php: wp_set_comment_status changes only comment_approved ('approve' and '1' = '1',
+// 'hold' and '0' = '0', 'spam', 'trash'); wp_trash_comment / wp_spam_comment first keep the old status in the comment meta
+// _wp_trash_meta_status (wp_trash_comment also _wp_trash_meta_time) and, with EMPTY_TRASH_DAYS 0, wp_trash_comment DELETES the
+// comment for good; wp_untrash_comment / wp_unspam_comment read the meta back (empty = '0', held) and delete it.
+// T_cmeta: comment id => key => list of values; T_comment_calls: every function call as array( name, id ...);
+// T_comment_blocked: the status functions return false (a plugin stopped it); T_comments_deleted: ids deleted for good;
+// T_new_comment_error: a WP_Error wp_new_comment returns.
+function get_comment_meta( $id, $k = '', $single = false ) {
+	$all = $GLOBALS['T_cmeta'][ (int) $id ] ?? array();
+	if ( '' === $k ) { return $all; }
+	$vals = $all[ $k ] ?? array();
+	return $single ? ( $vals[0] ?? '' ) : $vals;
+}
+function add_comment_meta( $id, $k, $v, $unique = false ) { if ( $unique && ! empty( $GLOBALS['T_cmeta'][ (int) $id ][ $k ] ) ) { return false; } $GLOBALS['T_cmeta'][ (int) $id ][ $k ][] = $v; return true; }
+function delete_comment_meta( $id, $k, $v = '' ) { $had = isset( $GLOBALS['T_cmeta'][ (int) $id ][ $k ] ); unset( $GLOBALS['T_cmeta'][ (int) $id ][ $k ] ); return $had; }
+function wp_set_comment_status( $id, $status, $wp_error = false ) {
+	$GLOBALS['T_comment_calls'][] = array( 'wp_set_comment_status', (int) ( is_object( $id ) ? $id->comment_ID : $id ), $status );
+	$c = get_comment( is_object( $id ) ? $id->comment_ID : $id );
+	if ( ! $c ) { return $wp_error ? new WP_Error( 'invalid_comment', 'Invalid comment ID.' ) : false; }
+	if ( ! empty( $GLOBALS['T_comment_blocked'] ) ) { return false; }
+	$map = array( 'approve' => '1', '1' => '1', 'hold' => '0', '0' => '0', 'spam' => 'spam', 'trash' => 'trash' );
+	if ( ! isset( $map[ (string) $status ] ) ) { return $wp_error ? new WP_Error( 'invalid_comment_status', 'Invalid comment status.' ) : false; }
+	$GLOBALS['T_comments'][ (int) $c->comment_ID ]->comment_approved = $map[ (string) $status ];
+	return true;
+}
+function wp_trash_comment( $id ) {
+	$c = get_comment( is_object( $id ) ? $id->comment_ID : $id );
+	if ( ! $c ) { return false; }
+	$GLOBALS['T_comment_calls'][] = array( 'wp_trash_comment', (int) $c->comment_ID );
+	if ( defined( 'EMPTY_TRASH_DAYS' ) && ! EMPTY_TRASH_DAYS ) { unset( $GLOBALS['T_comments'][ (int) $c->comment_ID ] ); $GLOBALS['T_comments_deleted'][] = (int) $c->comment_ID; return true; }
+	add_comment_meta( $c->comment_ID, '_wp_trash_meta_status', $c->comment_approved );
+	add_comment_meta( $c->comment_ID, '_wp_trash_meta_time', time() );
+	if ( wp_set_comment_status( $c, 'trash' ) ) { return true; }
+	delete_comment_meta( $c->comment_ID, '_wp_trash_meta_status' ); delete_comment_meta( $c->comment_ID, '_wp_trash_meta_time' );
+	return false;
+}
+function wp_untrash_comment( $id ) {
+	$c = get_comment( is_object( $id ) ? $id->comment_ID : $id );
+	if ( ! $c ) { return false; }
+	$GLOBALS['T_comment_calls'][] = array( 'wp_untrash_comment', (int) $c->comment_ID );
+	$st = (string) get_comment_meta( $c->comment_ID, '_wp_trash_meta_status', true );
+	if ( '' === $st ) { $st = '0'; }
+	if ( wp_set_comment_status( $c, $st ) ) { delete_comment_meta( $c->comment_ID, '_wp_trash_meta_time' ); delete_comment_meta( $c->comment_ID, '_wp_trash_meta_status' ); return true; }
+	return false;
+}
+function wp_spam_comment( $id ) {
+	$c = get_comment( is_object( $id ) ? $id->comment_ID : $id );
+	if ( ! $c ) { return false; }
+	$GLOBALS['T_comment_calls'][] = array( 'wp_spam_comment', (int) $c->comment_ID );
+	add_comment_meta( $c->comment_ID, '_wp_trash_meta_status', $c->comment_approved );
+	if ( wp_set_comment_status( $c, 'spam' ) ) { return true; }
+	delete_comment_meta( $c->comment_ID, '_wp_trash_meta_status' );
+	return false;
+}
+function wp_unspam_comment( $id ) {
+	$c = get_comment( is_object( $id ) ? $id->comment_ID : $id );
+	if ( ! $c ) { return false; }
+	$GLOBALS['T_comment_calls'][] = array( 'wp_unspam_comment', (int) $c->comment_ID );
+	$st = (string) get_comment_meta( $c->comment_ID, '_wp_trash_meta_status', true );
+	if ( '' === $st ) { $st = '0'; }
+	if ( wp_set_comment_status( $c, $st ) ) { delete_comment_meta( $c->comment_ID, '_wp_trash_meta_status' ); return true; }
+	return false;
+}
+// comments_open: the post's comment_status is 'open' (a stand-in post without the field is open).
+function comments_open( $post = null ) { $p = get_post( $post ); return $p && 'open' === ( $p->comment_status ?? 'open' ); }
+// wp_new_comment with wp_allow_comment as core, for a logged-in user: the post's author and anyone with moderate_comments are
+// approved; everyone else follows the site's moderation setting (option comment_moderation: held when set); an identical comment
+// on the same post and parent is a comment_duplicate WP_Error (409). Slashed data in (core unslashes), the comment id out;
+// a parent that is not approved or held is reset to 0, as core.
+function wp_new_comment( $data, $wp_error = false ) {
+	$data = wp_unslash( $data );
+	$GLOBALS['T_comment_calls'][] = array( 'wp_new_comment', $data );
+	if ( ! empty( $GLOBALS['T_new_comment_error'] ) ) { return $wp_error ? $GLOBALS['T_new_comment_error'] : false; }
+	$parent = (int) ( $data['comment_parent'] ?? 0 );
+	$pc = $parent ? get_comment( $parent ) : null;
+	if ( ! $pc || ! in_array( (string) $pc->comment_approved, array( '0', '1' ), true ) ) { $parent = 0; }
+	foreach ( $GLOBALS['T_comments'] as $c ) {
+		if ( (int) $c->comment_post_ID === (int) $data['comment_post_ID'] && (int) $c->comment_parent === $parent && 'trash' !== (string) $c->comment_approved
+			&& $c->comment_author === ( $data['comment_author'] ?? '' ) && $c->comment_content === $data['comment_content'] ) {
+			return $wp_error ? new WP_Error( 'comment_duplicate', 'Duplicate comment detected; it looks as though you have already said that!', 409 ) : false;
+		}
+	}
+	$uid = (int) ( $data['user_id'] ?? 0 );
+	$post = get_post( $data['comment_post_ID'] );
+	$approved = ( $uid && ( ( $post && (int) $post->post_author === $uid ) || t_has_cap( 'moderate_comments' ) ) ) ? '1' : ( get_option( 'comment_moderation' ) ? '0' : '1' );
+	return t_add_comment( array( 'comment_post_ID' => (int) $data['comment_post_ID'], 'comment_content' => $data['comment_content'], 'comment_parent' => $parent, 'user_id' => $uid,
+		'comment_author' => $data['comment_author'] ?? '', 'comment_author_email' => $data['comment_author_email'] ?? '', 'comment_author_url' => $data['comment_author_url'] ?? '',
+		'comment_author_IP' => $_SERVER['REMOTE_ADDR'] ?? '', 'comment_approved' => $approved, 'comment_type' => 'comment' ) );
+}
+// wp_restore_post_revision as core: the revision's title, content and excerpt go to the parent through wp_update_post, so
+// wp_save_post_revision runs AFTER the update, on the restored content: it does NOT keep the pre-restore content (the revision
+// made at the previous save is the one that holds that, when there is one). Returns the parent id; null for a missing revision.
+function wp_restore_post_revision( $revision, $fields = null ) {
+	$r = get_post( is_object( $revision ) ? $revision->ID : $revision );
+	if ( ! $r || 'revision' !== $r->post_type ) { return null; }
+	$GLOBALS['T_comment_calls'][] = array( 'wp_restore_post_revision', (int) $r->ID );
+	$id = wp_update_post( wp_slash( array( 'ID' => (int) $r->post_parent, 'post_title' => $r->post_title, 'post_content' => $r->post_content, 'post_excerpt' => $r->post_excerpt ) ) );
+	if ( ! $id || is_wp_error( $id ) ) { return $id; }
+	update_post_meta( $id, '_edit_last', get_current_user_id() );
+	return $id;
 }
