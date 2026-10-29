@@ -853,6 +853,129 @@ if ( ! function_exists( 'd5b_ds_can' ) ) {
 	}
 }
 
+/*
+ * Reads shared by the REST routes and the AI abilities (read-divi.php): the route and the ability call one function, so
+ * what they return is the same bytes. The design system overview (GET /design-system) and the Theme Builder reads
+ * (GET /tb-list, GET /tb-layout).
+ */
+if ( ! function_exists( 'd5b_ds_overview' ) ) {
+
+	// $full also returns each preset's attrs. Nothing is written.
+	function d5b_ds_overview( $full ) {
+		$full    = (bool) $full;
+		$presets = get_option( 'et_divi_builder_global_presets_d5', array() );
+		if ( is_string( $presets ) ) { $presets = maybe_unserialize( $presets ); }
+		$out = array( 'module' => array(), 'group' => array() );
+		foreach ( array( 'module', 'group' ) as $kind ) {
+			foreach ( (array) ( $presets[ $kind ] ?? array() ) as $owner => $set ) {
+				$default = (string) ( $set['default'] ?? '' );
+				foreach ( (array) ( $set['items'] ?? array() ) as $pid => $item ) {
+					$row = array(
+						'id'        => (string) $pid,
+						'name'      => (string) ( $item['name'] ?? '' ),
+						'for'       => (string) $owner,
+						'isDefault' => ( (string) $pid === $default ),
+						'version'   => (string) ( $item['version'] ?? '' ),
+					);
+					if ( 'group' === $kind ) { $row['groupId'] = (string) ( $item['groupId'] ?? '' ); }
+					if ( $full ) { foreach ( array( 'attrs', 'renderAttrs', 'styleAttrs' ) as $k ) { if ( isset( $item[ $k ] ) ) { $row[ $k ] = $item[ $k ]; } } }
+					$out[ $kind ][] = $row;
+				}
+			}
+		}
+		$et_divi = get_option( 'et_divi', array() );
+		$colors  = is_array( $et_divi ) ? ( $et_divi['et_global_data']['global_colors'] ?? null ) : null;
+		return array(
+			'ok'        => true,
+			'presets'   => $out,
+			'variables' => get_option( 'et_divi_global_variables', null ),
+			'colors'    => $colors,
+			'sources'   => array(
+				'presets'   => 'option et_divi_builder_global_presets_d5',
+				'variables' => 'option et_divi_global_variables',
+				'colors'    => 'option et_divi > et_global_data > global_colors',
+			),
+		);
+	}
+}
+
+if ( ! function_exists( 'd5b_tb_format' ) ) {
+
+	function d5b_tb_layout_types() {
+		return array( 'et_header_layout', 'et_body_layout', 'et_footer_layout' );
+	}
+
+	function d5b_tb_all_types() {
+		return array_merge( d5b_tb_layout_types(), array( 'et_template', 'et_theme_builder' ) );
+	}
+
+	function d5b_tb_format( $content ) {
+		if ( '' === trim( (string) $content ) ) { return 'empty'; }
+		$d5 = false !== strpos( $content, '<!-- wp:divi/' );
+		$d4 = false !== strpos( $content, '[et_pb_' );
+		if ( $d5 && $d4 ) { return 'divi5+legacy-shortcodes'; }
+		if ( $d5 ) { return 'divi5'; }
+		if ( $d4 ) { return 'divi4'; }
+		return 'other';
+	}
+
+	// Every template + layout, with format and hash. No content.
+	function d5b_tb_list_data() {
+		$posts = get_posts( array(
+			'post_type'        => d5b_tb_all_types(),
+			'post_status'      => array( 'publish', 'draft', 'private', 'pending', 'future' ),
+			'numberposts'      => -1,
+			'orderby'          => 'ID',
+			'order'            => 'ASC',
+			'suppress_filters' => true,
+		) );
+		$out = array();
+		foreach ( $posts as $p ) {
+			$meta = array();
+			foreach ( get_post_meta( $p->ID ) as $k => $vals ) {
+				if ( 0 !== strpos( $k, '_et_' ) && 0 !== strpos( $k, '_d5b_' ) ) { continue; }
+				$meta[ $k ] = array_map( function ( $v ) {
+					return strlen( (string) $v ) > 300 ? '[' . strlen( (string) $v ) . ' bytes]' : $v;
+				}, $vals );
+			}
+			$out[] = array(
+				'id'       => $p->ID,
+				'type'     => $p->post_type,
+				'status'   => $p->post_status,
+				'title'    => $p->post_title,
+				'modified' => $p->post_modified_gmt,
+				'format'   => d5b_tb_format( $p->post_content ),
+				'bytes'    => strlen( $p->post_content ),
+				'hash'     => md5( $p->post_content ),
+				'meta'     => $meta,
+			);
+		}
+		return array( 'count' => count( $out ), 'items' => $out );
+	}
+
+	// The raw, UNRENDERED post_content of one template or layout, or a 404 WP_Error.
+	function d5b_tb_layout_data( $id ) {
+		$id = (int) $id;
+		$p  = get_post( $id );
+		if ( ! $p || ! in_array( $p->post_type, d5b_tb_all_types(), true ) ) {
+			return new WP_Error( 'not_a_tb_post', 'id is not a Theme Builder template or layout', array( 'status' => 404 ) );
+		}
+		return array(
+			'id'              => $id,
+			'type'            => $p->post_type,
+			'status'          => $p->post_status,
+			'title'           => $p->post_title,
+			'modified'        => $p->post_modified_gmt,
+			'format'          => d5b_tb_format( $p->post_content ),
+			'bytes'           => strlen( $p->post_content ),
+			'hash'            => md5( $p->post_content ),
+			'has_backup'      => metadata_exists( 'post', $id, '_d5b_prev_content' ),
+			'backup_saved_at' => get_post_meta( $id, '_d5b_prev_saved_at', true ),
+			'content'         => $p->post_content,
+		);
+	}
+}
+
 if ( ! function_exists( 'd5b_routes_page_building' ) ) {
 
 /*
@@ -933,19 +1056,10 @@ function d5b_routes_page_building(): void {
 	 *   - the write is read back and auto-reverted if it did not round-trip.
 	 * All four routes need edit_theme_options (what Divi's own Theme Builder needs).
 	 */
-	$tb_layout_types = array( 'et_header_layout', 'et_body_layout', 'et_footer_layout' );
-	$tb_all_types    = array_merge( $tb_layout_types, array( 'et_template', 'et_theme_builder' ) );
+	$tb_layout_types = d5b_tb_layout_types();
 	$tb_perm         = function () { return current_user_can( 'edit_theme_options' ); };
 
-	$tb_format = function ( $content ) {
-		if ( '' === trim( (string) $content ) ) { return 'empty'; }
-		$d5 = false !== strpos( $content, '<!-- wp:divi/' );
-		$d4 = false !== strpos( $content, '[et_pb_' );
-		if ( $d5 && $d4 ) { return 'divi5+legacy-shortcodes'; }
-		if ( $d5 ) { return 'divi5'; }
-		if ( $d4 ) { return 'divi4'; }
-		return 'other';
-	};
+	$tb_format = 'd5b_tb_format';
 
 	// Content reduced to what it MEANS: block names, decoded attributes, nesting, and the text between blocks
 	// with whitespace runs removed. Two contents with equal trees render the same.
@@ -999,37 +1113,8 @@ function d5b_routes_page_building(): void {
 	register_rest_route( 'divi5-builder/v1', '/tb-list', array(
 		'methods'             => 'GET',
 		'permission_callback' => $tb_perm,
-		'callback'            => function () use ( $tb_all_types, $tb_format ) {
-			$posts = get_posts( array(
-				'post_type'        => $tb_all_types,
-				'post_status'      => array( 'publish', 'draft', 'private', 'pending', 'future' ),
-				'numberposts'      => -1,
-				'orderby'          => 'ID',
-				'order'            => 'ASC',
-				'suppress_filters' => true,
-			) );
-			$out = array();
-			foreach ( $posts as $p ) {
-				$meta = array();
-				foreach ( get_post_meta( $p->ID ) as $k => $vals ) {
-					if ( 0 !== strpos( $k, '_et_' ) && 0 !== strpos( $k, '_d5b_' ) ) { continue; }
-					$meta[ $k ] = array_map( function ( $v ) {
-						return strlen( (string) $v ) > 300 ? '[' . strlen( (string) $v ) . ' bytes]' : $v;
-					}, $vals );
-				}
-				$out[] = array(
-					'id'       => $p->ID,
-					'type'     => $p->post_type,
-					'status'   => $p->post_status,
-					'title'    => $p->post_title,
-					'modified' => $p->post_modified_gmt,
-					'format'   => $tb_format( $p->post_content ),
-					'bytes'    => strlen( $p->post_content ),
-					'hash'     => md5( $p->post_content ),
-					'meta'     => $meta,
-				);
-			}
-			return array( 'count' => count( $out ), 'items' => $out );
+		'callback'            => function () {
+			return d5b_tb_list_data();
 		},
 	) );
 
@@ -1037,25 +1122,8 @@ function d5b_routes_page_building(): void {
 	register_rest_route( 'divi5-builder/v1', '/tb-layout', array(
 		'methods'             => 'GET',
 		'permission_callback' => $tb_perm,
-		'callback'            => function ( $req ) use ( $tb_all_types, $tb_format ) {
-			$id = (int) $req->get_param( 'id' );
-			$p  = get_post( $id );
-			if ( ! $p || ! in_array( $p->post_type, $tb_all_types, true ) ) {
-				return new WP_Error( 'not_a_tb_post', 'id is not a Theme Builder template or layout', array( 'status' => 404 ) );
-			}
-			return array(
-				'id'              => $id,
-				'type'            => $p->post_type,
-				'status'          => $p->post_status,
-				'title'           => $p->post_title,
-				'modified'        => $p->post_modified_gmt,
-				'format'          => $tb_format( $p->post_content ),
-				'bytes'           => strlen( $p->post_content ),
-				'hash'            => md5( $p->post_content ),
-				'has_backup'      => metadata_exists( 'post', $id, '_d5b_prev_content' ),
-				'backup_saved_at' => get_post_meta( $id, '_d5b_prev_saved_at', true ),
-				'content'         => $p->post_content,
-			);
+		'callback'            => function ( $req ) {
+			return d5b_tb_layout_data( (int) $req->get_param( 'id' ) );
 		},
 	) );
 
@@ -1294,40 +1362,7 @@ function d5b_routes_page_building(): void {
 		'methods'             => 'GET',
 		'permission_callback' => $palette_perm,
 		'callback'            => function ( $req ) {
-			$full    = (bool) $req->get_param( 'full' );
-			$presets = get_option( 'et_divi_builder_global_presets_d5', array() );
-			if ( is_string( $presets ) ) { $presets = maybe_unserialize( $presets ); }
-			$out = array( 'module' => array(), 'group' => array() );
-			foreach ( array( 'module', 'group' ) as $kind ) {
-				foreach ( (array) ( $presets[ $kind ] ?? array() ) as $owner => $set ) {
-					$default = (string) ( $set['default'] ?? '' );
-					foreach ( (array) ( $set['items'] ?? array() ) as $pid => $item ) {
-						$row = array(
-							'id'        => (string) $pid,
-							'name'      => (string) ( $item['name'] ?? '' ),
-							'for'       => (string) $owner,
-							'isDefault' => ( (string) $pid === $default ),
-							'version'   => (string) ( $item['version'] ?? '' ),
-						);
-						if ( 'group' === $kind ) { $row['groupId'] = (string) ( $item['groupId'] ?? '' ); }
-						if ( $full ) { foreach ( array( 'attrs', 'renderAttrs', 'styleAttrs' ) as $k ) { if ( isset( $item[ $k ] ) ) { $row[ $k ] = $item[ $k ]; } } }
-						$out[ $kind ][] = $row;
-					}
-				}
-			}
-			$et_divi = get_option( 'et_divi', array() );
-			$colors  = is_array( $et_divi ) ? ( $et_divi['et_global_data']['global_colors'] ?? null ) : null;
-			return array(
-				'ok'        => true,
-				'presets'   => $out,
-				'variables' => get_option( 'et_divi_global_variables', null ),
-				'colors'    => $colors,
-				'sources'   => array(
-					'presets'   => 'option et_divi_builder_global_presets_d5',
-					'variables' => 'option et_divi_global_variables',
-					'colors'    => 'option et_divi > et_global_data > global_colors',
-				),
-			);
+			return d5b_ds_overview( (bool) $req->get_param( 'full' ) );
 		},
 	) );
 

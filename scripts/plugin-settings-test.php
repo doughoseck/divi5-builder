@@ -25,6 +25,7 @@ require $dir . '/inc/parts.php';
 require $dir . '/inc/switches.php';
 require $dir . '/inc/gate.php';
 require $dir . '/inc/takeover.php';
+require $dir . '/inc/abilities/categories.php'; // as the loader does: the page then shows the AI abilities categories it ships with
 require $dir . '/inc/settings.php';
 foreach ( array( 'page-building', 'media-audit', 'media-clean-up', 'updates' ) as $f ) { require $dir . '/parts/' . $f . '.php'; }
 
@@ -139,15 +140,18 @@ foreach ( array( 'media_audit', 'media_clean_up', 'updates' ) as $p ) {
 	check( "single site: $p note is printed as d5b_risk_note gives it", false !== strpos( $out, esc_html( d5b_risk_note( $p ) ) ) && '' !== d5b_risk_note( $p ), $p );
 	check( "$p has one checkbox", 1 === substr_count( $out, 'name="d5b_on[' . $p . ']"' ), $p );
 }
-check( 'page_building has no checkbox and the form names exactly three', false === strpos( $out, 'd5b_on[page_building]' ) && 3 === substr_count( $out, 'type="checkbox"' ), $out );
-check( 'all three start unticked', false === strpos( $out, 'checked="checked"' ), $out );
+check( 'page_building has no checkbox and the form names exactly three', false === strpos( $out, 'd5b_on[page_building]' ) && 3 === substr_count( $out, 'name="d5b_on[' ), $out );
+check( 'all three start unticked', 0 === preg_match( '/name="d5b_on\[[a-z_]+\]"[^>]*checked/', $out ) && 3 === preg_match_all( '/name="d5b_on\[[a-z_]+\]"/', $out ), $out );
+check( 'the AI abilities master starts unticked', 1 === preg_match( '/name="d5b_abilities_master"(?![^>]*checked)/', $out ), $out );
+// The spec (Defaults): the categories are already ticked for when the master is switched on; the master keeps them off until then.
+check( 'the shipped page shows every category, already ticked (the spec default), and nothing else is ticked', 23 === preg_match_all( '/name="d5b_abilities_cat\[[a-z]+\]"[^>]*checked/', $out ) && 23 === substr_count( $out, 'checked="checked"' ), substr_count( $out, 'checked="checked"' ) );
 check( 'no multisite sentence on a single site', false === strpos( $out, 'every site in it at once' ) && false === strpos( $out, 'sites that share these files' ) );
 check( 'the form posts to admin-post.php with the nonce and the action', false !== strpos( $out, 'action="https://x.example/wp-admin/admin-post.php"' ) && false !== strpos( $out, 'value="nonce-for-d5b_switches"' ) && false !== strpos( $out, 'name="action" value="d5b_save_switches"' ), $out );
 check( 'no "Last switched" line when nothing was ever switched', false === strpos( $out, 'Last switched' ) );
 d5b_switch_set( 'updates', true, 'doug' );
 $out = html( 'd5b_settings_render' );
 $at  = d5b_switches()['updates']['changed_at'];
-check( 'updates ticked, and Last switched on <time> by doug', 1 === substr_count( $out, 'checked="checked"' ) && false !== strpos( $out, 'Last switched on ' . $at . ' by doug' ) && 1 === substr_count( $out, 'Last switched' ), $out );
+check( 'updates ticked, and Last switched on <time> by doug', 1 === preg_match_all( '/name="d5b_on\[[a-z_]+\]"[^>]*checked/', $out ) && 1 === preg_match( '/name="d5b_on\[updates\]"[^>]*checked/', $out ) &&false !== strpos( $out, 'Last switched on ' . $at . ' by doug' ) && 1 === substr_count( $out, 'Last switched' ), $out );
 d5b_switch_set( 'updates', false, 'ann' );
 $out = html( 'd5b_settings_render' );
 check( 'one entry per switch: its latest change only', 1 === substr_count( $out, 'Last switched' ) && false !== strpos( $out, 'Last switched off ' ) && false !== strpos( $out, ' by ann' ) && false === strpos( $out, ' by doug' ), $out );

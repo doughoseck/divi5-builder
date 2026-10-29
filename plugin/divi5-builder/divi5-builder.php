@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Divi 5 Builder
  * Description: Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.
- * Version: 2.0.1
+ * Version: 2.1.0
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: divi5-builder skill
@@ -26,7 +26,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 // Loaded twice (a must-use copy and a normal copy, or two folders): the first copy wins, the second does nothing.
 if ( defined( 'D5B_VERSION' ) ) { return; }
 
-define( 'D5B_VERSION', '2.0.1' );
+define( 'D5B_VERSION', '2.1.0' );
 define( 'D5B_FILE', __FILE__ );
 
 // An explicit list, not a directory scan: a file left behind by an older copy (copying over the folder by FTP does not
@@ -36,6 +36,16 @@ foreach ( array(
 	'inc/switches.php',
 	'inc/gate.php',
 	'inc/takeover.php',
+	'inc/abilities/categories.php',
+	'inc/abilities/register.php',
+	'inc/abilities/secrets.php',
+	'inc/abilities/audit.php',
+	'inc/abilities/scrub.php',
+	'inc/abilities/read-content.php',
+	'inc/abilities/read-structure.php',
+	'inc/abilities/read-site.php',
+	'inc/abilities/read-divi.php',
+	'inc/abilities/read-history.php',
 	'inc/settings.php',
 	'parts/page-building.php',
 	'parts/media-audit.php',
@@ -53,6 +63,19 @@ add_action( 'init', function () {
 
 // Late, so an old copy's routes are already there to see.
 add_action( 'rest_api_init', 'd5b_gate', 99 );
+
+// AI abilities (WordPress 6.9+ Abilities API). Both callbacks do nothing without the API, while the master switch is
+// off, or for a category whose switch is off.
+add_action( 'wp_abilities_api_categories_init', 'd5b_abilities_register_categories' );
+add_action( 'wp_abilities_api_init', 'd5b_abilities_register' );
+
+// The audit log: the table is made on activation or, for a must-use copy that is never activated, on the next admin page;
+// a daily event deletes rows older than 30 days (cleared on deactivation, on every site for a network deactivation;
+// uninstall.php drops the table). Before WordPress 6.9 no ability is registered, but the empty table and the event still exist.
+register_activation_hook( D5B_FILE, 'd5b_audit_activate' );
+register_deactivation_hook( D5B_FILE, 'd5b_audit_deactivate' );
+add_action( 'admin_init', 'd5b_audit_maybe_install' );
+add_action( 'd5b_audit_prune', 'd5b_audit_prune' );
 
 // Taking over from the old plugins. A must-use plugin is never "activated", so it runs on admin_init instead.
 register_activation_hook( D5B_FILE, 'd5b_takeover_on_activation' );

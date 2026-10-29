@@ -30,6 +30,7 @@ function entries(buf) { // read the central directory: name, method, data
   }
   return out;
 }
+const main0 = files => files.find(e => e.name === 'divi5-builder/divi5-builder.php').data.toString();
 function walk(dir, rel) { let o = []; for (const e of fs.readdirSync(dir, { withFileTypes: true })) { const r = rel ? rel + '/' + e.name : e.name; o = e.isDirectory() ? o.concat(walk(path.join(dir, e.name), r)) : o.concat([r]); } return o; }
 
 try {
@@ -48,6 +49,9 @@ try {
   check('the zip holds exactly the plugin folder plus LICENSE, under divi5-builder/', JSON.stringify([...names].sort()) === JSON.stringify([...src].sort()), { names, src });
   for (const want of ['divi5-builder/divi5-builder.php', 'divi5-builder/uninstall.php', 'divi5-builder/readme.txt', 'divi5-builder/LICENSE']) check('holds ' + want, names.includes(want));
   check('holds inc/ and parts/ files', names.filter(x => x.startsWith('divi5-builder/inc/')).length >= 5 && names.filter(x => x.startsWith('divi5-builder/parts/')).length >= 4);
+  const abil = ['audit', 'categories', 'read-content', 'read-divi', 'read-history', 'read-site', 'read-structure', 'register', 'scrub', 'secrets'];
+  check('holds every file of inc/abilities/ (2.1.0)', abil.every(f => names.includes('divi5-builder/inc/abilities/' + f + '.php')), names.filter(x => x.includes('/abilities/')));
+  check('the zip header says version 2.1.0, as the constant and the readme do', /Version: 2\.1\.0\b/.test(main0(files)) && /D5B_VERSION', '2\.1\.0'/.test(main0(files)) && /Stable tag: 2\.1\.0\b/.test(files.find(e => e.name === 'divi5-builder/readme.txt').data.toString()));
   check('every name sits under divi5-builder/', names.every(x => x.startsWith('divi5-builder/')), names);
   check('no old plugin, no assets/, no must-use loader in the zip', !names.some(x => /legacy|assets|mu-loader|divi5-builder-rest|wp-media|wp-site-updates|divi5-builder-loader/.test(x)), names);
   const body = names.filter(x => x !== 'divi5-builder/LICENSE');

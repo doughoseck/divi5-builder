@@ -63,6 +63,7 @@ if ( ! function_exists( 'd5b_settings_render' ) ) {
 			echo '</td></tr>';
 		}
 		echo '</table>';
+		d5b_settings_render_abilities();
 		echo '<p class="submit"><input type="submit" class="button button-primary" value="Save changes" /></p>';
 		echo '</form>';
 		d5b_legacy_refresh( true ); // always here: an old copy with no constant (a code snippet) is found too
@@ -71,7 +72,104 @@ if ( ! function_exists( 'd5b_settings_render' ) ) {
 		foreach ( $lines as $line ) {
 			echo '<p' . ( $line['red'] ? ' style="color:#b32d2e;font-weight:600"' : '' ) . '>' . esc_html( $line['text'] ) . '</p>';
 		}
+		d5b_settings_render_audit();
 		echo '</div>';
+	}
+}
+
+if ( ! function_exists( 'd5b_settings_render_abilities' ) ) {
+	/**
+	 * The "AI abilities" section, inside the page's form: the master box, and one box per category.
+	 * The category boxes are always enabled, so an admin can untick categories in the same save that switches the master
+	 * on. The marker field d5b_abilities_cat_form is printed with them, so the save handler can tell "unticked" from
+	 * "not on the form" (a form without the category boxes changes no category).
+	 */
+	function d5b_settings_render_abilities(): void {
+		$a      = d5b_abilities_switches();
+		$master = $a['master'];
+		$cats   = function_exists( 'd5b_ability_categories' ) ? d5b_ability_categories() : array();
+		echo '<h2>AI abilities</h2>';
+		if ( function_exists( 'd5b_audit_table_broken' ) && d5b_audit_table_broken() ) {
+			echo '<div class="notice notice-error inline"><p>' . esc_html( 'The audit log table could not be created, so every AI call is refused. Ask your host to allow CREATE TABLE for the WordPress database user.' ) . '</p></div>';
+		}
+		echo '<table class="form-table" role="presentation"><tr><th scope="row"><label for="d5b-abilities-master">AI abilities</label></th><td>';
+		echo '<label><input type="checkbox" id="d5b-abilities-master" name="d5b_abilities_master" value="1"' . ( $master['on'] ? ' checked="checked"' : '' ) . ' /> Switched on</label>';
+		echo '<p class="description">' . esc_html( 'Lets AI clients connected to this site (over the REST API) read site content and settings through this plugin. Nothing is shared until you switch this on. Every call is logged for 30 days. Secrets are filtered out by name and shape; the filter is careful but not perfect, so switch on only what you need.' ) . '</p>';
+		if ( '' !== $master['changed_at'] || '' !== $master['changed_by'] ) {
+			echo '<p class="description">Last switched ' . ( $master['on'] ? 'on' : 'off' ) . ' ' . esc_html( $master['changed_at'] ) . ' by ' . esc_html( $master['changed_by'] ) . '</p>';
+		}
+		echo '</td></tr>';
+		if ( array() !== $cats ) {
+			echo '<tr><th scope="row">Categories</th><td>';
+			echo '<input type="hidden" name="d5b_abilities_cat_form" value="1" />';
+			foreach ( $cats as $slug => $cat ) {
+				$id = 'd5b-abilities-cat-' . $slug;
+				echo '<p><label for="' . esc_attr( $id ) . '"><input type="checkbox" id="' . esc_attr( $id ) . '" name="d5b_abilities_cat[' . esc_attr( $slug ) . ']" value="1"'
+					. ( $a['categories'][ $slug ]['on'] ? ' checked="checked"' : '' ) . ' /> ' . esc_html( $cat['label'] ) . '</label>'
+					. ' <span class="description">' . esc_html( $cat['description'] ) . '</span></p>';
+			}
+			echo '</td></tr>';
+		}
+		echo '</table>';
+	}
+}
+
+if ( ! function_exists( 'd5b_settings_render_audit' ) ) {
+	/**
+	 * The "Audit log" section: the newest 50 calls, read-only (no delete or clear control), filtered by ability and user
+	 * through a GET form. Needs the settings capability itself, so it is safe to call from anywhere. On a network the
+	 * log is the one of the site the page is served for (the main site, in Network Admin).
+	 */
+	function d5b_settings_render_audit(): void {
+		if ( ! current_user_can( d5b_settings_cap() ) || ! function_exists( 'd5b_audit_list' ) ) { return; }
+		$ability = isset( $_GET['d5b_audit_ability'] ) && is_string( $_GET['d5b_audit_ability'] ) ? sanitize_text_field( wp_unslash( $_GET['d5b_audit_ability'] ) ) : '';
+		$user    = isset( $_GET['d5b_audit_user'] ) ? absint( is_scalar( $_GET['d5b_audit_user'] ) ? $_GET['d5b_audit_user'] : 0 ) : 0;
+		$day     = isset( $_GET['d5b_audit_since'] ) && is_string( $_GET['d5b_audit_since'] ) ? sanitize_text_field( wp_unslash( $_GET['d5b_audit_since'] ) ) : '';
+		if ( 1 !== preg_match( '/^(\d{4})-(\d{2})-(\d{2})$/', $day, $dm ) || ! checkdate( (int) $dm[2], (int) $dm[3], (int) $dm[1] ) ) { $day = ''; }
+		$rows    = d5b_audit_list( array( 'ability' => $ability, 'user_id' => $user, 'since' => '' === $day ? '' : $day . ' 00:00:00' ), 50, 0 );
+		$base    = is_multisite() ? network_admin_url( 'settings.php' ) : admin_url( 'options-general.php' );
+		echo '<h2>Audit log</h2>';
+		echo '<p class="description">' . esc_html( 'The newest 50 AI ability calls on this site, kept for 30 days. Times are UTC. Secrets are masked before they are stored.' ) . '</p>';
+		echo '<form method="get" action="' . esc_url( $base ) . '">';
+		echo '<input type="hidden" name="page" value="divi5-builder" />';
+		echo '<label>Ability <input type="text" name="d5b_audit_ability" value="' . esc_attr( $ability ) . '" /></label> ';
+		echo '<label>User ID <input type="number" min="0" name="d5b_audit_user" value="' . esc_attr( $user > 0 ? (string) $user : '' ) . '" /></label> ';
+		echo '<label>Since (UTC) <input type="date" name="d5b_audit_since" value="' . esc_attr( $day ) . '" /></label> ';
+		echo '<input type="submit" class="button" value="Filter" />';
+		echo '</form>';
+		echo '<table class="widefat striped"><thead><tr><th>Time (UTC)</th><th>User</th><th>Login</th><th>Ability</th><th>Status</th><th>Ms</th><th>IP</th><th>Arguments</th></tr></thead><tbody>';
+		if ( array() === $rows ) {
+			echo '<tr><td colspan="8">' . esc_html( 'No calls recorded.' ) . '</td></tr>';
+		}
+		foreach ( $rows as $r ) {
+			$args  = (string) $r['args'];
+			if ( strlen( $args ) > 300 ) { $args = d5b_audit_str_cut( $args, 300 ) . '…'; }
+			$login = function_exists( 'd5b_audit_user_login' ) ? d5b_audit_user_login( (int) $r['user_id'] ) : '';
+			echo '<tr><td>' . esc_html( $r['created_at'] ) . '</td><td>' . esc_html( (string) $r['user_id'] ) . '</td><td>' . esc_html( $login ) . '</td><td>' . esc_html( $r['ability'] ) . '</td><td>' . esc_html( $r['status'] )
+				. '</td><td>' . esc_html( (string) $r['duration_ms'] ) . '</td><td>' . esc_html( $r['ip'] ) . '</td><td><code>' . esc_html( $args ) . '</code></td></tr>';
+		}
+		echo '</tbody></table>';
+		echo '<p class="description">' . esc_html( 'started = the call began and did not finish (or is the current one); forbidden = refused; error:<code> = the ability answered with an error' ) . '</p>';
+	}
+}
+
+if ( ! function_exists( 'd5b_settings_save_abilities' ) ) {
+	/**
+	 * Called by d5b_settings_save() after its nonce and capability checks, never on its own.
+	 * Flips only what changed. Category fields are read only when the form marker says the boxes were on the form
+	 * (the page always prints them with the marker, master on or off, so categories can be unticked in the same save that
+	 * switches the master on). Unknown slugs are never looked at: the walk is over the known categories.
+	 */
+	function d5b_settings_save_abilities( string $login ): void {
+		$now = d5b_abilities_switches();
+		$want = isset( $_POST['d5b_abilities_master'] );
+		if ( $want !== $now['master']['on'] ) { d5b_abilities_set_master( $want, $login ); }
+		if ( ! isset( $_POST['d5b_abilities_cat_form'] ) ) { return; }
+		$posted = isset( $_POST['d5b_abilities_cat'] ) && is_array( $_POST['d5b_abilities_cat'] ) ? wp_unslash( $_POST['d5b_abilities_cat'] ) : array();
+		foreach ( $now['categories'] as $slug => $row ) {
+			$want = isset( $posted[ $slug ] );
+			if ( $want !== $row['on'] ) { d5b_abilities_set_category( $slug, $want, $row['risky_on'], $login ); }
+		}
 	}
 }
 
@@ -144,6 +242,7 @@ if ( ! function_exists( 'd5b_settings_save' ) ) {
 			$want = isset( $posted[ $key ] );
 			if ( $want !== $row['on'] ) { d5b_switch_set( $key, $want, $login ); }
 		}
+		d5b_settings_save_abilities( $login );
 		$base = is_multisite() ? network_admin_url( 'settings.php' ) : admin_url( 'options-general.php' );
 		wp_safe_redirect( $base . '?page=divi5-builder&updated=1' );
 		d5b_settings_exit();

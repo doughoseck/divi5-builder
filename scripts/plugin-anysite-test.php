@@ -19,7 +19,7 @@ function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $o
 function fire( $hook ) { foreach ( $GLOBALS['T_actions'][ $hook ] ?? array() as $cb ) { 'rest_api_init' === $hook ? call_user_func( $cb, rest_get_server() ) : call_user_func( $cb ); } }
 // The files the loader names, and the .php files really under inc/ and parts/ (both sorted).
 function loader_list( $src ) { preg_match_all( "#'((?:inc|parts)/[^']+\\.php)'#", $src, $m ); sort( $m[1] ); return $m[1]; }
-function disk_list( $dir ) { $o = array(); foreach ( array( 'inc', 'parts' ) as $d ) { foreach ( scandir( "$dir/$d" ) as $f ) { if ( preg_match( '/\\.php$/', $f ) ) { $o[] = "$d/$f"; } } } sort( $o ); return $o; }
+function disk_list( $dir ) { $o = array(); foreach ( array( 'inc', 'parts' ) as $d ) { $it = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( "$dir/$d", FilesystemIterator::SKIP_DOTS ) ); foreach ( $it as $f ) { if ( preg_match( '/\\.php$/', $f->getFilename() ) ) { $o[] = $d . '/' . ltrim( str_replace( '\\', '/', substr( $f->getPathname(), strlen( "$dir/$d" ) ) ), '/' ); } } } sort( $o ); return $o; }
 function status() { return call_user_func( $GLOBALS['T_routes']['GET divi5-builder/v1/status']['callback'] ); }
 function routes_in( $ns ) { $o = array(); foreach ( $GLOBALS['T_routes'] as $k => $_ ) { if ( 0 === strpos( explode( ' ', $k, 2 )[1], $ns . '/' ) ) { $o[] = $k; } } sort( $o ); return $o; }
 function norm( $p ) { return str_replace( chr( 92 ), '/', $p ); }
@@ -44,7 +44,7 @@ $loaderA = "$copyA/divi5-builder.php"; $loaderB = "$copyB/divi5-builder.php";
 // ---- the loader file itself
 echo "the loader file\n";
 $head = file_get_contents( $loaderA );
-check( 'header: plugin name, slug version, update URI, description', false !== strpos( $head, 'Plugin Name: Divi 5 Builder' ) && 1 === preg_match( '/^\s*\*\s*Version:\s*2\.0\.1\s*$/m', $head ) && false !== strpos( $head, 'Update URI: https://github.com/doughoseck/divi5-builder' ) && false !== strpos( $head, 'Description: Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.' ) );
+check( 'header: plugin name, slug version, update URI, description', false !== strpos( $head, 'Plugin Name: Divi 5 Builder' ) && 1 === preg_match( '/^\s*\*\s*Version:\s*2\.1\.0\s*$/m', $head ) && false !== strpos( $head, 'Update URI: https://github.com/doughoseck/divi5-builder' ) && false !== strpos( $head, 'Description: Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.' ) );
 check( 'the header Version: equals D5B_VERSION as defined by the loader', 1 === preg_match( "/define\(\s*'D5B_VERSION',\s*'(\d+\.\d+\.\d+)'\s*\)/", $head, $m ) && 1 === preg_match( '/^\s*\*\s*Version:\s*(\S+)/m', $head, $h ) && $m[1] === $h[1], array( $m ?? null, $h ?? null ) );
 check( 'the old constants are never defined by the loader', 1 !== preg_match( "/define\(\s*'(D5B_REST_VERSION|WPMA_VERSION|WPMQ_VERSION|WPSU_VERSION)'/", $head ) );
 check( 'the loader lists exactly the .php files under inc/ and parts/ (no glob)', loader_list( $head ) === disk_list( $src ) && false === strpos( $head, 'glob(' ), array( loader_list( $head ), disk_list( $src ) ) );
@@ -58,7 +58,7 @@ check( 'header: Requires PHP 7.4 and Requires at least 6.0, the same as readme.t
 echo "no Divi: loads, status divi5 false\n";
 check( 'no ET_BUILDER_5_DIR in this process', ! defined( 'ET_BUILDER_5_DIR' ) );
 require $loaderA;
-check( 'D5B_VERSION and D5B_FILE are defined, D5B_FILE is the loader path', defined( 'D5B_VERSION' ) && '2.0.1' === D5B_VERSION && defined( 'D5B_FILE' ) && norm( D5B_FILE ) === norm( $loaderA ), defined( 'D5B_FILE' ) ? D5B_FILE : 'unset' );
+check( 'D5B_VERSION and D5B_FILE are defined, D5B_FILE is the loader path', defined( 'D5B_VERSION' ) && '2.1.0' === D5B_VERSION && defined( 'D5B_FILE' ) && norm( D5B_FILE ) === norm( $loaderA ), defined( 'D5B_FILE' ) ? D5B_FILE : 'unset' );
 check( 'no old constant defined', ! defined( 'D5B_REST_VERSION' ) && ! defined( 'WPMA_VERSION' ) && ! defined( 'WPMQ_VERSION' ) && ! defined( 'WPSU_VERSION' ) );
 check( 'loading raised no PHP warning', array() === $PHP_WARNINGS, $PHP_WARNINGS );
 check( 'all the plugin functions exist after loading', function_exists( 'd5b_gate' ) && function_exists( 'd5b_settings_menu' ) && function_exists( 'd5b_takeover_on_activation' ) && function_exists( 'd5b_routes_updates' ) && function_exists( 'd5b_init_page_building' ) );
@@ -66,7 +66,7 @@ fire( 'init' );
 check( 'init registered the page building meta (2 post types x 6 keys)', 12 === count( $GLOBALS['T_post_meta'] ), $GLOBALS['T_post_meta'] );
 fire( 'rest_api_init' );
 $st = status();
-check( 'status: divi5 false, version 2.0.1', false === $st['divi5'] && '2.0.1' === $st['version'], $st );
+check( 'status: divi5 false, version 2.1.0', false === $st['divi5'] && '2.1.0' === $st['version'], $st );
 check( 'status: the three optional parts are off', array( 'media_audit' => false, 'media_clean_up' => false, 'updates' => false ) === $st['switches'], $st['switches'] );
 check( 'page building routes exist, the optional ones do not', count( routes_in( 'divi5-builder/v1' ) ) > 10 && array() === routes_in( 'wp-media-audit/v1' ) && array() === routes_in( 'wp-media-quarantine/v1' ) && array() === routes_in( 'wp-site-updates/v1' ) );
 check( 'nothing stood aside, no stand-aside saved', array() === $st['stood_aside'] && null === get_option( 'd5b_legacy_seen', null ), array( $st['stood_aside'], get_option( 'd5b_legacy_seen', null ) ) );
@@ -74,14 +74,14 @@ check( 'nothing stood aside, no stand-aside saved', array() === $st['stood_aside
 // ---- the hooks the loader registers
 echo "hooks\n";
 $hooks = array_keys( $GLOBALS['T_actions'] ); sort( $hooks );
-$want  = array( 'admin_init', 'admin_menu', 'admin_notices', 'admin_post_d5b_save_switches', 'init', 'network_admin_edit_d5b_save_switches', 'network_admin_menu', 'network_admin_notices', 'rest_api_init' );
-check( 'exactly the expected hooks, each registered once', $want === $hooks && 1 === count( array_unique( array_map( 'count', $GLOBALS['T_actions'] ) ) ) && 1 === max( array_map( 'count', $GLOBALS['T_actions'] ) ), array( $hooks, array_map( 'count', $GLOBALS['T_actions'] ) ) );
+$want  = array( 'admin_init', 'admin_menu', 'admin_notices', 'admin_post_d5b_save_switches', 'd5b_audit_prune', 'init', 'network_admin_edit_d5b_save_switches', 'network_admin_menu', 'network_admin_notices', 'rest_api_init', 'wp_abilities_api_categories_init', 'wp_abilities_api_init' );
+check( 'exactly the expected hooks, each registered once', $want === $hooks && array( 'admin_init' => 2 ) === array_filter( array_map( 'count', $GLOBALS['T_actions'] ), function ( $c ) { return 1 !== $c; } ), array( $hooks, array_map( 'count', $GLOBALS['T_actions'] ) ) );
 check( 'rest_api_init runs the gate at priority 99', array( 'd5b_gate' ) === $GLOBALS['T_actions']['rest_api_init'] && array( 99 ) === $GLOBALS['T_priorities']['rest_api_init'] );
 check( 'admin_menu and network_admin_menu run d5b_settings_menu', array( 'd5b_settings_menu' ) === $GLOBALS['T_actions']['admin_menu'] && array( 'd5b_settings_menu' ) === $GLOBALS['T_actions']['network_admin_menu'] );
 check( 'both save hooks run d5b_settings_save', array( 'd5b_settings_save' ) === $GLOBALS['T_actions']['admin_post_d5b_save_switches'] && array( 'd5b_settings_save' ) === $GLOBALS['T_actions']['network_admin_edit_d5b_save_switches'] );
-check( 'both notice hooks run d5b_admin_notice, admin_init runs the must-use takeover', array( 'd5b_admin_notice' ) === $GLOBALS['T_actions']['admin_notices'] && array( 'd5b_admin_notice' ) === $GLOBALS['T_actions']['network_admin_notices'] && array( 'd5b_takeover_mu_admin_init' ) === $GLOBALS['T_actions']['admin_init'] );
+check( 'both notice hooks run d5b_admin_notice, admin_init runs the must-use takeover', array( 'd5b_admin_notice' ) === $GLOBALS['T_actions']['admin_notices'] && array( 'd5b_admin_notice' ) === $GLOBALS['T_actions']['network_admin_notices'] && array( 'd5b_audit_maybe_install', 'd5b_takeover_mu_admin_init' ) === $GLOBALS['T_actions']['admin_init'] && array( 'd5b_audit_prune' ) === $GLOBALS['T_actions']['d5b_audit_prune'] );
 check( 'exactly one filter: rest_pre_dispatch refuses REST activation of an old plugin', array( 'rest_pre_dispatch' => array( 'd5b_refuse_legacy_rest_activation' ) ) === $GLOBALS['T_filters'] && function_exists( 'd5b_refuse_legacy_rest_activation' ), $GLOBALS['T_filters'] );
-check( 'activation hook: this file, d5b_takeover_on_activation', 1 === count( $GLOBALS['T_activation'] ) && norm( $GLOBALS['T_activation'][0][0] ) === norm( $loaderA ) && 'd5b_takeover_on_activation' === $GLOBALS['T_activation'][0][1], $GLOBALS['T_activation'] );
+check( 'activation hooks: this file, d5b_audit_activate then d5b_takeover_on_activation; one deactivation hook d5b_audit_deactivate', 2 === count( $GLOBALS['T_activation'] ) && norm( $GLOBALS['T_activation'][0][0] ) === norm( $loaderA ) && 'd5b_audit_activate' === $GLOBALS['T_activation'][0][1] && norm( $GLOBALS['T_activation'][1][0] ) === norm( $loaderA ) && 'd5b_takeover_on_activation' === $GLOBALS['T_activation'][1][1] && 1 === count( $GLOBALS['T_deactivation'] ) && 'd5b_audit_deactivate' === $GLOBALS['T_deactivation'][0][1], $GLOBALS['T_activation'] );
 $nopriv = array_values( array_filter( $hooks, function ( $h ) { return false !== strpos( $h, 'nopriv' ); } ) );
 check( 'no *_nopriv_* hook: a logged-out visitor can reach nothing', array() === $nopriv, $nopriv );
 
