@@ -667,29 +667,41 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 		return $out;
 	}
 
-	/** The text near matches are looked for in: every tag read as a space ("5pm<br>Wed" reads "5pm Wed"), tokens left out. */
+	/** Where a tag stood in the near-match text: a private-use character, read as a space by the near-match search. */
+	define( 'D5B_WD_TAG_MARK', "\u{E000}" );
+
+	/**
+	 * The text near matches are looked for in: every tag read as a space ("5pm<br>Wed" reads "5pm Wed"), tokens left out.
+	 * Each tag is kept as D5B_WD_TAG_MARK, so a window that spans one can be told from one that does not.
+	 */
 	function d5b_wd_near_text( string $html ): string {
-		return d5b_wd_visible( (string) preg_replace( '/<[^>]*>/', ' ', (string) preg_replace( D5B_WD_VAR_RE, '', $html ) ) );
+		$h = str_replace( D5B_WD_TAG_MARK, '', $html );
+		return d5b_wd_visible( (string) preg_replace( '/<[^>]*>/', D5B_WD_TAG_MARK, (string) preg_replace( D5B_WD_VAR_RE, '', $h ) ) );
 	}
 
 	/**
 	 * Up to 5 windows of the haystacks equal to $old ignoring case, runs of whitespace, curly or straight quotes, and hyphens
-	 * or dashes: list of { address, field, text }.
+	 * or dashes: list of { address, field, text }. A window that spans a tag can never be matched as text, so it is not
+	 * offered as old: it is { address, field, reads_as, crosses_markup: true, html (the field as stored), hint }.
 	 */
 	function d5b_wd_near( array $hays, string $old ): array {
 		$single = array( "\u{2018}", "\u{2019}", "\u{201A}", "\u{201B}", "\u{2032}" );
 		$double = array( "\u{201C}", "\u{201D}", "\u{201E}", "\u{2033}" );
 		$dash   = array( "\u{2010}", "\u{2011}", "\u{2012}", "\u{2013}", "\u{2014}", "\u{2015}" );
-		$fold   = str_replace( $dash, '-', str_replace( $double, '"', str_replace( $single, "'", $old ) ) );
+		$fold   = str_replace( $dash, '-', str_replace( $double, '"', str_replace( $single, "'", str_replace( D5B_WD_TAG_MARK, ' ', $old ) ) ) );
 		$words  = preg_split( '/[\s\x{00A0}]+/u', trim( $fold ), -1, PREG_SPLIT_NO_EMPTY );
 		if ( ! $words ) { return array(); }
 		$cls = array( "'" => "['" . implode( '', $single ) . ']', '"' => '["' . implode( '', $double ) . ']', '\\-' => '[\\-' . implode( '', $dash ) . ']' );
-		$re  = '/' . implode( '[\s\x{00A0}]+', array_map( function ( $w ) use ( $cls ) { return strtr( preg_quote( $w, '/' ), $cls ); }, $words ) ) . '/iu';
+		$re  = '/' . implode( '[\s\x{00A0}\x{E000}]+', array_map( function ( $w ) use ( $cls ) { return strtr( preg_quote( $w, '/' ), $cls ); }, $words ) ) . '/iu';
 		$out = array();
 		foreach ( $hays as $h ) {
 			if ( ! preg_match_all( $re, $h['text'], $m ) ) { continue; }
 			foreach ( $m[0] as $hit ) {
-				$out[] = array( 'address' => $h['address'], 'field' => $h['field'], 'text' => $hit );
+				if ( false === strpos( $hit, D5B_WD_TAG_MARK ) ) {
+					$out[] = array( 'address' => $h['address'], 'field' => $h['field'], 'text' => $hit );
+				} else {
+					$out[] = array( 'address' => $h['address'], 'field' => $h['field'], 'reads_as' => (string) preg_replace( '/[\s\x{00A0}]*\x{E000}[\s\x{00A0}\x{E000}]*/u', ' ', $hit ), 'crosses_markup' => true, 'html' => (string) ( $h['html'] ?? '' ), 'hint' => 'this text spans a tag; shorten old to one side of it, or use html: true' );
+				}
 				if ( count( $out ) >= 5 ) { return $out; }
 			}
 		}
@@ -767,7 +779,7 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 		foreach ( $nodes as $nd ) {
 			foreach ( d5b_blocks_text_fields( $nd ) as $field => $fh ) {
 				$hay    = $html ? $fh : d5b_wd_visible( $fh );
-				$hays[] = array( 'address' => $nd['addr'], 'field' => $field, 'text' => $html ? $fh : d5b_wd_near_text( $fh ) );
+				$hays[] = array( 'address' => $nd['addr'], 'field' => $field, 'text' => $html ? $fh : d5b_wd_near_text( $fh ), 'html' => $fh );
 				$offs   = d5b_wd_offsets( $hay, $old );
 				if ( ! $offs ) { continue; }
 				$fp  = d5b_wd_field_parts( $field );
@@ -779,7 +791,7 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 		$where = isset( $a['at'] ) ? 'in the block at ' . $a['at'] : 'on the page';
 		if ( 0 === $total ) {
 			$near = d5b_wd_near( $hays, $old );
-			return new WP_Error( 'not_found', 'old is not in the ' . ( $html ? 'stored HTML' : 'text a visitor reads' ) . ' ' . $where . ' (it must match exactly, case and spaces included). ' . ( $near ? 'Near matches are in data.near_matches: repeat with old set to one of them.' : 'Read the item again to see its text.' ), array( 'near_matches' => $near ) );
+			return new WP_Error( 'not_found', 'old is not in the ' . ( $html ? 'stored HTML' : 'text a visitor reads' ) . ' ' . $where . ' (it must match exactly, case and spaces included). ' . ( $near ? 'Near matches are in data.near_matches: repeat with old set to the text of one of them (an entry with crosses_markup spans a tag and has no text to use: shorten old to one side of the tag, or use html: true with its html).' : 'Read the item again to see its text.' ), array( 'near_matches' => $near ) );
 		}
 		if ( $total > 1 ) {
 			$list = array();
@@ -943,7 +955,7 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 
 	d5b_wc_def( 'divi-text-edit', 'divi', 'Change text on a Divi page',
 		'Changes words inside one existing module of a Divi 5 page, post, custom item, canvas, Divi Library item or Theme Builder header, body or footer layout (a footer\'s opening hours, a heading, a button label), without touching the layout. It searches only the text a visitor reads in the modules\' text fields (heading, text, button, blurb, and the other text fields Divi has), with tags and Divi $variable(...)$ tokens (dynamic content) removed and entities decoded, never attribute names, settings, classes, ids or token contents; old must occur exactly once, and is replaced in the field\'s stored HTML, keeping the tags around it. A field stored with the same text for several breakpoints or states (desktop, tablet, hover) counts once and every copy is changed. Returns the item (id, title, status, url, without its content) with its new hash (the expect_hash of the next edit), changed, address and field (where the change was made; also_changed lists the other breakpoint or state copies) and excerpt (120 characters of the field\'s new text around the change, tokens shown as {variable}; not the post excerpt). '
-		. $d5b_wd_hash_from . '. Refuses, writing nothing: not_found when old is not there exactly (data.near_matches lists up to 5 places that differ only in case, spacing, curly or straight quotes, or dashes: repeat with old set to one of them); ambiguous when old occurs more than once (data.matches lists address, field, breakpoint, state and count: repeat with at set to one of those addresses, or a longer old; two matches in one block differ by breakpoint or state, so make old longer); crosses_markup when the match runs across a tag or a $variable token, as old "Mon to Fri 9 to 5" against <strong>Mon to Fri</strong> 9 to 5 (data.html is the field as stored: shorten old to one side of the tag, or repeat with html true and old and new as HTML taken from data.html); invalid_input when new holds a $variable( token without html true, or when an html true edit would change the text outside the replaced part or leave tags unbalanced; stale when the item changed since that read (read it again, then repeat); masked_read when new holds [redacted]; needs_unfiltered_html; not_allowed for templates and other kinds of item, an item you may not edit, or a switched-off category; not_found or ambiguous for an at that matches no block or several. To add, move or remove blocks, use divi-section-edit.',
+		. $d5b_wd_hash_from . '. Refuses, writing nothing: not_found when old is not there exactly (data.near_matches lists up to 5 places that differ only in case, spacing, curly or straight quotes, or dashes: repeat with old set to the text of one of them; an entry marked crosses_markup spans a tag, has reads_as and html instead of text, and needs a shorter old or html true); ambiguous when old occurs more than once (data.matches lists address, field, breakpoint, state and count: repeat with at set to one of those addresses, or a longer old; two matches in one block differ by breakpoint or state, so make old longer); crosses_markup when the match runs across a tag or a $variable token, as old "Mon to Fri 9 to 5" against <strong>Mon to Fri</strong> 9 to 5 (data.html is the field as stored: shorten old to one side of the tag, or repeat with html true and old and new as HTML taken from data.html); invalid_input when new holds a $variable( token without html true, or when an html true edit would change the text outside the replaced part or leave tags unbalanced; stale when the item changed since that read (read it again, then repeat); masked_read when new holds [redacted]; needs_unfiltered_html; not_allowed for templates and other kinds of item, an item you may not edit, or a switched-off category; not_found or ambiguous for an at that matches no block or several. To add, move or remove blocks, use divi-section-edit.',
 		array(
 			'post_id'     => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The id of the page, post, custom item, canvas, Divi Library item or Theme Builder header, body or footer layout.' ),
 			'expect_hash' => array( 'type' => 'string', 'description' => 'The hash of the content you read (from the get, or from the previous edit). An item changed since is refused with stale.' ),

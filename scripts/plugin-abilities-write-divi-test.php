@@ -759,7 +759,22 @@ phone( 'opening hours with <br> and &amp;', $p2, array( 'old' => 'Sat & Sun: clo
 phone( 'one time in the hours', $p2, array( 'old' => '9pm', 'new' => '10pm' ), $h2, '<p>Mon &amp; Tue: 9am - 5pm<br>Wed - Fri: 9am - 10pm<br />Sat &amp; Sun: closed</p>' );
 site(); $id = mkpage( $p2 );
 $e1 = ed( $id, array( 'old' => '5pm Wed', 'new' => '6pm Wed' ) ); $e2 = ed( $id, array( 'old' => '9am', 'new' => '8am' ) );
-check( 'hours: "5pm Wed" across <br> is not_found with "5pm Wed" as a near match (tags read as spaces); "9am" twice is ambiguous', 'not_found' === code( $e1 ) && array( '5pm Wed' ) === array_column( $e1->get_error_data()['near_matches'], 'text' ) && 'ambiguous' === code( $e2 ) && 2 === $e2->get_error_data()['matches'][0]['count'] && $p2 === post( $id )->post_content, array( $e1, $e2 ) );
+check( 'hours: "5pm Wed" across <br> is not_found; its near match reads "5pm Wed" but spans the tag, so it has no text to retry with; "9am" twice is ambiguous', 'not_found' === code( $e1 ) && array( '5pm Wed' ) === array_column( $e1->get_error_data()['near_matches'], 'reads_as' ) && array() === array_column( $e1->get_error_data()['near_matches'], 'text' ) && 'ambiguous' === code( $e2 ) && 2 === $e2->get_error_data()['matches'][0]['count'] && $p2 === post( $id )->post_content, array( $e1, $e2 ) );
+
+echo "fix round 2: near matches that span a tag say so (probe f)\n";
+$pf = with_field( $FA, '3.1.1.2', $BL, '<p>Mon: 9am - 5pm<br>Wed: closed</p>' );
+site(); $id = mkpage( $pf );
+$e = ed( $id, array( 'old' => '5pm Wed', 'new' => 'x' ) );
+$nm = is_wp_error( $e ) ? $e->get_error_data()['near_matches'] : array();
+check( 'probe f: the near match of "5pm Wed" is marked crosses_markup with the field html and the hint, and carries no text (a retry with it cannot loop)', 'not_found' === code( $e ) && 1 === count( $nm ) && array( 'address' => '3.1.1.2', 'field' => $BL, 'reads_as' => '5pm Wed', 'crosses_markup' => true, 'html' => '<p>Mon: 9am - 5pm<br>Wed: closed</p>', 'hint' => 'this text spans a tag; shorten old to one side of it, or use html: true' ) === $nm[0] && false !== strpos( $e->get_error_message(), 'crosses_markup' ), $nm );
+$e = ed( $id, array( 'old' => "9am \u{2013} 5pm", 'new' => 'x' ) );
+check( 'probe f: a near match that ends right before the <br> (touching the tag, not spanning it) stays plain text', 'not_found' === code( $e ) && array( array( 'address' => '3.1.1.2', 'field' => $BL, 'text' => '9am - 5pm' ) ) === $e->get_error_data()['near_matches'], $e );
+$e = ed( $id, array( 'old' => 'wed: Closed', 'new' => 'x' ) );
+check( 'a near match that starts right after the <br> stays plain text, and retrying with it succeeds', 'not_found' === code( $e ) && array( array( 'address' => '3.1.1.2', 'field' => $BL, 'text' => 'Wed: closed' ) ) === $e->get_error_data()['near_matches'] && is_array( ed( $id, array( 'old' => $e->get_error_data()['near_matches'][0]['text'], 'new' => 'Wed: 9am - 1pm' ) ) ), $e );
+site(); $id = mkpage( with_field( $FA, '3.1.1.2', $BL, '<p>Open <strong>Mon to Fri</strong> 9 to 5</p>' ) );
+$e = ed( $id, array( 'old' => 'mon to fri 9 to 5', 'new' => 'x' ) );
+check( 'a near match that spans two tags (<strong> ... </strong>) is marked; one inside the strong is plain', 'not_found' === code( $e ) && true === ( $e->get_error_data()['near_matches'][0]['crosses_markup'] ?? null ) && 'Mon to Fri 9 to 5' === $e->get_error_data()['near_matches'][0]['reads_as'] && array( 'Mon to Fri' ) === array_column( ed( $id, array( 'old' => 'MON to fri', 'new' => 'x' ) )->get_error_data()['near_matches'], 'text' ), $e );
+check( 'a private-use character in old cannot fake a tag mark', 'not_found' === code( $x = ed( $id, array( 'old' => "Mon\u{E000}to Fri", 'new' => 'x' ) ) ) && array( 'Mon to Fri' ) === array_column( $x->get_error_data()['near_matches'], 'text' ) );
 phone( 'heading typo (5.18 fixture)', with_field( $FV, '1.1.1.3', $TF, 'Our Delicous Burgers' ), array( 'old' => 'Delicous', 'new' => 'Delicious' ), 'Our Delicous Burgers', 'Our Delicious Burgers' );
 phone( 'button label', $FB, array( 'old' => 'Read the docs', 'new' => 'Order now' ), 'Read the docs', 'Order now' );
 phone( 'blurb title', $FA, array( 'old' => 'Global variables', 'new' => 'Global colours' ), 'Global variables', 'Global colours' );
