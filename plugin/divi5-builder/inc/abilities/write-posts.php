@@ -84,6 +84,8 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 		if ( isset( $a['categories'] ) ) { $terms['category'] = $a['categories']; }
 		if ( isset( $a['tags'] ) ) { $terms['post_tag'] = $a['tags']; }
 		if ( isset( $a['terms'] ) ) { $terms = $a['terms']; }
+		// Strictest switch wins: assigning terms is also a Taxonomy write.
+		if ( $terms && ! d5b_abilities_category_on( 'taxonomy' ) ) { return new WP_Error( 'not_allowed', 'The Taxonomy ability category is switched off, so terms cannot be set. Leave out categories, tags and terms.' ); }
 		foreach ( $terms as $tax => $ids ) {
 			$tx = get_taxonomy( (string) $tax );
 			if ( ! is_object( $tx ) || ! is_object_in_taxonomy( $type, (string) $tax ) ) { return new WP_Error( 'invalid_input', 'The taxonomy "' . $tax . '" is not registered for this kind of content.' ); }
@@ -99,6 +101,10 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 			if ( is_protected_meta( $key, 'post' ) || d5b_is_secret_key( $key ) ) {
 				return new WP_Error( 'not_allowed', 'The custom field "' . substr( preg_replace( '/[^A-Za-z0-9_\-]/', '', $key ), 0, 100 ) . '" is protected (its name starts with _) or names a secret, so it cannot be written here.' );
 			}
+			// As core's REST API: edit_post_meta for the key (it runs the auth_post_meta_{key} filters). On create there is no id
+			// yet, so the type's edit capability stands in.
+			$may = is_object( $p ) ? current_user_can( 'edit_post_meta', (int) $p->ID, $key ) : current_user_can( d5b_rc_type_cap( $type, 'edit_posts' ) );
+			if ( ! $may ) { return new WP_Error( 'not_allowed', 'You may not change the custom field "' . substr( preg_replace( '/[^A-Za-z0-9_\-]/', '', $key ), 0, 100 ) . '".' ); }
 		}
 		if ( isset( $a['featured_image'] ) && 0 !== $a['featured_image'] ) {
 			if ( ! post_type_supports( $type, 'thumbnail' ) ) { return new WP_Error( 'invalid_input', 'This kind of content has no featured image.' ); }
@@ -108,9 +114,10 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 		return array( 'terms' => $terms );
 	}
 
-	/** Sets the terms and the featured image after the post itself is written. @return string[] warnings */
+	/** Sets the custom fields, the terms and the featured image after the post itself is written. @return string[] warnings */
 	function d5b_wp_apply_related( int $id, array $a, array $rel ): array {
 		$warn = array();
+		if ( isset( $a['meta'] ) ) { d5b_wc_apply_meta( $id, $a['meta'] ); }
 		foreach ( $rel['terms'] as $tax => $ids ) {
 			$r = wp_set_post_terms( $id, array_map( 'intval', $ids ), (string) $tax, false );
 			if ( is_wp_error( $r ) || false === $r ) { $warn[] = 'The terms of "' . $tax . '" could not be set.'; }
@@ -122,17 +129,21 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 		return $warn;
 	}
 
-	/** The masked-read check over every text input that has a stored counterpart. @return true|WP_Error */
+	/**
+	 * The masked-read check over every text input against its stored counterpart. On create ($p null) there is nothing
+	 * stored, so any [redacted] is refused.
+	 * @return true|WP_Error
+	 */
 	function d5b_wp_check_masked_all( array $a, $p ) {
 		$pairs = array( 'title' => 'post_title', 'content' => 'post_content', 'excerpt' => 'post_excerpt' );
 		foreach ( $pairs as $in => $field ) {
 			if ( ! isset( $a[ $in ] ) ) { continue; }
-			$r = d5b_wc_check_masked( (string) $a[ $in ], (string) $p->$field );
+			$r = d5b_wc_check_masked( (string) $a[ $in ], is_object( $p ) ? (string) $p->$field : '' );
 			if ( true !== $r ) { return $r; }
 		}
 		foreach ( (array) ( $a['meta'] ?? array() ) as $k => $v ) {
 			if ( ! is_string( $v ) ) { continue; }
-			$stored = get_post_meta( (int) $p->ID, (string) $k, true );
+			$stored = is_object( $p ) ? get_post_meta( (int) $p->ID, (string) $k, true ) : '';
 			$r = d5b_wc_check_masked( $v, is_string( $stored ) ? $stored : '' );
 			if ( true !== $r ) { return $r; }
 		}
@@ -165,12 +176,14 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 			$ok = d5b_wc_check_divi_html( $a['content'] );
 			if ( true !== $ok ) { return $ok; }
 		}
+		$ok = d5b_wp_check_masked_all( $a, null );
+		if ( true !== $ok ) { return $ok; }
 		$rel = d5b_wp_related( $kind, $type, $a, null );
 		if ( is_wp_error( $rel ) ) { return $rel; }
 		$arr = d5b_wc_apply_fields( array( 'status' => $status ) + $a, null );
 		$arr['post_type'] = $type;
 		$id = wp_insert_post( wp_slash( $arr ), true );
-		if ( is_wp_error( $id ) ) { return $id; }
+		if ( is_wp_error( $id ) ) { return d5b_wc_core_error( $id ); }
 		if ( (int) $id < 1 ) { return new WP_Error( 'write_failed', 'WordPress did not create the item.' ); }
 		$warn = d5b_wp_apply_related( (int) $id, $a, $rel );
 		$p    = get_post( (int) $id );
@@ -205,13 +218,17 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 		}
 		$rel = d5b_wp_related( $kind, $type, $a, $p );
 		if ( is_wp_error( $rel ) ) { return $rel; }
+		// As core: title, content and excerpt may not all end up empty (core would refuse with empty_content).
+		if ( d5b_wc_would_be_empty( $type, (string) ( $a['title'] ?? $p->post_title ), (string) ( $a['content'] ?? $p->post_content ), (string) ( $a['excerpt'] ?? $p->post_excerpt ) ) ) {
+			return new WP_Error( 'invalid_input', 'Title, content and excerpt would all be empty: WordPress does not allow that. Keep at least one.' );
+		}
 		// The "before" and the revision that holds the old content are taken BEFORE the write, against the old content.
 		$old_content = (string) $p->post_content;
 		$rev    = d5b_wc_matching_revision( $p );
 		$before = d5b_wc_post_before( $p );
 		$old    = d5b_wc_state( $p );
 		$r = wp_update_post( wp_slash( d5b_wc_apply_fields( $a, $p ) ), true );
-		if ( is_wp_error( $r ) ) { return $r; }
+		if ( is_wp_error( $r ) ) { return d5b_wc_core_error( $r ); }
 		if ( (int) $r < 1 ) { return new WP_Error( 'write_failed', 'WordPress did not save the change.' ); }
 		$warn = d5b_wp_apply_related( (int) $p->ID, $a, $rel );
 		$np   = get_post( (int) $p->ID );
@@ -237,7 +254,8 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 		if ( 'trash' === $p->post_status ) { return new WP_Error( 'cannot_trash', 'This item is already in the trash.' ); }
 		if ( ! d5b_wc_trash_available() ) { return new WP_Error( 'cannot_trash', 'This site has no trash (EMPTY_TRASH_DAYS is 0), so WordPress would delete the item for good. It is not trashed.' ); }
 		$rev    = d5b_wc_matching_revision( $p );
-		$before = d5b_wc_post_before( $p );
+		// Always the content: emptying the trash deletes the revisions together with the post.
+		$before = d5b_wc_post_before( $p, true );
 		$old    = d5b_wc_state( $p );
 		$r = wp_trash_post( (int) $p->ID );
 		$np = get_post( (int) $p->ID );
@@ -359,17 +377,17 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 		$d5b_req = 'cpt' === $d5b_kind ? array( 'type' ) : array();
 		$d5b_div = 'blocks' === $d5b_kind ? '' : ' With divi true the Divi builder is switched on for it.';
 		d5b_wc_def( $d5b_kind . '-create', $d5b_cat, 'Create ' . ( 'cpt' === $d5b_kind ? 'a custom post type item' : 'a ' . $d5b_word ),
-			'Creates ' . $d5b_long . ' and returns its id, link, status and the hash of its content. It is a draft unless status says otherwise; publish, future (with a date) and private are refused without the right to publish. Refuses Divi blocks in the content from a user without unfiltered_html (needs_unfiltered_html), protected or secret-named custom fields, and terms of taxonomies not registered for it.' . $d5b_div . ' Every change is kept in the change history.',
+			'Creates ' . $d5b_long . ' and returns its id, link, status and the hash of its content. It is a draft unless status says otherwise; publish, future (with a date) and private are refused without the right to publish. Refuses Divi blocks in the content from a user without unfiltered_html (needs_unfiltered_html), text holding [redacted] (masked_read: it came from a masked read), protected or secret-named custom fields, terms of taxonomies not registered for it, terms while the Taxonomy category is off, and an item with no title, content and excerpt at all.' . $d5b_div . ' Every change is kept in the change history.',
 			d5b_wp_props( $d5b_kind, 'create' ), $d5b_req, 'd5b_wp_h_' . $d5b_kind . '_create',
 			function ( array $in ) use ( $d5b_kind ) { return d5b_wp_can_create( $d5b_kind, $in ); },
 			array() );
 		d5b_wc_def( $d5b_kind . '-update', $d5b_cat, 'Update ' . ( 'cpt' === $d5b_kind ? 'a custom post type item' : 'a ' . $d5b_word ),
-			'Changes ' . $d5b_long . ': only the fields given. Returns the item with its new hash. Content needs expect_hash from the last read; a stale hash is refused (stale, with last_saved and the current hash) and nothing is written. Title-only or status-only changes need no hash. Refuses text holding [redacted] from a masked read (masked_read), Divi blocks from a user without unfiltered_html, and an item in the trash. On a Divi page prefer divi-section-edit or divi-text-edit over replacing the whole content. WordPress makes a revision as usual, and the change history keeps everything needed to put it back.',
+			'Changes ' . $d5b_long . ': only the fields given. Returns the item with its new hash. Content needs expect_hash from the last read; a stale hash is refused (stale, with last_saved and the current hash) and nothing is written. Title-only or status-only changes need no hash. Refuses text holding [redacted] from a masked read (masked_read), Divi blocks from a user without unfiltered_html, terms while the Taxonomy category is off, a change that would leave title, content and excerpt all empty, and an item in the trash. On a Divi page prefer divi-section-edit or divi-text-edit over replacing the whole content. WordPress makes a revision as usual, and the change history keeps everything needed to put it back.',
 			d5b_wp_props( $d5b_kind, 'update' ), array_merge( $d5b_req, array( 'id' ) ), 'd5b_wp_h_' . $d5b_kind . '_update',
 			function ( array $in ) use ( $d5b_kind ) { return d5b_wp_can_update( $d5b_kind, $in ); },
 			array() );
 		d5b_wc_def( $d5b_kind . '-trash', $d5b_cat, 'Trash ' . ( 'cpt' === $d5b_kind ? 'a custom post type item' : 'a ' . $d5b_word ),
-			'Moves ' . $d5b_long . ' to the trash (never deletes it) and returns it with restore_with, the ability that puts it back. Refuses an item already in the trash, an item you may not delete, and a site without a trash (EMPTY_TRASH_DAYS 0, where WordPress would delete it for good).',
+			'Moves ' . $d5b_long . ' to the trash (never deletes it) and returns it with restore_with, the ability that puts it back. Refuses an item already in the trash, an item you may not delete, and a site without a trash (EMPTY_TRASH_DAYS 0, where WordPress would delete it for good). The change history keeps a full copy (content included); a password is not kept, so after a manual restore from the history a password must be set again by hand.',
 			d5b_wp_props( $d5b_kind, 'trash' ), array_merge( $d5b_req, array( 'id' ) ), 'd5b_wp_h_' . $d5b_kind . '_trash',
 			function ( array $in ) use ( $d5b_kind ) { return d5b_wp_can_trash( $d5b_kind, $in ); },
 			array( 'destructive' => true ) );

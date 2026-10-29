@@ -120,7 +120,8 @@ check( 'a required property and additionalProperties false are enforced; no sche
 	&& 'ability_invalid_input' === code( ( new T_Ability( 'x/y', array( 'input_schema' => array( 'type' => 'object', 'additionalProperties' => false, 'properties' => array() ), 'execute_callback' => $t_yes, 'permission_callback' => $t_yes ) ) )->execute( array( 'z' => 1 ) ) )
 	&& 'ability_missing_input_schema' === code( ( new T_Ability( 'x/y', array( 'execute_callback' => $t_yes, 'permission_callback' => $t_yes ) ) )->execute( array( 'z' => 1 ) ) ) );
 $r = wp_get_ability( 'divi5-builder/posts-create' )->execute( null );
-check( 'the plugin registers its writes with a default, so a null input reaches the handler (here: creates an empty-titled draft? no: WordPress refuses empty content)', 'empty_content' === code( $r ), $r );
+check( 'the plugin registers its writes with a default, so a null input reaches the handler (WordPress then refuses the empty post: invalid_input)', 'invalid_input' === code( $r ) && 'Content, title, and excerpt are empty.' === $r->get_error_message(), $r );
+check( 'an input of \'\' is an empty object, as rest_is_object says (passes additionalProperties false)', 'ran' === ( new T_Ability( 'x/y', array( 'input_schema' => array( 'type' => 'object', 'additionalProperties' => false, 'properties' => array() ), 'execute_callback' => function () { return 'ran'; }, 'permission_callback' => $t_yes ) ) )->execute( '' ) );
 
 echo "create\n";
 site();
@@ -332,6 +333,176 @@ unset( $GLOBALS['wpdb']->tables['wp_d5b_history'] ); $GLOBALS['T_dbdelta_fail'] 
 $r = call( 'pages-update', array( 'id' => $pg, 'title' => 'Contact again' ) );
 check( 'when the history row cannot be stored the write stands, the caller never sees _history_failed, and the audit row says ok_no_history', is_array( $r ) && ! array_key_exists( '_history_failed', $r ) && 'Contact again' === post( $pg )->post_title && 'ok_no_history' === end( $GLOBALS['wpdb']->tables['wp_d5b_audit'] )['status'], $r );
 check( 'the result of a write is the detail row (id, url, hash, status, content) with no masked flag for plain content', isset( $r['id'], $r['url'], $r['hash'], $r['status'], $r['content'] ) && ! isset( $r['masked'] ) );
+
+// ---- fix round 1 (review of 2e33467)
+const AUTHOR = array( 'read', 'edit_posts', 'edit_published_posts', 'publish_posts', 'delete_posts', 'delete_published_posts', 'upload_files' );
+const SUBSCRIBER = array( 'read' );
+
+echo "terms: the Taxonomy switch and assign_terms\n";
+site();
+$cat = t_add_term( 'category', 'News' ); $tag = t_add_term( 'post_tag', 'Hot' ); $id = t_add_post( array( 'post_author' => 3 ) );
+t_add_type( 'book', true, true, false ); t_add_taxonomy( 'genre', true, true, array( 'book' ) ); $gen = t_add_term( 'genre', 'Crime' ); $bk = t_add_post( array( 'post_type' => 'book', 'post_author' => 3 ) );
+d5b_abilities_set_category( 'taxonomy', false, false, 'tester' );
+$i0 = count( $GLOBALS['T_inserts'] );
+$codes = array( code( call( 'posts-create', array( 'title' => 'x', 'categories' => array( $cat ) ) ) ), code( call( 'posts-update', array( 'id' => $id, 'title' => 'changed', 'tags' => array() ) ) ),
+	code( call( 'cpt-create', array( 'type' => 'book', 'title' => 'x', 'terms' => array( 'genre' => array( $gen ) ) ) ) ), code( call( 'cpt-update', array( 'type' => 'book', 'id' => $bk, 'terms' => array( 'genre' => array( $gen ) ) ) ) ) );
+check( 'Taxonomy off: categories, tags or terms refuse the whole call not_allowed; nothing is written', array( 'not_allowed', 'not_allowed', 'not_allowed', 'not_allowed' ) === $codes && $i0 === count( $GLOBALS['T_inserts'] ) && array() === $GLOBALS['T_updates'] && 'Title ' . $id === post( $id )->post_title && array() === hrows(), $codes );
+check( '... a write without terms still works', is_array( call( 'posts-update', array( 'id' => $id, 'title' => 'changed' ) ) ) );
+d5b_abilities_set_category( 'taxonomy', true, false, 'tester' );
+$GLOBALS['T_taxonomies']['post_tag']->cap->assign_terms = 'assign_post_tags';
+check( 'the taxonomy\'s assign_terms capability is required (refused not_allowed, no terms set)', 'not_allowed' === code( call( 'posts-update', array( 'id' => $id, 'tags' => array( $tag ) ) ) ) && empty( $GLOBALS['T_object_terms'][ $id ]['post_tag'] ) );
+t_set_caps( array_merge( ADMIN, array( 'assign_post_tags' ) ) );
+check( '... and with it the tags are set', is_array( call( 'posts-update', array( 'id' => $id, 'tags' => array( $tag ) ) ) ) && array( $tag ) === $GLOBALS['T_object_terms'][ $id ]['post_tag'] );
+
+echo "masked text on create, meta and the edit_post_meta check\n";
+site();
+$i0 = count( $GLOBALS['T_inserts'] );
+check( 'create: content, title or a meta value holding [redacted] is refused masked_read; nothing is created', 'masked_read' === code( call( 'posts-create', array( 'title' => 'x', 'content' => 'key=[redacted]' ) ) ) && 'masked_read' === code( call( 'posts-create', array( 'title' => 'T [redacted]' ) ) )
+	&& 'masked_read' === code( call( 'posts-create', array( 'title' => 'x', 'meta' => array( 'note' => '[redacted]' ) ) ) ) && $i0 === count( $GLOBALS['T_inserts'] ) && array() === hrows() );
+$id = t_add_post( array( 'post_author' => 3, 'post_content' => 'c' ) ); t_add_meta( $id, 'note', 'token=abc' );
+check( 'update: a meta value holding [redacted] where the stored one does not is refused masked_read (extra.php)', 'masked_read' === code( call( 'posts-update', array( 'id' => $id, 'meta' => array( 'note' => 'token=[redacted]' ) ) ) ) && 'token=abc' === meta1( $id, 'note' ) );
+$id2 = t_add_post( array( 'post_author' => 3, 'post_title' => 'about [redacted] marker' ) );
+check( 'content with [redacted] is refused even when only the stored TITLE holds the marker (each field against its own)', 'masked_read' === code( call( 'posts-update', array( 'id' => $id2, 'content' => 'secret=[redacted]', 'expect_hash' => md5( 'Content ' . $id2 ) ) ) ) );
+$GLOBALS['T_meta_auth_denied'] = array( 'locked' );
+check( 'update: edit_post_meta is asked per key (an auth_post_meta filter that says no refuses not_allowed)', 'not_allowed' === code( call( 'posts-update', array( 'id' => $id, 'meta' => array( 'locked' => 'x' ) ) ) ) && null === meta1( $id, 'locked' ) && is_array( call( 'posts-update', array( 'id' => $id, 'meta' => array( 'open' => 'x' ) ) ) ) );
+site( array( 'read', 'create_books', 'publish_posts' ) );
+t_add_type( 'book', true, true, false, null, array( 'create_posts' => 'create_books', 'edit_posts' => 'edit_books' ) );
+check( 'create: without the type\'s edit capability, meta is refused not_allowed (edit_post_meta stand-in); without meta it is created', 'not_allowed' === code( call( 'cpt-create', array( 'type' => 'book', 'title' => 'x', 'meta' => array( 'a' => 'b' ) ) ) ) && is_array( call( 'cpt-create', array( 'type' => 'book', 'title' => 'x' ) ) ) );
+site();
+$i0 = count( $GLOBALS['T_inserts'] );
+check( 'a meta key that is not UTF-8 is refused invalid_input (bad-utf8.php); nothing is created', 'invalid_input' === code( call( 'posts-create', array( 'title' => 'x', 'meta' => array( "k\xff\xfe" => 'v' ) ) ) ) && $i0 === count( $GLOBALS['T_inserts'] ) );
+check( 'a key that is protected once control characters are dropped ("\x01_thumbnail_id") is refused', 'not_allowed' === code( call( 'posts-create', array( 'title' => 'x', 'meta' => array( "\x01_thumbnail_id" => '5' ) ) ) ) );
+$id = t_add_post( array( 'post_author' => 3 ) ); t_add_meta( $id, 'm', 'one' ); t_add_meta( $id, 'm', 'two' );
+call( 'posts-update', array( 'id' => $id, 'meta' => array( 'm' => 'z' ) ) );
+$h = hlast();
+check( 'a key with two rows ends with exactly the one value given; before keeps both old rows', array( 'z' ) === $GLOBALS['T_meta'][ $id ]['m'] && array( 'one', 'two' ) === $h['before']['meta']['m'], array( $GLOBALS['T_meta'][ $id ]['m'], $h['before']['meta'] ) );
+t_add_meta( $id, 'n', 'a' ); t_add_meta( $id, 'n', 'b' ); update_post_meta( $id, 'n', 'c' );
+check( 'stand-in parity: core\'s update_post_meta on a key with 2 rows sets both rows', array( 'c', 'c' ) === $GLOBALS['T_meta'][ $id ]['n'] );
+
+echo "exact meta copies in the history\n";
+site();
+$id = t_add_post( array( 'post_author' => 3 ) );
+$deep = array( 'a' => array( 'b' => array( 'c' => array( 'd' => array( 'e' => array( 'f' => array( 'g' => array( 'h' => array( 'i' => 'deep' ) ) ) ) ) ) ) ) );
+t_add_meta( $id, 'cfg', (object) array( 'a' => 1 ) ); t_add_meta( $id, 'obj', new ArrayObject( array( 'k' => 'v' ) ) ); t_add_meta( $id, 'bin', "bad\xff" ); t_add_meta( $id, 'deep', $deep ); t_add_meta( $id, 'plain', array( 'x' => 1 ) );
+call( 'posts-update', array( 'id' => $id, 'meta' => array( 'obj' => 'x', 'cfg' => 'y', 'bin' => 'z', 'deep' => 'w' ) ) );
+$m = hlast()['before']['meta'];
+$back = function ( $cell ) { return is_array( $cell ) && isset( $cell['serialized'] ) && 1 === count( $cell ) ? unserialize( base64_decode( $cell['serialized'] ) ) : null; };
+$o = $back( $m['obj'][0] ?? null );
+check( 'an object other than stdClass is kept as { serialized } and comes back as the same object (extra.php)', $o instanceof ArrayObject && array( 'k' => 'v' ) === $o->getArrayCopy(), $m['obj'] ?? null );
+check( 'stdClass is kept as an array; a plain array as it is', array( array( 'a' => 1 ) ) === $m['cfg'] && array( array( 'x' => 1 ) ) === $m['plain'], array( $m['cfg'], $m['plain'] ) );
+check( 'invalid UTF-8 and nesting deeper than 8 are kept as { serialized } and come back byte for byte', is_array( $m['bin'][0] ?? null ) && "bad\xff" === base64_decode( $m['bin'][0]['serialized'] ) && $deep === $back( $m['deep'][0] ?? null ), array( $m['bin'] ?? null, $m['deep'] ?? null ) );
+
+echo "trash rows hold everything\n";
+site();
+t_add_taxonomy( 'section', true, true, array( 'page' ) ); $sec = t_add_term( 'section', 'Main' );
+$img = t_add_post( array( 'post_type' => 'attachment', 'post_status' => 'inherit', 'post_mime_type' => 'image/jpeg', 'post_author' => 3 ) );
+$pg = t_add_post( array( 'post_type' => 'page', 'post_author' => 3, 'post_status' => 'publish', 'post_content' => 'body', 'post_password' => 'pw-secret-1', 'menu_order' => 3 ) );
+$GLOBALS['T_object_terms'][ $pg ] = array( 'section' => array( $sec ) );
+t_add_meta( $pg, 'color', 'red' ); t_add_meta( $pg, '_thumbnail_id', $img ); t_add_meta( $pg, '_wp_page_template', 'tpl.php' ); t_add_meta( $pg, '_et_pb_page_layout', 'et_full_width_page' ); t_add_meta( $pg, 'api_key', 'sekret-1' ); t_add_meta( $pg, '_stripe_secret', 'sekret-2' );
+update_option( 'sticky_posts', array( $pg ) );
+$rv = t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $pg, 'post_name' => $pg . '-revision-v1', 'post_content' => 'body' ) );
+call( 'pages-trash', array( 'id' => $pg ) );
+$row = hrows()[ count( hrows() ) - 1 ]; $h = hlast(); $b = $h['before'];
+check( 'trash: before.content is there even though a matching revision exists (emptying the trash deletes revisions)', 'body' === ( $b['content'] ?? null ) && $rv === $h['revision_id'], $h );
+check( '... with terms, meta, featured image, template, sticky and menu order', array( 'section' => array( $sec ) ) === $b['terms'] && array( 'color' => array( 'red' ) ) === $b['meta'] && $img === $b['featured_image'] && 'tpl.php' === $b['template'] && true === $b['sticky'] && 'publish' === $b['status'] && 3 === $b['menu_order'], $b );
+check( '... and every protected custom field that is not secret-named (Divi page settings) under protected_meta', array( 'et_full_width_page' ) === ( $b['protected_meta']['_et_pb_page_layout'] ?? null ) && array( 'tpl.php' ) === ( $b['protected_meta']['_wp_page_template'] ?? null ) && array( $img ) === ( $b['protected_meta']['_thumbnail_id'] ?? null ) && ! isset( $b['protected_meta']['_stripe_secret'] ) && ! isset( $b['meta']['api_key'] ), $b['protected_meta'] );
+check( '... the password only as access_gate: true (a key named has_password would be dropped by the secret filter); its value and the secrets are nowhere in the row', true === ( $b['access_gate'] ?? null ) && false === strpos( $row['before'] . $row['after'], 'pw-secret-1' ) && false === strpos( $row['before'], 'sekret-' ) );
+$id = t_add_post( array( 'post_author' => 3, 'post_content' => 'current' ) );
+t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $id, 'post_name' => $id . '-revision-v1', 'post_content' => 'older' ) );
+call( 'posts-trash', array( 'id' => $id ) ); $h = hlast();
+check( 'trash when the newest revision differs from the content: revision_id stays empty, content in before (extra.php)', null === $h['revision_id'] && 'current' === $h['before']['content'], $h );
+
+echo "core's errors\n";
+site();
+foreach ( array( array(), array( 'title' => '' ), array( 'title' => '   ', 'content' => '' ), array( 'status' => 'draft' ) ) as $in ) {
+	$r = call( 'posts-create', $in );
+	check( 'empty.php create ' . json_encode( $in ) . ': invalid_input, HTTP 400, core\'s message, audit error:invalid_input', 'invalid_input' === code( $r ) && 400 === $r->get_error_data()['status'] && 'Content, title, and excerpt are empty.' === $r->get_error_message() && 'error:invalid_input' === end( $GLOBALS['wpdb']->tables['wp_d5b_audit'] )['status'], $r );
+}
+$id = t_add_post( array( 'post_author' => 3, 'post_title' => 'T', 'post_content' => 'C' ) );
+$GLOBALS['T_update_fail'] = true;
+$r = call( 'posts-update', array( 'id' => $id, 'title' => 'n' ) );
+check( 'a database error on update is write_failed, HTTP 500; nothing changed, no history row', 'write_failed' === code( $r ) && 500 === $r->get_error_data()['status'] && 'T' === post( $id )->post_title && array() === hrows(), $r );
+$GLOBALS['T_update_fail'] = false; $GLOBALS['T_insert_fail'] = true;
+check( 'a database error on create is write_failed', 'write_failed' === code( call( 'posts-create', array( 'title' => 'x' ) ) ) );
+$GLOBALS['T_insert_fail'] = false; $GLOBALS['T_insert_error'] = new WP_Error( 'some_plugin_says_no', 'A plugin refused this post.' );
+$r = call( 'posts-create', array( 'title' => 'x' ) );
+check( 'any other error from WordPress is invalid_input with WordPress\'s message', 'invalid_input' === code( $r ) && 'A plugin refused this post.' === $r->get_error_message(), $r );
+$GLOBALS['T_insert_error'] = null;
+$u0 = count( $GLOBALS['T_updates'] );
+$r = call( 'posts-update', array( 'id' => $id, 'title' => '', 'content' => '', 'expect_hash' => md5( 'C' ) ) );
+check( 'empty.php: an update that would empty title, content and excerpt is refused invalid_input before WordPress is asked', 'invalid_input' === code( $r ) && 'T' === post( $id )->post_title && 'C' === post( $id )->post_content && $u0 === count( $GLOBALS['T_updates'] ), $r );
+$pg = t_add_post( array( 'post_type' => 'page', 'post_author' => 3, 'post_title' => 'P', 'post_content' => 'C' ) );
+check( '... but a page (no excerpt support) may be emptied, as core allows', is_array( call( 'pages-update', array( 'id' => $pg, 'title' => '', 'content' => '', 'expect_hash' => md5( 'C' ) ) ) ) && '' === post( $pg )->post_title );
+
+echo "restore: the filter is scoped to the item\n";
+site();
+$parent = t_add_post( array( 'post_author' => 3, 'post_status' => 'publish' ) ); $child = t_add_post( array( 'post_author' => 3, 'post_status' => 'pending' ) );
+call( 'posts-trash', array( 'id' => $parent ) ); call( 'posts-trash', array( 'id' => $child ) );
+$GLOBALS['T_untrash_cascade'] = array( $parent => array( $child ) );
+call( 'posts-restore', array( 'id' => $parent ) );
+check( 'a post another plugin untrashes during our restore gets WordPress\'s own status (draft), not ours (publish)', 'publish' === post( $parent )->post_status && 'draft' === post( $child )->post_status, array( post( $parent )->post_status, post( $child )->post_status ) );
+foreach ( array( 'publish', 'private', 'pending', 'draft', 'future' ) as $st ) {
+	site();
+	$id = t_add_post( array( 'post_author' => 3, 'post_status' => $st, 'post_date_gmt' => 'future' === $st ? gmdate( 'Y-m-d H:i:s', time() + 86400 ) : '2026-10-01 10:00:00' ) );
+	call( 'posts-trash', array( 'id' => $id ) ); $r = call( 'posts-restore', array( 'id' => $id ) );
+	check( "probe: $st -> trash -> restore = $st", is_array( $r ) && $st === post( $id )->post_status, post( $id )->post_status );
+}
+site();
+$id = t_add_post( array( 'post_author' => 3, 'post_status' => 'trash', 'post_name' => 'x__trashed' ) );
+$id2 = t_add_post( array( 'post_author' => 3, 'post_status' => 'trash' ) ); t_add_meta( $id2, '_wp_trash_meta_status', 'inherit' );
+check( 'probe: no _wp_trash_meta_status, or an odd one (inherit), restores to draft', is_array( call( 'posts-restore', array( 'id' => $id ) ) ) && 'draft' === post( $id )->post_status && is_array( call( 'posts-restore', array( 'id' => $id2 ) ) ) && 'draft' === post( $id2 )->post_status );
+
+echo "probe.php cases\n";
+site();
+$id = t_add_post( array( 'post_author' => 3, 'post_content' => 'A' ) );
+$r1 = call( 'posts-update', array( 'id' => $id, 'content' => 'B', 'expect_hash' => md5( 'A' ) ) );
+$u0 = count( $GLOBALS['T_updates'] ); $h0 = count( hrows() );
+$r2 = call( 'posts-update', array( 'id' => $id, 'content' => 'C', 'expect_hash' => md5( 'A' ) ) );
+check( 'probe: a second update with the same old hash is stale; content stays B; no update, no history; stale hash = md5(B)', is_array( $r1 ) && 'stale' === code( $r2 ) && 'B' === post( $id )->post_content && $u0 === count( $GLOBALS['T_updates'] ) && $h0 === count( hrows() ) && md5( 'B' ) === $r2->get_error_data()['hash'] );
+check( "probe: content '' without a hash is refused (empty counts as given)", 'invalid_input' === code( call( 'posts-update', array( 'id' => $id, 'content' => '' ) ) ) && 'B' === post( $id )->post_content );
+$nasty = "a\\b \\\\c \"q\" 'x' \\' \\\" \\\\\\\\ {\"k\":\"v\\\"w\\\\u0026\"} \\n";
+$r = call( 'posts-create', array( 'title' => $nasty, 'content' => $nasty, 'excerpt' => $nasty, 'meta' => array( 'fld' => $nasty ) ) );
+$id = (int) ( $r['id'] ?? 0 );
+check( 'probe: create keeps content, title, excerpt and meta byte for byte; hash = md5(sent)', $id && $nasty === post( $id )->post_content && $nasty === post( $id )->post_title && $nasty === post( $id )->post_excerpt && $nasty === meta1( $id, 'fld' ) && md5( $nasty ) === $r['hash'] );
+$n2 = $nasty . ' \\\\x';
+$r = call( 'posts-update', array( 'id' => $id, 'title' => $n2, 'content' => $n2, 'excerpt' => $n2, 'meta' => array( 'fld' => $n2 ), 'expect_hash' => md5( $nasty ) ) );
+$ins = end( $GLOBALS['T_updates'] );
+check( 'probe: update keeps them byte for byte, slashed exactly once on the way in, and before.title is the old unslashed title', is_array( $r ) && $n2 === post( $id )->post_content && $n2 === post( $id )->post_title && $n2 === post( $id )->post_excerpt && $n2 === meta1( $id, 'fld' ) && wp_unslash( $ins['post_content'] ) === $n2 && $nasty === hlast()['before']['title'] );
+site( CONTRIB );
+$i0 = count( $GLOBALS['T_inserts'] );
+check( 'probe: a contributor\'s publish is refused, not downgraded; nothing inserted', null !== code( call( 'posts-create', array( 'title' => 'x', 'status' => 'publish' ) ) ) && $i0 === count( $GLOBALS['T_inserts'] ) );
+$r = call( 'posts-create', array( 'title' => 'x', 'status' => 'pending' ) ); $own = (int) $r['id'];
+check( 'probe: contributor pending ok; publishing it by update refused; another author refused', 'pending' === $r['status'] && 'not_allowed' === code( call( 'posts-update', array( 'id' => $own, 'status' => 'publish' ) ) ) && 'pending' === post( $own )->post_status && 'not_allowed' === code( call( 'posts-create', array( 'title' => 'x', 'author' => 5 ) ) ) );
+check( 'probe: a contributor cannot create a reusable block (core: wp_block create_posts = publish_posts): refused by the gate and by the handler', 'FORBIDDEN' === call( 'blocks-create', array( 'title' => 'b' ) ) && 'not_allowed' === code( handler( 'blocks-create', array( 'title' => 'b' ) ) ) );
+site( AUTHOR );
+$other = t_add_post( array( 'post_author' => 5, 'post_status' => 'publish' ) );
+check( 'probe: an author on another author\'s post: update forbidden (handler not_allowed), trash forbidden, unchanged', 'FORBIDDEN' === call( 'posts-update', array( 'id' => $other, 'title' => 'mine' ) ) && 'not_allowed' === code( handler( 'posts-update', array( 'id' => $other, 'title' => 'mine' ) ) ) && 'FORBIDDEN' === call( 'posts-trash', array( 'id' => $other ) ) && 'publish' === post( $other )->post_status && 'Title ' . $other === post( $other )->post_title );
+site( NO_UFH );
+$pp = t_add_post( array( 'post_type' => 'page', 'post_author' => 5, 'post_status' => 'private', 'post_content' => 'p' ) );
+check( 'probe: an editor updates, trashes and restores another user\'s private page; it is private again', is_array( call( 'pages-update', array( 'id' => $pp, 'content' => 'q', 'expect_hash' => md5( 'p' ) ) ) ) && is_array( call( 'pages-trash', array( 'id' => $pp ) ) ) && is_array( call( 'pages-restore', array( 'id' => $pp ) ) ) && 'private' === post( $pp )->post_status && 'q' === post( $pp )->post_content );
+$pg = t_add_post( array( 'post_type' => 'page', 'post_author' => 3, 'post_content' => 'plain' ) );
+foreach ( array( '<!-- wp:divi/section {"a":1} --><!-- /wp:divi/section -->', "<!--\twp:divi/text -->", '<!--wp:divi/x-->', '<!-- WP:DIVI/section -->', "x<!--\n wp:divi/row -->" ) as $dc ) {
+	$i0 = count( $GLOBALS['T_inserts'] ); $u0 = count( $GLOBALS['T_updates'] ); $h0 = count( hrows() );
+	$a = call( 'pages-create', array( 'title' => 'x', 'content' => $dc ) ); $b = call( 'pages-update', array( 'id' => $pg, 'content' => $dc, 'expect_hash' => md5( 'plain' ) ) );
+	check( 'probe: needs_unfiltered_html for ' . json_encode( $dc ) . ', nothing written', 'needs_unfiltered_html' === code( $a ) && 'needs_unfiltered_html' === code( $b ) && $i0 === count( $GLOBALS['T_inserts'] ) && $u0 === count( $GLOBALS['T_updates'] ) && $h0 === count( hrows() ) && 'plain' === post( $pg )->post_content );
+}
+site( SUBSCRIBER );
+check( 'probe: a subscriber\'s blocks-create is refused by the gate and by the handler (create_posts checked in the handler); nothing inserted', 'FORBIDDEN' === call( 'blocks-create', array( 'title' => 'b', 'content' => 'x' ) ) && 'not_allowed' === code( handler( 'blocks-create', array( 'title' => 'b', 'content' => 'x' ) ) ) && 'not_allowed' === code( handler( 'posts-create', array( 'title' => 'b' ) ) ) && array() === $GLOBALS['T_inserts'] );
+site();
+$blk = t_add_post( array( 'post_type' => 'wp_block', 'post_author' => 3 ) );
+d5b_abilities_set_category( 'blocks', false, false, 'tester' );
+check( 'probe: blocks off: blocks-create, cpt-update on wp_block and posts-update on a block id are refused; unchanged', 'FORBIDDEN' === call( 'blocks-create', array( 'title' => 'b' ) ) && null !== code( call( 'cpt-update', array( 'type' => 'wp_block', 'id' => $blk, 'title' => 'x' ) ) ) && null !== code( call( 'posts-update', array( 'id' => $blk, 'title' => 'x' ) ) ) && 'Title ' . $blk === post( $blk )->post_title );
+d5b_abilities_set_category( 'blocks', true, false, 'tester' );
+check( 'probe: blocks on again: blocks-update works', is_array( call( 'blocks-update', array( 'id' => $blk, 'title' => 'x' ) ) ) && 'x' === post( $blk )->post_title );
+foreach ( array( 'create', 'update', 'trash', 'restore' ) as $shape ) {
+	site();
+	$id = t_add_post( array( 'post_author' => 3, 'post_content' => 'c' ) );
+	if ( 'restore' === $shape ) { call( 'posts-trash', array( 'id' => $id ) ); }
+	unset( $GLOBALS['wpdb']->tables['wp_d5b_history'] ); $GLOBALS['T_dbdelta_fail'] = true; set_transient( 'd5b_audit_install_failed', 1, 3600 );
+	$r = call( 'posts-' . $shape, 'create' === $shape ? array( 'title' => 'n' ) : ( 'update' === $shape ? array( 'id' => $id, 'title' => 'n' ) : array( 'id' => $id ) ) );
+	$did = 'create' === $shape ? isset( $r['id'] ) && null !== post( $r['id'] ) : ( 'update' === $shape ? 'n' === post( $id )->post_title : ( 'trash' === $shape ? 'trash' === post( $id )->post_status : 'publish' === post( $id )->post_status ) );
+	check( "probe: $shape with the history table gone: the write stands, no _history_failed in the response, audit ok_no_history", is_array( $r ) && $did && ! array_key_exists( '_history_failed', $r ) && 'ok_no_history' === end( $GLOBALS['wpdb']->tables['wp_d5b_audit'] )['status'] );
+}
 
 echo "\n" . ( $n - $failed ) . " of $n passed\n";
 exit( $failed ? 1 : 0 );

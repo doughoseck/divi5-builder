@@ -92,16 +92,56 @@ if ( ! function_exists( 'd5b_wc_check_hash' ) ) {
 		return $out;
 	}
 
-	/** The custom fields a write may touch (not protected, not secret-named): key => list of values, as get_post_meta gives them. */
-	function d5b_wc_meta_of( $p ): array {
+	/**
+	 * True when the value survives JSON exactly: scalars (a string must be valid UTF-8, a float finite), arrays up to 8 levels
+	 * deep with UTF-8 keys, and stdClass (stored as its array, as the reads do). Any other object is not.
+	 */
+	function d5b_wc_json_safe( $v, int $depth = 0 ): bool {
+		if ( is_string( $v ) ) { return 1 === preg_match( '//u', $v ); }
+		if ( is_float( $v ) ) { return is_finite( $v ); }
+		if ( null === $v || is_bool( $v ) || is_int( $v ) ) { return true; }
+		if ( $v instanceof stdClass ) { $v = get_object_vars( $v ); }
+		if ( ! is_array( $v ) || $depth >= 8 ) { return false; }
+		foreach ( $v as $k => $x ) {
+			if ( is_string( $k ) && 1 !== preg_match( '//u', $k ) ) { return false; }
+			if ( ! d5b_wc_json_safe( $x, $depth + 1 ) ) { return false; }
+		}
+		return true;
+	}
+
+	/** stdClass as an array, every level. */
+	function d5b_wc_unobject( $v ) {
+		if ( $v instanceof stdClass ) { $v = get_object_vars( $v ); }
+		if ( is_array( $v ) ) { foreach ( $v as $k => $x ) { $v[ $k ] = d5b_wc_unobject( $x ); } }
+		return $v;
+	}
+
+	/**
+	 * One stored meta value as the history keeps it, so it can be put back exactly: a JSON-safe value as it is (stdClass as an
+	 * array); anything else (another object, nesting deeper than 8, invalid UTF-8) as { "serialized": base64 of
+	 * maybe_serialize( value ) }, the form WordPress itself stores it in (put back with maybe_unserialize( base64_decode() )).
+	 */
+	function d5b_wc_meta_value( $v ) {
+		if ( d5b_wc_json_safe( $v ) ) { return d5b_wc_unobject( $v ); }
+		$s = function_exists( 'maybe_serialize' ) ? maybe_serialize( $v ) : serialize( $v );
+		return array( 'serialized' => base64_encode( is_string( $s ) ? $s : serialize( $v ) ) );
+	}
+
+	/** Custom fields of the post: key => list of values (d5b_wc_meta_value). $protected picks the _ keys or the others; secret-named keys never. */
+	function d5b_wc_meta_rows( $p, bool $protected ): array {
 		$out = array();
 		foreach ( array_keys( (array) get_post_meta( (int) $p->ID ) ) as $k ) {
 			$k = (string) $k;
-			if ( is_protected_meta( $k, 'post' ) || d5b_is_secret_key( $k ) ) { continue; }
-			$out[ $k ] = d5b_rc_meta_clean( array_values( (array) get_post_meta( (int) $p->ID, $k, false ) ) );
+			if ( $protected !== is_protected_meta( $k, 'post' ) || d5b_is_secret_key( $k ) ) { continue; }
+			$out[ $k ] = array_map( 'd5b_wc_meta_value', array_values( (array) get_post_meta( (int) $p->ID, $k, false ) ) );
 		}
 		ksort( $out );
 		return $out;
+	}
+
+	/** The custom fields a write may touch (not protected, not secret-named): key => list of values. */
+	function d5b_wc_meta_of( $p ): array {
+		return d5b_wc_meta_rows( $p, false );
 	}
 
 	/** Every field of a post-like object other than its content, as the history keeps it (key names follow the inputs). */
@@ -115,6 +155,13 @@ if ( ! function_exists( 'd5b_wc_check_hash' ) ) {
 			'terms' => d5b_wc_terms_of( $p ), 'meta' => d5b_wc_meta_of( $p ), 'featured_image' => (int) get_post_thumbnail_id( $id ),
 			// Divi's own flags are protected meta, but divi: true writes them, so the history keeps them.
 			'divi_flags' => array( '_et_pb_use_builder' => (string) get_post_meta( $id, '_et_pb_use_builder', true ), '_et_pb_use_divi_5' => (string) get_post_meta( $id, '_et_pb_use_divi_5', true ) ),
+			'template' => (string) get_post_meta( $id, '_wp_page_template', true ),
+			'sticky' => is_sticky( $id ),
+			// The password itself is never stored: only whether there was one (it is set again by hand after a manual restore).
+			// Not called has_password: the history's secret filter drops every key that names a password, with its value.
+			'access_gate' => '' !== (string) ( $p->post_password ?? '' ),
+			// Every protected custom field that is not secret-named (Divi's _et_pb_* page settings, the template, the thumbnail ...).
+			'protected_meta' => d5b_wc_meta_rows( $p, true ),
 		);
 	}
 
@@ -138,11 +185,51 @@ if ( ! function_exists( 'd5b_wc_check_hash' ) ) {
 		return 0;
 	}
 
-	/** The history "before": every field, and the content only when no matching revision holds it. */
-	function d5b_wc_post_before( $p ): array {
+	/**
+	 * The history "before": every field, and the content only when no matching revision holds it. $with_content true always
+	 * keeps the content (a trash: emptying the trash deletes the revisions with the post).
+	 */
+	function d5b_wc_post_before( $p, bool $with_content = false ): array {
 		$before = d5b_wc_snapshot( $p );
-		if ( 0 === d5b_wc_matching_revision( $p ) ) { $before['content'] = (string) $p->post_content; }
+		if ( $with_content || 0 === d5b_wc_matching_revision( $p ) ) { $before['content'] = (string) $p->post_content; }
 		return $before;
+	}
+
+	/**
+	 * True when title, content and excerpt would all be empty, as core's wp_insert_post judges it (the title trimmed, as the
+	 * title_save_pre filter does; falsy values; only for a type that supports all three; never an attachment). Core then
+	 * refuses with empty_content.
+	 */
+	function d5b_wc_would_be_empty( string $type, string $title, string $content, string $excerpt ): bool {
+		if ( 'attachment' === $type || trim( $title ) || $content || $excerpt ) { return false; }
+		return post_type_supports( $type, 'editor' ) && post_type_supports( $type, 'title' ) && post_type_supports( $type, 'excerpt' );
+	}
+
+	/**
+	 * A WP_Error from wp_insert_post / wp_update_post in the plugin's codes: empty_content and anything else WordPress
+	 * refused become invalid_input (400) with WordPress's message; a database error (db_*_error) becomes write_failed (500).
+	 */
+	function d5b_wc_core_error( WP_Error $e ): WP_Error {
+		$code = (string) $e->get_error_code();
+		$msg  = (string) $e->get_error_message();
+		if ( 1 === preg_match( '/^db_[a-z_]*error$/', $code ) ) { return new WP_Error( 'write_failed', 'WordPress could not save it to the database' . ( '' === $msg ? '.' : ': ' . $msg ) ); }
+		return new WP_Error( 'invalid_input', '' === $msg ? 'WordPress refused the change (' . $code . ').' : $msg );
+	}
+
+	/**
+	 * Sets custom fields after the post is written, so a key that holds several rows ends with exactly the one value given
+	 * (core's update_post_meta would set every row of the key to it). Values are slashed: core unslashes.
+	 */
+	function d5b_wc_apply_meta( int $id, array $meta ): void {
+		foreach ( $meta as $k => $v ) {
+			$k = (string) $k;
+			if ( count( (array) get_post_meta( $id, $k, false ) ) > 1 ) {
+				delete_post_meta( $id, $k );
+				add_post_meta( $id, wp_slash( $k ), wp_slash( $v ) );
+			} else {
+				update_post_meta( $id, wp_slash( $k ), wp_slash( $v ) );
+			}
+		}
 	}
 
 	/** The fields of $new that differ from $old (the "after" of a write). */
@@ -154,7 +241,8 @@ if ( ! function_exists( 'd5b_wc_check_hash' ) ) {
 
 	/**
 	 * The wp_insert_post / wp_update_post array from accepted input (title, content, excerpt, status, slug, parent, author,
-	 * date, meta, divi). Terms and the featured image are set separately. The caller slashes it (wp_slash): core unslashes.
+	 * date, divi). Terms, custom fields (d5b_wc_apply_meta) and the featured image are set separately, after the post is
+	 * written. The caller slashes it (wp_slash): core unslashes.
 	 */
 	function d5b_wc_apply_fields( array $a, $existing ): array {
 		$arr = array();
@@ -167,9 +255,7 @@ if ( ! function_exists( 'd5b_wc_check_hash' ) ) {
 			$arr['post_date']     = (string) get_date_from_gmt( (string) $a['date'], 'Y-m-d H:i:s' );
 			$arr['edit_date']     = true;
 		}
-		$meta = isset( $a['meta'] ) && is_array( $a['meta'] ) ? $a['meta'] : array();
-		if ( ! empty( $a['divi'] ) ) { $meta['_et_pb_use_builder'] = 'on'; $meta['_et_pb_use_divi_5'] = 'on'; }
-		if ( $meta ) { $arr['meta_input'] = $meta; }
+		if ( ! empty( $a['divi'] ) ) { $arr['meta_input'] = array( '_et_pb_use_builder' => 'on', '_et_pb_use_divi_5' => 'on' ); }
 		return $arr;
 	}
 

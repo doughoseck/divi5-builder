@@ -138,7 +138,8 @@ function sanitize_text_field( $s ) { return trim( strip_tags( (string) $s ) ); }
 function sanitize_key( $s ) { return preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $s ) ); }
 function wp_generate_uuid4() { return '00000000-0000-4000-8000-000000000000'; }
 // As core (meta.php): the key and the value are UNSLASHED, every existing value of the key is replaced. Kept in T_meta.
-function update_post_meta( $id, $k, $v, $prev = '' ) { $GLOBALS['T_meta'][ (int) $id ][ wp_unslash( $k ) ] = array( wp_unslash( $v ) ); return true; }
+// With no previous value core updates EVERY row of the key (a key with 2 rows keeps 2 rows, both with the new value).
+function update_post_meta( $id, $k, $v, $prev = '' ) { $k = wp_unslash( $k ); $n = max( 1, count( $GLOBALS['T_meta'][ (int) $id ][ $k ] ?? array() ) ); $GLOBALS['T_meta'][ (int) $id ][ $k ] = array_fill( 0, $n, wp_unslash( $v ) ); return true; }
 function add_post_meta( $id, $k, $v, $unique = false ) { $k = wp_unslash( $k ); if ( $unique && ! empty( $GLOBALS['T_meta'][ (int) $id ][ $k ] ) ) { return false; } $GLOBALS['T_meta'][ (int) $id ][ $k ][] = wp_unslash( $v ); return true; }
 function delete_post_meta( $id, $k, $v = '' ) { $had = isset( $GLOBALS['T_meta'][ (int) $id ][ $k ] ); unset( $GLOBALS['T_meta'][ (int) $id ][ $k ] ); return $had; }
 // get_post_meta: see the content stand-ins at the end of this file.
@@ -352,6 +353,7 @@ function t_content_reset() {
 	$GLOBALS['T_menus'] = array(); $GLOBALS['T_menu_items'] = array(); $GLOBALS['T_menu_locations'] = array(); $GLOBALS['T_registered_menus'] = array();
 	$GLOBALS['T_post_types'] = array(); $GLOBALS['T_taxonomies'] = array();
 	$GLOBALS['T_inserts'] = array(); $GLOBALS['T_updates'] = array(); $GLOBALS['T_deleted'] = array(); $GLOBALS['T_revisions_keep'] = -1; $GLOBALS['T_insert_fail'] = false; $GLOBALS['T_update_fail'] = false; $GLOBALS['T_trash_blocked'] = false;
+	$GLOBALS['T_meta_auth_denied'] = array(); $GLOBALS['T_untrash_cascade'] = array(); $GLOBALS['T_insert_error'] = null;
 	foreach ( array( 'post' => array( 1, 1, 0 ), 'page' => array( 1, 1, 1 ), 'attachment' => array( 1, 0, 0 ), 'revision' => array( 0, 0, 0 ), 'nav_menu_item' => array( 0, 0, 0 ), 'wp_block' => array( 0, 1, 0 ), 'wp_template' => array( 0, 1, 0 ), 'et_pb_layout' => array( 1, 1, 0 ) ) as $n => $f ) { t_add_type( $n, (bool) $f[0], (bool) $f[1], (bool) $f[2] ); }
 	foreach ( array( 'category' => array( 1, 1 ), 'post_tag' => array( 1, 1 ), 'nav_menu' => array( 0, 1 ), 'wp_theme' => array( 0, 0 ) ) as $n => $f ) { t_add_taxonomy( $n, (bool) $f[0], (bool) $f[1] ); }
 }
@@ -362,8 +364,10 @@ function t_add_type( $name, $public = true, $rest = true, $hier = false, $suppor
 	$cap = array( 'edit_post' => 'edit_post', 'read_post' => 'read_post', 'delete_post' => 'delete_post', 'edit_posts' => 'edit_posts', 'edit_others_posts' => 'edit_others_posts',
 		'delete_posts' => 'delete_posts', 'publish_posts' => 'publish_posts', 'read_private_posts' => 'read_private_posts', 'delete_private_posts' => 'delete_private_posts',
 		'delete_published_posts' => 'delete_published_posts', 'delete_others_posts' => 'delete_others_posts', 'edit_private_posts' => 'edit_private_posts', 'edit_published_posts' => 'edit_published_posts', 'create_posts' => 'edit_posts' );
+	// core registers wp_block with create_posts = publish_posts (a contributor cannot make a synced pattern).
+	if ( 'wp_block' === $name ) { $cap['create_posts'] = 'publish_posts'; }
 	if ( null === $supports ) {
-		$supports = in_array( $name, array( 'post', 'page' ), true ) ? array( 'title', 'editor', 'excerpt', 'revisions', 'thumbnail' ) : ( 'wp_block' === $name ? array( 'title', 'editor', 'revisions' ) : array( 'title', 'editor' ) );
+		$supports = 'post' === $name ? array( 'title', 'editor', 'excerpt', 'revisions', 'thumbnail' ) : ( 'page' === $name ? array( 'title', 'editor', 'revisions', 'thumbnail', 'page-attributes' ) : ( 'wp_block' === $name ? array( 'title', 'editor', 'revisions' ) : array( 'title', 'editor' ) ) );
 	}
 	$GLOBALS['T_post_types'][ $name ] = (object) array( 'name' => $name, 'label' => ucfirst( $name ), 'public' => $public, 'show_in_rest' => $rest, 'hierarchical' => $hier, 'supports' => $supports, 'cap' => (object) array_merge( $cap, $caps ) );
 }
@@ -424,7 +428,10 @@ function t_post_cap( $cap, $id ) {
 	if ( 'inherit' === $p->post_status ) { return $p->post_parent && isset( $GLOBALS['T_posts'][ (int) $p->post_parent ] ) ? t_post_cap( 'read_post', (int) $p->post_parent ) : t_has_cap( 'read' ); }
 	return t_post_cap( 'edit_post', $id );
 }
-function current_user_can( $cap, $id = null ) {
+// edit_post_meta( id, key ): as map_meta_cap, edit_post on the post, a key that is not protected, and the
+// auth_post_meta_{key} filter (here: the key is not in T_meta_auth_denied).
+function current_user_can( $cap, $id = null, $key = null ) {
+	if ( 'edit_post_meta' === $cap ) { return null !== $id && t_post_cap( 'edit_post', (int) $id ) && ! is_protected_meta( (string) $key, 'post' ) && ! in_array( (string) $key, $GLOBALS['T_meta_auth_denied'] ?? array(), true ); }
 	if ( null !== $id && ( 'read_post' === $cap || 'edit_post' === $cap || 'delete_post' === $cap ) ) { return t_post_cap( $cap, (int) $id ); }
 	return t_has_cap( $cap );
 }
@@ -536,9 +543,10 @@ class T_Ability {
 		if ( empty( $s ) ) { return null === $input ? true : new WP_Error( 'ability_missing_input_schema', 'Ability "' . $this->name . '" does not define an input schema required to validate the provided input.' ); }
 		$why = '';
 		if ( 'object' === ( $s['type'] ?? '' ) ) {
+			// rest_is_object: '' is an empty object, as are arrays and stdClass.
 			if ( ! is_array( $input ) && '' !== $input && ! ( $input instanceof stdClass ) ) { $why = 'input is not of type object.'; }
 			else {
-				$in = (array) $input;
+				$in = '' === $input ? array() : (array) $input;
 				foreach ( (array) ( $s['required'] ?? array() ) as $r ) { if ( ! array_key_exists( $r, $in ) ) { $why = $r . ' is a required property of input.'; break; } }
 				if ( '' === $why && false === ( $s['additionalProperties'] ?? true ) ) {
 					foreach ( array_keys( $in ) as $k ) { if ( ! isset( $s['properties'][ $k ] ) ) { $why = $k . ' is not a valid property of Object.'; break; } }
@@ -602,13 +610,20 @@ function t_status_by_date( $status, $gmt ) {
 	if ( 'future' === $status && '' !== (string) $gmt && strtotime( $gmt . ' UTC' ) - time() < 60 ) { return 'publish'; }
 	return $status;
 }
+// core's wp_insert_post empty check: the title is trimmed (title_save_pre), content and excerpt are not; falsy counts as
+// empty ('0' too); only for a type that supports title, editor and excerpt, never an attachment.
+function t_empty_post( $type, $title, $content, $excerpt ) {
+	return 'attachment' !== $type && ! trim( $title ) && ! $content && ! $excerpt && post_type_supports( $type, 'editor' ) && post_type_supports( $type, 'title' ) && post_type_supports( $type, 'excerpt' );
+}
+// T_insert_error: a WP_Error wp_insert_post returns as it is (another refusal of core's, or of a plugin's filter).
 function wp_insert_post( $arr, $wp_error = false, $fire_after_hooks = true ) {
 	$GLOBALS['T_inserts'][] = $arr;
 	if ( ! empty( $arr['ID'] ) ) { return wp_update_post( $arr, $wp_error ); }
 	if ( ! empty( $GLOBALS['T_insert_fail'] ) ) { return $wp_error ? new WP_Error( 'db_insert_error', 'Could not insert post into the database.' ) : 0; }
 	$f = wp_unslash( $arr );
 	$type = $f['post_type'] ?? 'post';
-	if ( 'attachment' !== $type && '' === trim( (string) ( $f['post_title'] ?? '' ) ) && '' === trim( (string) ( $f['post_content'] ?? '' ) ) && '' === trim( (string) ( $f['post_excerpt'] ?? '' ) ) ) {
+	if ( $GLOBALS['T_insert_error'] instanceof WP_Error ) { return $wp_error ? $GLOBALS['T_insert_error'] : 0; }
+	if ( t_empty_post( $type, (string) ( $f['post_title'] ?? '' ), (string) ( $f['post_content'] ?? '' ), (string) ( $f['post_excerpt'] ?? '' ) ) ) {
 		return $wp_error ? new WP_Error( 'empty_content', 'Content, title, and excerpt are empty.' ) : 0;
 	}
 	$now = gmdate( 'Y-m-d H:i:s' );
@@ -634,6 +649,8 @@ function wp_update_post( $arr = array(), $wp_error = false, $fire_after_hooks = 
 	$new = clone $old;
 	foreach ( t_post_fields() as $k ) { if ( array_key_exists( $k, $f ) ) { $new->$k = $f[ $k ]; } }
 	if ( array_key_exists( 'post_date_gmt', $f ) && ! array_key_exists( 'post_date', $f ) ) { $new->post_date = $f['post_date_gmt']; }
+	// core: wp_update_post goes through wp_insert_post, so the merged post meets the same empty check.
+	if ( t_empty_post( (string) $new->post_type, (string) $new->post_title, (string) $new->post_content, (string) $new->post_excerpt ) ) { return $wp_error ? new WP_Error( 'empty_content', 'Content, title, and excerpt are empty.' ) : 0; }
 	$new->post_status = t_status_by_date( (string) $new->post_status, (string) ( $new->post_date_gmt ?? '' ) );
 	$new->post_modified = $new->post_modified_gmt = gmdate( 'Y-m-d H:i:s' );
 	$GLOBALS['T_posts'][ $id ] = $new;
@@ -682,7 +699,24 @@ function wp_untrash_post( $id = 0 ) {
 	$slug = (string) get_post_meta( $p->ID, '_wp_desired_post_slug', true );
 	if ( '' !== $slug ) { $new->post_name = $slug; delete_post_meta( $p->ID, '_wp_desired_post_slug' ); }
 	$GLOBALS['T_posts'][ $p->ID ] = $new;
+	// T_untrash_cascade: id => ids another plugin untrashes from its untrashed_post hook (children, attachments), while
+	// every wp_untrash_post_status filter of the outer call is still added.
+	foreach ( $GLOBALS['T_untrash_cascade'][ (int) $p->ID ] ?? array() as $child ) { wp_untrash_post( $child ); }
 	return $new;
+}
+function is_sticky( $post_id = 0 ) { return in_array( (int) $post_id, array_map( 'intval', (array) get_option( 'sticky_posts', array() ) ), true ); }
+// As core (functions.php), reduced: arrays and objects are serialized; a string that already looks serialized is serialized
+// again (so maybe_unserialize gives it back); everything else is returned as it is.
+function is_serialized( $data, $strict = true ) {
+	if ( ! is_string( $data ) ) { return false; }
+	$d = trim( $data );
+	if ( 'N;' === $d ) { return true; }
+	return 1 === preg_match( '/^[aOsbidC]:/', $d ) && ( 'b:0;' === $d || false !== @unserialize( $d ) );
+}
+function maybe_serialize( $data ) {
+	if ( is_array( $data ) || is_object( $data ) ) { return serialize( $data ); }
+	if ( is_serialized( $data, false ) ) { return serialize( $data ); }
+	return $data;
 }
 function get_post_thumbnail_id( $post = null ) { $p = get_post( $post ); return $p ? (int) get_post_meta( $p->ID, '_thumbnail_id', true ) : false; }
 function set_post_thumbnail( $post, $thumbnail_id ) {

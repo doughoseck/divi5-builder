@@ -172,7 +172,7 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 				$map = array();
 				foreach ( $v as $k => $x ) {
 					$k = (string) $k;
-					if ( '' === $k || strlen( $k ) > 255 ) { return new WP_Error( 'invalid_input', $key . ' has a field name that is empty or longer than 255 characters.' ); }
+					if ( '' === $k || strlen( $k ) > 255 || 1 !== preg_match( '//u', $k ) ) { return new WP_Error( 'invalid_input', $key . ' has a field name that is empty, longer than 255 characters or not UTF-8.' ); }
 					if ( ! is_scalar( $x ) || ( is_string( $x ) && ( strlen( $x ) > 65536 || 1 !== preg_match( '//u', $x ) ) ) ) { return new WP_Error( 'invalid_input', $key . ' values must be text (at most 64 KB), numbers or true/false.' ); }
 					$map[ $k ] = $x;
 				}
