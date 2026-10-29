@@ -290,7 +290,72 @@ if ( ! function_exists( 'd5b_wt_tax' ) ) {
 		$term = d5b_wt_term( $a['id'], (string) $t->name );
 		if ( null === $term ) { return new WP_Error( 'not_found', 'No term with that id in that taxonomy.' ); }
 		if ( d5b_wt_is_default( $term ) ) { return d5b_wt_default_error(); }
+		// Everything the delete also takes must be kept in full by the history: no secret-named key in the term's own meta
+		// nor in the menu items WordPress deletes with it.
+		foreach ( d5b_wt_term_meta_raw( (int) $term->term_id ) as $k => $rows ) {
+			if ( d5b_is_secret_key( (string) $k ) || ! d5b_wc_secret_free( $rows ) ) { return d5b_wc_secret_error( 'term' ); }
+		}
+		foreach ( d5b_wt_menu_item_ids( $term ) as $mi ) {
+			if ( ! d5b_wc_post_secret_free( $mi ) ) { return d5b_wc_secret_error( 'term has a menu item that' ); }
+		}
 		return $term;
+	}
+
+	/** The term's own meta, every row: key => list of raw values. */
+	function d5b_wt_term_meta_raw( int $id ): array {
+		$all = get_term_meta( $id );
+		$out = array();
+		foreach ( is_array( $all ) ? array_keys( $all ) : array() as $k ) { $out[ (string) $k ] = array_values( (array) get_term_meta( $id, (string) $k, false ) ); }
+		ksort( $out );
+		return $out;
+	}
+
+	/** The term's meta as the history keeps it: key => rows (d5b_wc_meta_value). */
+	function d5b_wt_term_meta( int $id ): array {
+		return array_map( function ( $rows ) { return array_map( 'd5b_wc_meta_value', $rows ); }, d5b_wt_term_meta_raw( $id ) );
+	}
+
+	/** The nav menu items linking to the term: WordPress deletes them for good with it (_wp_delete_tax_menu_item). */
+	function d5b_wt_menu_item_ids( $term ): array {
+		$ids = function_exists( 'wp_get_associated_nav_menu_items' ) ? wp_get_associated_nav_menu_items( (int) $term->term_id, 'taxonomy', (string) $term->taxonomy ) : array();
+		$ids = array_values( array_unique( array_map( 'intval', (array) $ids ) ) );
+		sort( $ids );
+		return $ids;
+	}
+
+	function d5b_wt_menu_items( $term ): array {
+		$out = array();
+		foreach ( d5b_wt_menu_item_ids( $term ) as $id ) { $p = get_post( $id ); if ( is_object( $p ) ) { $out[] = d5b_wc_nav_item_data( $p, true ); } }
+		return $out;
+	}
+
+	/** The term WordPress gives an item left with no term of the taxonomy (the default category, a default term), or null. */
+	function d5b_wt_default_term( string $tax ) {
+		$id = 0;
+		if ( 'category' === $tax ) { $id = (int) get_option( 'default_category' ); }
+		$obj = get_taxonomy( $tax );
+		if ( is_object( $obj ) && ! empty( $obj->default_term ) ) { $id = (int) get_option( 'default_term_' . $tax ); }
+		return $id > 0 ? d5b_wt_term( $id, $tax ) : null;
+	}
+
+	/** Every item the term is on, with every term id it holds in this taxonomy (so a rebuild can tell a default it already had). */
+	function d5b_wt_object_rows( $term ): array {
+		$rows = array();
+		foreach ( d5b_wt_objects( $term ) as $o ) { $rows[] = array( 'id' => $o, 'term_ids' => d5b_wt_object_term_ids( $o, (string) $term->taxonomy ) ); }
+		return $rows;
+	}
+
+	/** The items that hold no other term of the taxonomy: they get the default term, when there is one. */
+	function d5b_wt_losing_last( $term, array $rows ): array {
+		$out = array();
+		foreach ( $rows as $r ) { if ( array( (int) $term->term_id ) === $r['term_ids'] ) { $out[] = $r['id']; } }
+		return $out;
+	}
+
+	/** The confirmation fingerprint: the term (name, slug, parent, count), its meta and the menu items that go with it. */
+	function d5b_wt_fp( $term ): string {
+		$extra = array( d5b_wt_term_meta( (int) $term->term_id ), d5b_wt_menu_items( $term ) );
+		return d5b_fp_term( $term ) . '|' . sha1( (string) json_encode( $extra, JSON_PARTIAL_OUTPUT_ON_ERROR ) );
 	}
 
 	/** @return array|WP_Error */
@@ -301,13 +366,18 @@ if ( ! function_exists( 'd5b_wt_tax' ) ) {
 		if ( is_wp_error( $term ) ) { return $term; }
 		$children = d5b_wt_children( $term );
 		$objects  = d5b_wt_objects( $term );
-		$code = d5b_confirm_issue( 'divi5-builder/taxonomy-delete', 'term', (int) $term->term_id, d5b_fp_term( $term ) );
+		$losing   = d5b_wt_losing_last( $term, d5b_wt_object_rows( $term ) );
+		$default  = d5b_wt_default_term( (string) $term->taxonomy );
+		$code = d5b_confirm_issue( 'divi5-builder/taxonomy-delete', 'term', (int) $term->term_id, d5b_wt_fp( $term ) );
 		if ( is_wp_error( $code ) ) { return $code; }
 		return array(
 			'term' => d5b_rc_term_detail( $term ), 'count' => (int) $term->count,
 			'children' => array_slice( $children, 0, 100 ), 'children_total' => count( $children ),
 			'posts' => array_slice( $objects, 0, 100 ), 'posts_total' => count( $objects ), 'posts_capped' => count( $objects ) > 100,
-			'note' => 'A term has no trash: the delete is permanent. WordPress moves its child terms up to its own parent, and takes it off every item it was assigned to' . ( 'category' === (string) $term->taxonomy ? ' (an item left with no category gets the default category)' : '' ) . '. The change history keeps the term, its children and every item id, so it can be recreated and reassigned by hand.',
+			'objects_losing_last_term' => array_slice( $losing, 0, 100 ), 'objects_losing_last_term_total' => count( $losing ),
+			'default_term' => null === $default ? null : array( 'id' => (int) $default->term_id, 'name' => (string) $default->name ),
+			'menu_items' => d5b_wt_menu_items( $term ), 'term_meta' => d5b_wt_term_meta( (int) $term->term_id ),
+			'note' => 'A term has no trash: the delete is permanent. WordPress moves its child terms up to its own parent, takes it off every item it was assigned to (the items in objects_losing_last_term then hold no term of this taxonomy' . ( null === $default ? '' : ' and get the default term "' . (string) $default->name . '"' ) . '), deletes the term\'s own meta (term_meta) and deletes for good every menu item that links to it (menu_items). The change history keeps all of it, so it can be rebuilt by hand.',
 		) + $code;
 	}
 
@@ -319,11 +389,18 @@ if ( ! function_exists( 'd5b_wt_tax' ) ) {
 		if ( is_wp_error( $term ) ) { return $term; }
 		$id  = (int) $term->term_id;
 		$tax = (string) $term->taxonomy;
-		$ok  = d5b_confirm_check( 'divi5-builder/taxonomy-delete', 'term', $id, d5b_fp_term( $term ), (string) ( $a['confirmation'] ?? '' ) );
+		$ok  = d5b_confirm_check( 'divi5-builder/taxonomy-delete', 'term', $id, d5b_wt_fp( $term ), (string) ( $a['confirmation'] ?? '' ) );
 		if ( true !== $ok ) { return $ok; }
-		// The history row comes FIRST: once the term is gone it is all there is to rebuild it and its assignments from.
+		// The history row comes FIRST: once the term is gone it is all there is to rebuild it, its assignments (with the term
+		// sets each item held, so a default term WordPress adds can be told apart), its meta and its menu items from.
 		$objects = d5b_wt_objects( $term );
-		$before  = d5b_rc_term_detail( $term ) + array( 'children' => d5b_wt_children( $term ), 'object_ids' => $objects );
+		$rows    = d5b_wt_object_rows( $term );
+		$default = d5b_wt_default_term( $tax );
+		$before  = d5b_rc_term_detail( $term ) + array(
+			'children' => d5b_wt_children( $term ), 'object_ids' => $objects, 'objects' => $rows,
+			'objects_losing_last_term' => d5b_wt_losing_last( $term, $rows ), 'default_term_id' => null === $default ? 0 : (int) $default->term_id,
+			'term_meta' => d5b_wt_term_meta( $id ), 'menu_items' => d5b_wt_menu_items( $term ),
+		);
 		$hid = d5b_wt_history( 'taxonomy-delete', 'term', $id, 'delete', $before, array( 'deleted' => true ), d5b_wt_summary( 'Permanently deleted', $term ) );
 		if ( $hid < 1 ) { return d5b_wt_history_unavailable(); }
 		$r = wp_delete_term( $id, $tax );
@@ -394,6 +471,7 @@ if ( ! function_exists( 'd5b_wt_tax' ) ) {
 		if ( is_wp_error( $p ) ) { return $p; }
 		$id   = (int) $p->ID;
 		$rows = (array) get_post_meta( $id, $key, false );
+		if ( ! d5b_wc_secret_free( array_values( $rows ) ) ) { return d5b_wc_secret_error( 'field' ); }
 		$stored = json_encode( d5b_rc_meta_clean( array_values( $rows ) ) );
 		$ok = d5b_wc_check_masked( $json, is_string( $stored ) ? $stored : '' );
 		if ( true !== $ok ) { return $ok; }
@@ -429,6 +507,7 @@ if ( ! function_exists( 'd5b_wt_tax' ) ) {
 		if ( is_wp_error( $p ) ) { return $p; }
 		$rows = (array) get_post_meta( (int) $p->ID, $a['key'], false );
 		if ( array() === $rows ) { return new WP_Error( 'not_found', 'This item has no custom field with that name.' ); }
+		if ( ! d5b_wc_secret_free( array_values( $rows ) ) ) { return d5b_wc_secret_error( 'field' ); }
 		$code = d5b_confirm_issue( 'divi5-builder/meta-delete', 'post_meta', (int) $p->ID . '|' . $a['key'], d5b_fp_meta( (int) $p->ID, $a['key'] ) );
 		if ( is_wp_error( $code ) ) { return $code; }
 		return array(
@@ -447,6 +526,7 @@ if ( ! function_exists( 'd5b_wt_tax' ) ) {
 		$id   = (int) $p->ID;
 		$rows = d5b_wt_meta_rows( $id, $key );
 		if ( array() === $rows ) { return new WP_Error( 'not_found', 'This item has no custom field with that name.' ); }
+		if ( ! d5b_wc_secret_free( array_values( (array) get_post_meta( $id, $key, false ) ) ) ) { return d5b_wc_secret_error( 'field' ); }
 		$ok = d5b_confirm_check( 'divi5-builder/meta-delete', 'post_meta', $id . '|' . $key, d5b_fp_meta( $id, $key ), (string) ( $a['confirmation'] ?? '' ) );
 		if ( true !== $ok ) { return $ok; }
 		// The history row comes FIRST, with every row of the key.
@@ -524,20 +604,20 @@ if ( ! function_exists( 'd5b_wt_tax' ) ) {
 		), array( 'post_id', 'taxonomy', 'terms' ), 'd5b_wt_h_assign', 'd5b_wt_can_assign', array() );
 
 	d5b_wc_def( 'taxonomy-delete-preview', 'taxonomy', 'Preview a term delete',
-		'Step one of a permanent term delete (a term has no trash). Changes nothing. Returns the term, its count, its child terms (WordPress moves them up to the term\'s own parent; at most 100 shown, children_total counts them all), the first 100 ids of the items it is assigned to (posts_total counts them all), and a confirmation code valid for 10 minutes for this user and this term as it is now. Show the preview to the user and wait for their explicit OK before calling divi5-builder/taxonomy-delete with the code. Refuses the default category (and a taxonomy\'s default term) with not_allowed: WordPress never deletes it.',
+		'Step one of a permanent term delete (a term has no trash). Changes nothing. Returns the term, its count, its child terms (WordPress moves them up to the term\'s own parent; at most 100 shown, children_total counts them all), the first 100 ids of the items it is assigned to (posts_total counts them all), and a confirmation code valid for 10 minutes for this user and this term as it is now. Show the preview to the user and wait for their explicit OK before calling divi5-builder/taxonomy-delete with the code. Also returns what WordPress takes with the term: menu_items (every menu item linking to it, deleted for good), term_meta (every row of its own meta), objects_losing_last_term (items left with no term of this taxonomy) and default_term (the term those items then get, or null). Refuses the default category (and a taxonomy\'s default term) with not_allowed: WordPress never deletes it; and a term whose meta, or a linked menu item\'s custom fields, hold a secret-named key (not_allowed: the history could not keep it; delete it in wp-admin).',
 		$d5b_wt_tax_prop + $d5b_wt_id_prop, array( 'taxonomy', 'id' ), 'd5b_wt_h_delete_preview', 'd5b_wt_can_manage', array( 'readonly' => true ) );
 
 	d5b_wc_def( 'taxonomy-delete', 'taxonomy', 'Delete a term for good',
-		'Step two of a permanent term delete: deletes the term and returns deleted true with the history row id. Only with the confirmation code from taxonomy-delete-preview, by the same user, for the same term, unchanged since the preview (name, slug, parent and count), used once, within 10 minutes; anything else is refused with confirmation_invalid and data.reason, and nothing is deleted. The change history row is written BEFORE the delete and keeps the term, its children and every item id it was assigned to; when it cannot be written the delete is refused (history_unavailable). Refuses the default category.',
+		'Step two of a permanent term delete: deletes the term and returns deleted true with the history row id. Only with the confirmation code from taxonomy-delete-preview, by the same user, for the same term, unchanged since the preview (name, slug, parent and count), used once, within 10 minutes; anything else is refused with confirmation_invalid and data.reason, and nothing is deleted. The change history row is written BEFORE the delete and keeps the term, its children, every item it was assigned to with the term ids each held in this taxonomy, its meta and its menu items in full; when it cannot be written the delete is refused (history_unavailable). Refuses the default category.',
 		$d5b_wt_tax_prop + $d5b_wt_id_prop + $d5b_wt_confirm, array( 'taxonomy', 'id', 'confirmation' ), 'd5b_wt_h_delete', 'd5b_wt_can_manage', array( 'destructive' => true ) );
 
 	d5b_wc_def( 'meta-set', 'meta', 'Set a custom field',
-		'Sets one custom field (post meta) of one post, page or item to value and returns it. value is text, a number, true/false, or a list or object of those (8 levels at most, 1 MB at most); other objects are refused. When the field holds several rows (WordPress allows a name more than once), they are ALL replaced by this one value, and replaced_rows says how many there were. Needs edit rights on the item and on the field; the item\'s own category must be switched on as well as Custom fields. Refuses protected fields (names starting with an underscore, Divi\'s among them) and secret-looking names (keys, tokens, passwords) with not_allowed, and a value holding [redacted] from a masked read (masked_read). The change history keeps every previous row.',
+		'Sets one custom field (post meta) of one post, page or item to value and returns it. value is text, a number, true/false, or a list or object of those (8 levels at most, 1 MB at most); other objects are refused. When the field holds several rows (WordPress allows a name more than once), they are ALL replaced by this one value, and replaced_rows says how many there were. Needs edit rights on the item and on the field; the item\'s own category must be switched on as well as Custom fields. Refuses protected fields (names starting with an underscore, Divi\'s among them) and secret-looking names (keys, tokens, passwords) with not_allowed, a field whose current value holds a secret-named key (not_allowed: the history could not keep it; change it in wp-admin), and a value holding [redacted] from a masked read (masked_read). The change history keeps every previous row.',
 		$d5b_wt_meta_ids + array( 'value' => array( 'type' => array( 'string', 'number', 'integer', 'boolean', 'array', 'object' ), 'description' => 'The new value.' ) ),
 		array( 'post_id', 'key', 'value' ), 'd5b_wt_h_meta_set', 'd5b_wt_can_meta_set', array( 'idempotent' => true ) );
 
 	d5b_wc_def( 'meta-delete-preview', 'meta', 'Preview a custom field delete',
-		'Step one of a permanent custom field delete (a custom field has no trash). Changes nothing. Returns how many rows the field has and their values (a value over 64 KB as its size only), and a confirmation code valid for 10 minutes for this user and this field as it is now. Show the preview to the user and wait for their explicit OK before calling divi5-builder/meta-delete with the code. Refuses protected and secret-looking names, and a field the item does not have (not_found).',
+		'Step one of a permanent custom field delete (a custom field has no trash). Changes nothing. Returns how many rows the field has and their values (a value over 64 KB as its size only), and a confirmation code valid for 10 minutes for this user and this field as it is now. Show the preview to the user and wait for their explicit OK before calling divi5-builder/meta-delete with the code. Refuses protected and secret-looking names, a field whose value holds a secret-named key (not_allowed; delete it in wp-admin), and a field the item does not have (not_found).',
 		$d5b_wt_meta_ids, array( 'post_id', 'key' ), 'd5b_wt_h_meta_delete_preview', 'd5b_wt_can_meta_delete', array( 'readonly' => true ) );
 
 	d5b_wc_def( 'meta-delete', 'meta', 'Delete a custom field for good',

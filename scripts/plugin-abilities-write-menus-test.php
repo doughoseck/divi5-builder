@@ -235,12 +235,56 @@ foreach ( $full['before']['items'] as $d ) {
 }
 $GLOBALS['T_menu_locations'] = array( 'primary' => $m, 'footer' => $m );
 check( '... and that row was enough to rebuild the menu exactly (every item, its fields, its menu)', $all === get_objects_in_term( $m, 'nav_menu' ) && 'Start again' === post( $home['id'] )->post_title && 'trash' === post( $trashed )->post_status && array( 'big', 'red' ) === pmeta( $home['id'], '_menu_item_classes' ) );
+add_post_meta( $home['id'], 'menu-icon', 'star' ); add_post_meta( $home['id'], '_menu_item_megamenu', array( 'cols' => 4 ) );
+update_option( 'nav_menu_options', array( 'auto_add' => array( $m ) ) );
 $pv = call( 'menus-delete-preview', array( 'menu' => $m ) );
 $r = call( 'menus-delete', array( 'menu' => $m, 'confirmation' => $pv['confirmation'] ) );
 $h = hlast();
+$hi = array_column( $h['before']['items'], null, 'id' )[ $home['id'] ];
+check( '... the history row also keeps every other custom field of each item (plain and protected) and the menu\'s auto_add', array( 'star' ) === ( $hi['meta']['menu-icon'] ?? null ) && array( array( 'cols' => 4 ) ) === ( $hi['meta']['_menu_item_megamenu'] ?? null ) && ! isset( $hi['meta']['_menu_item_url'] ) && true === $h['before']['auto_add'], array( $hi, $h['before']['auto_add'] ?? null ) );
 check( 'a valid delete removes the menu and every item (the trashed one too) and takes it off its locations', is_array( $r ) && true === $r['deleted'] && ! isset( $GLOBALS['T_menus'][ $m ] ) && array() === array_filter( $all, function ( $i ) { return null !== post( $i ); } ) && 0 === get_nav_menu_locations()['primary'] && 0 === get_nav_menu_locations()['footer'] && array( 'primary', 'footer' ) === $r['locations_cleared'], $r );
 check( '... the history row holds the menu, every item in full and its locations', (int) $h['id'] === $r['history_id'] && 'nav_menu' === $h['object_type'] && 'delete' === $h['action'] && 'Main menu' === $h['before']['name'] && $all === ( function ( $ids ) { sort( $ids ); return $ids; } )( array_column( $h['before']['items'], 'id' ) ) && array( 'primary', 'footer' ) === $h['before']['locations'] && 'Start again' === array_column( $h['before']['items'], 'title', 'id' )[ $home['id'] ], $h );
 check( 'deleting again: not_found', 'not_found' === code( call( 'menus-delete', array( 'menu' => $m, 'confirmation' => $pv['confirmation'] ) ) ) );
+
+echo "fix round 1: strictest switch on existing items\n";
+site();
+$m = wp_create_nav_menu( 'Main' );
+$page = t_add_post( array( 'post_type' => 'page', 'post_title' => 'About' ) );
+$cat  = t_add_term( 'category', 'News' );
+$pi = call( 'menus-item-add', array( 'menu' => $m, 'type' => 'post_type', 'object' => $page ) );
+$ti = call( 'menus-item-add', array( 'menu' => $m, 'type' => 'taxonomy', 'object' => $cat ) );
+$ci = call( 'menus-item-add', array( 'menu' => $m, 'type' => 'custom', 'object' => '/c', 'title' => 'C' ) );
+d5b_abilities_set_category( 'pages', false, false, 'tester' );
+$ru = call( 'menus-item-update', array( 'menu' => $m, 'item' => $pi['id'], 'title' => 'Changed' ) );
+$rr = call( 'menus-item-remove', array( 'menu' => $m, 'item' => $pi['id'] ) );
+$rc = call( 'menus-item-update', array( 'menu' => $m, 'item' => $ci['id'], 'title' => 'Custom still fine' ) );
+check( 'Pages off: update and remove of a page item are refused not_allowed (the item untouched); a custom item is still fine', 'not_allowed' === code( $ru ) && 'not_allowed' === code( $rr ) && 'publish' === post( $pi['id'] )->post_status && '' === post( $pi['id'] )->post_title && is_array( $rc ), array( $ru, $rr ) );
+d5b_abilities_set_category( 'pages', true, false, 'tester' );
+call( 'menus-item-remove', array( 'menu' => $m, 'item' => $pi['id'] ) );
+d5b_abilities_set_category( 'pages', false, false, 'tester' );
+$rs = call( 'menus-item-restore', array( 'menu' => $m, 'item' => $pi['id'] ) );
+check( '... and restore of a removed page item too (it stays in the trash)', 'not_allowed' === code( $rs ) && 'trash' === post( $pi['id'] )->post_status, $rs );
+d5b_abilities_set_category( 'pages', true, false, 'tester' );
+call( 'menus-item-restore', array( 'menu' => $m, 'item' => $pi['id'] ) );
+d5b_abilities_set_category( 'taxonomy', false, false, 'tester' );
+check( 'Taxonomies off: update, remove and restore of a term item are refused not_allowed',
+	'not_allowed' === code( call( 'menus-item-update', array( 'menu' => $m, 'item' => $ti['id'], 'title' => 'x' ) ) ) && 'not_allowed' === code( call( 'menus-item-remove', array( 'menu' => $m, 'item' => $ti['id'] ) ) ) && 'publish' === post( $ti['id'] )->post_status );
+d5b_abilities_set_category( 'taxonomy', true, false, 'tester' );
+
+echo "fix round 1: reorder leaves draft items alone\n";
+$draft = wp_update_nav_menu_item( $m, 0, array( 'menu-item-type' => 'custom', 'menu-item-url' => '/draft', 'menu-item-title' => 'Draft', 'menu-item-position' => 7 ) );
+check( '(a draft item is in the menu)', 'draft' === post( $draft )->post_status && in_array( $m, in_menu( $draft ), true ) );
+$live = array_column( order_of( $m ), 0 );
+$r = call( 'menus-reorder', array( 'menu' => $m, 'items' => array_map( function ( $id ) { return array( 'id' => $id, 'parent' => 0 ); }, array_reverse( $live ) ) ) );
+check( 'reorder with every published item (no draft) works; the draft keeps its position and status', is_array( $r ) && array_reverse( $live ) === array_column( order_of( $m ), 0 ) && 7 === (int) post( $draft )->menu_order && 'draft' === post( $draft )->post_status, $r );
+$r = call( 'menus-reorder', array( 'menu' => $m, 'items' => array_map( function ( $id ) { return array( 'id' => $id ); }, array_merge( $live, array( $draft ) ) ) ) );
+check( '... a list that includes the draft is refused (not one of the published items)', 'invalid_input' === code( $r ) && array( $draft ) === ( $r->get_error_data()['not_in_menu'] ?? null ), $r );
+
+echo "fix round 1: a menu delete never loses a secret-named field\n";
+add_post_meta( $ci['id'], 'license_key', 'abc' );
+$r1 = call( 'menus-delete-preview', array( 'menu' => $m ) );
+$r2 = call( 'menus-delete', array( 'menu' => $m, 'confirmation' => 'ABCDEFGHJKLM' ) );
+check( 'an item with a secret-named custom field: preview and delete refused not_allowed (wp-admin message), nothing deleted', 'not_allowed' === code( $r1 ) && 'not_allowed' === code( $r2 ) && false !== strpos( msg( $r1 ), 'wp-admin' ) && isset( $GLOBALS['T_menus'][ $m ] ) && null !== post( $ci['id'] ) && array() === codes_issued(), array( $r1, $r2 ) );
 
 echo "\n" . ( $n - $failed ) . " of $n passed\n";
 exit( $failed ? 1 : 0 );

@@ -396,7 +396,7 @@ function t_content_reset() {
 	$GLOBALS['T_post_types'] = array(); $GLOBALS['T_taxonomies'] = array();
 	$GLOBALS['T_inserts'] = array(); $GLOBALS['T_updates'] = array(); $GLOBALS['T_deleted'] = array(); $GLOBALS['T_revisions_keep'] = -1; $GLOBALS['T_insert_fail'] = false; $GLOBALS['T_update_fail'] = false; $GLOBALS['T_trash_blocked'] = false;
 	$GLOBALS['T_meta_auth_denied'] = array(); $GLOBALS['T_untrash_cascade'] = array(); $GLOBALS['T_insert_error'] = null;
-	$GLOBALS['T_meta_delete_blocked'] = false; $GLOBALS['T_term_fail'] = false; $GLOBALS['T_term_delete_fail'] = false; $GLOBALS['T_menu_delete_fail'] = false; $GLOBALS['T_theme_mods'] = array();
+	$GLOBALS['T_meta_delete_blocked'] = false; $GLOBALS['T_term_fail'] = false; $GLOBALS['T_term_delete_fail'] = false; $GLOBALS['T_menu_delete_fail'] = false; $GLOBALS['T_theme_mods'] = array(); $GLOBALS['T_term_meta'] = array();
 	$GLOBALS['T_cmeta'] = array(); $GLOBALS['T_comment_calls'] = array(); $GLOBALS['T_comment_blocked'] = false; $GLOBALS['T_comments_deleted'] = array(); $GLOBALS['T_new_comment_error'] = null;
 	foreach ( array( 'post' => array( 1, 1, 0 ), 'page' => array( 1, 1, 1 ), 'attachment' => array( 1, 0, 0 ), 'revision' => array( 0, 0, 0 ), 'nav_menu_item' => array( 0, 0, 0 ), 'wp_block' => array( 0, 1, 0 ), 'wp_template' => array( 0, 1, 0 ), 'et_pb_layout' => array( 1, 1, 0 ) ) as $n => $f ) { t_add_type( $n, (bool) $f[0], (bool) $f[1], (bool) $f[2] ); }
 	foreach ( array( 'category' => array( 1, 1 ), 'post_tag' => array( 1, 1 ), 'nav_menu' => array( 0, 1 ), 'wp_theme' => array( 0, 0 ) ) as $n => $f ) { t_add_taxonomy( $n, (bool) $f[0], (bool) $f[1] ); }
@@ -1193,8 +1193,12 @@ function wp_delete_term( $term, $tax, $args = array() ) {
 		if ( array() === $left && isset( $default ) ) { $left = array( $default ); }
 		$GLOBALS['T_object_terms'][ $obj ][ $tax ] = $left;
 	}
+	// core 6.4.1 taxonomy.php ~2122: every term meta row goes; then the term; then the delete_term action, on which
+	// _wp_delete_tax_menu_item (nav-menu.php ~1100) deletes for good every menu item linking to the term.
+	unset( $GLOBALS['T_term_meta'][ $term ] );
 	unset( $GLOBALS['T_terms'][ $term ], $GLOBALS['T_menus'][ $term ] );
 	if ( isset( $default ) ) { t_recount( $default ); }
+	foreach ( wp_get_associated_nav_menu_items( $term, 'taxonomy', $tax ) as $mi ) { wp_delete_post( $mi, true ); }
 	return true;
 }
 function t_term_ids( $terms, string $tax, bool $create ): array {
@@ -1234,6 +1238,26 @@ function get_objects_in_term( $term_ids, $taxonomies, $args = array() ) {
 	}
 	sort( $out );
 	return $out;
+}
+// Term meta (T_term_meta: term id => key => rows), as core's get_metadata / add_metadata (key and value unslashed on add).
+function get_term_meta( $id, $k = '', $single = false ) {
+	$all = $GLOBALS['T_term_meta'][ (int) $id ] ?? array();
+	if ( '' === $k ) { return $all; }
+	$vals = $all[ $k ] ?? array();
+	return $single ? ( $vals[0] ?? '' ) : $vals;
+}
+function add_term_meta( $id, $k, $v, $unique = false ) { $GLOBALS['T_term_meta'][ (int) $id ][ wp_unslash( $k ) ][] = wp_unslash( $v ); return true; }
+// As core: the nav_menu_item ids whose _menu_item_object_id is the object (post_status any: trash and auto-draft left out),
+// of that type, and for a taxonomy item of that taxonomy.
+function wp_get_associated_nav_menu_items( $object_id = 0, $object_type = 'post_type', $taxonomy = '' ) {
+	$out = array();
+	foreach ( $GLOBALS['T_posts'] as $p ) {
+		if ( 'nav_menu_item' !== $p->post_type || in_array( $p->post_status, array( 'trash', 'auto-draft' ), true ) ) { continue; }
+		if ( (int) get_post_meta( $p->ID, '_menu_item_object_id', true ) !== (int) $object_id ) { continue; }
+		$type = get_post_meta( $p->ID, '_menu_item_type', true );
+		if ( ( 'post_type' === $object_type && 'post_type' === $type ) || ( 'taxonomy' === $object_type && 'taxonomy' === $type && get_post_meta( $p->ID, '_menu_item_object', true ) === $taxonomy ) ) { $out[] = (int) $p->ID; }
+	}
+	return array_values( array_unique( $out ) );
 }
 function wp_get_object_terms( $object_ids, $taxonomies, $args = array() ) {
 	$out = array();

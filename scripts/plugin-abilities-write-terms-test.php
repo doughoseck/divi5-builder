@@ -46,6 +46,12 @@ function terms_of( $id, $tax ) { $ids = array_map( 'intval', $GLOBALS['T_object_
 function term( $id ) { return $GLOBALS['T_terms'][ (int) $id ] ?? null; }
 function meta( $id, $k ) { return $GLOBALS['T_meta'][ (int) $id ][ $k ] ?? null; }
 function break_history() { unset( $GLOBALS['wpdb']->tables['wp_d5b_history'] ); $GLOBALS['T_dbdelta_fail'] = true; set_transient( 'd5b_audit_install_failed', 1, 3600 ); }
+/** wp_update_nav_menu_item's data from a history item (as write-menus.php's d5b_wn_core_data, which this suite does not load). */
+function d5b_wn_core_data_for_test( array $d ) {
+	return wp_slash( array( 'menu-item-object-id' => $d['object_id'], 'menu-item-object' => $d['object'], 'menu-item-parent-id' => $d['parent'], 'menu-item-position' => $d['position'], 'menu-item-type' => $d['type'],
+		'menu-item-title' => $d['title'], 'menu-item-url' => $d['url'], 'menu-item-description' => $d['description'], 'menu-item-attr-title' => $d['attr_title'], 'menu-item-target' => $d['target'],
+		'menu-item-classes' => implode( ' ', $d['classes'] ), 'menu-item-xfn' => $d['xfn'], 'menu-item-status' => $d['status'] ) );
+}
 function mend_history() { $GLOBALS['T_dbdelta_fail'] = false; $GLOBALS['wpdb']->tables['wp_d5b_history'] = array(); }
 
 echo "registration\n";
@@ -295,6 +301,99 @@ check( 'protected and secret-named keys: the preview is refused not_allowed; a m
 site( READER );
 $p = t_add_post( array( 'post_author' => 3 ) ); t_add_meta( $p, 'color', 'red' );
 check( 'without edit_post: preview and delete refused by the gate', 'FORBIDDEN' === call( 'meta-delete-preview', array( 'post_id' => $p, 'key' => 'color' ) ) && 'FORBIDDEN' === call( 'meta-delete', array( 'post_id' => $p, 'key' => 'color', 'confirmation' => 'X' ) ) && array( 'red' ) === meta( $p, 'color' ) );
+
+echo "fix round 1: a term delete takes nothing that is not previewed and recorded\n";
+site( array_merge( ED, array( 'edit_theme_options' ) ) );
+$def = t_add_term( 'category', 'Uncategorized' ); update_option( 'default_category', $def );
+$top = t_add_term( 'category', 'Top' ); $t = t_add_term( 'category', 'Target', $top ); $kid = t_add_term( 'category', 'Kid', $t ); $other = t_add_term( 'category', 'Other' );
+$GLOBALS['T_terms'][ $t ]->description = "Back\\slash 'quoted'";
+add_term_meta( $t, 'color', 'teal' ); add_term_meta( $t, 'color', 'navy' ); add_term_meta( $t, '_thumb', 55 ); add_term_meta( $t, 'layout', array( 'cols' => 3 ) );
+$only = t_add_post(); $two = t_add_post(); $had_def = t_add_post( array( 'post_status' => 'draft' ) ); $pg = t_add_post( array( 'post_type' => 'page' ) );
+wp_set_object_terms( $only, array( $t ), 'category' ); wp_set_object_terms( $two, array( $t, $other ), 'category' ); wp_set_object_terms( $had_def, array( $t, $def ), 'category' ); wp_set_object_terms( $pg, array( $t ), 'category' );
+$menu = wp_create_nav_menu( 'Main' );
+$mi = wp_update_nav_menu_item( $menu, 0, array( 'menu-item-type' => 'taxonomy', 'menu-item-object' => 'category', 'menu-item-object-id' => $t, 'menu-item-title' => 'Target link', 'menu-item-status' => 'publish', 'menu-item-classes' => 'hot' ) );
+add_post_meta( $mi, 'menu-icon', 'star' ); add_post_meta( $mi, '_menu_item_megamenu', '1' );
+$mi_other = wp_update_nav_menu_item( $menu, 0, array( 'menu-item-type' => 'custom', 'menu-item-url' => '/x', 'menu-item-title' => 'X', 'menu-item-status' => 'publish' ) );
+$snap = array();
+foreach ( array( $only, $two, $had_def, $pg ) as $o ) { $snap[ $o ] = terms_of( $o, 'category' ); }
+$snap_meta = $GLOBALS['T_term_meta'][ $t ]; ksort( $snap_meta );
+$snap_item = d5b_wc_nav_item_data( get_post( $mi ), true );
+$pv = call( 'taxonomy-delete-preview', array( 'taxonomy' => 'category', 'id' => $t ) );
+check( 'the preview lists the menu items WordPress deletes with the term (full data, their own meta too)', is_array( $pv ) && 1 === count( $pv['menu_items'] ) && $mi === $pv['menu_items'][0]['id'] && 'Target link' === $pv['menu_items'][0]['title'] && array( 'star' ) === ( $pv['menu_items'][0]['meta']['menu-icon'] ?? null ) && array( '1' ) === ( $pv['menu_items'][0]['meta']['_menu_item_megamenu'] ?? null ), $pv['menu_items'] ?? $pv );
+check( '... every term meta row', is_array( $pv ) && array( '_thumb' => array( 55 ), 'color' => array( 'teal', 'navy' ), 'layout' => array( array( 'cols' => 3 ) ) ) === $pv['term_meta'], $pv['term_meta'] ?? null );
+check( '... and the items left with no term of the taxonomy (they get the default term, named)', is_array( $pv ) && array( $only, $pg ) === $pv['objects_losing_last_term'] && array( 'id' => $def, 'name' => 'Uncategorized' ) === $pv['default_term'], $pv );
+add_term_meta( $t, 'late', 'x' );
+$r = call( 'taxonomy-delete', array( 'taxonomy' => 'category', 'id' => $t, 'confirmation' => $pv['confirmation'] ) );
+check( 'a term meta row added after the preview: stale, nothing deleted', 'stale' === reason( $r ) && null !== term( $t ), $r );
+unset( $GLOBALS['T_term_meta'][ $t ]['late'] );
+$pv = call( 'taxonomy-delete-preview', array( 'taxonomy' => 'category', 'id' => $t ) );
+$late = wp_update_nav_menu_item( $menu, 0, array( 'menu-item-type' => 'taxonomy', 'menu-item-object' => 'category', 'menu-item-object-id' => $t, 'menu-item-status' => 'publish' ) );
+$r = call( 'taxonomy-delete', array( 'taxonomy' => 'category', 'id' => $t, 'confirmation' => $pv['confirmation'] ) );
+check( 'a menu item linking to the term added after the preview: stale, nothing deleted', 'stale' === reason( $r ) && null !== get_post( $late ), $r );
+wp_delete_post( $late, true );
+$pv = call( 'taxonomy-delete-preview', array( 'taxonomy' => 'category', 'id' => $t ) );
+$r = call( 'taxonomy-delete', array( 'taxonomy' => 'category', 'id' => $t, 'confirmation' => $pv['confirmation'] ) );
+$h = d5b_history_get( (int) ( $r['history_id'] ?? 0 ) );
+check( 'the delete goes as core does it: the linked menu item is deleted for good, the term meta is gone, the lone items got the default category', is_array( $r ) && null === get_post( $mi ) && null !== get_post( $mi_other ) && ! isset( $GLOBALS['T_term_meta'][ $t ] ) && array( $def ) === terms_of( $only, 'category' ) && array( $def ) === terms_of( $pg, 'category' ), $r );
+$b = $h['before'];
+check( 'the history row carries the menu items, the term meta, the items losing their last term, the default term and each item\'s term ids',
+	array( $mi ) === array_column( $b['menu_items'], 'id' ) && $snap_meta === $b['term_meta'] && array( $only, $pg ) === $b['objects_losing_last_term'] && $def === $b['default_term_id'] && $snap[ $had_def ] === array_column( $b['objects'], 'term_ids', 'id' )[ $had_def ], $b );
+// Rebuild from the row alone.
+$new = wp_insert_term( wp_slash( $b['name'] ), 'category', wp_slash( array( 'slug' => $b['slug'], 'description' => $b['description'], 'parent' => $b['parent'] ) ) );
+$nid = (int) $new['term_id'];
+foreach ( $b['children'] as $c ) { wp_update_term( (int) $c['id'], 'category', array( 'parent' => $nid ) ); }
+foreach ( $b['objects'] as $o ) { wp_set_object_terms( (int) $o['id'], array_map( function ( $x ) use ( $t, $nid ) { return $x === $t ? $nid : $x; }, $o['term_ids'] ), 'category' ); }
+foreach ( $b['term_meta'] as $k => $rows ) { foreach ( $rows as $v ) { add_term_meta( $nid, wp_slash( $k ), wp_slash( $v ) ); } }
+foreach ( $b['menu_items'] as $d ) {
+	$d['object_id'] = $nid; $d['id'] = 0;
+	$nmi = wp_update_nav_menu_item( $d['menu'], 0, d5b_wn_core_data_for_test( $d ) );
+	foreach ( $d['meta'] as $k => $rows ) { foreach ( $rows as $v ) { add_post_meta( $nmi, wp_slash( $k ), wp_slash( $v ) ); } }
+}
+$exact = true;
+foreach ( $snap as $o => $ids ) { $want = array_map( function ( $x ) use ( $t, $nid ) { return $x === $t ? $nid : $x; }, $ids ); sort( $want ); if ( $want !== terms_of( $o, 'category' ) ) { $exact = false; } }
+$rebuilt = d5b_wc_nav_item_data( get_post( $nmi ), true );
+$cmp = function ( $d ) { unset( $d['id'], $d['object_id'], $d['position'] ); return $d; };
+check( 'rebuild from the row: the exact term set of every item (the default the lone ones received is gone again; the one that had it keeps it)', $exact, array_map( function ( $o ) { return terms_of( $o, 'category' ); }, array_keys( $snap ) ) );
+check( '... the term (name, slug, description, parent), its children, its meta and its menu item with its own meta', $b['name'] === term( $nid )->name && "Back\\slash 'quoted'" === term( $nid )->description && $top === term( $nid )->parent && $nid === term( $kid )->parent && $snap_meta === ( function ( $m ) { ksort( $m ); return $m; } )( $GLOBALS['T_term_meta'][ $nid ] ) && $cmp( $snap_item ) === $cmp( $rebuilt ), array( $cmp( $snap_item ), $cmp( $rebuilt ) ) );
+
+echo "fix round 1: secrets are never overwritten or deleted where the history could not keep them\n";
+site();
+$x = t_add_term( 'category', 'Keyed' ); add_term_meta( $x, 'api_key', 'sk_live_1' );
+$y = t_add_term( 'category', 'Nested' ); add_term_meta( $y, 'settings', array( 'name' => 'n', 'password' => 'hunter2' ) );
+$z = t_add_term( 'category', 'Linked' );
+$zm = wp_create_nav_menu( 'Z' ); $zi = wp_update_nav_menu_item( $zm, 0, array( 'menu-item-type' => 'taxonomy', 'menu-item-object' => 'category', 'menu-item-object-id' => $z, 'menu-item-status' => 'publish' ) ); add_post_meta( $zi, 'auth_token', 'abc' );
+check( 'a term whose meta has a secret-named key, a secret-named key inside a value, or a linked menu item with one: preview and delete refused not_allowed, nothing deleted',
+	'not_allowed' === code( call( 'taxonomy-delete-preview', array( 'taxonomy' => 'category', 'id' => $x ) ) ) && 'not_allowed' === code( call( 'taxonomy-delete-preview', array( 'taxonomy' => 'category', 'id' => $y ) ) ) && 'not_allowed' === code( call( 'taxonomy-delete-preview', array( 'taxonomy' => 'category', 'id' => $z ) ) )
+	&& 'not_allowed' === code( call( 'taxonomy-delete', array( 'taxonomy' => 'category', 'id' => $y, 'confirmation' => 'ABCDEFGHJKLM' ) ) ) && null !== term( $x ) && null !== term( $y ) && null !== get_post( $zi ) && array() === hrows() );
+$p = t_add_post( array( 'post_author' => 3 ) );
+t_add_meta( $p, 'config', array( 'name' => 'x', 'password' => 'hunter2' ) );
+t_add_meta( $p, 'blob', array( 'api_key' => "sk_live_\xff" ) );
+t_add_meta( $p, 'obj', new ArrayObject( array( 'token' => 'zzz' ) ) );
+$res = array();
+foreach ( array( 'config', 'blob', 'obj' ) as $k ) {
+	$r1 = call( 'meta-set', array( 'post_id' => $p, 'key' => $k, 'value' => 'plain' ) );
+	$r2 = call( 'meta-delete-preview', array( 'post_id' => $p, 'key' => $k ) );
+	$r3 = call( 'meta-delete', array( 'post_id' => $p, 'key' => $k, 'confirmation' => 'ABCDEFGHJKLM' ) );
+	$res[ $k ] = array( code( $r1 ), code( $r2 ), code( $r3 ), msg( $r1 ) );
+}
+check( 'meta-set, meta-delete-preview and meta-delete on a value holding a secret-named key (plain, invalid UTF-8, inside an object): not_allowed with the wp-admin message, the value untouched, no history row',
+	array( 'not_allowed', 'not_allowed', 'not_allowed' ) === array_slice( $res['config'], 0, 3 ) && array( 'not_allowed', 'not_allowed', 'not_allowed' ) === array_slice( $res['blob'], 0, 3 ) && array( 'not_allowed', 'not_allowed', 'not_allowed' ) === array_slice( $res['obj'], 0, 3 )
+	&& 'This field holds a value under a secret-named key; change or delete it in wp-admin.' === $res['config'][3] && 1 === count( meta( $p, 'config' ) ) && "sk_live_\xff" === meta( $p, 'blob' )[0]['api_key'] && array() === hrows(), $res );
+$mv = d5b_wc_meta_value( array( 'api_key' => "sk_live_\xff" ) );
+$mo = d5b_wc_meta_value( new ArrayObject( array( 'token' => 'zzz' ) ) );
+check( 'd5b_wc_meta_value never serialises a secret: the decoded value is checked before the base64 fallback (withheld instead)', array( 'withheld' => 'secret_named_key' ) === $mv && array( 'withheld' => 'secret_named_key' ) === $mo && false === strpos( json_encode( array( $mv, $mo ) ), 'serialized' ), array( $mv, $mo ) );
+check( '... a value without one still round-trips through base64', isset( d5b_wc_meta_value( array( 'name' => "bad\xff" ) )['serialized'] ) );
+
+echo "fix round 1: assign_terms on its own\n";
+site( array( 'read', 'edit_posts' ), 3 );
+$tg = t_add_term( 'post_tag', 'tg' );
+$GLOBALS['T_taxonomies']['post_tag']->cap = (object) array( 'assign_terms' => 'assign_post_tags', 'manage_terms' => 'manage_post_tags' );
+$own = t_add_post( array( 'post_author' => 3, 'post_status' => 'draft' ) );
+$r = call( 'taxonomy-assign', array( 'post_id' => $own, 'taxonomy' => 'post_tag', 'terms' => array( $tg ) ) );
+$r2 = handler( 'taxonomy-assign', array( 'post_id' => $own, 'taxonomy' => 'post_tag', 'terms' => array( $tg ) ) );
+check( 'a user WITH edit_post on the item but WITHOUT the taxonomy\'s assign_terms: refused by the gate and by the handler (not_allowed)', current_user_can( 'edit_post', $own ) && 'FORBIDDEN' === $r && 'not_allowed' === code( $r2 ) && array() === terms_of( $own, 'post_tag' ), array( $r, $r2 ) );
+t_set_caps( array( 'read', 'edit_posts', 'assign_post_tags' ) );
+check( '... and with assign_terms it works', is_array( call( 'taxonomy-assign', array( 'post_id' => $own, 'taxonomy' => 'post_tag', 'terms' => array( $tg ) ) ) ) && array( $tg ) === terms_of( $own, 'post_tag' ) );
 
 echo "\n" . ( $n - $failed ) . " of $n passed\n";
 exit( $failed ? 1 : 0 );

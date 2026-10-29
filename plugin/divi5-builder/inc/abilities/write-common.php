@@ -117,11 +117,86 @@ if ( ! function_exists( 'd5b_wc_check_hash' ) ) {
 	}
 
 	/**
+	 * The value with every object as an array of its properties (private and protected ones too, their names without
+	 * PHP's \0Class\0 prefix), every level: what a key check must see of a value that would be stored serialized.
+	 */
+	function d5b_wc_plain( $v, int $depth = 0 ) {
+		if ( is_object( $v ) ) {
+			$a = array();
+			foreach ( (array) $v as $k => $x ) { $a[ is_string( $k ) ? preg_replace( '/^\0[^\0]*\0/', '', $k ) : $k ] = $x; }
+			$v = $a;
+		}
+		if ( ! is_array( $v ) || $depth >= 32 ) { return $v; }
+		foreach ( $v as $k => $x ) { $v[ $k ] = d5b_wc_plain( $x, $depth + 1 ); }
+		return $v;
+	}
+
+	/**
+	 * True when the history's key filter would keep the whole value: no secret-named key at any depth (objects included).
+	 * A value that fails it cannot be kept in full, so a write that would overwrite or delete it is refused (the one rule:
+	 * nothing is lost that the history cannot put back).
+	 */
+	function d5b_wc_secret_free( $v ): bool {
+		if ( ! function_exists( 'd5b_ability_scrub_keys' ) ) { return true; }
+		$p = d5b_wc_plain( $v );
+		return d5b_ability_scrub_keys( $p ) === $p;
+	}
+
+	/** Refusal for a value the history could not keep in full. */
+	function d5b_wc_secret_error( string $what ): WP_Error {
+		return new WP_Error( 'not_allowed', 'This ' . $what . ' holds a value under a secret-named key; change or delete it in wp-admin.' );
+	}
+
+	/**
+	 * Everything that makes a nav menu item, as stored. With $all_meta also every other custom field of the item (protected
+	 * ones too: menu plugins keep icons and flags there), as key => rows; secret-named keys are left out (a delete checks
+	 * d5b_wc_post_secret_free first and refuses).
+	 */
+	function d5b_wc_nav_item_data( $p, bool $all_meta = false ): array {
+		$id    = (int) $p->ID;
+		$menus = wp_get_object_terms( $id, 'nav_menu', array( 'fields' => 'ids' ) );
+		$menus = is_array( $menus ) ? array_values( array_map( 'intval', $menus ) ) : array();
+		$cls   = get_post_meta( $id, '_menu_item_classes', true );
+		$cls   = is_array( $cls ) ? array_values( array_filter( array_map( 'strval', $cls ), 'strlen' ) ) : array();
+		$out   = array(
+			'id' => $id, 'menu' => (int) ( $menus[0] ?? 0 ), 'status' => (string) $p->post_status,
+			'parent' => (int) get_post_meta( $id, '_menu_item_menu_item_parent', true ), 'position' => (int) $p->menu_order,
+			'title' => (string) $p->post_title, 'url' => (string) get_post_meta( $id, '_menu_item_url', true ),
+			'type' => (string) get_post_meta( $id, '_menu_item_type', true ), 'object' => (string) get_post_meta( $id, '_menu_item_object', true ),
+			'object_id' => (int) get_post_meta( $id, '_menu_item_object_id', true ),
+			'classes' => $cls, 'target' => (string) get_post_meta( $id, '_menu_item_target', true ),
+			'attr_title' => (string) $p->post_excerpt, 'description' => (string) $p->post_content, 'xfn' => (string) get_post_meta( $id, '_menu_item_xfn', true ),
+		);
+		if ( $all_meta ) {
+			$known = array( '_menu_item_type', '_menu_item_menu_item_parent', '_menu_item_object_id', '_menu_item_object', '_menu_item_target', '_menu_item_classes', '_menu_item_xfn', '_menu_item_url' );
+			$meta  = array();
+			foreach ( array_keys( (array) get_post_meta( $id ) ) as $k ) {
+				$k = (string) $k;
+				if ( in_array( $k, $known, true ) || d5b_is_secret_key( $k ) ) { continue; }
+				$meta[ $k ] = array_map( 'd5b_wc_meta_value', array_values( (array) get_post_meta( $id, $k, false ) ) );
+			}
+			ksort( $meta );
+			$out['meta'] = $meta;
+		}
+		return $out;
+	}
+
+	/** True when no custom field of the post has a secret-named key or a value holding one (all of it can be kept). */
+	function d5b_wc_post_secret_free( int $id ): bool {
+		foreach ( array_keys( (array) get_post_meta( $id ) ) as $k ) {
+			if ( d5b_is_secret_key( (string) $k ) || ! d5b_wc_secret_free( array_values( (array) get_post_meta( $id, (string) $k, false ) ) ) ) { return false; }
+		}
+		return true;
+	}
+
+	/**
 	 * One stored meta value as the history keeps it, so it can be put back exactly: a JSON-safe value as it is (stdClass as an
 	 * array); anything else (another object, nesting deeper than 8, invalid UTF-8) as { "serialized": base64 of
 	 * maybe_serialize( value ) }, the form WordPress itself stores it in (put back with maybe_unserialize( base64_decode() )).
 	 */
 	function d5b_wc_meta_value( $v ) {
+		// A secret under a secret-named key never reaches the history, also not inside the serialized (base64) form.
+		if ( ! d5b_wc_secret_free( $v ) ) { return array( 'withheld' => 'secret_named_key' ); }
 		if ( d5b_wc_json_safe( $v ) ) { return d5b_wc_unobject( $v ); }
 		$s = function_exists( 'maybe_serialize' ) ? maybe_serialize( $v ) : serialize( $v );
 		return array( 'serialized' => base64_encode( is_string( $s ) ? $s : serialize( $v ) ) );

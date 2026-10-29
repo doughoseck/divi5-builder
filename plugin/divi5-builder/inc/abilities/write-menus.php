@@ -57,20 +57,23 @@ if ( ! function_exists( 'd5b_wn_menu' ) ) {
 	}
 
 	/** Everything that makes a menu item, as stored (the history keeps this; restore and update rebuild from it). */
-	function d5b_wn_item_data( $p ): array {
-		$id    = (int) $p->ID;
-		$menus = d5b_wn_item_menus( $id );
-		$cls   = get_post_meta( $id, '_menu_item_classes', true );
-		$cls   = is_array( $cls ) ? array_values( array_filter( array_map( 'strval', $cls ), 'strlen' ) ) : array();
-		return array(
-			'id' => $id, 'menu' => (int) ( $menus[0] ?? 0 ), 'status' => (string) $p->post_status,
-			'parent' => (int) get_post_meta( $id, '_menu_item_menu_item_parent', true ), 'position' => (int) $p->menu_order,
-			'title' => (string) $p->post_title, 'url' => (string) get_post_meta( $id, '_menu_item_url', true ),
-			'type' => (string) get_post_meta( $id, '_menu_item_type', true ), 'object' => (string) get_post_meta( $id, '_menu_item_object', true ),
-			'object_id' => (int) get_post_meta( $id, '_menu_item_object_id', true ),
-			'classes' => $cls, 'target' => (string) get_post_meta( $id, '_menu_item_target', true ),
-			'attr_title' => (string) $p->post_excerpt, 'description' => (string) $p->post_content, 'xfn' => (string) get_post_meta( $id, '_menu_item_xfn', true ),
-		);
+	function d5b_wn_item_data( $p, bool $all_meta = false ): array {
+		return d5b_wc_nav_item_data( $p, $all_meta );
+	}
+
+	/**
+	 * Strictest switch for an existing item: one that links to content whose category is off (a page while Pages is off, a
+	 * term while Taxonomies is off) is not changed, removed or restored. @return true|WP_Error
+	 */
+	function d5b_wn_item_gate( array $d ) {
+		if ( 'post_type' === $d['type'] ) {
+			$linked = get_post( (int) $d['object_id'] );
+			$type   = is_object( $linked ) ? (string) $linked->post_type : (string) $d['object'];
+			if ( '' !== $type && ! d5b_rc_type_on( $type ) ) { return new WP_Error( 'not_allowed', 'This item links to content whose ability category is switched off.' ); }
+		} elseif ( 'taxonomy' === $d['type'] && ! d5b_abilities_category_on( 'taxonomy' ) ) {
+			return new WP_Error( 'not_allowed', 'This item links to a term, and the ability category for taxonomies is switched off.' );
+		}
+		return true;
 	}
 
 	/** wp_update_nav_menu_item's data from an item's data (every field: core resets what it is not given). Slashed: core unslashes. */
@@ -114,10 +117,20 @@ if ( ! function_exists( 'd5b_wn_menu' ) ) {
 		$items = array();
 		foreach ( (array) get_objects_in_term( $mid, 'nav_menu' ) as $id ) {
 			$p = get_post( (int) $id );
-			if ( is_object( $p ) && 'nav_menu_item' === ( $p->post_type ?? '' ) ) { $items[] = d5b_wn_item_data( $p ); }
+			if ( is_object( $p ) && 'nav_menu_item' === ( $p->post_type ?? '' ) ) { $items[] = d5b_wn_item_data( $p, true ); }
 		}
 		usort( $items, function ( $a, $b ) { return array( $a['position'], $a['id'] ) <=> array( $b['position'], $b['id'] ); } );
-		return array( 'id' => $mid, 'name' => (string) $m->name, 'slug' => (string) $m->slug, 'description' => (string) ( $m->description ?? '' ), 'items' => $items, 'locations' => d5b_wn_locations_of( $mid ) );
+		$opts = get_option( 'nav_menu_options' );
+		$auto = is_array( $opts ) && isset( $opts['auto_add'] ) && in_array( $mid, array_map( 'intval', (array) $opts['auto_add'] ), true );
+		return array( 'id' => $mid, 'name' => (string) $m->name, 'slug' => (string) $m->slug, 'description' => (string) ( $m->description ?? '' ), 'items' => $items, 'locations' => d5b_wn_locations_of( $mid ), 'auto_add' => $auto );
+	}
+
+	/** True when every item of the menu can be kept in full by the history (no secret-named custom field anywhere). */
+	function d5b_wn_menu_secret_free( int $mid ): bool {
+		foreach ( (array) get_objects_in_term( $mid, 'nav_menu' ) as $id ) {
+			if ( ! d5b_wc_post_secret_free( (int) $id ) ) { return false; }
+		}
+		return true;
 	}
 
 	function d5b_wn_menu_row( $m ): array {
@@ -268,6 +281,8 @@ if ( ! function_exists( 'd5b_wn_menu' ) ) {
 		$changes = array_intersect_key( $a, array( 'title' => 1, 'url' => 1, 'parent' => 1, 'position' => 1, 'classes' => 1, 'target' => 1 ) );
 		if ( array() === $changes ) { return new WP_Error( 'invalid_input', 'Nothing to change: give at least one of title, url, parent, position, classes, target.' ); }
 		$before = d5b_wn_item_data( $p );
+		$gate = d5b_wn_item_gate( $before );
+		if ( true !== $gate ) { return $gate; }
 		$new    = $before;
 		if ( array_key_exists( 'title', $changes ) ) {
 			$ok = d5b_wc_check_masked( $changes['title'], $before['title'] );
@@ -319,6 +334,8 @@ if ( ! function_exists( 'd5b_wn_menu' ) ) {
 		if ( 'trash' === $p->post_status ) { return new WP_Error( 'cannot_trash', 'This menu item is already in the trash.' ); }
 		if ( ! d5b_wc_trash_available() ) { return new WP_Error( 'cannot_trash', 'This site has no trash (EMPTY_TRASH_DAYS is 0), so WordPress would delete the menu item for good. It is not removed.' ); }
 		$before = d5b_wn_item_data( $p );
+		$gate = d5b_wn_item_gate( $before );
+		if ( true !== $gate ) { return $gate; }
 		$r  = wp_trash_post( (int) $p->ID );
 		$np = get_post( (int) $p->ID );
 		if ( ! $r || ! is_object( $np ) || 'trash' !== $np->post_status ) { return new WP_Error( 'cannot_trash', 'WordPress did not move the menu item to the trash (a plugin may have stopped it).' ); }
@@ -342,6 +359,8 @@ if ( ! function_exists( 'd5b_wn_menu' ) ) {
 		if ( array() !== $menus && ! in_array( $mid, $menus, true ) ) { return new WP_Error( 'not_found', 'No item with that id in that menu.' ); }
 		if ( 'trash' !== $p->post_status ) { return new WP_Error( 'not_found', 'This menu item is not in the trash.' ); }
 		$before = d5b_wn_item_data( $p );
+		$gate = d5b_wn_item_gate( $before );
+		if ( true !== $gate ) { return $gate; }
 		$d      = $before;
 		$d['status'] = 'publish';
 		// Parent: the one kept on the item, else the fallback given; one that is gone (deleted or in the trash) becomes 0.
@@ -488,6 +507,7 @@ if ( ! function_exists( 'd5b_wn_menu' ) ) {
 		$m = d5b_wn_menu( $a['menu'] );
 		if ( null === $m ) { return d5b_wn_no_menu(); }
 		$mid   = (int) $m->term_id;
+		if ( ! d5b_wn_menu_secret_free( $mid ) ) { return d5b_wc_secret_error( "menu has an item that" ); }
 		$state = d5b_wn_menu_state( $m );
 		$shown = array();
 		foreach ( $state['items'] as $d ) {
@@ -518,6 +538,7 @@ if ( ! function_exists( 'd5b_wn_menu' ) ) {
 		if ( null === $m ) { return d5b_wn_no_menu(); }
 		// The menu as a term id, never the slug or name given: the fingerprint reads the items of exactly this menu.
 		$mid = (int) $m->term_id;
+		if ( ! d5b_wn_menu_secret_free( $mid ) ) { return d5b_wc_secret_error( "menu has an item that" ); }
 		$ok  = d5b_confirm_check( 'divi5-builder/menus-delete', 'nav_menu', $mid, d5b_fp_menu( $mid ), (string) ( $a['confirmation'] ?? '' ) );
 		if ( true !== $ok ) { return $ok; }
 		// The history row comes FIRST: once the menu is gone it is all there is to rebuild it from.
@@ -576,7 +597,7 @@ if ( ! function_exists( 'd5b_wn_menu' ) ) {
 		) + $d5b_wn_pos, array( 'menu', 'type', 'object' ), 'd5b_wn_h_item_add', 'd5b_wn_can', array() );
 
 	d5b_wc_def( 'menus-item-update', 'menus', 'Update a menu item',
-		'Changes the title, url (custom links only), parent, position, classes or target of one menu item (only the fields given; WordPress would reset the others, so the item\'s full data is sent with the change) and returns it. An empty title on a link to content shows the content\'s own title. target is _blank (new tab) or empty. Refuses an item in the trash and text holding [redacted] (masked_read). Needs edit_theme_options. The change history keeps the previous values.',
+		'Changes the title, url (custom links only), parent, position, classes or target of one menu item (only the fields given; WordPress would reset the others, so the item\'s full data is sent with the change) and returns it. An empty title on a link to content shows the content\'s own title. target is _blank (new tab) or empty. Refuses an item in the trash, an item linking to content whose category is switched off (a page while Pages is off, a term while Taxonomies is off), and text holding [redacted] (masked_read). Needs edit_theme_options. The change history keeps the previous values.',
 		$d5b_wn_menu + $d5b_wn_item + array(
 			'title' => array( 'type' => 'string', 'maxLength' => 500, 'description' => 'The text of the link.' ),
 			'url' => array( 'type' => 'string', 'maxLength' => 2048, 'description' => 'The link of a custom item.' ),
@@ -586,11 +607,11 @@ if ( ! function_exists( 'd5b_wn_menu' ) ) {
 		), array( 'menu', 'item' ), 'd5b_wn_h_item_update', 'd5b_wn_can', array( 'idempotent' => true ) );
 
 	d5b_wc_def( 'menus-item-remove', 'menus', 'Remove a menu item',
-		'Moves one menu item to the trash (a menu item is a post) and returns it with restore_with, the ability that puts it back. Items below it keep it as their parent until it is restored. Refuses an item already in the trash and a site without a trash (EMPTY_TRASH_DAYS 0). Needs edit_theme_options. The change history keeps the item in full (menu, parent, position, title, url, type, object, classes, target).',
+		'Moves one menu item to the trash (a menu item is a post) and returns it with restore_with, the ability that puts it back. Items below it keep it as their parent until it is restored. Refuses an item already in the trash, an item linking to content whose category is switched off, and a site without a trash (EMPTY_TRASH_DAYS 0). Needs edit_theme_options. The change history keeps the item in full (menu, parent, position, title, url, type, object, classes, target).',
 		$d5b_wn_menu + $d5b_wn_item, array( 'menu', 'item' ), 'd5b_wn_h_item_remove', 'd5b_wn_can', array( 'destructive' => true ) );
 
 	d5b_wc_def( 'menus-item-restore', 'menus', 'Restore a menu item',
-		'Takes one removed menu item out of the trash and puts it back published, in its menu, parent and position (kept on the trashed item). parent and position are optional fallbacks (the values in the history row of the remove), used only when the item lost its own; a parent that is gone makes it a top-level item (parent_reset true). Returns the item. Refuses an item that is not in the trash. Needs edit_theme_options.',
+		'Takes one removed menu item out of the trash and puts it back published, in its menu, parent and position (kept on the trashed item). parent and position are optional fallbacks (the values in the history row of the remove), used only when the item lost its own; a parent that is gone makes it a top-level item (parent_reset true). Returns the item. Refuses an item that is not in the trash and an item linking to content whose category is switched off. Needs edit_theme_options.',
 		$d5b_wn_menu + $d5b_wn_item + array(
 			'parent' => array( 'type' => 'integer', 'minimum' => 0, 'description' => 'Fallback parent item id.' ),
 			'position' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'Fallback position (menu order).' ),
@@ -607,11 +628,11 @@ if ( ! function_exists( 'd5b_wn_menu' ) ) {
 		array( 'location', 'menu' ), 'd5b_wn_h_assign_location', 'd5b_wn_can', array( 'idempotent' => true ) );
 
 	d5b_wc_def( 'menus-delete-preview', 'menus', 'Preview a menu delete',
-		'Step one of a permanent menu delete (a menu has no trash). Changes nothing. Returns the menu, every item in it (a link to content you may not read, or whose category is off, shows as type hidden), the locations that show it, and a confirmation code valid for 10 minutes for this user and this menu as it is now (its items and their last change). Show the preview to the user and wait for their explicit OK before calling divi5-builder/menus-delete with the code. Refuses an unknown menu. Needs edit_theme_options.',
+		'Step one of a permanent menu delete (a menu has no trash). Changes nothing. Returns the menu, every item in it (a link to content you may not read, or whose category is off, shows as type hidden), the locations that show it, and a confirmation code valid for 10 minutes for this user and this menu as it is now (its items and their last change). Refuses a menu with an item whose custom fields hold a secret-named key (not_allowed: the history could not keep it; delete it in wp-admin). Show the preview to the user and wait for their explicit OK before calling divi5-builder/menus-delete with the code. Refuses an unknown menu. Needs edit_theme_options.',
 		$d5b_wn_menu, array( 'menu' ), 'd5b_wn_h_delete_preview', 'd5b_wn_can', array( 'readonly' => true ) );
 
 	d5b_wc_def( 'menus-delete', 'menus', 'Delete a menu for good',
-		'Step two of a permanent menu delete: deletes the menu and every item in it, takes it off its locations, and returns deleted true with the history row id. Only with the confirmation code from menus-delete-preview, by the same user, for the same menu, unchanged since the preview (no item added, removed or changed), used once, within 10 minutes; anything else is refused with confirmation_invalid and data.reason, and nothing is deleted. The change history row is written BEFORE the delete and keeps the menu, every item in full and its locations; when it cannot be written the delete is refused (history_unavailable). Needs edit_theme_options.',
+		'Step two of a permanent menu delete: deletes the menu and every item in it, takes it off its locations, and returns deleted true with the history row id. Only with the confirmation code from menus-delete-preview, by the same user, for the same menu, unchanged since the preview (no item added, removed or changed), used once, within 10 minutes; anything else is refused with confirmation_invalid and data.reason, and nothing is deleted. The change history row is written BEFORE the delete and keeps the menu, every item in full (with its other custom fields), its locations and whether new pages are added to it automatically (auto_add); when it cannot be written the delete is refused (history_unavailable). Needs edit_theme_options.',
 		$d5b_wn_menu + array( 'confirmation' => array( 'type' => 'string', 'description' => 'The confirmation code from menus-delete-preview, after the user said OK.' ) ),
 		array( 'menu', 'confirmation' ), 'd5b_wn_h_delete', 'd5b_wn_can', array( 'destructive' => true ) );
 
