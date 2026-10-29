@@ -281,9 +281,10 @@ function get_attached_file( $id ) { $f = get_post_meta( $id, "_wp_attached_file"
 // WITHOUT //IGNORE, which fails on a bad byte, so a line with one bad byte comes back false (empty), not cleaned.
 function wp_check_invalid_utf8( $s, $strip = false ) { $s = (string) $s; if ( '' === $s || 1 === @preg_match( '/^./us', $s ) ) { return $s; } return $strip && function_exists( 'iconv' ) ? @iconv( 'utf-8', 'utf-8', $s ) : ''; }
 // T_transients: name => array( value, expires at, ttl ); a test expires one by lowering its expires-at.
-function set_transient( $n, $v, $ttl = 0 ) { $GLOBALS['T_transients'][ $n ] = array( $v, time() + $ttl, $ttl ); return true; }
-function get_transient( $n ) { $t = $GLOBALS['T_transients'][ $n ] ?? null; return ( null === $t || $t[1] < time() ) ? false : $t[0]; }
-function delete_transient( $n ) { $GLOBALS['T_transient_deletes'][] = array( $n, $GLOBALS['T_blog_id'] ?? 1 ); unset( $GLOBALS['T_transients'][ $n ] ); return true; }
+function set_transient( $n, $v, $ttl = 0 ) { if ( ! empty( $GLOBALS['T_transient_fail'] ) ) { return false; } $GLOBALS['T_transients'][ $n ] = array( $v, time() + $ttl, $ttl ); return true; }
+// T_on_get: name => callable run once right after that transient is read (a concurrent request acting between a read and a write).
+function get_transient( $n ) { $t = $GLOBALS['T_transients'][ $n ] ?? null; $v = ( null === $t || $t[1] < time() ) ? false : $t[0]; if ( isset( $GLOBALS['T_on_get'][ $n ] ) ) { $cb = $GLOBALS['T_on_get'][ $n ]; unset( $GLOBALS['T_on_get'][ $n ] ); $cb(); } return $v; }
+function delete_transient( $n ) { $GLOBALS['T_transient_deletes'][] = array( $n, $GLOBALS['T_blog_id'] ?? 1 ); $had = false !== get_transient( $n ); unset( $GLOBALS['T_transients'][ $n ] ); return $had; }
 function absint( $n ) { return abs( (int) $n ); }
 function switch_to_blog( $id ) { $GLOBALS['T_blog_stack'][] = $GLOBALS['T_blog_id']; $GLOBALS['T_blog_id'] = (int) $id; return true; }
 function restore_current_blog() { $GLOBALS['T_blog_id'] = array_pop( $GLOBALS['T_blog_stack'] ); return true; }

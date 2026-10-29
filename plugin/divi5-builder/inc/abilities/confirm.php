@@ -23,6 +23,9 @@ function d5b_confirm_obj_key( $ability, $type, $id ) { return 'd5b_confirm_obj_'
 function d5b_confirm_uat_key( $user, $ability, $type ) { return 'd5b_confirm_uat_' . sha1( (int) $user . '|' . $ability . '|' . $type ); }
 function d5b_confirm_used_key( $user, $ability, $type, $id ) { return 'd5b_confirm_used_' . sha1( (int) $user . '|' . $ability . '|' . $type . '|' . $id ); }
 
+/** A numeric id is one object whatever its spelling ("05" and 5). */
+function d5b_confirm_id( $id ) { return ( is_int( $id ) || ( is_string( $id ) && ctype_digit( $id ) ) ) ? (string) absint( $id ) : (string) $id; }
+
 function d5b_confirm_new_code() {
 	$out = ''; $max = strlen( D5B_CONFIRM_ALPHABET ) - 1;
 	for ( $i = 0; $i < 12; $i++ ) { $out .= D5B_CONFIRM_ALPHABET[ random_int( 0, $max ) ]; }
@@ -32,8 +35,11 @@ function d5b_confirm_new_code() {
 /** Issue a code for one object in its current state; a second issue for the same user and object replaces the first. */
 function d5b_confirm_issue( $ability, $object_type, $object_id, $fingerprint ) {
 	$user = (int) get_current_user_id();
+	$object_id = d5b_confirm_id( $object_id );
 	$code = d5b_confirm_new_code();
-	set_transient( d5b_confirm_key( $user, $ability, $object_type, $object_id ), array( 'code_hash' => wp_hash( $code ), 'fingerprint' => (string) $fingerprint, 'issued' => time() ), D5B_CONFIRM_TTL );
+	if ( ! set_transient( d5b_confirm_key( $user, $ability, $object_type, $object_id ), array( 'code_hash' => wp_hash( $code ), 'fingerprint' => (string) $fingerprint, 'issued' => time() ), D5B_CONFIRM_TTL ) ) {
+		return new WP_Error( 'unavailable', 'The confirmation code could not be stored, so the delete cannot be confirmed. Try again.' );
+	}
 	delete_transient( d5b_confirm_used_key( $user, $ability, $object_type, $object_id ) );
 	set_transient( d5b_confirm_obj_key( $ability, $object_type, $object_id ), $user, D5B_CONFIRM_TTL );
 	$ids = get_transient( d5b_confirm_uat_key( $user, $ability, $object_type ) );
@@ -64,13 +70,15 @@ function d5b_confirm_check( $ability, $object_type, $object_id, $fingerprint, $c
 	$code = trim( (string) $code );
 	if ( '' === $code ) { return d5b_confirm_error( 'missing' ); }
 	$user = (int) get_current_user_id();
+	$object_id = d5b_confirm_id( $object_id );
 	$key  = d5b_confirm_key( $user, $ability, $object_type, $object_id );
 	$row  = get_transient( $key );
 	$hash = wp_hash( $code );
 	if ( is_array( $row ) && isset( $row['code_hash'], $row['fingerprint'] ) ) {
 		if ( hash_equals( (string) $row['code_hash'], $hash ) ) {
 			if ( ! hash_equals( (string) $row['fingerprint'], (string) $fingerprint ) ) { return d5b_confirm_error( 'stale' ); }
-			delete_transient( $key );
+			// Atomic: of two concurrent checks only the one whose delete finds the row passes.
+			if ( ! delete_transient( $key ) ) { return d5b_confirm_error( 'used' ); }
 			set_transient( d5b_confirm_used_key( $user, $ability, $object_type, $object_id ), 1, D5B_CONFIRM_TTL );
 			return true;
 		}
@@ -101,6 +109,7 @@ function d5b_confirm_other_object( $user, $ability, $type, $id, $hash ) {
 
 // ---- Fingerprints: a string that changes when the object does.
 function d5b_fp_term( $term ) { return $term->name . '|' . $term->slug . '|' . $term->parent . '|' . $term->count; }
+/** $menu_id is the menu's term id. */
 function d5b_fp_menu( $menu_id ) {
 	$items = wp_get_nav_menu_items( (int) $menu_id, array( 'post_status' => 'any' ) );
 	$rows  = array();
@@ -108,7 +117,12 @@ function d5b_fp_menu( $menu_id ) {
 	sort( $rows, SORT_STRING );
 	return implode( ',', $rows );
 }
-function d5b_fp_meta( $post_id, $key ) { return sha1( serialize( get_post_meta( (int) $post_id, $key, true ) ) ); }
+/** Every row of the key, in order, with the row count (a deleted key removes all rows; an absent key differs from one empty row). */
+function d5b_fp_meta( $post_id, $key ) {
+	$rows = get_post_meta( (int) $post_id, $key, false );
+	$rows = is_array( $rows ) ? array_values( $rows ) : array();
+	return count( $rows ) . ':' . sha1( serialize( $rows ) );
+}
 function d5b_fp_media( $id ) {
 	$p = get_post( (int) $id );
 	return ( $p ? $p->post_modified_gmt : '' ) . '|' . get_attached_file( (int) $id );

@@ -13,7 +13,7 @@ require $dir . '/inc/abilities/confirm.php';
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . ( is_string( $detail ) ? $detail : json_encode( $detail ) ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
-function fresh() { t_reset(); $GLOBALS['T_user_id'] = 1; }
+function fresh() { t_reset(); $GLOBALS['T_user_id'] = 1; $GLOBALS['T_transient_fail'] = false; $GLOBALS['T_on_get'] = array(); }
 function reason( $r ) { return is_wp_error( $r ) && 'confirmation_invalid' === $r->get_error_code() ? ( $r->get_error_data()['reason'] ?? '?' ) : ( true === $r ? 'OK' : 'other' ); }
 const AB = 'divi5-builder/taxonomy-delete';
 function expire( $name ) { $GLOBALS['T_transients'][ $name ][1] = time() - 1; }
@@ -34,6 +34,9 @@ echo "storage\n";
 fresh();
 $r = d5b_confirm_issue( AB, 'term', 12, 'fp1' );
 $key = 'd5b_confirm_' . sha1( '1|' . AB . '|term|12' );
+$GLOBALS['T_user_id'] = 2;
+check( 'user 2 presenting user 1\'s code is refused (wrong_user), whatever the key format', 'wrong_user' === reason( d5b_confirm_check( AB, 'term', 12, 'fp1', $r['confirmation'] ) ) );
+$GLOBALS['T_user_id'] = 1;
 check( 'the transient is keyed d5b_confirm_ + sha1(user|ability|type|id), ttl 600', isset( $GLOBALS['T_transients'][ $key ] ) && 600 === $GLOBALS['T_transients'][ $key ][2] );
 $v = $GLOBALS['T_transients'][ $key ][0];
 check( 'it holds code_hash, fingerprint and issued only', array( 'code_hash', 'fingerprint', 'issued' ) === array_keys( $v ) && 'fp1' === $v['fingerprint'] );
@@ -106,7 +109,7 @@ check( 'menu: a menu that does not exist gives an empty string', '' === d5b_fp_m
 
 $p = t_add_post(); t_add_meta( $p, 'k', 'one' );
 $f0 = d5b_fp_meta( $p, 'k' );
-check( 'meta: sha1 of the serialized value, stable', sha1( serialize( 'one' ) ) === $f0 && $f0 === d5b_fp_meta( $p, 'k' ) );
+check( 'meta: row count + sha1 of the serialized rows, stable', '1:' . sha1( serialize( array( 'one' ) ) ) === $f0 && $f0 === d5b_fp_meta( $p, 'k' ) );
 $GLOBALS['T_meta'][ $p ]['k'] = array( 'two' );
 check( 'meta: a changed value changes it', $f0 !== d5b_fp_meta( $p, 'k' ) );
 $GLOBALS['T_meta'][ $p ]['k'] = array( array( 'a' => 1 ) ); $f1 = d5b_fp_meta( $p, 'k' ); $GLOBALS['T_meta'][ $p ]['k'] = array( array( 'a' => 2 ) );
@@ -119,6 +122,37 @@ $GLOBALS['T_posts'][ $a ]->post_modified_gmt = '2026-10-03 10:00:00';
 check( 'media: a new modified time changes it', $g0 !== d5b_fp_media( $a ) );
 $GLOBALS['T_posts'][ $a ]->post_modified_gmt = '2026-10-02 10:00:00'; $GLOBALS['T_meta'][ $a ]['_wp_attached_file'] = array( '2026/10/b.png' );
 check( 'media: a new file path changes it; unchanged does not', $g0 !== d5b_fp_media( $a ) && ( $GLOBALS['T_meta'][ $a ]['_wp_attached_file'] = array( '2026/10/a.png' ) ) && $g0 === d5b_fp_media( $a ) );
+
+echo "fix round 1\n";
+fresh(); $p = t_add_post(); t_add_meta( $p, 'k', 'one' );
+$c = d5b_confirm_issue( AB, 'meta', $p, d5b_fp_meta( $p, 'k' ) )['confirmation'];
+t_add_meta( $p, 'k', 'two' );
+check( 'meta: a second row added after the preview -> stale', 'stale' === reason( d5b_confirm_check( AB, 'meta', $p, d5b_fp_meta( $p, 'k' ), $c ) ) );
+$a = d5b_fp_meta( $p, 'k' ); $GLOBALS['T_meta'][ $p ]['k'][1] = 'three';
+check( 'meta: changing row 2 changes it', $a !== d5b_fp_meta( $p, 'k' ) );
+fresh(); $p = t_add_post(); $none = d5b_fp_meta( $p, 'k' ); t_add_meta( $p, 'k', '' );
+check( 'meta: an absent key differs from one empty row', $none !== d5b_fp_meta( $p, 'k' ) );
+
+fresh(); $c = d5b_confirm_issue( AB, 'term', 12, 'fp1' )['confirmation'];
+$GLOBALS['T_on_get'][ $key ] = function () use ( $key ) { delete_transient( $key ); };
+$res = d5b_confirm_check( AB, 'term', 12, 'fp1', $c );
+check( 'atomic consume: a concurrent check that consumed it between read and delete makes this one fail (used)', 'used' === reason( $res ), reason( $res ) );
+fresh(); $c = d5b_confirm_issue( AB, 'term', 12, 'fp1' )['confirmation'];
+$ok = 0; for ( $i = 0; $i < 3; $i++ ) { if ( true === d5b_confirm_check( AB, 'term', 12, 'fp1', $c ) ) { $ok++; } }
+check( 'three checks of one code: exactly one passes', 1 === $ok );
+
+fresh(); $GLOBALS['T_transient_fail'] = true;
+$e = d5b_confirm_issue( AB, 'term', 12, 'fp1' );
+check( 'issue with a failing set_transient returns WP_Error unavailable, no code', is_wp_error( $e ) && 'unavailable' === $e->get_error_code() );
+$GLOBALS['T_transient_fail'] = false;
+
+fresh(); $c = d5b_confirm_issue( AB, 'term', 5, 'f' )['confirmation'];
+check( 'issue with 5, check with "05" succeeds', true === d5b_confirm_check( AB, 'term', '05', 'f', $c ) );
+$c = d5b_confirm_issue( AB, 'term', '05', 'f' )['confirmation'];
+check( 'issue with "05", check with 5 succeeds', true === d5b_confirm_check( AB, 'term', 5, 'f', $c ) );
+$c = d5b_confirm_issue( AB, 'meta', 'slug-a', 'f' )['confirmation'];
+check( 'a non-numeric id is left alone (works as given)', true === d5b_confirm_check( AB, 'meta', 'slug-a', 'f', $c ) );
+check( 'fp_menu documents that it takes the menu\'s term id', false !== strpos( $src, "menu's term id" ) );
 
 echo "\n" . ( $failed ? "FAILED: $failed of $n\n" : "ALL $n PASSED\n" );
 exit( $failed ? 1 : 0 );
