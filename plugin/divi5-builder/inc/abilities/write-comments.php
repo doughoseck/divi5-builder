@@ -21,9 +21,6 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-// The definitions below use d5b_wc_def at include time; a loader that includes files in alphabetical order reaches this file first.
-require_once __DIR__ . '/write-common.php';
-
 if ( ! function_exists( 'd5b_cm_comment' ) ) {
 
 	/** The comment types that are real comments. */
@@ -121,7 +118,9 @@ if ( ! function_exists( 'd5b_cm_comment' ) ) {
 			default:          $ok = wp_untrash_comment( $id ); break;
 		}
 		$np = get_comment( $id );
-		if ( ! $ok || is_wp_error( $ok ) || ! is_object( $np ) || ! in_array( d5b_rc_comment_status( $np ), $plan['want'], true ) ) {
+		// Whatever WordPress did, a status that changed is recorded and reported as it is (a restore of a comment that was spam before
+		// it was trashed goes back to spam); only a comment whose status did not change is a failure.
+		if ( ! is_object( $np ) || d5b_rc_comment_status( $np ) === $st ) {
 			return new WP_Error( 'write_failed', 'WordPress did not change the comment (a plugin may have stopped it).' );
 		}
 		$new   = d5b_rc_comment_status( $np );

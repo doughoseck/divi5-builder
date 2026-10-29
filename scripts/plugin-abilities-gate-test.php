@@ -56,7 +56,8 @@ require $dir . '/inc/switches.php';
 require $dir . '/inc/abilities/categories.php';
 require $dir . '/inc/abilities/register.php';
 // Group files that later tasks add: loading them adds the real definitions to the registry. scrub.php is left out: this test has its own scrubber double.
-foreach ( glob( $dir . '/inc/abilities/*.php' ) as $f ) { if ( ! in_array( basename( $f ), array( 'categories.php', 'register.php', 'audit.php', 'scrub.php' ), true ) ) { require_once $f; } }
+$d5b_files = glob( $dir . '/inc/abilities/*.php' ); usort( $d5b_files, function ( $a, $b ) { $w = function ( $p ) { return 'write-common.php' === basename( $p ) ? 0 : 1; }; return $w( $a ) <=> $w( $b ) ?: strcmp( $a, $b ); } ); // write-common.php first, as the loader
+foreach ( $d5b_files as $f ) { if ( ! in_array( basename( $f ), array( 'categories.php', 'register.php', 'audit.php', 'scrub.php' ), true ) ) { require_once $f; } }
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . ( is_string( $detail ) ? $detail : json_encode( $detail ) ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }

@@ -765,6 +765,8 @@ function wp_trash_comment( $id ) {
 	if ( ! $c ) { return false; }
 	$GLOBALS['T_comment_calls'][] = array( 'wp_trash_comment', (int) $c->comment_ID );
 	if ( defined( 'EMPTY_TRASH_DAYS' ) && ! EMPTY_TRASH_DAYS ) { unset( $GLOBALS['T_comments'][ (int) $c->comment_ID ] ); $GLOBALS['T_comments_deleted'][] = (int) $c->comment_ID; return true; }
+	// As core: the old keys go first, so a comment that was spam keeps 'spam' as its status to go back to.
+	delete_comment_meta( $c->comment_ID, '_wp_trash_meta_status' ); delete_comment_meta( $c->comment_ID, '_wp_trash_meta_time' );
 	add_comment_meta( $c->comment_ID, '_wp_trash_meta_status', $c->comment_approved );
 	add_comment_meta( $c->comment_ID, '_wp_trash_meta_time', time() );
 	if ( wp_set_comment_status( $c, 'trash' ) ) { return true; }
@@ -819,7 +821,22 @@ function wp_new_comment( $data, $wp_error = false ) {
 	}
 	$uid = (int) ( $data['user_id'] ?? 0 );
 	$post = get_post( $data['comment_post_ID'] );
-	$approved = ( $uid && ( ( $post && (int) $post->post_author === $uid ) || t_has_cap( 'moderate_comments' ) ) ) ? '1' : ( get_option( 'comment_moderation' ) ? '0' : '1' );
+	if ( $uid && ( ( $post && (int) $post->post_author === $uid ) || t_has_cap( 'moderate_comments' ) ) ) {
+		$approved = '1';
+	} else {
+		// check_comment: manual moderation holds everything; comment_previously_approved needs an earlier approved comment of the
+		// same author (name and email); then the disallowed list (option disallowed_keys, one word per line) makes it 'trash'
+		// (EMPTY_TRASH_DAYS is 30 on a real site) or, with no trash, 'spam'.
+		$ok = ! get_option( 'comment_moderation' );
+		if ( $ok && get_option( 'comment_previously_approved' ) ) {
+			$ok = false;
+			foreach ( $GLOBALS['T_comments'] as $c ) { if ( '1' === (string) $c->comment_approved && $c->comment_author === ( $data['comment_author'] ?? '' ) && $c->comment_author_email === ( $data['comment_author_email'] ?? '' ) ) { $ok = true; } }
+		}
+		$approved = $ok ? '1' : '0';
+		foreach ( preg_split( '/\R/', trim( (string) get_option( 'disallowed_keys', '' ) ) ) as $w ) {
+			if ( '' !== trim( $w ) && false !== stripos( ( $data['comment_content'] ?? '' ) . ' ' . ( $data['comment_author'] ?? '' ), trim( $w ) ) ) { $approved = ( ! defined( 'EMPTY_TRASH_DAYS' ) || EMPTY_TRASH_DAYS ) ? 'trash' : 'spam'; }
+		}
+	}
 	return t_add_comment( array( 'comment_post_ID' => (int) $data['comment_post_ID'], 'comment_content' => $data['comment_content'], 'comment_parent' => $parent, 'user_id' => $uid,
 		'comment_author' => $data['comment_author'] ?? '', 'comment_author_email' => $data['comment_author_email'] ?? '', 'comment_author_url' => $data['comment_author_url'] ?? '',
 		'comment_author_IP' => $_SERVER['REMOTE_ADDR'] ?? '', 'comment_approved' => $approved, 'comment_type' => 'comment' ) );

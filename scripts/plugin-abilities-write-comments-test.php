@@ -74,6 +74,12 @@ if ( getenv( 'T_EMPTY_TRASH_0' ) ) {
 	$c = t_add_comment( array( 'comment_post_ID' => $po ) );
 	$r = call( 'comments-trash', array( 'id' => $c ) );
 	echo 'SUB:' . json_encode( array( 'code' => code( $r ), 'exists' => null !== cm( $c ), 'status' => appr( $c ), 'deleted' => $GLOBALS['T_comments_deleted'], 'wp_calls' => count( calls( 'wp_trash_comment' ) ), 'history' => count( hrows() ) ) ) . "\n";
+	site( READER, 5 ); $GLOBALS['T_users'][5] = (object) array( 'user_login' => 'bob', 'display_name' => 'Bob' ); update_option( 'disallowed_keys', "viagra
+" );
+	$po2 = t_add_post( array( 'post_author' => 3, 'comment_status' => 'open' ) );
+	$rs = call( 'comments-reply', array( 'post_id' => $po2, 'content' => 'buy viagra now' ) );
+	echo 'SUB2:' . json_encode( array( 'status' => is_array( $rs ) ? $rs['status'] : code( $rs ), 'changed' => is_array( $rs ) ? $rs['changed'] : null, 'row' => hlast() ? array( hlast()['action'], hlast()['object_type'] ) : null, 'stored' => is_array( $rs ) ? appr( $rs['id'] ) : null ) ) . "
+";
 	exit( 0 );
 }
 
@@ -160,6 +166,8 @@ check( 'WordPress refusing the status change (a plugin stopped it) is write_fail
 $GLOBALS['T_comment_blocked'] = false;
 putenv( 'T_EMPTY_TRASH_0=1' ); $out = array(); exec( escapeshellarg( PHP_BINARY ) . ' -d max_execution_time=30 ' . escapeshellarg( __FILE__ ) . ' 2>&1', $out ); putenv( 'T_EMPTY_TRASH_0' );
 $sub = null; foreach ( $out as $line ) { if ( 0 === strpos( $line, 'SUB:' ) ) { $sub = json_decode( substr( $line, 4 ), true ); } }
+$sub2 = null; foreach ( $out as $line ) { if ( 0 === strpos( $line, 'SUB2:' ) ) { $sub2 = json_decode( substr( $line, 5 ), true ); } }
+check( 'a reader\'s reply that core\'s disallowed list marks as spam (site with no trash): the answer says status spam, changed true; a history row with action create is written', is_array( $sub2 ) && 'spam' === $sub2['status'] && true === $sub2['changed'] && array( 'create', 'comment' ) === $sub2['row'] && 'spam' === $sub2['stored'], $out );
 check( 'with EMPTY_TRASH_DAYS 0 comments-trash is refused cannot_trash, WordPress is never asked (it would delete), the comment is still there and no history row is written',
 	is_array( $sub ) && 'cannot_trash' === $sub['code'] && $sub['exists'] && '1' === $sub['status'] && array() === $sub['deleted'] && 0 === $sub['wp_calls'] && 0 === $sub['history'], $out );
 
@@ -282,6 +290,34 @@ $po = t_add_post( array( 'post_author' => 5, 'comment_status' => 'open' ) );
 unset( $GLOBALS['wpdb']->tables['wp_d5b_history'] ); $GLOBALS['T_dbdelta_fail'] = true; set_transient( 'd5b_audit_install_failed', 1, 3600 );
 $r = call( 'comments-reply', array( 'post_id' => $po, 'content' => 'history table gone' ) );
 check( 'with the history table gone the reply stands, the audit row says ok_no_history and the caller never sees _history_failed', is_array( $r ) && null !== cm( $r['id'] ) && ! array_key_exists( '_history_failed', $r ) && 'ok_no_history' === end( $GLOBALS['wpdb']->tables[ d5b_audit_table() ] )['status'], $r );
+
+echo "restore after spam, unexpected statuses, core's allow rules\n";
+site();
+$po = t_add_post( array( 'post_author' => 3 ) );
+$c = t_add_comment( array( 'comment_post_ID' => $po, 'comment_approved' => 'spam' ) );
+$r1 = call( 'comments-trash', array( 'id' => $c ) );
+$h0 = count( hrows() );
+$r2 = call( 'comments-restore', array( 'id' => $c ) );
+$h = hlast();
+check( 'spam, then trash, then restore: core puts it back to spam; the answer says spam with changed true (not write_failed) and a restore row is written (before trash, after spam)',
+	is_array( $r1 ) && 'spam' === ( $h['after']['status'] ?? null ) && is_array( $r2 ) && 'spam' === $r2['status'] && true === $r2['changed'] && 'spam' === appr( $c ) && $h0 + 1 === count( hrows() ) && 'restore' === $h['action'] && 'trash' === $h['before']['status'], array( $r1, $r2, $h ) );
+$c2 = t_add_comment( array( 'comment_post_ID' => $po, 'comment_approved' => 'spam' ) ); add_comment_meta( $c2, '_wp_trash_meta_status', 'trash' );
+$h0 = count( hrows() );
+$r = call( 'comments-unspam', array( 'id' => $c2 ) );
+check( 'a change to a status the action did not expect (unspam sent to trash by the remembered status) is still recorded and reported as it is, never write_failed', is_array( $r ) && 'trash' === $r['status'] && true === $r['changed'] && $h0 + 1 === count( hrows() ) && 'trash' === hlast()['after']['status'], $r );
+site( READER, 5 );
+$GLOBALS['T_users'][5] = (object) array( 'user_login' => 'bob', 'display_name' => 'Bob', 'user_email' => 'bob@example.org' );
+$po = t_add_post( array( 'post_author' => 3, 'comment_status' => 'open' ) );
+update_option( 'comment_previously_approved', 1 );
+$r = call( 'comments-reply', array( 'post_id' => $po, 'content' => 'first comment' ) );
+check( 'comment_previously_approved: a first-time commenter is held', is_array( $r ) && 'hold' === $r['status'], $r );
+t_add_comment( array( 'comment_post_ID' => $po, 'comment_approved' => '1', 'comment_author' => 'Bob', 'comment_author_email' => 'bob@example.org' ) );
+$r = call( 'comments-reply', array( 'post_id' => $po, 'content' => 'second comment' ) );
+check( '... and approved once an earlier comment of theirs was approved', is_array( $r ) && 'approved' === $r['status'], $r );
+update_option( 'disallowed_keys', "viagra\n" );
+$r = call( 'comments-reply', array( 'post_id' => $po, 'content' => 'buy viagra' ) );
+check( 'the disallowed list on a site with a trash puts the reply in the trash (core: trash when EMPTY_TRASH_DAYS); the answer says trash, changed true, a create row is written',
+	is_array( $r ) && 'trash' === $r['status'] && true === $r['changed'] && 'create' === hlast()['action'] && 'trash' === hlast()['after']['status'], $r );
 
 echo "\n" . ( $n - $failed ) . " of $n passed\n";
 exit( $failed ? 1 : 0 );
