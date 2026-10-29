@@ -121,7 +121,11 @@ if ( ! function_exists( 'd5b_abilities_register' ) ) {
 				'permission_callback' => function ( $input = null ) use ( $name ) { return d5b_ability_permit( $name, $input ); },
 				'meta'                => array( 'annotations' => $annotations, 'public' => true, 'show_in_rest' => true ),
 			);
-			if ( ! empty( $def['input_schema'] ) ) { $args['input_schema'] = $def['input_schema']; }
+			if ( ! empty( $def['input_schema'] ) ) {
+				// Core validates a missing input (null) against the schema unless the schema has a default.
+				if ( 'object' === ( $def['input_schema']['type'] ?? '' ) && ! array_key_exists( 'default', $def['input_schema'] ) ) { $def['input_schema']['default'] = array(); }
+				$args['input_schema'] = $def['input_schema'];
+			}
 			if ( ! empty( $def['output_schema'] ) ) { $args['output_schema'] = $def['output_schema']; }
 			wp_register_ability( $name, $args );
 		}
