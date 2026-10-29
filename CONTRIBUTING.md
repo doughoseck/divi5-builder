@@ -72,6 +72,7 @@ Before opening a PR:
    node scripts/switch-advice-test.js    # what the scripts say when a switch is off
    node scripts/plugin-live-check-test.js    # the read-only live check (plugin-live-check.js <site>): GET only, exit 0/1/2
    node scripts/abilities-live-check-test.js   # the read-only abilities check (abilities-live-check.js <site>): GET only, exit 0/1/2
+   node scripts/abilities-live-write-test.js   # the live write script (abilities-live-write.js <site> <step>) against the fake site: only d5b-live- items, previews then --confirm, exit 0/1/2/3
    node scripts/build-plugin-zips-test.js
    php scripts/permissions-test.php && php scripts/double-load-test.php && php scripts/media-quarantine-test.php && php scripts/media-audit-test.php
    php scripts/site-updates-test.php

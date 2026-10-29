@@ -19,6 +19,102 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
   const https = require('https');
   const { EventEmitter } = require('events');
   const STATE = process.env.FAKE_WP_STATE;
+  // A stateful model of the write and read abilities the live write script uses (issue #32, task 11). st.mdl = {} switches it on
+  // (st.mdl.items, .revs, .hist, .codes, .calls are its state; .mediaTrash false = a site with no media trash, .transport overrides
+  // the upload's transport, .noHistory = ability short names that write no history row, .badWrite = short names answered 500).
+  // Read abilities are readonly, so core takes only GET for them and only POST for the writes (405 otherwise), as the real site does.
+  // Every answer carries a planted secret (SECRET-LEAK-VALUE) that the script must never print.
+  const modelRun = (st, name, method, q, body) => {
+    const m = st.mdl; m.next = m.next || 1000; m.calls = m.calls || []; m.hist = m.hist || []; m.items = m.items || {}; m.revs = m.revs || {}; m.codes = m.codes || {};
+    const short = name.replace(/^divi5-builder\//, '');
+    m.calls.push(method + ' ' + short);
+    const E = (s, code, data) => [s, { code, message: 'ERR-MSG-' + code, data: Object.assign({ status: s }, data || {}) }];
+    const READ = ['pages-get', 'posts-list', 'revisions-list', 'revisions-get', 'history-changes-list', 'media-delete-preview', 'taxonomy-delete-preview', 'menus-delete-preview'];
+    if (READ.includes(short) !== (method === 'GET')) return [405, { code: 'rest_ability_invalid_method' }];
+    if ((m.badWrite || []).includes(short)) return E(500, 'internal_error');
+    const input = {};
+    if (method === 'GET') { for (const [k, v] of new URLSearchParams(q)) { const mm = k.match(/^input\[([a-z_]+)\]$/); if (mm) input[mm[1]] = v; } }
+    else Object.assign(input, JSON.parse(body || '{}').input || {});
+    const md5 = s => crypto.createHash('md5').update(String(s)).digest('hex');
+    const nid = () => ++m.next;
+    const get = (id, kinds) => { const o = m.items[String(id)]; return o && (!kinds || kinds.includes(o.kind)) ? o : null; };
+    const hash = o => md5(o.content || '');
+    const res = o => ({ id: o.id, type: o.kind, title: o.title, status: o.status, hash: hash(o), content: 'SECRET-LEAK-VALUE', secret: 'SECRET-LEAK-VALUE' });
+    const hist = (ability, o, action, what, rev) => {
+      if ((m.noHistory || []).includes(ability)) return;
+      m.hist.unshift({ id: m.hist.length + 1, time_utc: new Date().toISOString().slice(0, 19).replace('T', ' '), user_id: 1, ability: 'divi5-builder/' + ability, audit_id: 1, object_type: o.kind, object_id: o.id, action, revision_id: rev || null, summary: what + ' ' + o.kind + ' ' + o.id + " '" + (o.title || o.name || '') + "'" });
+    };
+    const confirm = (ability, o) => { const c = 'CONFIRM-' + o.id + '-' + nid(); m.codes[ability + ':' + o.id] = c; return { confirmation: c, expires_at: '2026-10-29T12:10:00+00:00', secret: 'SECRET-LEAK-VALUE' }; };
+    const useCode = (ability, o) => { const k = ability + ':' + o.id; if (!input.confirmation || m.codes[k] !== input.confirmation) return E(403, 'confirmation_invalid', { reason: 'missing' }); delete m.codes[k]; return null; };
+    const needHash = o => (input.expect_hash === hash(o) ? null : E(409, 'stale', { hash: hash(o) }));
+    const addRev = o => { (m.revs[o.id] = m.revs[o.id] || []).unshift({ id: nid(), content: o.content || '' }); return m.revs[o.id][0].id; };
+    let mm2;
+    if ((mm2 = short.match(/^(posts|pages)-(create|update|trash|restore)$/))) {
+      const kind = mm2[1] === 'posts' ? 'post' : 'page', act = mm2[2];
+      if (act === 'create') { const o = { id: nid(), kind, title: String(input.title || ''), status: input.status || 'draft', content: input.content || '' }; m.items[o.id] = o; addRev(o); hist(short, o, 'create', 'Created'); return [200, res(o)]; }
+      const o = get(input.id, [kind]); if (!o) return E(404, 'not_found');
+      if (act === 'update') { const s = needHash(o); if (s) return s; if ('title' in input) o.title = input.title; if ('content' in input) o.content = input.content; hist(short, o, 'update', 'Updated'); return [200, res(o)]; }
+      if (act === 'trash') { if (o.status === 'trash') return E(400, 'cannot_trash'); o.prev = o.status; o.status = 'trash'; hist(short, o, 'trash', 'Trashed'); return [200, Object.assign(res(o), { restore_with: 'divi5-builder/' + mm2[1] + '-restore' })]; }
+      if (o.status !== 'trash') return E(404, 'not_found'); o.status = o.prev || 'draft'; hist(short, o, 'restore', 'Restored'); return [200, res(o)];
+    }
+    if (short === 'media-upload') {
+      if (!input.url) return E(400, 'invalid_input');
+      m.uploadUrls = (m.uploadUrls || []).concat(input.url);
+      const o = { id: nid(), kind: 'media', title: String(input.title || 'upload'), status: 'inherit', content: '', file_url: 'https://fake.test/wp-content/uploads/2026/10/w-logo-blue.png' }; m.items[o.id] = o; hist(short, o, 'create', 'Uploaded');
+      return [200, Object.assign(res(o), { file_url: o.file_url, transport: m.transport || 'curl' })];
+    }
+    if (short === 'media-update') { const o = get(input.id, ['media']); if (!o) return E(404, 'not_found'); if ('alt' in input) o.alt = input.alt; hist(short, o, 'update', 'Updated'); return [200, res(o)]; }
+    if (short === 'media-trash') {
+      const o = get(input.id, ['media']); if (!o) return E(404, 'not_found');
+      if (m.mediaTrash === false) return E(400, 'cannot_trash', { use: 'divi5-builder/media-delete-preview' });
+      o.status = 'trash'; hist(short, o, 'trash', 'Trashed'); return [200, res(o)];
+    }
+    if (short === 'media-delete-preview') { const o = get(input.id, ['media']); if (!o) return E(404, 'not_found'); if (m.mediaTrash !== false) return E(403, 'not_allowed'); return [200, Object.assign({ item: { id: o.id, title: o.title, file_url: o.file_url, secret: 'SECRET-LEAK-VALUE' }, used_by: [{ id: 3, title: 'SECRET-LEAK-VALUE' }], used_by_hidden: 0 }, confirm('media-delete', o))]; }
+    if (short === 'media-delete') { const o = get(input.id, ['media']); if (!o) return E(404, 'not_found'); const bad = useCode('media-delete', o); if (bad) return bad; hist(short, o, 'delete', 'Deleted'); delete m.items[o.id]; return [200, { deleted: true, id: o.id, file_url: 'SECRET-LEAK-VALUE', history_id: m.hist.length }]; }
+    if (short === 'taxonomy-create') { const o = { id: nid(), kind: 'term', name: String(input.name || ''), taxonomy: input.taxonomy, title: String(input.name || ''), count: 0, posts: [] }; m.items[o.id] = o; hist(short, o, 'create', 'Created'); return [200, { id: o.id, name: o.name, slug: o.name, taxonomy: o.taxonomy, count: 0, secret: 'SECRET-LEAK-VALUE' }]; }
+    if (short === 'taxonomy-assign') {
+      const p = get(input.post_id, ['post', 'page']), t = get((input.terms || [])[0], ['term']); if (!p || !t) return E(400, 'invalid_input');
+      t.posts.push(p.id); t.count++; hist(short, p, 'assign', 'Assigned ' + t.name + ' to'); return [200, { terms: [t.id], secret: 'SECRET-LEAK-VALUE' }];
+    }
+    if (short === 'taxonomy-delete-preview') { const o = get(input.id, ['term']); if (!o) return E(404, 'not_found'); return [200, Object.assign({ term: { id: o.id, name: o.name }, count: o.count, children: [], children_total: 0, posts: o.posts, posts_total: o.posts.length, secret: 'SECRET-LEAK-VALUE' }, confirm('taxonomy-delete', o))]; }
+    if (short === 'taxonomy-delete') { const o = get(input.id, ['term']); if (!o) return E(404, 'not_found'); const bad = useCode('taxonomy-delete', o); if (bad) return bad; hist(short, o, 'delete', 'Deleted'); delete m.items[o.id]; return [200, { deleted: true, id: o.id, history_id: m.hist.length }]; }
+    if (short === 'menus-create') { const o = { id: nid(), kind: 'menu', name: String(input.name || ''), title: String(input.name || '') }; m.items[o.id] = o; hist(short, o, 'create', 'Created'); return [200, { id: o.id, name: o.name, slug: o.name, secret: 'SECRET-LEAK-VALUE' }]; }
+    if (short === 'menus-item-add') { const mn = get(input.menu, ['menu']); if (!mn) return E(404, 'not_found'); const o = { id: nid(), kind: 'menuitem', menu: mn.id, title: String(input.title || ''), position: 1 + Object.values(m.items).filter(x => x.menu === mn.id).length }; m.items[o.id] = o; hist(short, mn, 'update', 'Added item to'); return [200, { id: o.id, title: o.title, position: o.position, secret: 'SECRET-LEAK-VALUE' }]; }
+    if (short === 'menus-reorder') {
+      const mn = get(input.menu, ['menu']); if (!mn) return E(404, 'not_found');
+      const have = Object.values(m.items).filter(x => x.menu === mn.id).map(x => x.id).sort().join(), want = (input.items || []).map(x => x.id).sort().join();
+      if (have !== want) return E(400, 'invalid_input', { missing: [] });
+      (input.items || []).forEach((x, i) => { m.items[x.id].position = i + 1; }); hist(short, mn, 'update', 'Reordered'); return [200, { menu: { id: mn.id }, items: input.items, secret: 'SECRET-LEAK-VALUE' }];
+    }
+    if (short === 'menus-delete-preview') { const mn = get(input.menu, ['menu']); if (!mn) return E(404, 'not_found'); const its = Object.values(m.items).filter(x => x.menu === mn.id); return [200, Object.assign({ menu: { id: mn.id, name: mn.name }, items: its.map(x => ({ id: x.id, title: 'SECRET-LEAK-VALUE' })), items_total: its.length, locations: [] }, confirm('menus-delete', mn))]; }
+    if (short === 'menus-delete') { const mn = get(input.menu, ['menu']); if (!mn) return E(404, 'not_found'); const bad = useCode('menus-delete', mn); if (bad) return bad; hist(short, mn, 'delete', 'Deleted'); Object.keys(m.items).forEach(k => { if (m.items[k].menu === mn.id) delete m.items[k]; }); delete m.items[mn.id]; return [200, { deleted: true, id: mn.id, history_id: m.hist.length }]; }
+    if (short === 'pages-get') { const o = get(input.id, ['page']); if (!o) return E(404, 'not_found'); return [200, Object.assign(res(o), { content: o.content })]; }
+    if (short === 'posts-list') { const items = Object.values(m.items).filter(x => x.kind === 'post' && (!input.status || x.status === input.status) && (!input.search || x.title.includes(input.search))).map(x => ({ id: x.id, title: x.title, status: x.status })); return [200, { items, secret: 'SECRET-LEAK-VALUE' }]; }
+    if (short === 'revisions-list') { const o = get(input.post_id); if (!o) return E(404, 'not_found'); return [200, { post_id: o.id, items: (m.revs[o.id] || []).map(r => ({ id: r.id, title: 'SECRET-LEAK-VALUE' })), total: (m.revs[o.id] || []).length }]; }
+    if (short === 'revisions-get') { for (const k of Object.keys(m.revs)) { const r = m.revs[k].find(x => String(x.id) === String(input.id)); if (r) return [200, { id: r.id, parent: +k, content: r.content, hash: md5(r.content) }]; } return E(404, 'not_found'); }
+    if (short === 'history-changes-list') {
+      let rows = m.hist.slice(); if (input.since) rows = rows.filter(r => r.time_utc.slice(0, 10) >= input.since); if (input.ability) rows = rows.filter(r => r.ability === input.ability);
+      return [200, { items: rows.slice(0, +input.per_page || 20), page: 1, per_page: +input.per_page || 20, has_more: false }];
+    }
+    if (short === 'divi-text-edit') {
+      const o = get(input.post_id, ['page', 'post']); if (!o) return E(404, 'not_found'); const s = needHash(o); if (s) return s;
+      if (!input.old || !o.content.includes(input.old)) return E(400, 'not_found', { near_matches: [] });
+      if (!m.noRev) addRev(o); o.content = o.content.replace(input.old, input.new); hist(short, o, 'update', 'Edited text on', m.revs[o.id][0].id); return [200, Object.assign(res(o), { changed: true })];
+    }
+    if (short === 'divi-section-edit') {
+      const o = get(input.post_id, ['page', 'post']); if (!o) return E(404, 'not_found'); const s = needHash(o); if (s) return s;
+      if (input.op !== 'replace' || input.at !== '1') return E(400, 'invalid_input');
+      if (o.content.includes(input.with)) return [200, Object.assign(res(o), { changed: false })];
+      addRev(o); hist(short, o, 'update', 'Edited block of'); return [200, Object.assign(res(o), { changed: true })];
+    }
+    if (short === 'revisions-restore') {
+      const o = get(input.post_id, ['page', 'post']); if (!o) return E(404, 'not_found'); const s = needHash(o); if (s) return s;
+      const r = (m.revs[o.id] || []).find(x => x.id === input.revision_id); if (!r) return E(404, 'not_found');
+      o.content = r.content; hist(short, o, 'update', 'Restored revision ' + r.id + ' of', r.id); return [200, Object.assign(res(o), { changed: true, restored_revision: r.id })];
+    }
+    return E(404, 'rest_ability_not_found');
+  };
+
   https.request = (opts, cb) => {
     const req = new EventEmitter(); let body = '';
     req.write = d => { body += d; }; req.end = () => setImmediate(() => {
@@ -65,6 +161,9 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
           out = st.abilities.slice((pg - 1) * per, pg * per);
           if (st.pastEnd400 && pg > 1 && !out.length) { status = 400; out = { code: 'rest_invalid_page', message: 'The page number requested is larger than the number of pages available.' }; }
         }
+      }
+      else if (st.mdl && /^\/wp-json\/wp-abilities\/v1\/abilities\/(.+)\/run$/.test(p)) {
+        const r = modelRun(st, p.match(/\/v1\/abilities\/(.+)\/run$/)[1], opts.method, q, body); status = r[0]; out = r[1]; fs.writeFileSync(STATE, JSON.stringify(st));
       }
       else if (/^\/wp-json\/wp-abilities\/v1\/abilities\/(.+)\/run$/.test(p)) {
         const name = p.match(/\/v1\/abilities\/(.+)\/run$/)[1];
