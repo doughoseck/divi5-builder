@@ -5,7 +5,7 @@
  * Removes every option the plugin stored: d5b_switches, d5b_takeover, d5b_legacy_seen and d5b_db_version, and drops the
  * audit log table (d5b_audit), the change history table (d5b_history), its daily event and its d5b_audit_install_failed and d5b_anon transients, on every site of a network. On a multisite network,
  * the network options and each site's own options (sites read in batches of 100). Also removes the
- * d5b_abilities_upgrade_notice option and, per site, the folder wp-content/uploads/d5b-history (the files of permanently
+ * d5b_abilities_upgrade_notice and d5b_abilities_consent_220 options and, per site, the folder wp-content/uploads/d5b-history (the files of permanently
  * deleted media, kept 30 days with their history rows). Only deletes, never writes, so a later reinstall starts with every
  * switch off, as on a new site. Nothing else is touched: the old plugins' files and the media clean-up quarantine folder
  * stay where they are.
@@ -38,7 +38,7 @@ $d5b_rm_history_files = function () {
 	@rmdir( $root );
 };
 
-$d5b_names = array( 'd5b_switches', 'd5b_takeover', 'd5b_legacy_seen', 'd5b_db_version', 'd5b_abilities_upgrade_notice' );
+$d5b_names = array( 'd5b_switches', 'd5b_takeover', 'd5b_legacy_seen', 'd5b_db_version', 'd5b_abilities_upgrade_notice', 'd5b_abilities_consent_220' );
 foreach ( $d5b_names as $d5b_name ) { delete_option( $d5b_name ); }
 
 if ( is_multisite() ) {

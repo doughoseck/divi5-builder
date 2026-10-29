@@ -205,7 +205,7 @@ if ( ! function_exists( 'd5b_history_write' ) ) {
 				$done = $wpdb->insert( d5b_history_table(), $data, $fmt );
 				if ( ( false === $done || 0 === $done ) && d5b_audit_install_allowed() && ! d5b_history_table_exists() ) {
 					// The table is gone: make it again and try once more (bounded like the audit table's repair).
-					delete_option( 'd5b_db_version' );
+					if ( function_exists( 'd5b_audit_forget_version' ) ) { d5b_audit_forget_version(); }
 					d5b_audit_maybe_install();
 					$done = $wpdb->insert( d5b_history_table(), $data, $fmt );
 				}

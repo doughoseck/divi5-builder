@@ -193,6 +193,12 @@ if ( ! function_exists( 'd5b_abilities_upgrade_consent' ) ) {
 	 * (d5b_abilities_upgrade_notice, stored where the switches are). A master already off: nothing.
 	 */
 	function d5b_abilities_upgrade_consent(): void {
+		// On a network the switches are one network option but every site upgrades its own tables: the step runs once per
+		// network (d5b_abilities_consent_220), so a master switched on again after the first site's update stays on.
+		if ( is_multisite() ) {
+			if ( get_site_option( 'd5b_abilities_consent_220', 0 ) ) { return; }
+			update_site_option( 'd5b_abilities_consent_220', 1 );
+		}
 		if ( ! d5b_abilities_master_on() ) { return; }
 		d5b_abilities_set_master( false, '0', 'turned off by the update to 2.2.0, which adds abilities that create and change content' );
 		if ( is_multisite() ) { update_site_option( 'd5b_abilities_upgrade_notice', 1 ); } else { update_option( 'd5b_abilities_upgrade_notice', 1, false ); }

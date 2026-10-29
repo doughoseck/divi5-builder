@@ -660,7 +660,18 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 			if ( '' === $real || 0 !== strpos( $real, $base . '/' ) ) { $missing[] = $rel; continue; }
 			$have[] = $rel;
 		}
-		if ( array() === $have ) { return array( 'dir' => null, 'files' => array(), 'missing' => $missing, '_moved' => array(), '_base' => $base ); }
+		// Shared files stay where they are (not moved, not pruned): a file another attachment (a Polylang or WPML translation)
+		// uses as its own, and every file a wp_delete_file filter says not to delete (how those plugins keep a shared file;
+		// moving by rename would pass the filter by).
+		$shared = array();
+		$main   = $list[0] ?? '';
+		$others = d5b_wm_attachments_using( $main, $id );
+		foreach ( $have as $k => $rel ) {
+			$keep = apply_filters( 'wp_delete_file', $base . '/' . $rel );
+			if ( empty( $keep ) || array() !== $others ) { $shared[] = $rel; unset( $have[ $k ] ); }
+		}
+		$have = array_values( $have );
+		if ( array() === $have ) { return array( 'dir' => null, 'files' => array(), 'missing' => $missing, 'shared' => $shared, '_moved' => array(), '_base' => $base ); }
 		if ( ! d5b_history_files_prepare() ) { return $fail( 'the folder wp-content/uploads/d5b-history could not be made' ); }
 		$root = d5b_history_files_root();
 		// <row id>-<32 random hex>: not guessable, so the kept file cannot be fetched where .htaccess is ignored (nginx).
@@ -675,12 +686,33 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 		foreach ( $have as $rel ) {
 			$dst = $dir . '/' . basename( $rel );
 			if ( file_exists( $dst ) || ! d5b_wm_rename( $base . '/' . $rel, $dst ) ) {
-				d5b_wm_put_back( $base, $moved, $dir );
-				return $fail( 'moving ' . basename( $rel ) . ' failed' );
+				$e = $fail( 'moving ' . basename( $rel ) . ' failed' );
+				if ( ! d5b_wm_put_back( $base, $moved, $dir ) ) {
+					// Some moved files could not go back: the caller keeps the history row, which says where they are.
+					$e->add_data( array( 'put_back_failed' => true, 'folder' => 'd5b-history/' . $name, 'moved' => array_keys( $moved ) ) );
+				}
+				return $e;
 			}
 			$moved[ $rel ] = $dst;
 		}
-		return array( 'dir' => 'd5b-history/' . $name, 'files' => $have, 'missing' => $missing, '_moved' => $moved, '_base' => $base, '_dir' => $dir );
+		return array( 'dir' => 'd5b-history/' . $name, 'files' => $have, 'missing' => $missing, 'shared' => $shared, '_moved' => $moved, '_base' => $base, '_dir' => $dir );
+	}
+
+	/** Other attachments whose own file (_wp_attached_file) is $rel: ids, at most 10. */
+	function d5b_wm_attachments_using( string $rel, int $not ): array {
+		global $wpdb;
+		if ( '' === $rel || ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'get_col' ) ) { return array(); }
+		$pm  = isset( $wpdb->postmeta ) ? (string) $wpdb->postmeta : $wpdb->prefix . 'postmeta';
+		$ids = (array) $wpdb->get_col( $wpdb->prepare( "SELECT post_id FROM $pm WHERE meta_key = %s AND meta_value = %s LIMIT %d", '_wp_attached_file', $rel, 11 ) );
+		return array_values( array_filter( array_map( 'intval', $ids ), function ( $x ) use ( $not ) { return $x > 0 && $x !== $not; } ) );
+	}
+
+	/**
+	 * The refusal when files moved to d5b-history could not all be put back: the history row is kept (it is the record of
+	 * where they are) and the answer names it and the folder, so they can be put back by hand.
+	 */
+	function d5b_wm_stranded( int $hid, string $folder, string $why ): WP_Error {
+		return new WP_Error( 'history_unavailable', $why . ' Some files moved to wp-content/uploads/' . $folder . ' could not be put back: move them back to their folder by hand. History row ' . $hid . ' lists them. The media item was not deleted.', array( 'history_id' => $hid, 'folder' => $folder ) );
 	}
 
 	/**
@@ -738,10 +770,22 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 		if ( true !== $exact ) { return $exact; }
 		// Then the files are moved (not copied) into d5b-history/<row id>-<random hex>/, kept 30 days; the row says where.
 		$kept = d5b_wm_keep_files( $hid, $id );
-		if ( is_wp_error( $kept ) ) { d5b_history_delete( $hid ); return $kept; }
-		$copy = array( 'dir' => $kept['dir'], 'files' => $kept['files'], 'missing' => $kept['missing'] );
+		if ( is_wp_error( $kept ) ) {
+			$kd = $kept->get_error_data();
+			if ( is_array( $kd ) && ! empty( $kd['put_back_failed'] ) ) {
+				// The row stays: it is the record of the files that are now in the history folder.
+				d5b_history_set_after( $hid, array( 'deleted' => false, 'file_copy' => array( 'dir' => $kd['folder'], 'files' => $kd['moved'], 'put_back_failed' => true ) ) );
+				return d5b_wm_stranded( $hid, (string) $kd['folder'], 'The file could not be kept in the change history.' );
+			}
+			d5b_history_delete( $hid );
+			return $kept;
+		}
+		$copy = array( 'dir' => $kept['dir'], 'files' => $kept['files'], 'missing' => $kept['missing'], 'shared' => $kept['shared'] );
 		if ( ! d5b_history_set_after( $hid, array( 'deleted' => true, 'file_copy' => $copy ) ) ) {
-			d5b_wm_put_back( $kept['_base'], $kept['_moved'], (string) ( $kept['_dir'] ?? '' ) );
+			if ( ! d5b_wm_put_back( $kept['_base'], $kept['_moved'], (string) ( $kept['_dir'] ?? '' ) ) ) {
+				// Not removed: the row (written before, with the item's full state) is what is left to find the files by.
+				return d5b_wm_stranded( $hid, (string) $kept['dir'], 'Where the file was kept could not be recorded in the change history, so the permanent delete was refused.' );
+			}
 			d5b_history_delete( $hid );
 			return new WP_Error( 'history_unavailable', 'Where the file was kept could not be recorded in the change history, so the permanent delete was refused. Nothing was deleted.' );
 		}

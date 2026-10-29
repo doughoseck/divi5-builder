@@ -393,7 +393,7 @@ if ( ! function_exists( 'd5b_ability_history_ready' ) ) {
 		if ( d5b_history_table_exists() ) { return $ready = true; }
 		if ( function_exists( 'd5b_audit_maybe_install' ) && function_exists( 'd5b_audit_install_allowed' ) && d5b_audit_install_allowed() ) {
 			// The stored version says the tables were made: forget it so the install runs (as d5b_history_write does).
-			if ( function_exists( 'delete_option' ) ) { delete_option( 'd5b_db_version' ); }
+			if ( function_exists( 'd5b_audit_forget_version' ) ) { d5b_audit_forget_version(); }
 			d5b_audit_maybe_install();
 		}
 		return $ready = d5b_history_table_exists();

@@ -119,6 +119,17 @@ CREATE TABLE {$history} (
 	}
 }
 
+if ( ! function_exists( 'd5b_audit_forget_version' ) ) {
+	/**
+	 * Before a repair (a table found missing): forget the stored schema version so the install runs again, but only when it
+	 * is the current one. An older version ('1' after a failed upgrade CREATE) is kept, so the install that finally works
+	 * still sees the upgrade and runs its consent step (d5b_abilities_upgrade_consent).
+	 */
+	function d5b_audit_forget_version(): void {
+		if ( D5B_DB_VERSION === get_option( 'd5b_db_version' ) ) { delete_option( 'd5b_db_version' ); }
+	}
+}
+
 if ( ! function_exists( 'd5b_audit_activate' ) ) {
 	/** Activation is a person asking again: an earlier failed attempt (the one-hour back-off) must not stop this one. */
 	function d5b_audit_activate(): void {
@@ -455,7 +466,7 @@ if ( ! function_exists( 'd5b_audit_write' ) ) {
 				if ( ( false === $done || 0 === $done ) && d5b_audit_install_allowed() && ! d5b_audit_table_exists() ) {
 					// The table is gone (dropped by hand, or this site never ran admin_init): make it again and try once more.
 					// Bounded: once per request and site, and not at all for an hour after a failed attempt.
-					delete_option( 'd5b_db_version' );
+					d5b_audit_forget_version();
 					d5b_audit_maybe_install();
 					$done = $wpdb->insert( d5b_audit_table(), $row, $fmt );
 				}

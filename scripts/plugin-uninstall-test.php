@@ -105,7 +105,9 @@ $rmr( $up );
 t_reset(); t_set_multisite( true ); $GLOBALS['T_upload_basedir'] = $up;
 for ( $i = 1; $i <= 3; $i++ ) { $GLOBALS['T_blogs'][ $i ] = array( 'home' => 'https://s' . $i . '.example' ); }
 $plant( $up ); $plant( "$up/sites/3" );
+$GLOBALS['T_site_options']['d5b_abilities_consent_220'] = 1; $GLOBALS['T_site_options']['d5b_abilities_upgrade_notice'] = 1;
 uninstall();
+check( 'network: the d5b_abilities_consent_220 and d5b_abilities_upgrade_notice network options are deleted', ! isset( $GLOBALS['T_site_options']['d5b_abilities_consent_220'] ) && ! isset( $GLOBALS['T_site_options']['d5b_abilities_upgrade_notice'] ) );
 check( 'network: every site\'s d5b-history goes (site 1 in uploads, site 3 in uploads/sites/3); their own uploads stay', ! file_exists( "$up/d5b-history" ) && ! file_exists( "$up/sites/3/d5b-history" ) && is_file( "$up/2026/10/live.jpg" ) && is_file( "$up/sites/3/2026/10/live.jpg" ) && 1 === $GLOBALS['T_blog_id'] );
 unset( $GLOBALS['T_upload_basedir'] );
 $rmr( $up );

@@ -88,6 +88,21 @@ fresh(); t_set_multisite( true ); $wpdb->tables['wp_d5b_audit'] = array(); updat
 d5b_audit_maybe_install();
 check( 'network: the switch (a network option) goes off and the notice is a network option too', false === d5b_abilities_master_on() && 1 === get_site_option( 'd5b_abilities_upgrade_notice', null ) && null === $notice() );
 
+echo "re-review 3: the repair keeps an older version; the consent step runs once per network\n";
+fresh(); $wpdb->tables['wp_d5b_audit'] = array(); update_option( 'd5b_db_version', '1' ); d5b_abilities_set_master( true, 'ann' );
+$hw = d5b_history_write( hist() ); // the upgrade CREATE failed earlier: no history table, version still 1
+check( 'a repair from version 1 (failed upgrade CREATE) keeps the version, so the install that works runs the consent step: master off, notice set, version 2', $hw > 0 && '2' === get_option( 'd5b_db_version' ) && false === d5b_abilities_master_on() && 1 === get_option( 'd5b_abilities_upgrade_notice', null ) );
+fresh(); update_option( 'd5b_db_version', '2' ); $wpdb->tables['wp_d5b_audit'] = array(); d5b_abilities_set_master( true, 'ann' );
+check( '... a repair at version 2 (a table dropped later) re-installs without the consent step', d5b_history_write( hist() ) > 0 && true === d5b_abilities_master_on() && null === get_option( 'd5b_abilities_upgrade_notice', null ) );
+fresh(); t_set_multisite( true ); $wpdb->tables['wp_d5b_audit'] = array(); update_option( 'd5b_db_version', '1' ); d5b_abilities_set_master( true, 'ann' );
+d5b_audit_maybe_install();
+$first = false === d5b_abilities_master_on() && 1 === get_site_option( 'd5b_abilities_upgrade_notice', null ) && 1 === get_site_option( 'd5b_abilities_consent_220', null );
+d5b_abilities_set_master( true, 'netadmin' ); delete_site_option( 'd5b_abilities_upgrade_notice' );
+// The next site of the network upgrades its own tables.
+unset( $wpdb->tables['wp_d5b_history'] ); update_option( 'd5b_db_version', '1' ); d5b_audit_install_state( 'reset' );
+d5b_audit_maybe_install();
+check( 'network: the first site\'s upgrade turns the master off and records d5b_abilities_consent_220; a later site\'s upgrade leaves the master the admin switched on again, no new notice', $first && true === d5b_abilities_master_on() && '2' === get_option( 'd5b_db_version' ) && null === get_site_option( 'd5b_abilities_upgrade_notice', null ) );
+
 echo "write\n";
 installed();
 $GLOBALS['T_user_id'] = 7;

@@ -514,6 +514,8 @@ function get_taxonomy( $t ) { return $GLOBALS['T_taxonomies'][ $t ] ?? false; }
 function apply_filters( $tag, $value, ...$args ) {
 	// d5b_ds_class: T_ds_classes (short name => class) stands Divi's design-system classes in, as ds-write-test.php does.
 	if ( 'd5b_ds_class' === $tag ) { return $GLOBALS['T_ds_classes'][ $args[0] ] ?? $value; }
+	// wp_delete_file: the callbacks added with add_filter run, as core's (Polylang/WPML return '' to keep a shared file).
+	if ( 'wp_delete_file' === $tag ) { foreach ( $GLOBALS['T_filters']['wp_delete_file'] ?? array() as $cb ) { $value = call_user_func( $cb, $value ); } return $value; }
 	return 'the_content' === $tag ? '<div class="filtered">' . $value . '</div>' : $value;
 }
 function wp_strip_all_tags( $s ) { return trim( strip_tags( (string) $s ) ); }
@@ -962,7 +964,7 @@ function t_media_reset() {
 	$GLOBALS['T_mimes'] = array( 'jpg|jpeg|jpe' => 'image/jpeg', 'gif' => 'image/gif', 'png' => 'image/png', 'pdf' => 'application/pdf', 'txt|asc|c|cc|h|srt' => 'text/plain' );
 	foreach ( $GLOBALS['T_tempfiles'] ?? array() as $f ) { if ( file_exists( $f ) ) { @unlink( $f ); } }
 	$GLOBALS['T_tempfiles'] = array();
-	$GLOBALS['T_files_unlinked'] = array(); $GLOBALS['T_rename_fail'] = array(); $GLOBALS['T_renames'] = array();
+	$GLOBALS['T_files_unlinked'] = array(); $GLOBALS['T_rename_fail'] = array(); $GLOBALS['T_rename_fail_re'] = ''; $GLOBALS['T_renames'] = array();
 }
 // The media delete's file move, plugged here: a REAL rename (the tests use a real temporary uploads folder,
 // T_upload_basedir), except that a source path listed in T_rename_fail fails as a refused rename would (false, nothing
@@ -971,6 +973,8 @@ if ( ! function_exists( 'd5b_wm_rename' ) ) {
 	function d5b_wm_rename( string $from, string $to ): bool {
 		$GLOBALS['T_renames'][] = array( $from, $to );
 		if ( in_array( $from, $GLOBALS['T_rename_fail'] ?? array(), true ) ) { return false; }
+		// T_rename_fail_re: a pattern; a source path matching it fails too (a put-back from a random-named folder).
+		if ( '' !== ( $GLOBALS['T_rename_fail_re'] ?? '' ) && 1 === preg_match( $GLOBALS['T_rename_fail_re'], $from ) ) { return false; }
 		return @rename( $from, $to );
 	}
 }
@@ -1119,7 +1123,8 @@ function wp_delete_attachment( $id, $force_delete = false ) {
 		if ( '' === $f ) { continue; }
 		unset( $GLOBALS['T_files'][ $f ] ); $GLOBALS['T_files_deleted'][] = $f;
 		$disk = wp_upload_dir()['basedir'] . '/' . $f;
-		if ( is_file( $disk ) ) { @unlink( $disk ); $GLOBALS['T_files_unlinked'][] = $f; }
+		// As core's wp_delete_file: a filter that returns '' keeps the file.
+		if ( is_file( $disk ) && '' !== (string) apply_filters( 'wp_delete_file', $disk ) ) { @unlink( $disk ); $GLOBALS['T_files_unlinked'][] = $f; }
 	}
 	foreach ( $GLOBALS['T_meta'] as $pid => $keys ) { if ( isset( $keys['_thumbnail_id'] ) && in_array( (string) $id, array_map( 'strval', $keys['_thumbnail_id'] ), true ) ) { unset( $GLOBALS['T_meta'][ $pid ]['_thumbnail_id'] ); } }
 	unset( $GLOBALS['T_posts'][ (int) $id ], $GLOBALS['T_meta'][ (int) $id ] ); $GLOBALS['T_deleted'][] = (int) $id;
