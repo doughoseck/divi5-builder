@@ -132,11 +132,42 @@ if ( ! function_exists( 'd5b_abilities_register' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_ability_set_audit_args' ) ) {
+	/**
+	 * Gives definitions (by short name) a callable that maps their args before any audit row stores them (a URL without
+	 * its query, a base64 file as its size). Unknown names are ignored. Never passed to core.
+	 *
+	 * @param array<string, callable> $maps short name => function ( array $args ): array
+	 */
+	function d5b_ability_set_audit_args( array $maps ): void {
+		$defs = d5b_ability_registry();
+		foreach ( $maps as $short => $fn ) {
+			$name = 'divi5-builder/' . $short;
+			if ( isset( $defs[ $name ] ) && is_callable( $fn ) ) { $defs[ $name ]['audit_args'] = $fn; }
+		}
+		d5b_ability_registry( $defs );
+	}
+}
+
+if ( ! function_exists( 'd5b_ability_audit_args' ) ) {
+	/** The args as the audit row stores them: through the definition's audit_args map when it has one. Never throws. */
+	function d5b_ability_audit_args( string $name, array $args ): array {
+		$fn = d5b_ability_registry()[ $name ]['audit_args'] ?? null;
+		if ( ! is_callable( $fn ) ) { return $args; }
+		try {
+			$out = call_user_func( $fn, $args );
+			return is_array( $out ) ? $out : array( '_audit_args_failed' => true );
+		} catch ( Throwable $e ) {
+			return array( '_audit_args_failed' => true );
+		}
+	}
+}
+
 if ( ! function_exists( 'd5b_ability_audit' ) ) {
 	/** One audit row; the audit writer (when present) never throws, and a failure here never reaches the caller. */
 	function d5b_ability_audit( string $name, array $args, string $status, int $ms ): void {
 		if ( ! function_exists( 'd5b_audit_write' ) ) { return; }
-		try { d5b_audit_write( $name, $args, $status, $ms ); } catch ( Throwable $e ) { unset( $e ); }
+		try { d5b_audit_write( $name, d5b_ability_audit_args( $name, $args ), $status, $ms ); } catch ( Throwable $e ) { unset( $e ); }
 	}
 }
 
@@ -265,7 +296,7 @@ if ( ! function_exists( 'd5b_ability_audit_start' ) ) {
 	/** Writes the 'started' row before a handler runs. @return int its id, 0 when it could not be written */
 	function d5b_ability_audit_start( string $name, array $args ): int {
 		if ( ! function_exists( 'd5b_audit_write' ) ) { return 0; }
-		try { return max( 0, (int) d5b_audit_write( $name, $args, 'started', 0 ) ); } catch ( Throwable $e ) { return 0; }
+		try { return max( 0, (int) d5b_audit_write( $name, d5b_ability_audit_args( $name, $args ), 'started', 0 ) ); } catch ( Throwable $e ) { return 0; }
 	}
 }
 
@@ -375,7 +406,7 @@ if ( ! function_exists( 'd5b_ability_run' ) ) {
 		if ( $id < 1 ) {
 			return d5b_ability_with_status( new WP_Error( 'audit_unavailable', 'The activity log cannot be written on this site, so the ability was not run.' ) );
 		}
-		$audit_args = $args;
+		$audit_args = d5b_ability_audit_args( $name, $args );
 		$outer_id   = d5b_ability_audit_current_state( $id );
 		try {
 			$result     = call_user_func( $defs[ $name ]['handler'], $args );

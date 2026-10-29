@@ -14,8 +14,10 @@
  *    checked by d5b_wm_safe_url before it is requested: http or https only, ports 80 and 443 only, no user name or
  *    password, no unusual numeric host forms, and the host must resolve only to public addresses. Redirects are followed by
  *    hand (at most 3). The real file type is read from the bytes (wp_check_filetype_and_ext), never from Content-Type.
- *    Known limit: the address is checked, then WordPress resolves the host again when it connects (DNS rebinding window);
- *    reject_unsafe_urls makes WordPress repeat its own check at request time, which narrows it but does not close it.
+ *    No DNS rebinding: each request is pinned to the address that was checked (CURLOPT_RESOLVE, set from a one-shot
+ *    http_api_curl action), so curl never resolves the host again; SNI and the certificate check still use the host
+ *    name. A transport that is not curl, a proxy, or a pin that cannot be set: the upload is refused (unavailable).
+ *    reject_unsafe_urls stays on as a second check. SVG is never taken from a URL or base64 (stored XSS).
  *  - Trash, never delete, where the site has a media trash. Without one, a delete needs the preview's confirmation code,
  *    and the history row is written BEFORE the delete: when it cannot be written nothing is deleted (history_unavailable).
  *  - Every other successful write writes one change-history row after the write; when that row cannot be stored the
@@ -38,6 +40,21 @@ if ( ! function_exists( 'd5b_wm_dns_lookup' ) ) {
 			foreach ( is_array( $v6 ) ? $v6 : array() as $r ) { if ( isset( $r['ipv6'] ) ) { $out[] = (string) $r['ipv6']; } }
 		}
 		return array_values( array_unique( array_map( 'strval', $out ) ) );
+	}
+}
+
+if ( ! function_exists( 'd5b_wm_curl_pin' ) ) {
+	/**
+	 * Sets CURLOPT_RESOLVE ("host:port:address" entries) on a curl handle. False when it cannot be set. Kept apart (and
+	 * pluggable) so the tests can see what was pinned on their stand-in handle.
+	 */
+	function d5b_wm_curl_pin( $handle, array $resolve ): bool {
+		if ( ! defined( 'CURLOPT_RESOLVE' ) || ! function_exists( 'curl_setopt' ) ) { return false; }
+		try {
+			return (bool) @curl_setopt( $handle, CURLOPT_RESOLVE, $resolve );
+		} catch ( Throwable $e ) {
+			return false;
+		}
 	}
 }
 
@@ -85,12 +102,21 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 	}
 
 	/**
-	 * May this URL be fetched? http or https; no user name or password; port 80 or 443 (or none); a host name or a public
-	 * IP literal; a host name must resolve, and to public addresses only (every address it resolves to is checked).
-	 * Nothing is requested here.
+	 * May this URL be fetched? As d5b_wm_check_url, without the addresses.
 	 * @return true|WP_Error invalid_input
 	 */
 	function d5b_wm_safe_url( string $url ) {
+		$c = d5b_wm_check_url( $url );
+		return is_wp_error( $c ) ? $c : true;
+	}
+
+	/**
+	 * May this URL be fetched? http or https; no user name or password; port 80 or 443 (or none); a host name or a public
+	 * IP literal; a host name must resolve, and to public addresses only (every address it resolves to is checked).
+	 * Nothing is requested here.
+	 * @return array|WP_Error invalid_input; else array( host, port (the effective one), ips (the checked addresses), literal )
+	 */
+	function d5b_wm_check_url( string $url ) {
 		$bad = function ( string $why ) { return new WP_Error( 'invalid_input', 'This URL is not fetched: ' . $why ); };
 		if ( strlen( $url ) > 2048 || 1 !== preg_match( '/^[\x21-\x7e]+$/', $url ) || false !== strpos( $url, '\\' ) ) {
 			return $bad( 'it must be a plain http or https address of at most 2048 characters, with no spaces or backslashes.' );
@@ -107,15 +133,18 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 		$port      = isset( $u['port'] ) ? (int) $u['port'] : null;
 		if ( $authority !== $host . ( null === $port ? '' : ':' . $port ) ) { return $bad( 'the host part could not be read unambiguously.' ); }
 		if ( null !== $port && 80 !== $port && 443 !== $port ) { return $bad( 'only the standard ports 80 and 443 are fetched.' ); }
+		$eff  = null === $port ? ( 'https' === $scheme ? 443 : 80 ) : $port;
 		$host = rtrim( $host, '.' );
 		if ( '' === $host ) { return $bad( 'it has no host.' ); }
 		if ( '[' === $host[0] ) {
 			$ip = trim( $host, '[]' );
 			if ( false === filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6 ) ) { return $bad( 'the IPv6 address is not valid.' ); }
-			return d5b_wm_ip_blocked( $ip ) ? $bad( 'it points to a private, loopback, link-local or reserved address, which is never fetched.' ) : true;
+			if ( d5b_wm_ip_blocked( $ip ) ) { return $bad( 'it points to a private, loopback, link-local or reserved address, which is never fetched.' ); }
+			return array( 'host' => $host, 'port' => $eff, 'ips' => array( $ip ), 'literal' => true );
 		}
 		if ( false !== filter_var( $host, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 ) ) {
-			return d5b_wm_ip_blocked( $host ) ? $bad( 'it points to a private, loopback, link-local or reserved address, which is never fetched.' ) : true;
+			if ( d5b_wm_ip_blocked( $host ) ) { return $bad( 'it points to a private, loopback, link-local or reserved address, which is never fetched.' ); }
+			return array( 'host' => $host, 'port' => $eff, 'ips' => array( $host ), 'literal' => true );
 		}
 		$labels = explode( '.', $host );
 		$last   = (string) end( $labels );
@@ -128,7 +157,68 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 		foreach ( $ips as $ip ) {
 			if ( d5b_wm_ip_blocked( (string) $ip ) ) { return $bad( 'it points to a private, loopback, link-local or reserved address, which is never fetched.' ); }
 		}
+		return array( 'host' => $host, 'port' => $eff, 'ips' => array_values( array_map( 'strval', $ips ) ), 'literal' => false );
+	}
+
+	/**
+	 * The CURLOPT_RESOLVE entry that pins a checked host to a checked address: "host:port:ip", the first IPv4 address,
+	 * else the first IPv6 one in brackets. '' for an IP literal (nothing to resolve).
+	 */
+	function d5b_wm_pin_entry( array $c ): string {
+		if ( ! empty( $c['literal'] ) ) { return ''; }
+		$pick = '';
+		foreach ( $c['ips'] as $ip ) { if ( false !== filter_var( $ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 ) ) { $pick = $ip; break; } }
+		if ( '' === $pick ) { $pick = '[' . trim( (string) $c['ips'][0], '[]' ) . ']'; }
+		return $c['host'] . ':' . (int) $c['port'] . ':' . $pick;
+	}
+
+	/** True when WordPress would send this request through a proxy (the proxy resolves the host itself: a pin cannot hold). */
+	function d5b_wm_proxied( string $url ): bool {
+		if ( ! class_exists( 'WP_HTTP_Proxy' ) ) { return false; }
+		$p = new WP_HTTP_Proxy();
+		return $p->is_enabled() && $p->send_through_proxy( $url );
+	}
+
+	/** False when WordPress's first transport for this request is known not to be curl. */
+	function d5b_wm_curl_first( string $url, array $args ): bool {
+		if ( ! function_exists( 'curl_init' ) || ! function_exists( 'curl_exec' ) ) { return false; }
+		if ( class_exists( 'WP_Http' ) && method_exists( 'WP_Http', '_get_first_available_transport' ) ) {
+			$t = ( new WP_Http() )->_get_first_available_transport( $args, $url );
+			return 'WP_Http_Curl' === $t;
+		}
 		return true;
+	}
+
+	function d5b_wm_no_pin(): WP_Error {
+		return new WP_Error( 'unavailable', 'This site\'s HTTP transport cannot pin the checked address (it needs curl without a proxy), so a URL upload could be redirected to an internal address by a DNS change and is refused. Upload the file as base64 instead.' );
+	}
+
+	/**
+	 * One request, pinned: a one-shot http_api_curl action (last priority) sets CURLOPT_RESOLVE to the checked address on
+	 * the handle of this request, and is removed after it. When the action did not run (not curl) or the pin could not
+	 * be set, the answer is discarded and unavailable returned.
+	 * @return array|WP_Error the wp_remote_get response
+	 */
+	function d5b_wm_pinned_get( string $url, array $c, array $args ) {
+		if ( d5b_wm_proxied( $url ) || ! d5b_wm_curl_first( $url, $args ) ) { return d5b_wm_no_pin(); }
+		$entry = d5b_wm_pin_entry( $c );
+		$host  = trim( (string) $c['host'], '[]' );
+		$state = (object) array( 'fired' => false, 'pinned' => false );
+		$cb    = function ( $handle, $r = null, $req = '' ) use ( $state, $entry, $host ) {
+			// Only the request made here: another one in between (a plugin's own call) is not touched.
+			if ( '' !== (string) $req && strtolower( trim( rtrim( (string) parse_url( (string) $req, PHP_URL_HOST ), '.' ), '[]' ) ) !== $host ) { return; }
+			$state->fired  = true;
+			$state->pinned = '' === $entry ? true : d5b_wm_curl_pin( $handle, array( $entry ) );
+		};
+		add_action( 'http_api_curl', $cb, PHP_INT_MAX, 3 );
+		try {
+			$r = wp_remote_get( $url, $args );
+		} finally {
+			remove_action( 'http_api_curl', $cb, PHP_INT_MAX );
+		}
+		if ( is_wp_error( $r ) && ! $state->fired ) { return $r; }
+		if ( ! $state->fired || ! $state->pinned ) { return d5b_wm_no_pin(); }
+		return $r;
 	}
 
 	/** A Location header made absolute against the URL that answered with it. */
@@ -167,18 +257,19 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 	function d5b_wm_fetch( string $url ) {
 		$max = d5b_wm_max();
 		for ( $hop = 0; ; $hop++ ) {
-			$ok = d5b_wm_safe_url( $url );
-			if ( true !== $ok ) {
+			$ok = d5b_wm_check_url( $url );
+			if ( is_wp_error( $ok ) ) {
 				return 0 === $hop ? $ok : new WP_Error( 'invalid_input', 'Redirect ' . $hop . ' was refused. ' . $ok->get_error_message() );
 			}
 			$tmp = wp_tempnam( 'd5b-upload' );
 			if ( ! is_string( $tmp ) || '' === $tmp ) { return new WP_Error( 'write_failed', 'No temporary file could be made for the download.' ); }
-			$r = wp_remote_get( $url, array(
+			$r = d5b_wm_pinned_get( $url, $ok, array(
 				'redirection' => 0, 'timeout' => 20, 'stream' => true, 'filename' => $tmp,
 				'limit_response_size' => $max + 1, 'reject_unsafe_urls' => true,
 			) );
 			if ( is_wp_error( $r ) ) {
 				d5b_wm_unlink( $tmp );
+				if ( 'unavailable' === $r->get_error_code() ) { return $r; }
 				return new WP_Error( 'invalid_input', 'The download failed: ' . $r->get_error_message() );
 			}
 			$code = (int) wp_remote_retrieve_response_code( $r );
@@ -197,7 +288,7 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 			$len = wp_remote_retrieve_header( $r, 'content-length' );
 			if ( is_string( $len ) && ctype_digit( $len ) && (int) $len > $max ) { d5b_wm_unlink( $tmp ); return d5b_wm_too_large(); }
 			$disp = wp_remote_retrieve_header( $r, 'content-disposition' );
-			return array( 'file' => $tmp, 'url' => $url, 'disposition' => is_string( $disp ) ? $disp : '' );
+			return array( 'file' => $tmp, 'url' => $url, 'disposition' => is_string( $disp ) ? $disp : '', 'transport' => 'curl' );
 		}
 	}
 
@@ -314,13 +405,23 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 	 * checked against the site's allowed types, then media_handle_sideload. The temporary file is always removed.
 	 * @return int|WP_Error the attachment id
 	 */
+	function d5b_wm_no_svg(): WP_Error {
+		return new WP_Error( 'not_allowed', 'SVG files are not uploaded through the abilities, even where the site allows them: an SVG can carry script (a stored cross-site scripting risk), so upload it by hand in wp-admin after checking it.' );
+	}
+
 	function d5b_wm_store( string $tmp, string $filename, array $a ) {
 		$size = @filesize( $tmp );
 		if ( false === $size || 0 === (int) $size ) { d5b_wm_unlink( $tmp ); return new WP_Error( 'invalid_input', 'The file is empty.' ); }
 		if ( (int) $size > d5b_wm_max() ) { d5b_wm_unlink( $tmp ); return d5b_wm_too_large(); }
+		if ( 1 === preg_match( '/\.svgz?$/i', $filename ) ) { d5b_wm_unlink( $tmp ); return d5b_wm_no_svg(); }
 		$chk  = wp_check_filetype_and_ext( $tmp, $filename );
 		$type = is_array( $chk ) ? ( $chk['type'] ?? false ) : false;
 		$ext  = is_array( $chk ) ? ( $chk['ext'] ?? false ) : false;
+		// Even where the site allows SVG: an AI-fetched SVG can carry script (stored XSS), so it is uploaded by hand only.
+		if ( 'image/svg+xml' === $type || ( is_string( $ext ) && 1 === preg_match( '/^svgz?$/i', $ext ) ) || ( is_array( $chk ) && ! empty( $chk['proper_filename'] ) && 1 === preg_match( '/\.svgz?$/i', (string) $chk['proper_filename'] ) ) ) {
+			d5b_wm_unlink( $tmp );
+			return d5b_wm_no_svg();
+		}
 		if ( ! $type || ! $ext || ! in_array( $type, array_values( (array) get_allowed_mime_types() ), true ) ) {
 			d5b_wm_unlink( $tmp );
 			return new WP_Error( 'invalid_input', 'This kind of file is not allowed on this site, or the file is not what its name says (the type is read from the file itself, not from its name or the server\'s Content-Type).' );
@@ -377,6 +478,7 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 		$ok = d5b_wm_check_parent( $a );
 		if ( true !== $ok ) { return $ok; }
 		$filename = isset( $a['filename'] ) ? (string) sanitize_file_name( basename( str_replace( '\\', '/', $a['filename'] ) ) ) : '';
+		if ( 1 === preg_match( '/\.svgz?$/i', $filename ) ) { return d5b_wm_no_svg(); }
 		if ( $has_b64 ) {
 			if ( '' === $filename ) { return new WP_Error( 'invalid_input', 'filename is required with base64 (for example photo.jpg).' ); }
 			if ( 1 === preg_match( '#^data:[^,]{0,200};base64,#i', $b64, $m ) ) { $b64 = substr( $b64, strlen( $m[0] ) ); }
@@ -405,7 +507,7 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 		$p = get_post( $id );
 		if ( ! is_object( $p ) ) { return new WP_Error( 'write_failed', 'WordPress did not add the file to the media library.' ); }
 		$stored = d5b_wm_history( 'media-upload', $p, 'upload', null, d5b_wm_state( $p ) + $source, d5b_wm_summary( 'Uploaded', $p ) );
-		return d5b_wm_out( $p, $stored > 0 );
+		return d5b_wm_out( $p, $stored > 0, $has_url ? array( 'transport' => $got['transport'] ) : array() );
 	}
 
 	/** @return array|WP_Error */
@@ -515,7 +617,10 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 		$url = (string) wp_get_attachment_url( $id );
 		$r   = wp_delete_attachment( $id, true );
 		if ( ! $r || null !== get_post( $id ) ) {
-			return new WP_Error( 'write_failed', 'WordPress did not delete the media item (a plugin may have stopped it). Nothing was deleted; the history row ' . $hid . ' written for the delete can be ignored.' );
+			// There is no history update: a second row records the failure, the first keeps the full state.
+			$err = ! $r ? 'wp_delete_attachment_failed' : 'still_present';
+			$fid = d5b_wm_history( 'media-delete', $p, 'delete_failed', null, array( 'deleted' => false, 'error' => $err, 'history_id' => $hid ), d5b_wm_summary( 'Failed to delete', $p ) );
+			return new WP_Error( 'write_failed', 'WordPress did not finish the delete (a plugin may have stopped it): the media item may be partly deleted (its files or some of its data may be gone). History row ' . $hid . ' holds its full state' . ( $fid > 0 ? '; row ' . $fid . ' records the failure.' : '.' ), array( 'history_id' => $hid ) );
 		}
 		return array( 'deleted' => true, 'id' => $id, 'file_url' => $url, 'history_id' => $hid );
 	}
@@ -550,7 +655,7 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 	);
 
 	d5b_wc_def( 'media-upload', 'media', 'Upload a media file',
-		'Adds one file to the media library, from url (fetched by the site) or from base64, and returns its id, link, every image size and the hash of its description. Both are capped at the site\'s upload size limit and its allowed file types; the type is read from the file\'s own bytes, never from its name or the server\'s Content-Type. A url must be http or https on port 80 or 443, with no user name or password, and its host must resolve only to public addresses: private, loopback, link-local and reserved addresses are refused before anything is requested. It is fetched with a 20-second timeout and at most 3 redirects, each target checked the same way before it is requested; only an HTTP 200 answer is kept. Known limit: the host is resolved for the check and again by WordPress when it connects, so a host that changes its DNS answer in between (DNS rebinding) is only partly covered (WordPress repeats its own address check at request time). filename is required with base64 and optional with url (read from the URL otherwise). parent (optional) attaches the file to a post, page or item you may edit whose category is on. Refuses a caller without upload_files, text holding [redacted] (masked_read), and the Media category switched off. The change history records the upload.',
+		'Adds one file to the media library, from url (fetched by the site) or from base64, and returns its id, link, every image size and the hash of its description. Both are capped at the site\'s upload size limit and its allowed file types; the type is read from the file\'s own bytes, never from its name or the server\'s Content-Type. A url must be http or https on port 80 or 443, with no user name or password, and its host must resolve only to public addresses: private, loopback, link-local and reserved addresses are refused before anything is requested. It is fetched with a 20-second timeout and at most 3 redirects, each target checked the same way before it is requested; only an HTTP 200 answer is kept. Each request is pinned to the address that was checked, so a host that changes its DNS answer in between (DNS rebinding) cannot send the request elsewhere; this needs curl as the site\'s HTTP transport and no proxy, otherwise a url upload is refused with unavailable (base64 still works). The result says transport: curl. SVG files are refused with not_allowed, even where the site allows them (upload SVG by hand in wp-admin). filename is required with base64 and optional with url (read from the URL otherwise). parent (optional) attaches the file to a post, page or item you may edit whose category is on. Refuses a caller without upload_files, text holding [redacted] (masked_read), and the Media category switched off. The change history records the upload.',
 		array( 'url' => array( 'type' => 'string', 'maxLength' => 2048, 'description' => 'An http or https address of the file. Give url or base64, not both.' ),
 			'base64' => array( 'type' => 'string', 'description' => 'The file itself, base64 encoded (a data: prefix is allowed). Give url or base64, not both.' ),
 			'filename' => array( 'type' => 'string', 'maxLength' => 255, 'description' => 'The file name with its extension, for example photo.jpg. Required with base64. It is cleaned the way WordPress cleans file names.' ),
@@ -579,4 +684,15 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 		array( 'id', 'confirmation' ), 'd5b_wm_h_delete', 'd5b_wm_can_delete', array( 'destructive' => true ) );
 
 	unset( $d5b_wm_id, $d5b_wm_meta );
+
+	/**
+	 * The upload's args as the audit row keeps them: the URL without its query or fragment (a signed URL's token), and a
+	 * base64 file as its length only.
+	 */
+	function d5b_wm_audit_args( array $args ): array {
+		if ( isset( $args['url'] ) && is_string( $args['url'] ) ) { $args['url'] = d5b_wm_bare_url( $args['url'] ); }
+		if ( array_key_exists( 'base64', $args ) ) { $args['base64'] = array( 'base64_bytes' => is_string( $args['base64'] ) ? strlen( $args['base64'] ) : 0 ); }
+		return $args;
+	}
+	d5b_ability_set_audit_args( array( 'media-upload' => 'd5b_wm_audit_args' ) );
 }

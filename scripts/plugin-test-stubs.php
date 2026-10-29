@@ -904,7 +904,8 @@ function wp_restore_post_revision( $revision, $fields = null ) {
 function t_media_reset() {
 	$GLOBALS['T_http'] = array(); $GLOBALS['T_http_calls'] = array(); $GLOBALS['T_dns'] = array(); $GLOBALS['T_dns_calls'] = array();
 	$GLOBALS['T_max_upload'] = 100000; $GLOBALS['T_files'] = array(); $GLOBALS['T_files_deleted'] = array(); $GLOBALS['T_sideloads'] = array();
-	$GLOBALS['T_attach_delete_blocked'] = false;
+	$GLOBALS['T_attach_delete_blocked'] = false; $GLOBALS['T_curl_pins'] = array(); $GLOBALS['T_curl_pin_fail'] = false; $GLOBALS['T_http_transport'] = 'curl'; $GLOBALS['T_rebind'] = array(); $GLOBALS['T_connects'] = array();
+	if ( isset( $GLOBALS['T_actions']['http_api_curl'] ) ) { unset( $GLOBALS['T_actions']['http_api_curl'], $GLOBALS['T_priorities']['http_api_curl'] ); }
 	$GLOBALS['T_mimes'] = array( 'jpg|jpeg|jpe' => 'image/jpeg', 'gif' => 'image/gif', 'png' => 'image/png', 'pdf' => 'application/pdf', 'txt|asc|c|cc|h|srt' => 'text/plain' );
 	foreach ( $GLOBALS['T_tempfiles'] ?? array() as $f ) { if ( file_exists( $f ) ) { @unlink( $f ); } }
 	$GLOBALS['T_tempfiles'] = array();
@@ -912,9 +913,40 @@ function t_media_reset() {
 if ( ! function_exists( 'd5b_wm_dns_lookup' ) ) {
 	function d5b_wm_dns_lookup( string $host ): array { $GLOBALS['T_dns_calls'][] = $host; return array_values( array_map( 'strval', (array) ( $GLOBALS['T_dns'][ strtolower( $host ) ] ?? array() ) ) ); }
 }
+// The pin: the plugin's CURLOPT_RESOLVE setter, plugged here so the test sees what was pinned on the stand-in handle.
+//   T_curl_pins      every array( handle id, resolve entries );  T_curl_pin_fail  true = the setter fails (returns false)
+if ( ! function_exists( 'd5b_wm_curl_pin' ) ) {
+	function d5b_wm_curl_pin( $handle, array $resolve ): bool {
+		if ( ! empty( $GLOBALS['T_curl_pin_fail'] ) || ! $handle instanceof T_CurlHandle ) { return false; }
+		$handle->resolve = $resolve; $GLOBALS['T_curl_pins'][] = array( $handle->id, $resolve );
+		return true;
+	}
+}
+class T_CurlHandle { public $id; public $resolve = array(); function __construct( $id ) { $this->id = $id; } }
+function remove_action( $h, $cb, $p = 10 ) {
+	foreach ( $GLOBALS['T_actions'][ $h ] ?? array() as $i => $c ) {
+		if ( $c === $cb ) { unset( $GLOBALS['T_actions'][ $h ][ $i ], $GLOBALS['T_priorities'][ $h ][ $i ] ); $GLOBALS['T_actions'][ $h ] = array_values( $GLOBALS['T_actions'][ $h ] ); $GLOBALS['T_priorities'][ $h ] = array_values( $GLOBALS['T_priorities'][ $h ] ?? array() ); return true; }
+	}
+	return false;
+}
+// As WordPress's curl transport: http_api_curl runs (callbacks by priority, as do_action_ref_array( &$handle, $args, $url ))
+// once the handle is built and before it connects; then curl "connects": to the pinned address when CURLOPT_RESOLVE names
+// the host, else to what DNS says at connect time: T_rebind host => address (a rebinding host), else T_dns's first answer.
+//   T_http_transport  'curl' (default) or 'streams' (http_api_curl never runs);  T_connects  every address connected to
 function wp_remote_get( $url, $args = array() ) {
 	$GLOBALS['T_traps'][] = 'wp_remote_get';
 	$GLOBALS['T_http_calls'][] = array( $url, $args );
+	$host = strtolower( trim( (string) parse_url( $url, PHP_URL_HOST ), '[]' ) );
+	$port = (int) ( parse_url( $url, PHP_URL_PORT ) ?: ( 'https' === strtolower( (string) parse_url( $url, PHP_URL_SCHEME ) ) ? 443 : 80 ) );
+	$ip = filter_var( $host, FILTER_VALIDATE_IP ) ? $host : ( $GLOBALS['T_rebind'][ $host ] ?? ( $GLOBALS['T_dns'][ $host ][0] ?? '' ) );
+	if ( 'curl' === ( $GLOBALS['T_http_transport'] ?? 'curl' ) ) {
+		$handle = new T_CurlHandle( count( $GLOBALS['T_http_calls'] ) );
+		$cbs = $GLOBALS['T_actions']['http_api_curl'] ?? array(); $pri = $GLOBALS['T_priorities']['http_api_curl'] ?? array();
+		$order = array_keys( $cbs ); usort( $order, function ( $a, $b ) use ( $pri ) { return ( $pri[ $a ] ?? 10 ) <=> ( $pri[ $b ] ?? 10 ); } );
+		foreach ( $order as $i ) { call_user_func( $cbs[ $i ], $handle, $args, $url ); }
+		foreach ( $handle->resolve as $e ) { if ( preg_match( '/^(.+):(\d+):\[?([^\]]+)\]?$/', $e, $m ) && strtolower( $m[1] ) === $host && (int) $m[2] === $port ) { $ip = $m[3]; } }
+	}
+	$GLOBALS['T_connects'][] = $ip;
 	$r = $GLOBALS['T_http'][ $url ] ?? new WP_Error( 'http_request_failed', 'cURL error 6: Could not resolve host (stand-in: no scripted answer).' );
 	if ( $r instanceof WP_Error ) { return $r; }
 	$body = (string) ( $r['body'] ?? '' );

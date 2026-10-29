@@ -193,17 +193,85 @@ http( 'http://good.example/cl.png', 200, PNG, array( 'Content-Length' => '500000
 $GLOBALS['T_sideloads'] = array();
 check( 'a Content-Length over the limit is refused too', 'invalid_input' === code( call( 'media-upload', array( 'url' => 'http://good.example/cl.png' ) ) ) && array() === $GLOBALS['T_sideloads'] );
 site();
-http( 'http://good.example/pic.svg', 200, '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>', array( 'Content-Type' => 'image/svg+xml' ) );
+http( 'http://good.example/tool.exe', 200, "MZ\x90\x00\x03\x00binary", array( 'Content-Type' => 'image/png' ) );
 http( 'http://good.example/fake.png', 200, '<html><script>alert(document.cookie)</script></html>', array( 'Content-Type' => 'image/png' ) );
 http( 'http://good.example/shell.jpg', 200, '<?php /* not an image */ echo 1; ?>' /* (a real web-shell line is quarantined by Windows Defender when written to Temp) */, array( 'Content-Type' => 'image/jpeg' ) );
 // (core lets a zip named .pdf through: application/zip is one of its "nonspecific" types; plain text is not.)
 http( 'http://good.example/doc.pdf', 200, 'plain text pretending to be a pdf', array( 'Content-Type' => 'application/pdf' ) );
 $bad = array();
-foreach ( array( 'pic.svg', 'fake.png', 'shell.jpg', 'doc.pdf' ) as $f ) { $r = call( 'media-upload', array( 'url' => 'http://good.example/' . $f ) ); if ( 'invalid_input' !== code( $r ) ) { $bad[] = $f; } }
-check( 'a type the site does not allow (svg) and files whose bytes are not what their name and Content-Type say (html as png, php as jpg, text as pdf) are refused BEFORE media_handle_sideload, nothing stored', array() === $bad && array() === $GLOBALS['T_sideloads'] && array() === atts() && array() === temps_left(), $bad );
+foreach ( array( 'tool.exe', 'fake.png', 'shell.jpg', 'doc.pdf' ) as $f ) { $r = call( 'media-upload', array( 'url' => 'http://good.example/' . $f ) ); if ( 'invalid_input' !== code( $r ) ) { $bad[] = $f; } }
+check( 'a type the site does not allow (exe) and files whose bytes are not what their name and Content-Type say (html as png, php as jpg, text as pdf) are refused BEFORE media_handle_sideload, nothing stored', array() === $bad && array() === $GLOBALS['T_sideloads'] && array() === atts() && array() === temps_left(), $bad );
 http( 'http://good.example/really-jpeg.png', 200, JPG, array( 'Content-Type' => 'image/png' ) );
 $r = call( 'media-upload', array( 'url' => 'http://good.example/really-jpeg.png' ) );
 check( 'a JPEG named .png and served as image/png is stored as what it is: really-jpeg.jpg, image/jpeg (the bytes decide, not the header)', is_array( $r ) && 'image/jpeg' === $r['mime'] && '.jpg' === substr( (string) get_post_meta( $r['id'], '_wp_attached_file', true ), -4 ), $r );
+
+echo "no SVG through the abilities\n";
+site();
+$GLOBALS['T_mimes']['svg|svgz'] = 'image/svg+xml';
+$svg = '<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>';
+http( 'http://good.example/pic.svg', 200, $svg, array( 'Content-Type' => 'image/svg+xml' ) );
+http( 'http://good.example/pic', 200, $svg, array( 'Content-Disposition' => 'attachment; filename="pic.svg"' ) );
+http( 'http://good.example/other.png', 200, PNG );
+$bad = array();
+foreach ( array(
+	'url .svg' => array( 'url' => 'http://good.example/pic.svg' ),
+	'url, svg name from Content-Disposition' => array( 'url' => 'http://good.example/pic' ),
+	'url, filename .SVG' => array( 'url' => 'http://good.example/other.png', 'filename' => 'x.SVG' ),
+	'base64 .svg' => array( 'base64' => base64_encode( $svg ), 'filename' => 'a.svg' ),
+	'base64 .svgz' => array( 'base64' => base64_encode( $svg ), 'filename' => 'a.svgz' ),
+) as $what => $in ) { $r = call( 'media-upload', $in ); if ( 'not_allowed' !== code( $r ) || false === strpos( msg( $r ), 'wp-admin' ) ) { $bad[] = $what . ' => ' . code( $r ); } }
+check( 'SVG from a URL or base64 is refused with not_allowed (upload it by hand in wp-admin) even where the site allows svg; nothing stored, no temp file left', array() === $bad && array() === $GLOBALS['T_sideloads'] && array() === atts() && array() === temps_left(), $bad );
+unset( $GLOBALS['T_mimes']['svg|svgz'] );
+check( '... on a site that does not allow svg the answer is the same not_allowed (not a type error)', 'not_allowed' === code( call( 'media-upload', array( 'url' => 'http://good.example/pic.svg' ) ) ) && 'not_allowed' === code( call( 'media-upload', array( 'url' => 'http://good.example/pic' ) ) ) );
+$GLOBALS['T_http_calls'] = array_slice( $GLOBALS['T_http_calls'], 0, 2 );
+check( '... a filename ending .svg is refused before anything is fetched', 'not_allowed' === code( call( 'media-upload', array( 'url' => 'http://good.example/other.png', 'filename' => 'y.svg' ) ) ) && 2 === count( hcalls() ), array_column( hcalls(), 0 ) );
+
+echo "the request is pinned to the checked address\n";
+site();
+$GLOBALS['T_rebind']['good.example'] = '169.254.169.254';
+http( 'http://good.example/a.png', 200, PNG );
+$r = call( 'media-upload', array( 'url' => 'http://good.example/a.png' ) );
+check( 'a host that rebinds to 169.254.169.254 after the check: curl connects to the checked 93.184.216.34 (CURLOPT_RESOLVE good.example:80:93.184.216.34); the result says transport curl',
+	is_array( $r ) && 'curl' === ( $r['transport'] ?? null ) && array( '93.184.216.34' ) === $GLOBALS['T_connects'] && array( array( 1, array( 'good.example:80:93.184.216.34' ) ) ) === $GLOBALS['T_curl_pins'], array( $r, $GLOBALS['T_connects'], $GLOBALS['T_curl_pins'] ) );
+check( '... the one-shot http_api_curl action is gone after the request', array() === ( $GLOBALS['T_actions']['http_api_curl'] ?? array() ) );
+site();
+$GLOBALS['T_dns']['six.example'] = array( '2606:2800:220:1::9' );
+http( 'https://six.example/a.png', 200, PNG );
+http( 'http://good.example/hop', 302, '', array( 'Location' => 'https://cdn.example/b.png' ) );
+http( 'https://cdn.example/b.png', 200, PNG );
+$r1 = call( 'media-upload', array( 'url' => 'https://six.example/a.png' ) );
+$r2 = call( 'media-upload', array( 'url' => 'http://good.example/hop' ) );
+check( 'an IPv6-only host is pinned in brackets on 443; each redirect hop is pinned to its own checked address (IPv4 preferred)', is_array( $r1 ) && is_array( $r2 ) && array( array( 'six.example:443:[2606:2800:220:1::9]' ), array( 'good.example:80:93.184.216.34' ), array( 'cdn.example:443:93.184.216.35' ) ) === array_column( $GLOBALS['T_curl_pins'], 1 ), $GLOBALS['T_curl_pins'] );
+site();
+http( 'http://93.184.216.34/a.png', 200, PNG );
+check( 'an IP literal needs no pin (nothing is resolved) and is fetched', is_array( call( 'media-upload', array( 'url' => 'http://93.184.216.34/a.png' ) ) ) && array() === $GLOBALS['T_curl_pins'] );
+site();
+$GLOBALS['T_http_transport'] = 'streams';
+http( 'http://good.example/a.png', 200, PNG );
+$r = call( 'media-upload', array( 'url' => 'http://good.example/a.png' ) );
+check( 'a transport that is not curl (http_api_curl never runs): refused unavailable, the answer discarded, nothing stored, no temp file left', 'unavailable' === code( $r ) && false !== strpos( msg( $r ), 'pin' ) && array() === atts() && array() === $GLOBALS['T_sideloads'] && array() === temps_left(), $r );
+check( '... base64 still works on such a site', is_array( call( 'media-upload', array( 'base64' => base64_encode( PNG ), 'filename' => 'b.png' ) ) ) );
+site();
+$GLOBALS['T_curl_pin_fail'] = true;
+http( 'http://good.example/a.png', 200, PNG );
+check( 'a pin that cannot be set: unavailable, nothing stored', 'unavailable' === code( call( 'media-upload', array( 'url' => 'http://good.example/a.png' ) ) ) && array() === atts() );
+
+echo "audit args\n";
+site();
+http( 'http://good.example/a.png?sig=SECRETSIG', 200, PNG );
+call( 'media-upload', array( 'url' => 'http://good.example/a.png?sig=SECRETSIG#frag' ) );
+call( 'media-upload', array( 'base64' => base64_encode( PNG ), 'filename' => 'c.png' ) );
+call( 'media-upload', array( 'base64' => 'not*base64', 'filename' => 'c.png' ) );
+$GLOBALS['T_user_id'] = 0; $GLOBALS['T_transients'] = array();
+call( 'media-upload', array( 'url' => 'http://good.example/a.png?sig=SECRETSIG' ) );
+$GLOBALS['T_user_id'] = 3;
+t_set_caps( READER );
+call( 'media-upload', array( 'url' => 'http://good.example/a.png?sig=SECRETSIG', 'base64' => base64_encode( PNG ) ) );
+$rows = $GLOBALS['wpdb']->tables['wp_d5b_audit'];
+$all = json_encode( array_column( $rows, 'args' ) );
+$b64 = json_decode( $rows[1]['args'], true );
+check( 'the audit rows (ok, refused, anonymous, forbidden) store the URL without its query or fragment and a base64 file only as its length', 5 <= count( $rows ) && false === strpos( $all, 'SECRETSIG' ) && false === strpos( $all, 'frag' ) && false === strpos( $all, base64_encode( PNG ) ) && 'http://good.example/a.png' === json_decode( $rows[0]['args'], true )['url'] && strlen( base64_encode( PNG ) ) === ( $b64['base64']['base64_bytes'] ?? null ) && 'c.png' === $b64['filename'], array_column( $rows, 'args', 'status' ) );
+check( 'other abilities keep their args as they are', ( function () { call( 'media-update', array( 'id' => 999, 'title' => 'x?y=1' ) ); $r = end( $GLOBALS['wpdb']->tables['wp_d5b_audit'] ); return false !== strpos( $r['args'], 'x?y=1' ); } )() );
 
 echo "a good upload\n";
 site();
@@ -238,7 +306,7 @@ $bad = array();
 foreach ( array(
 	'no filename' => array( 'base64' => base64_encode( PNG ) ),
 	'not base64' => array( 'base64' => 'not*base64!', 'filename' => 'a.png' ),
-	'svg' => array( 'base64' => base64_encode( '<svg xmlns="http://www.w3.org/2000/svg"/>' ), 'filename' => 'a.svg' ),
+	'exe' => array( 'base64' => base64_encode( "MZ\x90\x00binary" ), 'filename' => 'a.exe' ),
 	'html as png' => array( 'base64' => base64_encode( '<html>x</html>' ), 'filename' => 'a.png' ),
 	'both' => array( 'base64' => base64_encode( PNG ), 'filename' => 'a.png', 'url' => 'http://good.example/a.png' ),
 	'neither' => array( 'filename' => 'a.png' ),
@@ -353,6 +421,10 @@ $r1 = call( 'media-delete', array( 'id' => $a, 'confirmation' => $pv['confirmati
 $GLOBALS['T_attach_delete_blocked'] = false;
 $r2 = call( 'media-delete', array( 'id' => $a, 'confirmation' => $pv['confirmation'] ) );
 check( 'when WordPress does not delete, write_failed and the item is there; the code was used, so presenting it again is confirmation_invalid (used)', 'write_failed' === code( $r1 ) && 'confirmation_invalid' === code( $r2 ) && 'used' === reason( $r2 ) && null !== post( $a ), array( $r1, $r2 ) );
+$hr = hrows(); $full = d5b_history_get( (int) $hr[ count( $hr ) - 2 ]['id'] ); $fail = hlast();
+check( '... the message says it may be partly deleted and names the history row with the full state; that row is kept and a second row (delete_failed, after deleted false + error) records the failure',
+	false !== strpos( msg( $r1 ), 'may be partly deleted' ) && false !== strpos( msg( $r1 ), 'History row ' . $full['id'] . ' holds its full state' ) && 'delete' === $full['action'] && isset( $full['before']['url'] )
+	&& 'delete_failed' === $fail['action'] && false === $fail['after']['deleted'] && 'wp_delete_attachment_failed' === $fail['after']['error'] && (int) $full['id'] === $fail['after']['history_id'] && $a === (int) $fail['object_id'], array( msg( $r1 ), $full['action'] ?? null, $fail ) );
 
 echo "the history row comes first\n";
 $h0 = count( hrows() );
