@@ -452,5 +452,23 @@ $r = call( 'media-delete-preview', array( 'id' => $a ) );
 $GLOBALS['T_transient_fail'] = false;
 check( 'when the code cannot be stored the preview passes on unavailable (no code is shown)', 'unavailable' === code( $r ), $r );
 
+// ===== Task 11 fix wave (break-it reproducers a2, a3)
+if ( ! getenv( 'T_MEDIA_TRASH' ) ) {
+	echo "Task 11 M1: a post that starts using the item after the preview makes the code stale (a2)\n";
+	site();
+	$a  = att( array(), '2026/10/b.jpg' );
+	$pv = call( 'media-delete-preview', array( 'id' => $a ) );
+	$user = t_add_post( array( 'post_author' => 3 ) ); t_add_meta( $user, '_thumbnail_id', (string) $a );
+	$r = call( 'media-delete', array( 'id' => $a, 'confirmation' => $pv['confirmation'] ) );
+	check( 'a post set it as featured image after the preview (preview used_by []): stale, the item is kept', array() === $pv['used_by'] && 'stale' === reason( $r ) && null !== post( $a ), $r );
+	echo "Task 11 I1: a media delete whose copy would be cut is refused (a3)\n";
+	site();
+	$a  = att( array(), '2026/10/c.jpg' );
+	t_add_meta( $a, '_plugin_exif_dump', str_repeat( 'e', 9 * 1024 * 1024 ) );
+	$pv = call( 'media-delete-preview', array( 'id' => $a ) );
+	$r  = call( 'media-delete', array( 'id' => $a, 'confirmation' => is_array( $pv ) ? $pv['confirmation'] : '' ) );
+	check( 'media-delete of an item with a 9 MB custom field: history_unavailable ("over the size limit"), the item and its file are kept, no row left', 'history_unavailable' === code( $r ) && false !== strpos( msg( $r ), 'over the size limit' ) && null !== post( $a ) && isset( $GLOBALS['T_files']['2026/10/c.jpg'] ) && array() === hrows() && array() === $GLOBALS['T_deleted'], array( code( $pv ), code( $r ), msg( $r ) ) );
+}
+
 echo "\n" . ( $n - $failed ) . " of $n passed\n";
 exit( $failed ? 1 : 0 );

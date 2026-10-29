@@ -614,6 +614,8 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 		if ( $hid < 1 ) {
 			return new WP_Error( 'history_unavailable', 'The change history cannot be written on this site, so the permanent delete was refused: without that record nothing could be put back. Nothing was deleted; run the preview again once the history works.' );
 		}
+		$exact = d5b_wc_delete_record_ok( $hid );
+		if ( true !== $exact ) { return $exact; }
 		$url = (string) wp_get_attachment_url( $id );
 		$r   = wp_delete_attachment( $id, true );
 		if ( ! $r || null !== get_post( $id ) ) {

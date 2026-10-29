@@ -243,6 +243,17 @@ class T_Wpdb {
 		unset( $row );
 		return $changed;
 	}
+	// Like wpdb::delete: false on an error (no such table, empty where), else the number of rows deleted.
+	function delete( $table, $where, $where_format = null ) {
+		if ( ! isset( $this->tables[ $table ] ) || ! is_array( $where ) || array() === $where ) { return false; }
+		$keep = array();
+		foreach ( $this->tables[ $table ] as $row ) {
+			foreach ( $where as $k => $v ) { if ( ! array_key_exists( $k, $row ) || (string) $row[ $k ] !== (string) $v ) { $keep[] = $row; continue 2; } }
+		}
+		$n = count( $this->tables[ $table ] ) - count( $keep );
+		$this->tables[ $table ] = $keep;
+		return $n;
+	}
 	function get_var( $sql ) {
 		$this->note( $sql );
 		if ( preg_match( "/^SHOW TABLES LIKE '(.*)'$/", $sql, $m ) ) { $t = stripslashes( stripslashes( $m[1] ) ); return isset( $this->tables[ $t ] ) ? $t : null; }
@@ -396,7 +407,7 @@ function t_content_reset() {
 	$GLOBALS['T_post_types'] = array(); $GLOBALS['T_taxonomies'] = array();
 	$GLOBALS['T_inserts'] = array(); $GLOBALS['T_updates'] = array(); $GLOBALS['T_deleted'] = array(); $GLOBALS['T_revisions_keep'] = -1; $GLOBALS['T_insert_fail'] = false; $GLOBALS['T_update_fail'] = false; $GLOBALS['T_trash_blocked'] = false;
 	$GLOBALS['T_meta_auth_denied'] = array(); $GLOBALS['T_untrash_cascade'] = array(); $GLOBALS['T_insert_error'] = null; $GLOBALS['T_save_content'] = null;
-	$GLOBALS['T_meta_delete_blocked'] = false; $GLOBALS['T_term_fail'] = false; $GLOBALS['T_term_delete_fail'] = false; $GLOBALS['T_menu_delete_fail'] = false; $GLOBALS['T_theme_mods'] = array(); $GLOBALS['T_term_meta'] = array();
+	$GLOBALS['T_meta_delete_blocked'] = false; $GLOBALS['T_on_set_terms'] = null; $GLOBALS['T_term_fail'] = false; $GLOBALS['T_term_delete_fail'] = false; $GLOBALS['T_menu_delete_fail'] = false; $GLOBALS['T_theme_mods'] = array(); $GLOBALS['T_term_meta'] = array();
 	$GLOBALS['T_cmeta'] = array(); $GLOBALS['T_comment_calls'] = array(); $GLOBALS['T_comment_blocked'] = false; $GLOBALS['T_comments_deleted'] = array(); $GLOBALS['T_new_comment_error'] = null;
 	foreach ( array( 'post' => array( 1, 1, 0 ), 'page' => array( 1, 1, 1 ), 'attachment' => array( 1, 0, 0 ), 'revision' => array( 0, 0, 0 ), 'nav_menu_item' => array( 0, 0, 0 ), 'wp_block' => array( 0, 1, 0 ), 'wp_template' => array( 0, 1, 0 ), 'et_pb_layout' => array( 1, 1, 0 ) ) as $n => $f ) { t_add_type( $n, (bool) $f[0], (bool) $f[1], (bool) $f[2] ); }
 	foreach ( array( 'category' => array( 1, 1 ), 'post_tag' => array( 1, 1 ), 'nav_menu' => array( 0, 1 ), 'wp_theme' => array( 0, 0 ) ) as $n => $f ) { t_add_taxonomy( $n, (bool) $f[0], (bool) $f[1] ); }
@@ -1225,6 +1236,8 @@ function wp_set_object_terms( $object_id, $terms, $tax, $append = false ) {
 	$new = $append ? array_values( array_unique( array_merge( $old, $ids ) ) ) : $ids;
 	$GLOBALS['T_object_terms'][ (int) $object_id ][ $tax ] = $new;
 	foreach ( array_unique( array_merge( $old, $new ) ) as $t ) { t_recount( (int) $t ); }
+	// core fires the set_object_terms action here: a plugin hooked on it may change the terms again (T_on_set_terms).
+	if ( is_callable( $GLOBALS['T_on_set_terms'] ?? null ) ) { call_user_func( $GLOBALS['T_on_set_terms'], (int) $object_id, $tax ); }
 	return array_map( 'strval', $new );
 }
 function wp_remove_object_terms( $object_id, $terms, $tax ) {

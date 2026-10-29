@@ -63,6 +63,10 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 	 */
 	function d5b_wp_related( string $kind, string $type, array $a, $p ) {
 		$pto = get_post_type_object( $type );
+		// Strictest switch wins: each of these inputs is a write in another category, refused whole when that one is off.
+		if ( isset( $a['meta'] ) && ! d5b_abilities_category_on( 'meta' ) ) { return new WP_Error( 'not_allowed', 'The Custom fields ability category is switched off, so custom fields cannot be set. Leave out meta.' ); }
+		if ( ! empty( $a['divi'] ) && ! d5b_abilities_category_on( 'divi' ) ) { return new WP_Error( 'not_allowed', 'The Divi ability category is switched off, so the Divi builder cannot be switched on. Leave out divi.' ); }
+		if ( isset( $a['featured_image'] ) && ! d5b_abilities_category_on( 'media' ) ) { return new WP_Error( 'not_allowed', 'The Media ability category is switched off, so the featured image cannot be set. Leave out featured_image.' ); }
 		if ( isset( $a['author'] ) && (int) $a['author'] !== (int) get_current_user_id() ) {
 			if ( ! current_user_can( d5b_rc_type_cap( $type, 'edit_others_posts' ) ) ) { return new WP_Error( 'not_allowed', 'You may not set another user as the author.' ); }
 			if ( false === get_userdata( (int) $a['author'] ) ) { return new WP_Error( 'invalid_input', 'author is not a user of this site.' ); }
@@ -98,6 +102,8 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 		}
 		foreach ( (array) ( $a['meta'] ?? array() ) as $key => $v ) {
 			$key = (string) $key;
+			$ok  = d5b_wc_meta_key_ok( $key );
+			if ( true !== $ok ) { return $ok; }
 			if ( is_protected_meta( $key, 'post' ) || d5b_is_secret_key( $key ) ) {
 				return new WP_Error( 'not_allowed', 'The custom field "' . substr( preg_replace( '/[^A-Za-z0-9_\-]/', '', $key ), 0, 100 ) . '" is protected (its name starts with _) or names a secret, so it cannot be written here.' );
 			}
@@ -172,6 +178,8 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 		$ok = d5b_wc_status_allowed( $type, $status );
 		if ( true !== $ok ) { return $ok; }
 		if ( 'future' === $status && ! isset( $a['date'] ) ) { return new WP_Error( 'invalid_input', 'status future needs a date.' ); }
+		// core publishes a "future" post whose date is not ahead at once.
+		if ( 'future' === $status && 'future' !== d5b_wc_status_by_date( 'future', (string) $a['date'] ) ) { return new WP_Error( 'invalid_input', 'a scheduled post needs a future date' ); }
 		if ( isset( $a['content'] ) ) {
 			$ok = d5b_wc_check_divi_html( $a['content'] );
 			if ( true !== $ok ) { return $ok; }
@@ -216,6 +224,17 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 			if ( true !== $ok ) { return $ok; }
 			if ( 'future' === $a['status'] && ! isset( $a['date'] ) && 'future' !== $p->post_status ) { return new WP_Error( 'invalid_input', 'status future needs a date.' ); }
 		}
+		// The status the post will have, as core decides it (a date not ahead publishes a scheduled post at once; a date ahead
+		// schedules a published one): a change of status to one that needs the publish capability is checked even when the
+		// input gave no status (a past date on a scheduled post, a title edit of a scheduled post whose time has passed).
+		$will = d5b_wc_status_by_date( (string) ( $a['status'] ?? $p->post_status ), isset( $a['date'] ) ? (string) $a['date'] : d5b_wc_post_gmt( $p ) );
+		if ( 'future' === ( $a['status'] ?? '' ) && 'future' !== $will ) { return new WP_Error( 'invalid_input', 'a scheduled post needs a future date' ); }
+		if ( $will !== (string) $p->post_status && in_array( $will, array( 'publish', 'future', 'private' ), true ) ) {
+			$ok = d5b_wc_status_allowed( $type, $will );
+			if ( true !== $ok ) { return $ok; }
+		}
+		$ok = d5b_wc_check_content_size( (string) $p->post_content );
+		if ( true !== $ok ) { return $ok; }
 		$rel = d5b_wp_related( $kind, $type, $a, $p );
 		if ( is_wp_error( $rel ) ) { return $rel; }
 		// As core: title, content and excerpt may not all end up empty (core would refuse with empty_content).
@@ -253,6 +272,8 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 		if ( null === $p ) { return d5b_wc_deny( $a['id'], array( $type ) ); }
 		if ( 'trash' === $p->post_status ) { return new WP_Error( 'cannot_trash', 'This item is already in the trash.' ); }
 		if ( ! d5b_wc_trash_available() ) { return new WP_Error( 'cannot_trash', 'This site has no trash (EMPTY_TRASH_DAYS is 0), so WordPress would delete the item for good. It is not trashed.' ); }
+		$ok = d5b_wc_check_content_size( (string) $p->post_content );
+		if ( true !== $ok ) { return $ok; }
 		$rev    = d5b_wc_matching_revision( $p );
 		// Always the content: emptying the trash deletes the revisions together with the post.
 		$before = d5b_wc_post_before( $p, true );
@@ -276,6 +297,8 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 		// Back to the status it had (kept by WordPress in _wp_trash_meta_status), when the caller may give it that status.
 		$target = (string) get_post_meta( (int) $p->ID, '_wp_trash_meta_status', true );
 		if ( ! in_array( $target, array( 'draft', 'pending', 'publish', 'future', 'private' ), true ) || true !== d5b_wc_status_allowed( $type, $target ) ) { $target = 'draft'; }
+		$ok = d5b_wc_check_content_size( (string) $p->post_content );
+		if ( true !== $ok ) { return $ok; }
 		$rev    = d5b_wc_matching_revision( $p );
 		$before = d5b_wc_post_before( $p );
 		$old    = d5b_wc_state( $p );
@@ -347,7 +370,7 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 			'expect_hash'    => array( 'type' => 'string', 'description' => 'The hash from the last read of this ' . $what . ' (its get). Required when content is given; a hash that no longer matches is refused with stale.' ),
 			'title'          => array( 'type' => 'string', 'maxLength' => 1000, 'description' => 'The title, at most 1000 characters.' ),
 			'content'        => array( 'type' => 'string', 'description' => 'The full content (raw block markup), at most 1 MB. Replaces the whole content.' ),
-			'status'         => array( 'type' => 'string', 'enum' => array( 'draft', 'pending', 'publish', 'future', 'private' ), 'description' => 'draft (the default on create), pending, publish, future (needs date) or private. publish, future and private need the right to publish.' ),
+			'status'         => array( 'type' => 'string', 'enum' => array( 'draft', 'pending', 'publish', 'future', 'private' ), 'description' => 'draft (the default on create), pending, publish, future (needs a date in the future) or private. publish, future and private need the right to publish, and so does any change WordPress would publish (a scheduled item given a past date).' ),
 			'excerpt'        => array( 'type' => 'string', 'maxLength' => 10000, 'description' => 'The excerpt, at most 10000 characters.' ),
 			'slug'           => array( 'type' => 'string', 'description' => 'The URL slug; it is cleaned the way WordPress cleans slugs.' ),
 			'parent'         => array( 'type' => 'integer', 'minimum' => 0, 'description' => 'The id of the parent (an existing ' . $what . ' you may edit), or 0 for none.' ),
@@ -356,9 +379,9 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 			'categories'     => array( 'type' => 'array', 'items' => array( 'type' => 'integer' ), 'description' => 'Category ids (see taxonomy-list). Replaces the post\'s categories.' ),
 			'tags'           => array( 'type' => 'array', 'items' => array( 'type' => 'integer' ), 'description' => 'Tag ids (see taxonomy-list). Replaces the post\'s tags; [] removes them all.' ),
 			'terms'          => array( 'type' => 'object', 'additionalProperties' => array( 'type' => 'array', 'items' => array( 'type' => 'integer' ) ), 'description' => 'Term ids by taxonomy, for example {"genre": [4, 9]}. Each list replaces the item\'s terms in that taxonomy; only taxonomies registered for the type.' ),
-			'meta'           => array( 'type' => 'object', 'additionalProperties' => array( 'type' => array( 'string', 'number', 'integer', 'boolean' ) ), 'description' => 'Custom fields to set, name to value (text, number or true/false). Names starting with _ and secret-looking names are refused.' ),
-			'featured_image' => array( 'type' => 'integer', 'minimum' => 0, 'description' => 'The id of an image in the media library, or 0 to remove the featured image.' ),
-			'divi'           => array( 'type' => 'boolean', 'description' => 'true turns the Divi builder on for this item (_et_pb_use_builder and _et_pb_use_divi_5 = on). Without it, Divi blocks are saved but do not render as Divi until divi-builder-mode is on.' ),
+			'meta'           => array( 'type' => 'object', 'additionalProperties' => array( 'type' => array( 'string', 'number', 'integer', 'boolean' ) ), 'description' => 'Custom fields to set, name to value (text, number or true/false). Names are plain ASCII letters, digits, _ - . : only; names starting with _ and secret-looking names are refused. Needs the Custom fields category switched on.' ),
+			'featured_image' => array( 'type' => 'integer', 'minimum' => 0, 'description' => 'The id of an image in the media library, or 0 to remove the featured image. Needs the Media category switched on.' ),
+			'divi'           => array( 'type' => 'boolean', 'description' => 'true turns the Divi builder on for this item (_et_pb_use_builder and _et_pb_use_divi_5 = on); needs the Divi category switched on. Without it, Divi blocks are saved but do not render as Divi until divi-builder-mode is on.' ),
 		);
 		$out = array();
 		foreach ( array_keys( d5b_wp_spec( $kind, $shape ) ) as $k ) { $out[ $k ] = $all[ $k ]; }
@@ -433,6 +456,8 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 		if ( (string) $rv->post_title === (string) $p->post_title && (string) $rv->post_content === (string) $p->post_content && (string) $rv->post_excerpt === (string) $p->post_excerpt ) {
 			return d5b_wp_out( $p, true, array(), array( 'changed' => false ) );
 		}
+		$ok = d5b_wc_check_content_size( (string) $p->post_content );
+		if ( true !== $ok ) { return $ok; }
 		$old_content = (string) $p->post_content;
 		$rev    = d5b_wc_matching_revision( $p );
 		$before = d5b_wc_post_before( $p, true );

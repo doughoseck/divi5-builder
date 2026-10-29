@@ -88,12 +88,20 @@ check( 'a code issued as user 1 expires after 10 minutes (TTL 600 on all four tr
 
 echo "fingerprints\n";
 fresh();
-$term = (object) array( 'name' => 'News', 'slug' => 'news', 'parent' => 0, 'count' => 3 );
+// Task 11 M1: name|slug|parent|sha1(description)|count|sorted child ids|sha1(sorted object ids).
+$tid  = t_add_term( 'category', 'News' );
+$term = get_term( $tid ); $term->count = 3;
 $base = d5b_fp_term( $term );
-check( 'term: name|slug|parent|count', 'News|news|0|3' === $base );
+check( 'term: name|slug|parent|description|count|children|objects', 'News|news|0|' . sha1( 'About News' ) . '|3||' . sha1( '' ) === $base, $base );
 $all = true;
-foreach ( array( 'name' => 'Newz', 'slug' => 'newz', 'parent' => 4, 'count' => 4 ) as $f => $nv ) { $t2 = clone $term; $t2->$f = $nv; $all = $all && $base !== d5b_fp_term( $t2 ); }
-check( 'term: each field changes it; an unchanged copy does not', $all && $base === d5b_fp_term( clone $term ) );
+foreach ( array( 'name' => 'Newz', 'slug' => 'newz', 'parent' => 4, 'count' => 4, 'description' => 'Written after the preview' ) as $f => $nv ) { $t2 = clone $term; $t2->$f = $nv; $all = $all && $base !== d5b_fp_term( $t2 ); }
+check( 'term: each field changes it (description too); an unchanged copy does not', $all && $base === d5b_fp_term( clone $term ) );
+$kid = t_add_term( 'category', 'Kid', $tid );
+check( 'term: a child term added changes it', $base !== d5b_fp_term( $term ) );
+unset( $GLOBALS['T_terms'][ $kid ] );
+$GLOBALS['T_object_terms'][501]['category'] = array( $tid ); $f1 = d5b_fp_term( $term );
+unset( $GLOBALS['T_object_terms'][501] ); $GLOBALS['T_object_terms'][502]['category'] = array( $tid );
+check( 'term: the same count on another item changes it (object ids, not only the count)', $base !== $f1 && $f1 !== d5b_fp_term( $term ) );
 
 $GLOBALS['T_menus'][7] = (object) array( 'term_id' => 7, 'name' => 'Main', 'slug' => 'main', 'count' => 2 );
 $GLOBALS['T_menu_items'][7] = array( (object) array( 'ID' => 21, 'post_modified_gmt' => '2026-10-01 10:00:00' ), (object) array( 'ID' => 20, 'post_modified_gmt' => '2026-10-02 10:00:00' ) );
@@ -106,6 +114,10 @@ check( 'menu: an item edited changes it', $m0 !== d5b_fp_menu( 7 ) );
 $GLOBALS['T_menu_items'][7] = array( (object) array( 'ID' => 20, 'post_modified_gmt' => '2026-10-02 10:00:00' ) );
 check( 'menu: an item removed changes it', $m0 !== d5b_fp_menu( 7 ) );
 check( 'menu: a menu that does not exist gives an empty string', '' === d5b_fp_menu( 999 ) );
+$m1 = d5b_fp_menu( 7 );
+set_theme_mod( 'nav_menu_locations', array( 'primary' => 7, 'footer' => 9 ) );
+check( 'menu: a location taking the menu changes it (Task 11 M1)', $m1 . '|primary' === d5b_fp_menu( 7 ), d5b_fp_menu( 7 ) );
+set_theme_mod( 'nav_menu_locations', array() );
 
 $p = t_add_post(); t_add_meta( $p, 'k', 'one' );
 $f0 = d5b_fp_meta( $p, 'k' );
@@ -117,7 +129,7 @@ check( 'meta: an array value is covered too', $f1 !== d5b_fp_meta( $p, 'k' ) );
 
 $a = t_add_post( array( 'post_type' => 'attachment', 'post_modified_gmt' => '2026-10-02 10:00:00' ) ); t_add_meta( $a, '_wp_attached_file', '2026/10/a.png' );
 $g0 = d5b_fp_media( $a );
-check( 'media: post_modified_gmt|file path', '2026-10-02 10:00:00|/var/www/uploads/2026/10/a.png' === $g0, $g0 );
+check( 'media: post_modified_gmt|file path|sha1 of the used_by ids (none here: write-media is not loaded)', '2026-10-02 10:00:00|/var/www/uploads/2026/10/a.png|' . sha1( '' ) === $g0, $g0 );
 $GLOBALS['T_posts'][ $a ]->post_modified_gmt = '2026-10-03 10:00:00';
 check( 'media: a new modified time changes it', $g0 !== d5b_fp_media( $a ) );
 $GLOBALS['T_posts'][ $a ]->post_modified_gmt = '2026-10-02 10:00:00'; $GLOBALS['T_meta'][ $a ]['_wp_attached_file'] = array( '2026/10/b.png' );

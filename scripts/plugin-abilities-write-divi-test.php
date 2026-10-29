@@ -262,6 +262,11 @@ $run = function ( string $file ) {
 $g = proc_open( array( 'git', '-C', __DIR__ . '/..', 'show', 'ce24986:plugin/divi5-builder/parts/page-building.php' ), array( 1 => array( 'pipe', 'w' ), 2 => array( 'pipe', 'w' ) ), $gp );
 $old_src = is_resource( $g ) ? stream_get_contents( $gp[1] ) : ''; if ( is_resource( $g ) ) { fclose( $gp[1] ); fclose( $gp[2] ); proc_close( $g ); }
 $old_file = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'd5b-pb-ce24986-' . getmypid() . '.php';
+// Task 11 M5, the one deliberate change since: the TB write compares the hash in lowercase (an md5 in capitals is the same
+// read). The old file gets the same one-line change, so everything else must still be byte-identical.
+$m5_n    = 0;
+$old_src = str_replace( 'if ( ! hash_equals( $current, $expect ) ) {', 'if ( ! hash_equals( $current, strtolower( $expect ) ) ) {', $old_src, $m5_n );
+check( 'Task 11 M5: the hash comparison of the old route is found once and given the same lowercase change', 1 === $m5_n );
 file_put_contents( $old_file, $old_src );
 check( 'the file as it was at ce24986 comes from git, with the three route closures in it', false !== strpos( $old_src, '$tb_write = function' ) && false === strpos( $old_src, 'function d5b_tb_write' ) );
 list( $c1, $before, $e1 ) = $run( $old_file );
@@ -275,6 +280,7 @@ $want_codes = array( 'bad_canvas', 'db_update_error', 'empty_backup', 'empty_con
 check( 'the snapshot ran on both files (exit 0, no PHP warnings) and covers ' . count( $cases ) . ' cases: every refusal code of the three routes, DENIED, dry run and the successes', 0 === $c1 && 0 === $c2 && '' === trim( $e1 . $e2 ) && $want_codes === $codes && count( $cases ) >= 38 && in_array( 'DENIED', array_column( $snap, 'status' ), true ), array( $c1, $c2, $e1, $e2, $codes ) );
 check( 'BYTE-IDENTICAL: status, error code, message, data, response JSON and the stored content and meta after every case are the same before and after the refactor', '' !== $before && $before === $after, ( function () use ( $before, $after ) { $a = json_decode( $before, true ); $b = json_decode( $after, true ); foreach ( (array) $a as $i => $x ) { if ( ( $b[ $i ] ?? null ) !== $x ) { return array( $x, $b[ $i ] ?? null ); } } return 'lengths differ'; } )() );
 $by = array(); foreach ( (array) $snap as $x ) { $by[ $x['name'] ] = $x; }
+check( 'Task 11 M5: a TB write with the right hash in capitals is not stale (it writes)', isset( $by['tb: hash in capitals'] ) && 'stale' !== ( $by['tb: hash in capitals']['code'] ?? '' ) && false !== strpos( (string) ( $by['tb: hash in capitals']['json'] ?? '' ), '"new_hash"' ), $by['tb: hash in capitals'] ?? null );
 check( 'the snapshot is not vacuous: the auto-revert case put the old content back, the success case stored the new content with the old one as the safety copy', 'roundtrip_failed' === ( $by['tb: save damages the content (auto-revert)']['code'] ?? '' ) && false !== strpos( (string) ( $by['tb: success']['json'] ?? '' ), '"new_hash"' ) && false !== strpos( json_encode( $by['tb: success']['state'] ?? array() ), 'World' ) && false !== strpos( json_encode( $by['tb: success']['state'] ?? array() ), '_d5b_prev_content' ) );
 
 // =====================================================================================================
@@ -1027,6 +1033,43 @@ for ( $k = 0; $k < 400; $k++ ) {
 	} else { $ref[ $code ] = ( $ref[ $code ] ?? 0 ) + 1; }
 }
 check( "fuzz: $okn edits written, each reads as the old text with old replaced by new and keeps every token; the rest refused (" . json_encode( $ref ) . ')', $okn >= 100 && array() === $wrong, array_slice( $wrong, 0, 3 ) );
+
+// ===== Task 11 I3: the visible-text map scans each field once (break-it reproducers a5, a5b)
+echo "Task 11 I3: no quadratic scan in the visible-text map\n";
+// The one-pass helpers must answer exactly as the regexes they replace (core's wp_strip_all_tags regex and D5B_WD_VAR_RE).
+mt_srand( 11 );
+$parts = array( '$variable(', ')$', ')', '$', 'x', ' ', '<script>', '<script a="1">', '</script>', '</SCRIPT>', '<style>', '<STYLE b>', '</style>', '<b>', '</b>', '>', '<', '&amp;', 'é', "\n" );
+$bad_v = array(); $bad_t = array();
+for ( $i = 0; $i < 3000; $i++ ) {
+	$s = ''; $len = mt_rand( 0, 14 ); for ( $j = 0; $j < $len; $j++ ) { $s .= $parts[ mt_rand( 0, count( $parts ) - 1 ) ]; }
+	if ( d5b_wd_strip_vars( $s ) !== (string) preg_replace( D5B_WD_VAR_RE, '', $s ) ) { $bad_v[] = $s; }
+	if ( d5b_wd_strip_all_tags( $s ) !== trim( strip_tags( (string) preg_replace( '@<(script|style)[^>]*?>.*?</\\1>@si', '', $s ) ) ) ) { $bad_t[] = $s; }
+}
+check( 'd5b_wd_strip_vars answers as preg_replace( D5B_WD_VAR_RE ) on 3000 random strings of tokens, closers and tags', array() === $bad_v, array_slice( $bad_v, 0, 3 ) );
+check( 'd5b_wd_strip_all_tags answers as core\'s wp_strip_all_tags (its script/style regex, strip_tags, trim) on the same strings', array() === $bad_t, array_slice( $bad_t, 0, 3 ) );
+$timed = function ( callable $fn ) { $t = microtime( true ); $r = $fn(); return array( $r, microtime( true ) - $t ); };
+foreach ( array( '$variable(' => 'var', '<script>' => 'script', '<style>' => 'style' ) as $unit => $label ) {
+	$f = 'Hours here ' . str_repeat( $unit, (int) ( 600000 / strlen( $unit ) ) );
+	list( $m, $sec ) = $timed( function () use ( $f ) { return d5b_wd_vis_map( $f ); } );
+	check( "the map of a 600 KB field of unclosed \"$unit\" takes under 1 s (was quadratic: a regex from every start to the end)", $sec < 1.0 && 'Hours here' === substr( $m[0], 0, 10 ), round( $sec, 3 ) . ' s' );
+	list( , $sec ) = $timed( function () use ( $f ) { return d5b_wd_visible( $f ) . d5b_wd_near_text( $f ); } );
+	check( "... d5b_wd_visible and d5b_wd_near_text of it too", $sec < 1.0, round( $sec, 3 ) . ' s' );
+}
+site();
+foreach ( array( '$variable(' => 25000, '<script>' => 30000 ) as $unit => $count ) {
+	$PGx = "<!-- wp:divi/section -->\n<!-- wp:divi/row -->\n<!-- wp:divi/column -->\n" . txt( 'Hours here ' . str_repeat( $unit, $count ) ) . "\n<!-- /wp:divi/column -->\n<!-- /wp:divi/row -->\n<!-- /wp:divi/section -->";
+	$g = t_add_post( array( 'post_type' => 'page', 'post_author' => 1, 'post_content' => $PGx ) );
+	list( $r, $sec ) = $timed( function () use ( $g, $PGx ) { return call( 'divi-text-edit', array( 'post_id' => $g, 'expect_hash' => md5( $PGx ), 'old' => 'Hours', 'new' => 'Open' ) ); } );
+	list( $r2, $sec2 ) = $timed( function () use ( $g ) { $c = post( $g )->post_content; return call( 'divi-text-edit', array( 'post_id' => $g, 'expect_hash' => md5( $c ), 'old' => 'Open', 'new' => 'Hours', 'html' => true ) ); } );
+	check( sprintf( 'divi-text-edit in a field of %d x "%s" (%d KB, under the cap): text mode and html mode each under 1 s', $count, $unit, strlen( $PGx ) >> 10 ), $sec < 1.0 && $sec2 < 1.0 && is_array( $r ) && is_array( $r2 ), array( round( $sec, 3 ), round( $sec2, 3 ), code( $r ), code( $r2 ) ) );
+}
+foreach ( array( 60000, 90000 ) as $count ) {
+	$PGx = "<!-- wp:divi/section -->\n<!-- wp:divi/row -->\n<!-- wp:divi/column -->\n" . txt( 'Hours here ' . str_repeat( '$variable(', $count ) ) . "\n<!-- /wp:divi/column -->\n<!-- /wp:divi/row -->\n<!-- /wp:divi/section -->";
+	$g = t_add_post( array( 'post_type' => 'page', 'post_author' => 1, 'post_content' => $PGx ) );
+	$h0 = count( hrows() );
+	list( $r, $sec ) = $timed( function () use ( $g, $PGx ) { return call( 'divi-text-edit', array( 'post_id' => $g, 'expect_hash' => md5( $PGx ), 'old' => 'Hours', 'new' => 'Open' ) ); } );
+	check( sprintf( 'a field of %d x "$variable(" (%d KB, over the 256 KB cap): refused invalid_input in under 1 s, nothing written', $count, strlen( $PGx ) >> 10 ), 'invalid_input' === code( $r ) && false !== strpos( $r->get_error_message(), '256 KB' ) && $sec < 1.0 && $PGx === post( $g )->post_content && $h0 === count( hrows() ), array( code( $r ), round( $sec, 3 ) ) );
+}
 
 echo "\n" . ( $failed ? "$failed of $n checks FAILED\n" : "all $n checks passed\n" );
 exit( $failed ? 1 : 0 );

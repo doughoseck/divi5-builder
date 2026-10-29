@@ -444,6 +444,14 @@ if ( ! function_exists( 'd5b_wn_menu' ) ) {
 				$seen[ $up ] = true; $up = $parent[ $up ];
 			}
 		}
+		// Strictest switch, before anything moves: an item that changes position or parent must pass the same gate as
+		// menus-item-update (a link to a page while Pages is off is not moved). Items that stay where they are are not checked.
+		foreach ( $order as $n => $row ) {
+			$d = d5b_wn_item_data( $live[ $row['id'] ] );
+			if ( $d['parent'] === $row['parent'] && $d['position'] === $n + 1 ) { continue; }
+			$g = d5b_wn_item_gate( $d );
+			if ( true !== $g ) { return new WP_Error( 'not_allowed', 'Item ' . $row['id'] . ' would move, and it links to content whose ability category is switched off. Nothing was moved.' ); }
+		}
 		$before = array();
 		foreach ( $live as $id => $p ) { $before[] = array( 'id' => $id, 'parent' => (int) get_post_meta( $id, '_menu_item_menu_item_parent', true ), 'position' => (int) $p->menu_order ); }
 		$after = array();
@@ -547,6 +555,8 @@ if ( ! function_exists( 'd5b_wn_menu' ) ) {
 		if ( $hid < 1 ) {
 			return new WP_Error( 'history_unavailable', 'The change history cannot be written on this site, so the permanent delete was refused: without that record nothing could be put back. Nothing was deleted; run the preview again once the history works.' );
 		}
+		$exact = d5b_wc_delete_record_ok( $hid );
+		if ( true !== $exact ) { return $exact; }
 		$r    = wp_delete_nav_menu( $mid );
 		$left = array();
 		foreach ( $state['items'] as $d ) { if ( null !== get_post( $d['id'] ) ) { $left[] = $d['id']; } }

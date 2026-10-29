@@ -1058,7 +1058,8 @@ if ( ! function_exists( 'd5b_tb_write' ) ) {
 			return new WP_Error( 'expect_hash_required', 'send expect_hash = the hash returned by GET tb-layout', array( 'status' => 400 ) );
 		}
 		$current = md5( (string) $p->post_content );
-		if ( ! hash_equals( $current, $expect ) ) {
+		// An md5 is hex: the same hash in capitals is the same read (the abilities' gate compares lowercase too).
+		if ( ! hash_equals( $current, strtolower( $expect ) ) ) {
 			return new WP_Error( 'stale', 'layout changed since it was read (edited in the Visual Builder?). Read it again.', array(
 				'status' => 409, 'current_hash' => $current, 'modified' => $p->post_modified_gmt ) );
 		}

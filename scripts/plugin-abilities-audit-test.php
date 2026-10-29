@@ -121,7 +121,18 @@ foreach ( array(
 	check( "_exception masks $label", false === strpos( $out, $c[1] ) && false !== strpos( $out, $c[2] ), $out );
 }
 check( '_exception keeps the rest of the message readable', false !== strpos( $cap( 'RuntimeException: Table x is missing; password=abc' ), 'RuntimeException: Table x is missing;' ) );
-check( 'a secret-looking pattern in another string is NOT rewritten (only _exception is masked, other keys keep the 1024 rule)', 'see password=abc' === ( function () { d5b_audit_write( 'a/b', array( 'note' => 'see password=abc' ), 'ok', 1 ); return last_args()['note']; } )() );
+// Task 11 M3: free-text args get the STRICT masker (key=value and the value shapes), not the full one: "password abc" prose stays.
+check( 'a key=value secret in another string arg is masked by the STRICT masker (Task 11 M3)', 'see password=[redacted]' === ( function () { d5b_audit_write( 'a/b', array( 'note' => 'see password=abc' ), 'ok', 1 ); return last_args()['note']; } )() );
+check( '... prose without key=value stays as written (strict, not the full masker)', 'my password is long' === ( function () { d5b_audit_write( 'a/b', array( 'note' => 'my password is long' ), 'ok', 1 ); return last_args()['note']; } )() );
+check( '... a Google API key and a Stripe webhook secret in free text are masked, in both profiles', ( function () {
+	$g = 'AIza' . 'SyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY'; $w = 'whsec_' . 'MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw';
+	d5b_audit_write( 'a/b', array( 'note' => "maps $g hook $w" ), 'ok', 1 );
+	return 'maps [redacted] hook [redacted]' === last_args()['note'] && false === strpos( d5b_audit_mask_secrets( "$g $w" ), 'AIza' ) && false === strpos( d5b_audit_mask_strict( "$g $w" ), 'whsec_' );
+} )() );
+check( '... a secret across the 1024 cut is masked before the cut, never half kept', ( function () {
+	d5b_audit_write( 'a/b', array( 'note' => str_repeat( 'x ', 505 ) . 'sk_' . 'live_51HxYzAbCdEfGhIjKlMnOpQr' ), 'ok', 1 );
+	return false === strpos( last_args()['note'], 'sk_live' );
+} )() );
 d5b_audit_write( 'a/b', array( 'n' => array( '_exception' => 'E: password=zzz9 ' . str_repeat( 'q', 2000 ) ) ), 'x', 1 ); $ne = last_args()['n']['_exception'];
 check( '_exception inside a nested array gets the same mask and cap', mb_strlen( $ne, 'UTF-8' ) <= 300 && false === strpos( $ne, 'zzz9' ), $ne );
 

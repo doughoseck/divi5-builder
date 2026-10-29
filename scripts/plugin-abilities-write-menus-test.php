@@ -286,5 +286,41 @@ $r1 = call( 'menus-delete-preview', array( 'menu' => $m ) );
 $r2 = call( 'menus-delete', array( 'menu' => $m, 'confirmation' => 'ABCDEFGHJKLM' ) );
 check( 'an item with a secret-named custom field: preview and delete refused not_allowed (wp-admin message), nothing deleted', 'not_allowed' === code( $r1 ) && 'not_allowed' === code( $r2 ) && false !== strpos( msg( $r1 ), 'wp-admin' ) && isset( $GLOBALS['T_menus'][ $m ] ) && null !== post( $ci['id'] ) && array() === codes_issued(), array( $r1, $r2 ) );
 
+// ===== Task 11 fix wave (break-it reproducers a1, a2, a3)
+echo "Task 11 I2: menus-reorder runs the item gate on every item that moves (a1)\n";
+site();
+$pg   = t_add_post( array( 'post_type' => 'page', 'post_author' => 3, 'post_status' => 'publish' ) );
+$m    = call( 'menus-create', array( 'name' => 'Main' ) )['id'];
+$item = call( 'menus-item-add', array( 'menu' => $m, 'type' => 'post_type', 'object' => $pg ) );
+$cust = call( 'menus-item-add', array( 'menu' => $m, 'type' => 'custom', 'object' => 'https://x.example/a', 'title' => 'A' ) );
+$c2   = call( 'menus-item-add', array( 'menu' => $m, 'type' => 'custom', 'object' => 'https://x.example/b', 'title' => 'B' ) );
+d5b_abilities_set_category( 'pages', false, false, 'tester' );
+$before = order_of( $m ); $h0 = count( hrows() );
+$r = call( 'menus-reorder', array( 'menu' => $m, 'items' => array( array( 'id' => $cust['id'], 'parent' => 0 ), array( 'id' => $item['id'], 'parent' => $cust['id'] ), array( 'id' => $c2['id'], 'parent' => 0 ) ) ) );
+check( 'Pages off: a reorder that moves the item linking to a page is refused not_allowed; NOTHING moved (not even the custom links before it), no row', 'not_allowed' === code( $r ) && $before === order_of( $m ) && $h0 === count( hrows() ), array( $r, order_of( $m ) ) );
+$r = call( 'menus-reorder', array( 'menu' => $m, 'items' => array( array( 'id' => $item['id'], 'parent' => 0 ), array( 'id' => $c2['id'], 'parent' => 0 ), array( 'id' => $cust['id'], 'parent' => 0 ) ) ) );
+check( '... a reorder that leaves the page item where it is (position 1, top level) and moves only custom links is allowed', is_array( $r ) && array( array( $item['id'], 0 ), array( $c2['id'], 0 ), array( $cust['id'], 0 ) ) === order_of( $m ), array( $r, order_of( $m ) ) );
+d5b_abilities_set_category( 'pages', true, false, 'tester' );
+check( '... with Pages on, moving the page item works', is_array( call( 'menus-reorder', array( 'menu' => $m, 'items' => array( array( 'id' => $c2['id'], 'parent' => 0 ), array( 'id' => $item['id'], 'parent' => $c2['id'] ), array( 'id' => $cust['id'], 'parent' => 0 ) ) ) ) ) );
+
+echo "Task 11 I1: a menu delete whose copy would be cut is refused (a3)\n";
+site();
+$m  = call( 'menus-create', array( 'name' => 'Mega' ) )['id'];
+$it = call( 'menus-item-add', array( 'menu' => $m, 'type' => 'custom', 'object' => '/m', 'title' => 'M' ) );
+t_add_meta( $it['id'], '_mega_menu_html', str_repeat( 'w', 9 * 1024 * 1024 ) );
+$pv = call( 'menus-delete-preview', array( 'menu' => $m ) );
+$h0 = count( hrows() );
+$r  = call( 'menus-delete', array( 'menu' => $m, 'confirmation' => is_array( $pv ) ? $pv['confirmation'] : '' ) );
+check( 'menus-delete of a menu with a 9 MB item field: history_unavailable ("over the size limit"), the menu and item are kept, the cut row is removed', 'history_unavailable' === code( $r ) && false !== strpos( msg( $r ), 'over the size limit' ) && isset( $GLOBALS['T_menus'][ $m ] ) && null !== post( $it['id'] ) && $h0 === count( hrows() ), array( code( $pv ), code( $r ), msg( $r ) ) );
+
+echo "Task 11 M1: a location taken after the preview makes the code stale (a2)\n";
+site();
+$m = call( 'menus-create', array( 'name' => 'Loc' ) )['id'];
+call( 'menus-item-add', array( 'menu' => $m, 'type' => 'custom', 'object' => '/x', 'title' => 'X' ) );
+$pv = call( 'menus-delete-preview', array( 'menu' => $m ) );
+call( 'menus-assign-location', array( 'location' => 'primary', 'menu' => $m ) );
+$r = call( 'menus-delete', array( 'menu' => $m, 'confirmation' => $pv['confirmation'] ) );
+check( 'the menu was put in a location after the preview (preview locations []): stale, the menu is kept', array() === $pv['locations'] && 'stale' === reason( $r ) && isset( $GLOBALS['T_menus'][ $m ] ), $r );
+
 echo "\n" . ( $n - $failed ) . " of $n passed\n";
 exit( $failed ? 1 : 0 );

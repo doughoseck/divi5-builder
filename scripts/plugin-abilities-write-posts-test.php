@@ -371,7 +371,7 @@ check( 'create: without the type\'s edit capability, meta is refused not_allowed
 site();
 $i0 = count( $GLOBALS['T_inserts'] );
 check( 'a meta key that is not UTF-8 is refused invalid_input (bad-utf8.php); nothing is created', 'invalid_input' === code( call( 'posts-create', array( 'title' => 'x', 'meta' => array( "k\xff\xfe" => 'v' ) ) ) ) && $i0 === count( $GLOBALS['T_inserts'] ) );
-check( 'a key that is protected once control characters are dropped ("\x01_thumbnail_id") is refused', 'not_allowed' === code( call( 'posts-create', array( 'title' => 'x', 'meta' => array( "\x01_thumbnail_id" => '5' ) ) ) ) );
+check( 'a key that is protected once control characters are dropped ("\x01_thumbnail_id") is refused (invalid_input since Task 11 C1: not plain ASCII)', 'invalid_input' === code( call( 'posts-create', array( 'title' => 'x', 'meta' => array( "\x01_thumbnail_id" => '5' ) ) ) ) );
 $id = t_add_post( array( 'post_author' => 3 ) ); t_add_meta( $id, 'm', 'one' ); t_add_meta( $id, 'm', 'two' );
 call( 'posts-update', array( 'id' => $id, 'meta' => array( 'm' => 'z' ) ) );
 $h = hlast();
@@ -599,6 +599,108 @@ $T = t_add_post( array( 'post_author' => 3, 'post_content' => 'cur', 'post_statu
 $rT = t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => $T, 'post_content' => 'old' ) );
 $h0 = count( hrows() );
 check( 'an item in the trash is invalid_input (restore it first); nothing written', 'invalid_input' === code( handler( 'revisions-restore', array( 'post_id' => $T, 'revision_id' => $rT, 'expect_hash' => md5( 'cur' ) ) ) ) && 'cur' === post( $T )->post_content && $h0 === count( hrows() ) );
+
+// ===== Task 11 fix wave (break-it reproducers a1, a3, a4, a7)
+echo "Task 11 C1: look-alike keys in the meta input (a7)\n";
+$all = true; $why = array();
+foreach ( array( "\u{FF3F}et_pb_use_builder", "\u{FF3F}wp_page_template", "\u{FF3F}thumbnail_id", 'pässword', "\u{0430}pi_key", "smtp_p\u{0430}ss", "note\n" ) as $k ) {
+	site( CONTRIB );
+	$p  = t_add_post( array( 'post_author' => 3, 'post_status' => 'draft' ) );
+	$i0 = count( $GLOBALS['T_inserts'] );
+	$u  = call( 'posts-update', array( 'id' => $p, 'meta' => array( $k => 'X' ) ) );
+	$c  = call( 'posts-create', array( 'title' => 'n', 'meta' => array( $k => 'X' ) ) );
+	$ok = 'invalid_input' === code( $u ) && 'custom field names must be plain ASCII letters, digits, _ - . :' === $u->get_error_message() && 'invalid_input' === code( $c ) && $i0 === count( $GLOBALS['T_inserts'] ) && ! isset( $GLOBALS['T_meta'][ $p ][ $k ] ) && array() === hrows();
+	if ( ! $ok ) { $all = false; $why[] = array( json_encode( $k ), code( $u ), code( $c ) ); }
+}
+check( 'a contributor\'s posts-update and posts-create with a look-alike key in meta: invalid_input with the exact message, nothing written', $all, $why );
+site();
+$p = t_add_post( array( 'post_author' => 3, 'post_status' => 'draft' ) );
+check( '... a plain key (my-key.v2:x) in meta is written', is_array( call( 'posts-update', array( 'id' => $p, 'meta' => array( 'my-key.v2:x' => 'v' ) ) ) ) && 'v' === meta1( $p, 'my-key.v2:x' ) );
+
+echo "Task 11 I2: the strictest switch for meta, divi and featured_image (a1)\n";
+site();
+$pm = t_add_post( array( 'post_author' => 3, 'post_status' => 'draft', 'post_content' => 'c' ) );
+d5b_abilities_set_category( 'meta', false, false, 'tester' );
+$i0 = count( $GLOBALS['T_inserts'] ); $u0 = count( $GLOBALS['T_updates'] );
+$r1 = call( 'posts-update', array( 'id' => $pm, 'title' => 'T2', 'meta' => array( 'color' => 'red' ) ) );
+$r2 = call( 'posts-create', array( 'title' => 'm', 'meta' => array( 'color' => 'blue' ) ) );
+check( 'Custom fields off: posts-update and posts-create with meta are refused not_allowed (the whole call: the title is not changed either)', 'not_allowed' === code( $r1 ) && 'not_allowed' === code( $r2 ) && null === meta1( $pm, 'color' ) && 'Title ' . $pm === post( $pm )->post_title && $i0 === count( $GLOBALS['T_inserts'] ) && $u0 === count( $GLOBALS['T_updates'] ), array( code( $r1 ), code( $r2 ) ) );
+check( '... without meta the same update works', is_array( call( 'posts-update', array( 'id' => $pm, 'title' => 'T2' ) ) ) );
+d5b_abilities_set_category( 'meta', true, false, 'tester' );
+d5b_abilities_set_category( 'divi', false, false, 'tester' );
+$pp = t_add_post( array( 'post_type' => 'page', 'post_author' => 3, 'post_content' => 'plain' ) );
+$r1 = call( 'pages-update', array( 'id' => $pp, 'divi' => true ) );
+$r2 = call( 'pages-create', array( 'title' => 'n', 'divi' => true ) );
+check( 'Divi off: pages-update and pages-create with divi true are refused not_allowed; no Divi flag is set', 'not_allowed' === code( $r1 ) && 'not_allowed' === code( $r2 ) && null === meta1( $pp, '_et_pb_use_builder' ) && null === meta1( $pp, '_et_pb_use_divi_5' ), array( code( $r1 ), code( $r2 ) ) );
+check( '... divi false (which sets nothing) is not refused', is_array( call( 'pages-update', array( 'id' => $pp, 'title' => 'x', 'divi' => false ) ) ) );
+d5b_abilities_set_category( 'divi', true, false, 'tester' );
+d5b_abilities_set_category( 'media', false, false, 'tester' );
+$img = t_add_post( array( 'post_type' => 'attachment', 'post_status' => 'inherit', 'post_mime_type' => 'image/jpeg', 'post_author' => 3 ) );
+$pf  = t_add_post( array( 'post_author' => 3, 'post_status' => 'draft' ) );
+$r1 = call( 'posts-update', array( 'id' => $pf, 'featured_image' => $img ) );
+$r2 = call( 'posts-create', array( 'title' => 'f', 'featured_image' => $img ) );
+check( 'Media off: featured_image on update and create is refused not_allowed; no thumbnail set', 'not_allowed' === code( $r1 ) && 'not_allowed' === code( $r2 ) && null === meta1( $pf, '_thumbnail_id' ), array( code( $r1 ), code( $r2 ) ) );
+d5b_abilities_set_category( 'media', true, false, 'tester' );
+check( '... with Media on it is set', is_array( call( 'posts-update', array( 'id' => $pf, 'featured_image' => $img ) ) ) && (string) $img === (string) meta1( $pf, '_thumbnail_id' ) );
+
+echo "Task 11 I4: a publish nobody asked for (a1)\n";
+$past = gmdate( 'Y-m-d\TH:i:s\Z', time() - 86400 * 400 ); $later = gmdate( 'Y-m-d\TH:i:s\Z', time() + 86400 * 400 );
+site();
+$r = call( 'posts-create', array( 'title' => 'f', 'status' => 'future', 'date' => $past ) );
+check( 'posts-create status future with a past date: invalid_input "a scheduled post needs a future date"; nothing created', 'invalid_input' === code( $r ) && 'a scheduled post needs a future date' === $r->get_error_message() && array() === $GLOBALS['T_inserts'], $r );
+check( '... with a future date it is scheduled', 'future' === ( call( 'posts-create', array( 'title' => 'f', 'status' => 'future', 'date' => $later ) )['status'] ?? '' ) );
+$fut = t_add_post( array( 'post_author' => 3, 'post_status' => 'future', 'post_date_gmt' => gmdate( 'Y-m-d H:i:s', time() + 86400 * 400 ) ) );
+$r = call( 'posts-update', array( 'id' => $fut, 'status' => 'future', 'date' => $past ) );
+check( 'posts-update status future with a past date: invalid_input; still scheduled', 'invalid_input' === code( $r ) && 'future' === post( $fut )->post_status, $r );
+$r = call( 'posts-update', array( 'id' => $fut, 'date' => $past ) );
+check( 'posts-update with only a past date on a scheduled post, by a user who may publish: allowed (the ruling: a capability check, not a refusal) and published', is_array( $r ) && 'publish' === post( $fut )->post_status, $r );
+const EDPUB = array( 'read', 'edit_posts', 'edit_published_posts', 'delete_posts' ); // edits published content, may not publish
+site( EDPUB );
+$fut = t_add_post( array( 'post_author' => 3, 'post_status' => 'future', 'post_date_gmt' => gmdate( 'Y-m-d H:i:s', time() + 86400 * 400 ) ) );
+$u0 = count( $GLOBALS['T_updates'] );
+$r = call( 'posts-update', array( 'id' => $fut, 'date' => $past ) );
+check( 'a user who may edit the scheduled post but not publish: a past date (no status given) is refused not_allowed; still scheduled', 'not_allowed' === code( $r ) && 'future' === post( $fut )->post_status && $u0 === count( $GLOBALS['T_updates'] ), $r );
+$GLOBALS['T_posts'][ $fut ]->post_date_gmt = gmdate( 'Y-m-d H:i:s', time() - 3600 ); // the scheduled time has passed (a missed schedule)
+$r = call( 'posts-update', array( 'id' => $fut, 'title' => 'only the title' ) );
+check( '... a title-only edit of a scheduled post whose time has passed (core would publish it) is refused not_allowed too', 'not_allowed' === code( $r ) && 'future' === post( $fut )->post_status, $r );
+check( '... a later date keeps it scheduled and is allowed', is_array( call( 'posts-update', array( 'id' => $fut, 'date' => $later ) ) ) && 'future' === post( $fut )->post_status );
+site( CONTRIB );
+$own = t_add_post( array( 'post_author' => 3, 'post_status' => 'pending' ) );
+$r = call( 'posts-update', array( 'id' => $own, 'date' => $past, 'title' => 'x' ) );
+check( 'a contributor\'s own pending post with a past date stays pending (no publish involved)', is_array( $r ) && 'pending' === post( $own )->post_status, $r );
+
+echo "Task 11 I1 / M2: the history cap is per field, the content is kept whole (a3)\n";
+site();
+$p = t_add_post( array( 'post_author' => 3, 'post_content' => 'the only copy of v1' ) );
+t_add_meta( $p, '_other_plugin_cache', str_repeat( 'x', 9 * 1024 * 1024 ) );
+t_add_meta( $p, '_small', 's' );
+$r = call( 'posts-update', array( 'id' => $p, 'content' => 'v2', 'expect_hash' => md5( 'the only copy of v1' ) ) );
+$h = hlast();
+check( 'a small post with 9 MB of unrelated protected meta updates; the row keeps before.content whole, marks only that meta value too_large, keeps the rest', is_array( $r ) && 'v2' === post( $p )->post_content && 'the only copy of v1' === ( $h['before']['content'] ?? null )
+	&& true === ( $h['before']['protected_meta']['_other_plugin_cache'][0]['too_large'] ?? null ) && array( 's' ) === ( $h['before']['protected_meta']['_small'] ?? null ) && 'Title ' . $p === $h['before']['title'], array( code( $r ), array_keys( $h['before'] ?? array() ) ) );
+site();
+$big = t_add_post( array( 'post_author' => 3, 'post_content' => str_repeat( 'b', 8 * 1024 * 1024 + 1 ) ) );
+$u0 = count( $GLOBALS['T_updates'] );
+$r1 = call( 'posts-update', array( 'id' => $big, 'title' => 'x' ) );
+$r2 = call( 'posts-trash', array( 'id' => $big ) );
+check( 'a post whose content is over 8 MB: update and trash are refused history_unavailable, nothing written, no row', 'history_unavailable' === code( $r1 ) && 'history_unavailable' === code( $r2 ) && $u0 === count( $GLOBALS['T_updates'] ) && 'publish' === post( $big )->post_status && array() === hrows(), array( code( $r1 ), code( $r2 ) ) );
+site();
+$bad = "Caf\xE9 au lait";
+$p = t_add_post( array( 'post_author' => 3, 'post_content' => $bad ) );
+$r = call( 'posts-trash', array( 'id' => $p ) );
+$hr  = hrows();
+$raw = json_decode( (string) ( end( $hr )['before'] ?? '' ), true );
+check( 'trash of a post whose content is not valid UTF-8 (not a permanent delete): trashed; the row holds the content with U+FFFD and says _utf8_substituted', is_array( $r ) && 'trash' === post( $p )->post_status && "Caf\u{FFFD} au lait" === ( $raw['content'] ?? null ) && true === ( $raw['_utf8_substituted'] ?? null ), $raw['content'] ?? null );
+
+echo "Task 11 M3: secrets in free-text inputs never reach the audit log (a4)\n";
+site();
+$STRIPE = 'sk_' . 'live_51HxYzAbCdEfGhIjKlMnOpQr'; $GKEY = 'AIza' . 'SyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY'; $WHSEC = 'whsec_' . 'MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw'; $JWT = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+$r = call( 'posts-create', array( 'title' => 'password=hunter2', 'content' => 'Pay with ' . $STRIPE . ' token ' . $JWT . ' maps ' . $GKEY, 'excerpt' => 'hook ' . $WHSEC, 'meta' => array( 'note' => $STRIPE ) ) );
+$args = implode( "\n", array_column( arows(), 'args' ) );
+$leak = array(); foreach ( array( 'hunter2', $STRIPE, $GKEY, $WHSEC, $JWT ) as $s ) { if ( false !== strpos( $args, $s ) ) { $leak[] = substr( $s, 0, 8 ); } }
+check( 'posts-create: the audit args hold none of password=hunter2 (title), a Stripe key, a JWT, a Google API key, a Stripe webhook secret', is_array( $r ) && array() === $leak && '' !== $args, $leak );
+$res = json_encode( $r );
+check( '... and the result masks the Google key and the webhook secret by shape (both profiles have them)', false === strpos( $res, $GKEY ) && false === strpos( $res, $WHSEC ) );
 
 echo "\n" . ( $n - $failed ) . " of $n passed\n";
 exit( $failed ? 1 : 0 );

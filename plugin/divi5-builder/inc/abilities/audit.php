@@ -365,7 +365,9 @@ if ( ! function_exists( 'd5b_audit_redact' ) ) {
 			}
 			if ( is_array( $v ) ) { $out[ $k ] = $depth >= 12 ? '[too deep]' : d5b_audit_redact( $v, $depth + 1 ); continue; }
 			if ( is_string( $v ) ) {
-				if ( function_exists( 'd5b_secret_mask_values' ) ) { $v = d5b_secret_mask_values( $v ); }
+				// Free text (a title "password=hunter2", content holding an API key): the STRICT masker, which also applies the
+				// value shapes, before the cut, so a secret across the cut is never half kept.
+				$v = d5b_audit_mask_strict( $v );
 				$out[ $k ] = d5b_audit_str_len( $v ) > 1024 ? d5b_audit_str_cut( $v, 1024 ) . '…[truncated]' : $v;
 				continue;
 			}

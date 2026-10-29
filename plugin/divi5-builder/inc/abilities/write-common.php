@@ -148,6 +148,67 @@ if ( ! function_exists( 'd5b_wc_check_hash' ) ) {
 	}
 
 	/**
+	 * A custom field name any write accepts (meta-set, meta-delete, the meta input of create and update): plain ASCII
+	 * letters, digits, _ - . : only, 1 to 255 of them. MySQL's utf8mb4 *_ci collations compare 'pässword' equal to 'password'
+	 * and a full-width low line equal to '_', so core's update_metadata would find and change the REAL row of a look-alike
+	 * key, past the protected-key and secret-key rules (which see the look-alike). Run it before is_protected_meta and
+	 * d5b_is_secret_key. @return true|WP_Error
+	 */
+	function d5b_wc_meta_key_ok( string $key ) {
+		if ( 1 === preg_match( '/^[A-Za-z0-9_\-.:]{1,255}$/D', $key ) ) { return true; }
+		return new WP_Error( 'invalid_input', 'custom field names must be plain ASCII letters, digits, _ - . :' );
+	}
+
+	/**
+	 * After the history row of a permanent delete is written: true when the row is an exact, complete copy. A row with a
+	 * field replaced by its size marker, or text whose invalid UTF-8 had to be replaced, is not; it is removed (so it does
+	 * not look like a record) and the delete is refused with history_unavailable. @return true|WP_Error
+	 */
+	function d5b_wc_delete_record_ok( int $hid ) {
+		if ( ! function_exists( 'd5b_history_last_was_truncated' ) ) { return true; }
+		$big = d5b_history_last_was_truncated();
+		$sub = d5b_history_last_was_substituted();
+		if ( ! $big && ! $sub ) { return true; }
+		d5b_history_delete( $hid );
+		return new WP_Error( 'history_unavailable', $big
+			? 'the copy needed to undo this is over the size limit; delete it in wp-admin'
+			: 'the copy needed to undo this would not be exact (it holds text that is not valid UTF-8); delete it in wp-admin' );
+	}
+
+	/**
+	 * The content of a post-like item must fit the change history whole (8 MB of JSON on its own): the copy of the content is
+	 * never cut. Over that the write is refused with history_unavailable. @return true|WP_Error
+	 */
+	function d5b_wc_check_content_size( string $content ) {
+		if ( ! function_exists( 'd5b_history_encode' ) ) { return true; }
+		$sub  = false;
+		$json = d5b_history_encode( $content, $sub );
+		if ( null !== $json && strlen( $json ) <= d5b_history_limit() ) { return true; }
+		return new WP_Error( 'history_unavailable', 'The content of this item is over the 8 MB the change history can keep, so the change was refused: the copy needed to undo it could not be kept. Change it in wp-admin.' );
+	}
+
+	/**
+	 * The status core's wp_insert_post gives a post of $status with the GMT date $gmt: publish with a date a minute or more
+	 * ahead becomes future, future with a date less than a minute ahead (or past) becomes publish.
+	 */
+	function d5b_wc_status_by_date( string $status, string $gmt ): string {
+		if ( '' === $gmt || '0000-00-00 00:00:00' === $gmt ) { return $status; }
+		$t = strtotime( $gmt . ' UTC' );
+		if ( false === $t ) { return $status; }
+		if ( 'publish' === $status && $t - time() >= 60 ) { return 'future'; }
+		if ( 'future' === $status && $t - time() < 60 ) { return 'publish'; }
+		return $status;
+	}
+
+	/** The GMT date core uses for a stored post: post_date_gmt, or for a floating date (0000-...) post_date read as site time. */
+	function d5b_wc_post_gmt( $p ): string {
+		$gmt = (string) ( $p->post_date_gmt ?? '' );
+		if ( '' !== $gmt && '0000-00-00 00:00:00' !== $gmt ) { return $gmt; }
+		$local = (string) ( $p->post_date ?? '' );
+		return ( '' === $local || '0000-00-00 00:00:00' === $local ) ? '' : (string) get_gmt_from_date( $local, 'Y-m-d H:i:s' );
+	}
+
+	/**
 	 * Everything that makes a nav menu item, as stored. With $all_meta also every other custom field of the item (protected
 	 * ones too: menu plugins keep icons and flags there), as key => rows; secret-named keys are left out (a delete checks
 	 * d5b_wc_post_secret_free first and refuses).
@@ -361,11 +422,16 @@ if ( ! function_exists( 'd5b_wc_check_hash' ) ) {
 
 	/** One history row; true when it was stored. */
 	function d5b_wc_history( string $ability, $p, string $action, ?array $before, array $after, int $revision_id, string $summary ): bool {
-		if ( ! function_exists( 'd5b_history_write' ) ) { return false; }
+		return d5b_wc_history_id( $ability, $p, $action, $before, $after, $revision_id, $summary ) > 0;
+	}
+
+	/** One history row; its id, 0 when it was not stored. */
+	function d5b_wc_history_id( string $ability, $p, string $action, ?array $before, array $after, int $revision_id, string $summary ): int {
+		if ( ! function_exists( 'd5b_history_write' ) ) { return 0; }
 		return d5b_history_write( array(
 			'ability' => $ability, 'object_type' => (string) $p->post_type, 'object_id' => (int) $p->ID, 'action' => $action,
 			'before' => $before, 'after' => $after, 'revision_id' => $revision_id, 'summary' => $summary,
-		) ) > 0;
+		) );
 	}
 
 	/** "Updated page 42 'Contact us'". */

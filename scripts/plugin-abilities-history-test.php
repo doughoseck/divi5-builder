@@ -106,16 +106,33 @@ check( 'a handler that throws still clears the id', 0 === d5b_ability_audit_curr
 
 echo "8 MB limit\n";
 installed();
-$big = array( 'blob' => str_repeat( 'x', 8 * 1024 * 1024 + 10 ) );
+// Task 11 I1: the cap is per FIELD. The content is kept whole (up to 8 MB on its own); the other fields over the cap are
+// replaced one by one, largest first, by {too_large, bytes}; a side whose content alone is over 8 MB is one marker.
+$big = array( 'content' => str_repeat( 'x', 8 * 1024 * 1024 + 10 ) );
 $id  = d5b_history_write( hist( array( 'before' => $big ) ) );
 $r   = hrows()[0] ?? array();
 $bj  = json_decode( $r['before'] ?? '', true );
-check( 'a side over 8 MB is stored as too_large with its byte count, and the row is still written', $id > 0 && true === ( $bj['too_large'] ?? null ) && is_int( $bj['bytes'] ) && $bj['bytes'] > 8 * 1024 * 1024 && strlen( $r['before'] ) < 100 && 'New' === json_decode( $r['after'], true )['title'], array( $id, substr( $r['before'] ?? '', 0, 100 ) ) );
+check( 'a side whose content alone is over 8 MB is stored as too_large with its byte count, and the row is still written', $id > 0 && true === ( $bj['too_large'] ?? null ) && is_int( $bj['bytes'] ) && $bj['bytes'] > 8 * 1024 * 1024 && strlen( $r['before'] ) < 100 && 'New' === json_decode( $r['after'], true )['title'] && d5b_history_last_was_truncated(), array( $id, substr( $r['before'] ?? '', 0, 100 ) ) );
 $near = array( 'blob' => str_repeat( 'y', 8 * 1024 * 1024 - 100 ) );
 d5b_history_write( hist( array( 'after' => $near ) ) );
-check( 'a side just under 8 MB is stored whole', strlen( hrows()[1]['after'] ) > 8 * 1024 * 1024 - 200 && ! isset( json_decode( hrows()[1]['after'], true )['too_large'] ) );
+check( 'a side just under 8 MB is stored whole (and the row is not marked truncated)', strlen( hrows()[1]['after'] ) > 8 * 1024 * 1024 - 200 && ! isset( json_decode( hrows()[1]['after'], true )['too_large'] ) && ! d5b_history_last_was_truncated() );
 d5b_history_write( hist( array( 'before' => array( 'bad' => "\xB1\x31", 'ok' => 'fine' ) ) ) );
-check( 'invalid UTF-8 in a side still stores valid JSON', null !== json_decode( hrows()[2]['before'], true ) );
+$sb = json_decode( hrows()[2]['before'], true );
+check( 'invalid UTF-8 in a side still stores valid JSON: the bad bytes as U+FFFD, the side marked _utf8_substituted (Task 11 M2)', is_array( $sb ) && "\u{FFFD}1" === $sb['bad'] && 'fine' === $sb['ok'] && true === $sb['_utf8_substituted'] && d5b_history_last_was_substituted() && ! d5b_history_last_was_truncated(), $sb );
+d5b_history_write( hist( array( 'before' => array( 'ok' => 'fine' ) ) ) );
+check( '... the flags are reset by the next row', ! d5b_history_last_was_substituted() && ! d5b_history_last_was_truncated() && ! isset( json_decode( hrows()[3]['before'], true )['_utf8_substituted'] ) );
+$post = array( 'title' => 'T', 'content' => 'the only copy of v1', 'meta' => array( 'note' => array( 'a', str_repeat( 'n', 5 * 1024 * 1024 ) ) ), 'protected_meta' => array( '_cache' => array( str_repeat( 'c', 9 * 1024 * 1024 ) ), '_small' => array( 's' ) ) );
+d5b_history_write( hist( array( 'before' => $post ) ) );
+$pb = json_decode( hrows()[4]['before'], true );
+check( 'per field: a 9 MB protected meta value is replaced by its marker, the content, the title, the small fields and the 5 MB value (the rest fits) stay whole',
+	'the only copy of v1' === $pb['content'] && 'T' === $pb['title'] && array( 's' ) === $pb['protected_meta']['_small'] && true === $pb['protected_meta']['_cache'][0]['too_large'] && $pb['protected_meta']['_cache'][0]['bytes'] > 9 * 1024 * 1024
+	&& 'a' === $pb['meta']['note'][0] && 5 * 1024 * 1024 === strlen( $pb['meta']['note'][1] ) && d5b_history_last_was_truncated(), substr( hrows()[4]['before'], 0, 300 ) );
+$two = array( 'content' => str_repeat( 'k', 7 * 1024 * 1024 ), 'meta' => array( 'a' => array( str_repeat( 'a', 5 * 1024 * 1024 ) ), 'b' => array( str_repeat( 'b', 6 * 1024 * 1024 ) ) ) );
+d5b_history_write( hist( array( 'before' => $two ) ) );
+$tb = json_decode( hrows()[5]['before'], true );
+check( '... largest first, only as many as needed: the 6 MB value goes, the 5 MB one stays, the 7 MB content stays whole', 7 * 1024 * 1024 === strlen( $tb['content'] ) && 5 * 1024 * 1024 === strlen( $tb['meta']['a'][0] ) && true === $tb['meta']['b'][0]['too_large'] );
+$did = d5b_history_write( hist( array( 'before' => array( 'x' => 1 ) ) ) );
+check( 'd5b_history_delete removes exactly that row', d5b_history_delete( $did ) && null === d5b_history_get( $did ) && 6 === count( hrows() ) && ! d5b_history_delete( $did ) );
 
 echo "list\n";
 installed();
@@ -144,8 +161,8 @@ $id = d5b_history_write( hist( array( 'before' => array( 'a' => array( 1, 2 ), '
 $g  = d5b_history_get( $id );
 check( 'get decodes before and after into arrays and returns the whole row', array( 'a' => array( 1, 2 ) ) === $g['before'] && array( 'b' => 'é' ) === $g['after'] && $id === $g['id'] && 12 === $g['object_id'] && 99 === $g['revision_id'] && 'Changed the title' === $g['summary'] && 'update' === $g['action'], $g );
 check( 'get of an unknown id is null; of 0 is null', null === d5b_history_get( $id + 50 ) && null === d5b_history_get( 0 ) );
-d5b_history_write( hist( array( 'before' => $big ) ) );
-$g2 = d5b_history_get( $id + 1 );
+$id2 = d5b_history_write( hist( array( 'before' => $big ) ) );
+$g2 = d5b_history_get( $id2 );
 check( 'get of a too_large side returns the marker array', true === ( $g2['before']['too_large'] ?? null ) && is_int( $g2['before']['bytes'] ) );
 check( 'get goes through prepare()', array() === $wpdb->unprepared );
 fresh();

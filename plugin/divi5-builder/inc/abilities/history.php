@@ -26,17 +26,147 @@ if ( ! function_exists( 'd5b_history_table_exists' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_history_limit' ) ) {
+	/** The size cap of one side of a row, and of the content field on its own: 8 MB of JSON. */
+	function d5b_history_limit(): int {
+		return 8 * 1024 * 1024;
+	}
+}
+
+if ( ! function_exists( 'd5b_history_flags' ) ) {
+	/**
+	 * What the LAST d5b_history_write() had to do to its sides: truncated (a side, or one of its fields, was replaced by a
+	 * {"too_large"} marker, or a side could not be encoded at all) and substituted (text that is not valid UTF-8 was stored
+	 * with U+FFFD in its place). A row with either flag is not an exact copy. $set replaces the flags (the writer only).
+	 */
+	function d5b_history_flags( ?array $set = null ): array {
+		static $flags = array( 'truncated' => false, 'substituted' => false );
+		if ( null !== $set ) { $flags = array( 'truncated' => ! empty( $set['truncated'] ), 'substituted' => ! empty( $set['substituted'] ) ); }
+		return $flags;
+	}
+}
+
+if ( ! function_exists( 'd5b_history_last_was_truncated' ) ) {
+	/** True when the last row written had a side or a field replaced by its size marker (or a side it could not encode). */
+	function d5b_history_last_was_truncated(): bool {
+		return d5b_history_flags()['truncated'];
+	}
+}
+
+if ( ! function_exists( 'd5b_history_last_was_substituted' ) ) {
+	/** True when the last row written holds text whose invalid UTF-8 bytes were replaced (the copy is not byte-exact). */
+	function d5b_history_last_was_substituted(): bool {
+		return d5b_history_flags()['substituted'];
+	}
+}
+
+if ( ! function_exists( 'd5b_history_encode' ) ) {
+	/**
+	 * JSON of $v; text that is not valid UTF-8 is encoded with U+FFFD in its place and $substituted set. null when it cannot
+	 * be encoded at all (a value nested too deep, a float that is not finite).
+	 */
+	function d5b_history_encode( $v, bool &$substituted = false ): ?string {
+		$flags = JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES;
+		$json  = json_encode( $v, $flags );
+		if ( is_string( $json ) ) { return $json; }
+		if ( JSON_ERROR_UTF8 !== json_last_error() && JSON_ERROR_UTF16 !== json_last_error() ) { return null; }
+		$json = json_encode( $v, $flags | JSON_INVALID_UTF8_SUBSTITUTE );
+		if ( ! is_string( $json ) ) { return null; }
+		$substituted = true;
+		return $json;
+	}
+}
+
+if ( ! function_exists( 'd5b_history_marker' ) ) {
+	function d5b_history_marker( int $bytes ): array {
+		return array( 'too_large' => true, 'bytes' => $bytes );
+	}
+}
+
+if ( ! function_exists( 'd5b_history_fit' ) ) {
+	/**
+	 * A side over the cap, made to fit field by field: "content" is kept whole (it is checked on its own, up to the cap), and
+	 * the other fields are replaced one at a time, the largest first, by {"too_large":true,"bytes":N} until the rest of the
+	 * side is within the cap. A field is a top-level value, or one row of a key => rows map (a custom field's rows: one
+	 * oversized meta value goes, its siblings stay). null when it cannot fit (content over the cap, or not an object).
+	 */
+	function d5b_history_fit( $side ): ?array {
+		$limit = d5b_history_limit();
+		if ( ! is_array( $side ) || array() === $side || array_keys( $side ) === range( 0, count( $side ) - 1 ) ) { return null; }
+		$sub = false;
+		if ( array_key_exists( 'content', $side ) ) {
+			$c = d5b_history_encode( $side['content'], $sub );
+			if ( null === $c || strlen( $c ) > $limit ) { return null; }
+		}
+		$units = array(); // array( bytes, top key, row key or null, row index or null )
+		foreach ( $side as $k => $v ) {
+			if ( 'content' === $k ) { continue; }
+			$rows = is_array( $v ) && array() !== $v;
+			if ( $rows ) { foreach ( $v as $x ) { if ( ! is_array( $x ) || array() === $x || array_keys( $x ) !== range( 0, count( $x ) - 1 ) ) { $rows = false; break; } } }
+			if ( $rows ) {
+				foreach ( $v as $rk => $list ) { foreach ( $list as $i => $one ) { $units[] = array( strlen( (string) d5b_history_encode( $one, $sub ) ), $k, $rk, $i ); } }
+			} else {
+				$units[] = array( strlen( (string) d5b_history_encode( $v, $sub ) ), $k, null, null );
+			}
+		}
+		usort( $units, function ( $a, $b ) { return $b[0] <=> $a[0]; } );
+		$rest = $side;
+		unset( $rest['content'] );
+		$size = strlen( (string) d5b_history_encode( $rest, $sub ) );
+		foreach ( $units as $u ) {
+			if ( $size <= $limit ) { break; }
+			$mark = d5b_history_marker( $u[0] );
+			if ( null === $u[2] ) { $side[ $u[1] ] = $mark; } else { $side[ $u[1] ][ $u[2] ][ $u[3] ] = $mark; }
+			// The value's JSON is replaced by the marker's in place: the rest of the text does not change.
+			$size += strlen( (string) json_encode( $mark ) ) - $u[0];
+		}
+		$rest = $side;
+		unset( $rest['content'] );
+		$json = d5b_history_encode( $rest, $sub );
+		return ( null === $json || strlen( $json ) > $limit ) ? null : $side;
+	}
+}
+
 if ( ! function_exists( 'd5b_history_side_json' ) ) {
 	/**
-	 * One side (before or after) as JSON: secret-named keys removed (no text masking), or {"too_large":true,"bytes":N} when the
-	 * encoded text is over 8 MB, or {"unencodable":true} when it cannot be encoded at all.
+	 * One side (before or after) as JSON: secret-named keys removed (no text masking). Over 8 MB, the fields are replaced one at
+	 * a time by their size marker (d5b_history_fit: the content is kept whole); when that cannot make it fit, the whole side is
+	 * {"too_large":true,"bytes":N}; {"unencodable":true} when it cannot be encoded at all. Text that is not valid UTF-8 is kept
+	 * with U+FFFD in its place and the side gets "_utf8_substituted": true. $flags reports what was done (d5b_history_flags).
 	 */
-	function d5b_history_side_json( $side ): string {
+	function d5b_history_side_json( $side, ?array &$flags = null ): string {
+		$flags = array( 'truncated' => false, 'substituted' => false );
 		$clean = function_exists( 'd5b_ability_scrub_keys' ) ? d5b_ability_scrub_keys( $side ) : array();
-		$json  = json_encode( $clean, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR );
-		if ( ! is_string( $json ) ) { return '{"unencodable":true}'; }
-		if ( strlen( $json ) > 8 * 1024 * 1024 ) { return '{"too_large":true,"bytes":' . strlen( $json ) . '}'; }
+		$sub   = false;
+		$json  = d5b_history_encode( $clean, $sub );
+		if ( null === $json ) { $flags['truncated'] = true; return '{"unencodable":true}'; }
+		if ( strlen( $json ) > d5b_history_limit() ) {
+			$flags['truncated'] = true;
+			$fit = d5b_history_fit( $clean );
+			if ( null === $fit ) { return '{"too_large":true,"bytes":' . strlen( $json ) . '}'; }
+			$clean = $fit;
+			$json  = (string) d5b_history_encode( $clean, $sub );
+		}
+		if ( $sub ) {
+			$flags['substituted'] = true;
+			if ( is_array( $clean ) && ( array() === $clean || array_keys( $clean ) !== range( 0, count( $clean ) - 1 ) ) ) {
+				$clean['_utf8_substituted'] = true;
+				$json = (string) d5b_history_encode( $clean, $sub );
+			}
+		}
 		return $json;
+	}
+}
+
+if ( ! function_exists( 'd5b_history_delete' ) ) {
+	/** Removes one row (a row that turned out not to be a record: a permanent delete it was written for was refused). */
+	function d5b_history_delete( int $id ): bool {
+		global $wpdb;
+		if ( $id < 1 || ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return false; }
+		$quiet = method_exists( $wpdb, 'suppress_errors' ) ? $wpdb->suppress_errors( true ) : null;
+		$n     = $wpdb->delete( d5b_history_table(), array( 'id' => $id ), array( '%d' ) );
+		if ( null !== $quiet ) { $wpdb->suppress_errors( $quiet ); }
+		return is_int( $n ) && $n > 0;
 	}
 }
 
@@ -47,10 +177,15 @@ if ( ! function_exists( 'd5b_history_write' ) ) {
 	 * @return int the new row's id; 0 when nothing was written (no table, no database, a database error)
 	 */
 	function d5b_history_write( array $row ): int {
+		d5b_history_flags( array() );
 		try {
 			global $wpdb;
 			if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return 0; }
 			$rev  = isset( $row['revision_id'] ) ? (int) $row['revision_id'] : 0;
+			$fb   = null; $fa = null;
+			$bj   = d5b_history_side_json( $row['before'] ?? array(), $fb );
+			$aj   = d5b_history_side_json( $row['after'] ?? array(), $fa );
+			d5b_history_flags( array( 'truncated' => $fb['truncated'] || $fa['truncated'], 'substituted' => $fb['substituted'] || $fa['substituted'] ) );
 			$data = array(
 				'created_at'  => gmdate( 'Y-m-d H:i:s' ),
 				'user_id'     => function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0,
@@ -59,8 +194,8 @@ if ( ! function_exists( 'd5b_history_write' ) ) {
 				'object_type' => d5b_audit_str_cut( d5b_audit_utf8( (string) ( $row['object_type'] ?? '' ) ), 64 ),
 				'object_id'   => max( 0, (int) ( $row['object_id'] ?? 0 ) ),
 				'action'      => d5b_audit_str_cut( d5b_audit_utf8( (string) ( $row['action'] ?? '' ) ), 16 ),
-				'before'      => d5b_history_side_json( $row['before'] ?? array() ),
-				'after'       => d5b_history_side_json( $row['after'] ?? array() ),
+				'before'      => $bj,
+				'after'       => $aj,
 				'revision_id' => $rev > 0 ? $rev : null,
 				'summary'     => d5b_audit_str_cut( d5b_audit_utf8( (string) ( $row['summary'] ?? '' ) ), 191 ),
 			);

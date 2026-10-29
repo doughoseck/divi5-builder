@@ -362,6 +362,8 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 		if ( null !== $p ) {
 			$ok = d5b_wc_check_masked( $content, (string) $p->post_content );
 			if ( true !== $ok ) { return $ok; }
+			$ok = d5b_wc_check_content_size( (string) $p->post_content );
+			if ( true !== $ok ) { return $ok; }
 			$before = d5b_wd_tb_before( $p );
 		}
 		// The route's own checks and order: not a layout, edit_post, unfiltered_html, empty content, the hash, Divi format,
@@ -382,6 +384,10 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 		$need = d5b_dv_need( array( 'd5b_tb_restore' ) );
 		if ( null !== $need ) { return $need; }
 		$p      = d5b_wd_tb_layout( $a['id'] );
+		if ( null !== $p ) {
+			$ok = d5b_wc_check_content_size( (string) $p->post_content );
+			if ( true !== $ok ) { return $ok; }
+		}
 		$before = null !== $p ? d5b_wd_tb_before( $p ) : null;
 		$r = d5b_tb_restore( $a['id'] );
 		if ( is_wp_error( $r ) ) { return $r; }
@@ -416,6 +422,8 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 		$p    = $t['post'];
 		$id   = (int) $p->ID;
 		$warn = array();
+		$ok   = d5b_wc_check_content_size( (string) $p->post_content );
+		if ( true !== $ok ) { return $ok; }
 		if ( 'tb' === $t['via'] ) {
 			$need = d5b_dv_need( array( 'd5b_tb_write' ) );
 			if ( null !== $need ) { return $need; }
@@ -560,7 +568,89 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 	 * variable's value there, and their JSON is never text to edit), tags removed, entities decoded.
 	 */
 	function d5b_wd_visible( string $html ): string {
-		return html_entity_decode( wp_strip_all_tags( (string) preg_replace( D5B_WD_VAR_RE, '', $html ) ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+		return html_entity_decode( d5b_wd_strip_all_tags( d5b_wd_strip_vars( $html ) ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+	}
+
+	/** The largest text field divi-text-edit searches: 256 KB. */
+	function d5b_wd_field_cap(): int {
+		return 262144;
+	}
+
+	/**
+	 * Where the closing markers of one text are, found once, sorted: every ")$" (the end of a $variable(...)$ token), every
+	 * ">", and every "</script>" and "</style>" (any case). The start of a token or of a script or style element is then
+	 * resolved with a binary search (d5b_wd_var_end, d5b_wd_script_end) instead of a regex run from that start to the end
+	 * of the text, which made a field of many unclosed "$variable(" or "<script" quadratic.
+	 */
+	function d5b_wd_index( string $html ): array {
+		$idx = array( 'var' => array(), 'gt' => array(), 'script' => array(), 'style' => array() );
+		for ( $o = strpos( $html, ')$' ); false !== $o; $o = strpos( $html, ')$', $o + 2 ) ) { $idx['var'][] = $o; }
+		for ( $o = strpos( $html, '>' ); false !== $o; $o = strpos( $html, '>', $o + 1 ) ) { $idx['gt'][] = $o; }
+		if ( preg_match_all( '@</(script|style)>@i', $html, $m, PREG_OFFSET_CAPTURE ) ) {
+			foreach ( $m[1] as $k => $name ) { $idx[ strtolower( $name[0] ) ][] = $m[0][ $k ][1]; }
+		}
+		return $idx;
+	}
+
+	/** The first value in the sorted list that is $x or more, or null. */
+	function d5b_wd_first_at( array $sorted, int $x ): ?int {
+		$lo = 0; $hi = count( $sorted );
+		while ( $lo < $hi ) { $mid = ( $lo + $hi ) >> 1; if ( $sorted[ $mid ] < $x ) { $lo = $mid + 1; } else { $hi = $mid; } }
+		return $lo < count( $sorted ) ? $sorted[ $lo ] : null;
+	}
+
+	/** The end of the $variable(...)$ token starting at $i (as D5B_WD_VAR_RE anchored there: up to the first ")$"), or null. */
+	function d5b_wd_var_end( string $html, array $idx, int $i ): ?int {
+		if ( 0 !== substr_compare( $html, '$variable(', $i, 10 ) ) { return null; }
+		$p = d5b_wd_first_at( $idx['var'], $i + 10 );
+		return null === $p ? null : $p + 2;
+	}
+
+	/**
+	 * The end of the script or style element starting at $i, as wp_strip_all_tags' '@<(script|style)[^>]*?>.*?</\1>@si'
+	 * anchored there (the first ">" after the name, then the first closing tag of the same name), or null.
+	 */
+	function d5b_wd_script_end( string $html, array $idx, int $i ): ?int {
+		$name = 0 === substr_compare( $html, '<script', $i, 7, true ) ? 'script' : ( 0 === substr_compare( $html, '<style', $i, 6, true ) ? 'style' : '' );
+		if ( '' === $name ) { return null; }
+		$g = d5b_wd_first_at( $idx['gt'], $i + 1 + strlen( $name ) );
+		if ( null === $g ) { return null; }
+		$c = d5b_wd_first_at( $idx[ $name ], $g + 1 );
+		return null === $c ? null : $c + strlen( $name ) + 3;
+	}
+
+	/** preg_replace( D5B_WD_VAR_RE, '', $html ) in one pass: every $variable(...)$ token removed, left to right. */
+	function d5b_wd_strip_vars( string $html ): string {
+		if ( false === strpos( $html, '$variable(' ) ) { return $html; }
+		$idx = d5b_wd_index( $html );
+		$out = ''; $pos = 0;
+		for ( $s = strpos( $html, '$variable(' ); false !== $s; $s = strpos( $html, '$variable(', $s ) ) {
+			$e = d5b_wd_var_end( $html, $idx, $s );
+			// No ")$" after this start means none after any later start either.
+			if ( null === $e ) { break; }
+			$out .= substr( $html, $pos, $s - $pos );
+			$pos = $s = $e;
+		}
+		return $out . substr( $html, $pos );
+	}
+
+	/**
+	 * wp_strip_all_tags( $s ) (no line-break removal) in one pass: script and style elements removed as core's regex does,
+	 * then strip_tags, then trim. Core's regex runs from every "<script" to the end of the text when it is not closed.
+	 */
+	function d5b_wd_strip_all_tags( string $s ): string {
+		if ( false !== stripos( $s, '<script' ) || false !== stripos( $s, '<style' ) ) {
+			$idx = d5b_wd_index( $s );
+			$out = ''; $pos = 0;
+			for ( $i = strpos( $s, '<' ); false !== $i; $i = strpos( $s, '<', $i ) ) {
+				$e = d5b_wd_script_end( $s, $idx, $i );
+				if ( null === $e ) { $i++; continue; }
+				$out .= substr( $s, $pos, $i - $pos );
+				$pos = $i = $e;
+			}
+			$s = $out . substr( $s, $pos );
+		}
+		return trim( strip_tags( $s ) );
 	}
 
 	/** True when the text holds a $variable( token start (refused as new in text mode; a source span holding one is markup). */
@@ -580,6 +670,7 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 	 */
 	function d5b_wd_vis_map( string $html, bool $show_vars = false ): array {
 		$n    = strlen( $html );
+		$idx  = d5b_wd_index( $html ); // every closing marker, found once: no regex runs from a start to the end of the field
 		$raw  = array();   // array( kind, src start, src end, text )
 		$i    = 0;
 		$run  = -1;        // index in $raw of the text run being extended
@@ -590,7 +681,8 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 		while ( $i < $n ) {
 			$c = $html[ $i ];
 			if ( '<' === $c ) {
-				if ( 1 === preg_match( '@<(script|style)[^>]*?>.*?</\\1>@siA', $html, $m, 0, $i ) ) { $i += strlen( $m[0] ); $run = -1; continue; }
+				$se = d5b_wd_script_end( $html, $idx, $i );
+				if ( null !== $se ) { $i = $se; $run = -1; continue; }
 				$nx = $i + 1 < $n ? $html[ $i + 1 ] : '';
 				// PHP's strip_tags keeps a "<" that a space follows ("1 < 2")
 				if ( '' !== $nx && false !== strpos( " \t\n\r\x0B\f", $nx ) ) { $text( $i, $i + 1 ); $i++; continue; }
@@ -606,9 +698,9 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 				$i = $j < $n ? $j + 1 : $n; $run = -1;
 				continue;
 			}
-			if ( '$' === $c && 1 === preg_match( D5B_WD_VAR_RE . 'A', $html, $m, 0, $i ) ) {
-				if ( $show_vars ) { $raw[] = array( 'v', $i, $i + strlen( $m[0] ), '{variable}' ); }
-				$run = -1; $i += strlen( $m[0] ); continue;
+			if ( '$' === $c && null !== ( $ve = d5b_wd_var_end( $html, $idx, $i ) ) ) {
+				if ( $show_vars ) { $raw[] = array( 'v', $i, $ve, '{variable}' ); }
+				$run = -1; $i = $ve; continue;
 			}
 			if ( '&' === $c && 1 === preg_match( '/&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);/A', $html, $m, 0, $i ) ) {
 				$dec = html_entity_decode( $m[0], ENT_QUOTES | ENT_HTML5, 'UTF-8' );
@@ -676,7 +768,7 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 	 */
 	function d5b_wd_near_text( string $html ): string {
 		$h = str_replace( D5B_WD_TAG_MARK, '', $html );
-		return d5b_wd_visible( (string) preg_replace( '/<[^>]*>/', D5B_WD_TAG_MARK, (string) preg_replace( D5B_WD_VAR_RE, '', $h ) ) );
+		return d5b_wd_visible( (string) preg_replace( '/<[^>]*>/', D5B_WD_TAG_MARK, d5b_wd_strip_vars( $h ) ) );
 	}
 
 	/**
@@ -778,6 +870,9 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 		$units = array(); $hays = array(); $total = 0;
 		foreach ( $nodes as $nd ) {
 			foreach ( d5b_blocks_text_fields( $nd ) as $field => $fh ) {
+				if ( strlen( $fh ) > d5b_wd_field_cap() ) {
+					return new WP_Error( 'invalid_input', 'The ' . $field . ' field of the block at ' . $nd['addr'] . ' is over 256 KB, more than divi-text-edit searches. Use at to search another block, or change this one with divi-section-edit.' );
+				}
 				$hay    = $html ? $fh : d5b_wd_visible( $fh );
 				$hays[] = array( 'address' => $nd['addr'], 'field' => $field, 'text' => $html ? $fh : d5b_wd_near_text( $fh ), 'html' => $fh );
 				$offs   = d5b_wd_offsets( $hay, $old );
@@ -955,7 +1050,7 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 
 	d5b_wc_def( 'divi-text-edit', 'divi', 'Change text on a Divi page',
 		'Changes words inside one existing module of a Divi 5 page, post, custom item, canvas, Divi Library item or Theme Builder header, body or footer layout (a footer\'s opening hours, a heading, a button label), without touching the layout. It searches only the text a visitor reads in the modules\' text fields (heading, text, button, blurb, and the other text fields Divi has), with tags and Divi $variable(...)$ tokens (dynamic content) removed and entities decoded, never attribute names, settings, classes, ids or token contents; old must occur exactly once, and is replaced in the field\'s stored HTML, keeping the tags around it. A field stored with the same text for several breakpoints or states (desktop, tablet, hover) counts once and every copy is changed. Returns the item (id, title, status, url, without its content) with its new hash (the expect_hash of the next edit), changed, address and field (where the change was made; also_changed lists the other breakpoint or state copies) and excerpt (120 characters of the field\'s new text around the change, tokens shown as {variable}; not the post excerpt). '
-		. $d5b_wd_hash_from . '. Refuses, writing nothing: not_found when old is not there exactly (data.near_matches lists up to 5 places that differ only in case, spacing, curly or straight quotes, or dashes: repeat with old set to the text of one of them; an entry marked crosses_markup spans a tag, has reads_as and html instead of text, and needs a shorter old or html true); ambiguous when old occurs more than once (data.matches lists address, field, breakpoint, state and count: repeat with at set to one of those addresses, or a longer old; two matches in one block differ by breakpoint or state, so make old longer); crosses_markup when the match runs across a tag or a $variable token, as old "Mon to Fri 9 to 5" against <strong>Mon to Fri</strong> 9 to 5 (data.html is the field as stored: shorten old to one side of the tag, or repeat with html true and old and new as HTML taken from data.html); invalid_input when new holds a $variable( token without html true, or when an html true edit would change the text outside the replaced part or leave tags unbalanced; stale when the item changed since that read (read it again, then repeat); masked_read when new holds [redacted]; needs_unfiltered_html; not_allowed for templates and other kinds of item, an item you may not edit, or a switched-off category; not_found or ambiguous for an at that matches no block or several. To add, move or remove blocks, use divi-section-edit.',
+		. $d5b_wd_hash_from . '. Refuses, writing nothing: not_found when old is not there exactly (data.near_matches lists up to 5 places that differ only in case, spacing, curly or straight quotes, or dashes: repeat with old set to the text of one of them; an entry marked crosses_markup spans a tag, has reads_as and html instead of text, and needs a shorter old or html true); ambiguous when old occurs more than once (data.matches lists address, field, breakpoint, state and count: repeat with at set to one of those addresses, or a longer old; two matches in one block differ by breakpoint or state, so make old longer); crosses_markup when the match runs across a tag or a $variable token, as old "Mon to Fri 9 to 5" against <strong>Mon to Fri</strong> 9 to 5 (data.html is the field as stored: shorten old to one side of the tag, or repeat with html true and old and new as HTML taken from data.html); invalid_input when new holds a $variable( token without html true, when a text field searched is over 256 KB (use at to search other blocks), or when an html true edit would change the text outside the replaced part or leave tags unbalanced; stale when the item changed since that read (read it again, then repeat); masked_read when new holds [redacted]; needs_unfiltered_html; not_allowed for templates and other kinds of item, an item you may not edit, or a switched-off category; not_found or ambiguous for an at that matches no block or several. To add, move or remove blocks, use divi-section-edit.',
 		array(
 			'post_id'     => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The id of the page, post, custom item, canvas, Divi Library item or Theme Builder header, body or footer layout.' ),
 			'expect_hash' => array( 'type' => 'string', 'description' => 'The hash of the content you read (from the get, or from the previous edit). An item changed since is refused with stale.' ),

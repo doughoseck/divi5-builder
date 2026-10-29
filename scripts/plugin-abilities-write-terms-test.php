@@ -236,7 +236,10 @@ $r = call( 'meta-set', array( 'post_id' => $p, 'key' => 'multi', 'value' => 'onl
 check( 'a field with several rows: ALL replaced by the one value (replaced_rows 3); the history keeps all three', is_array( $r ) && 3 === $r['replaced_rows'] && array( 'only' ) === meta( $p, 'multi' ) && array( 'one', 'two', array( 'three' => 3 ) ) === hlast()['before']['rows'], $r );
 t_add_meta( $p, 'a\\b', 'x' ); t_add_meta( $p, 'a\\b', 'y' );
 $r = call( 'meta-set', array( 'post_id' => $p, 'key' => 'a\\b', 'value' => 'z' ) );
-check( 'a key with a backslash and several rows is replaced exactly (core unslashes keys)', is_array( $r ) && array( 'z' ) === meta( $p, 'a\\b' ) && null === meta( $p, 'ab' ), array( $r, $GLOBALS['T_meta'][ $p ] ) );
+check( 'a key with a backslash is refused invalid_input since Task 11 C1 (not plain ASCII letters, digits, _ - . :); its rows are untouched', 'invalid_input' === code( $r ) && array( 'x', 'y' ) === meta( $p, 'a\\b' ) && null === meta( $p, 'ab' ), array( $r, $GLOBALS['T_meta'][ $p ] ) );
+t_add_meta( $p, 'my-key.v2:x', 'x' ); t_add_meta( $p, 'my-key.v2:x', 'y' );
+$r = call( 'meta-set', array( 'post_id' => $p, 'key' => 'my-key.v2:x', 'value' => 'z' ) );
+check( '... a key of every allowed kind of character (my-key.v2:x) with several rows is replaced exactly', is_array( $r ) && array( 'z' ) === meta( $p, 'my-key.v2:x' ), array( $r, $GLOBALS['T_meta'][ $p ] ) );
 $h0 = count( hrows() );
 $refused = array();
 foreach ( array( '_secret_flag', '_et_pb_use_builder', 'api_key', 'smtp_pw', 'stripe_secret', 'my_password', 'auth_token' ) as $k ) {
@@ -288,8 +291,10 @@ check( 'a valid delete removes every row and returns the history id', is_array( 
 check( '... the history row holds the full value of every row', 'post_meta' === $h['object_type'] && 'delete' === $h['action'] && array( 'field' => 'gallery', 'rows' => array( array( 'ids' => array( 1, 2 ) ), 'changed' ) ) === $h['before'], $h );
 t_add_meta( $p, 'c:\\path', 'one' ); t_add_meta( $p, 'cpath', 'innocent' );
 $pv = call( 'meta-delete-preview', array( 'post_id' => $p, 'key' => 'c:\\path' ) );
-$r = call( 'meta-delete', array( 'post_id' => $p, 'key' => 'c:\\path', 'confirmation' => $pv['confirmation'] ?? '' ) );
-check( 'a key with a backslash is deleted exactly (the key is slashed for core), a look-alike key is untouched', is_array( $r ) && null === meta( $p, 'c:\\path' ) && array( 'innocent' ) === meta( $p, 'cpath' ), array( $r, $GLOBALS['T_meta'][ $p ] ?? null ) );
+$r = call( 'meta-delete', array( 'post_id' => $p, 'key' => 'c:\\path', 'confirmation' => is_array( $pv ) ? $pv['confirmation'] : '' ) );
+// Task 11 C1: a key must be plain ASCII letters, digits, _ - . : (a backslash is none of them); the key is still slashed for
+// core in the code (Task 6), which a plain key does not need.
+check( 'a key with a backslash is refused invalid_input (preview and delete); both fields are untouched', 'invalid_input' === code( $pv ) && 'invalid_input' === code( $r ) && array( 'one' ) === meta( $p, 'c:\\path' ) && array( 'innocent' ) === meta( $p, 'cpath' ), array( $r, $GLOBALS['T_meta'][ $p ] ?? null ) );
 t_add_meta( $p, 'kept', 'v' );
 $pv = call( 'meta-delete-preview', array( 'post_id' => $p, 'key' => 'kept' ) );
 $GLOBALS['T_meta_delete_blocked'] = true;
@@ -394,6 +399,106 @@ $r2 = handler( 'taxonomy-assign', array( 'post_id' => $own, 'taxonomy' => 'post_
 check( 'a user WITH edit_post on the item but WITHOUT the taxonomy\'s assign_terms: refused by the gate and by the handler (not_allowed)', current_user_can( 'edit_post', $own ) && 'FORBIDDEN' === $r && 'not_allowed' === code( $r2 ) && array() === terms_of( $own, 'post_tag' ), array( $r, $r2 ) );
 t_set_caps( array( 'read', 'edit_posts', 'assign_post_tags' ) );
 check( '... and with assign_terms it works', is_array( call( 'taxonomy-assign', array( 'post_id' => $own, 'taxonomy' => 'post_tag', 'terms' => array( $tg ) ) ) ) && array( $tg ) === terms_of( $own, 'post_tag' ) );
+
+// ===== Task 11 fix wave (break-it reproducers a2, a3, a7)
+echo "Task 11 C1: look-alike meta keys (a7)\n";
+// MySQL's utf8mb4 *_ci collations find the REAL row of these keys (attack/my/collation.sql); the stand-in keys rows by the exact
+// PHP string, so what is tested here is the plugin half: every write refuses them before core is reached.
+$FW  = "\u{FF3F}"; // FULLWIDTH LOW LINE
+$C1M = 'custom field names must be plain ASCII letters, digits, _ - . :';
+$bad = array( $FW . 'et_pb_use_builder', $FW . 'wp_page_template', $FW . 'wp_trash_meta_status', $FW . 'thumbnail_id', 'pässword', "\u{0430}pi_key", "smtp_p\u{0430}ss", "price\n", 'pass word', "\x01_thumbnail_id", 'a/b', "it's" );
+$all = true; $why = array();
+foreach ( $bad as $k ) {
+	site();
+	$p = t_add_post( array( 'post_author' => 3, 'post_status' => 'draft' ) );
+	t_add_meta( $p, $k, 'there' );
+	// Through the gate (core's edit_post_meta already forbids a key that is protected once control characters go) and
+	// straight into the handler (a direct run skips the gate): the handler itself refuses every one with the C1 message.
+	$c  = array( call( 'meta-set', array( 'post_id' => $p, 'key' => $k, 'value' => 'X' ) ), call( 'meta-delete-preview', array( 'post_id' => $p, 'key' => $k ) ), call( 'meta-delete', array( 'post_id' => $p, 'key' => $k, 'confirmation' => 'ABCDEFGHJKLM' ) ) );
+	$h1 = handler( 'meta-set', array( 'post_id' => $p, 'key' => $k, 'value' => 'X' ) );
+	$h2 = handler( 'meta-delete-preview', array( 'post_id' => $p, 'key' => $k ) );
+	$h3 = handler( 'meta-delete', array( 'post_id' => $p, 'key' => $k, 'confirmation' => 'ABCDEFGHJKLM' ) );
+	$ok = array( 'invalid_input' ) === array_values( array_unique( array_map( 'code', array( $h1, $h2, $h3 ) ) ) ) && $C1M === msg( $h1 ) && $C1M === msg( $h2 ) && $C1M === msg( $h3 )
+		&& array() === array_diff( array_map( 'code', $c ), array( 'invalid_input', 'FORBIDDEN' ) ) && array( 'there' ) === meta( $p, $k ) && array() === hrows();
+	if ( ! $ok ) { $all = false; $why[] = array( json_encode( $k ), array_map( 'code', $c ), code( $h1 ), code( $h2 ), code( $h3 ) ); }
+}
+check( 'every look-alike key (full-width _, ä, Cyrillic a, a trailing newline, a space, a control character, / and \') is refused: invalid_input with the exact message by the meta-set, meta-delete-preview and meta-delete handlers, and never OK through the gate; nothing changed, no history row', $all, $why );
+site();
+$p = t_add_post( array( 'post_author' => 3, 'post_status' => 'draft' ) );
+check( 'price is accepted', is_array( call( 'meta-set', array( 'post_id' => $p, 'key' => 'price', 'value' => '9' ) ) ) && array( '9' ) === meta( $p, 'price' ) );
+check( '_private is still refused not_allowed by the handler (protected; the ASCII rule comes first and lets it through to that check)', 'not_allowed' === code( handler( 'meta-set', array( 'post_id' => $p, 'key' => '_private', 'value' => '9' ) ) ) );
+check( 'api_key is still refused not_allowed (secret-named)', 'not_allowed' === code( call( 'meta-set', array( 'post_id' => $p, 'key' => 'api_key', 'value' => '9' ) ) ) );
+check( 'my-key.v2:x is accepted', is_array( call( 'meta-set', array( 'post_id' => $p, 'key' => 'my-key.v2:x', 'value' => '9' ) ) ) && array( '9' ) === meta( $p, 'my-key.v2:x' ) );
+check( 'd5b_wc_meta_key_ok: 255 characters pass, 256 do not', true === d5b_wc_meta_key_ok( str_repeat( 'a', 255 ) ) && is_wp_error( d5b_wc_meta_key_ok( str_repeat( 'a', 256 ) ) ) && is_wp_error( d5b_wc_meta_key_ok( '' ) ) );
+
+echo "Task 11 M4: write_failed after a change carries the history row\n";
+site();
+$p = t_add_post( array( 'post_author' => 3, 'post_status' => 'draft' ) );
+t_add_meta( $p, 'multi2', 'a' ); t_add_meta( $p, 'multi2', 'b' );
+$GLOBALS['T_meta_delete_blocked'] = true; // a plugin stops the delete of the old rows: the new value is added beside them
+$r = call( 'meta-set', array( 'post_id' => $p, 'key' => 'multi2', 'value' => 'c' ) );
+$h = hlast();
+check( 'meta-set that changed the field but not as asked: write_failed with data.history_id; the row keeps the previous rows and what is stored now (readback)', 'write_failed' === code( $r ) && is_array( $h ) && (int) $h['id'] === ( $r->get_error_data()['history_id'] ?? 0 ) && array( 'a', 'b' ) === $h['before']['rows'] && array( 'a', 'b', 'c' ) === $h['after']['readback'] && array( 'a', 'b', 'c' ) === meta( $p, 'multi2' ), array( $r, $h ) );
+$GLOBALS['T_meta_delete_blocked'] = false;
+site();
+$ta = t_add_term( 'post_tag', 'Ta' ); $tb2 = t_add_term( 'post_tag', 'Tb' );
+$p = t_add_post( array( 'post_author' => 3, 'post_status' => 'draft' ) );
+$GLOBALS['T_on_set_terms'] = function ( $id, $tax ) use ( $tb2 ) { $GLOBALS['T_object_terms'][ $id ][ $tax ][] = $tb2; };
+$r = call( 'taxonomy-assign', array( 'post_id' => $p, 'taxonomy' => 'post_tag', 'terms' => array( $ta ) ) );
+$h = hlast();
+$want = array( $ta, $tb2 ); sort( $want );
+check( 'taxonomy-assign that changed the terms but not as asked (a plugin added one): write_failed with data.history_id and data.terms; the row has before [] and after the terms now', 'write_failed' === code( $r ) && is_array( $h ) && (int) $h['id'] === ( $r->get_error_data()['history_id'] ?? 0 ) && $want === ( $r->get_error_data()['terms'] ?? null ) && array() === $h['before']['term_ids'] && $want === $h['after']['term_ids'], array( $r, $h ) );
+site();
+$ta = t_add_term( 'post_tag', 'Ta' );
+$p = t_add_post( array( 'post_author' => 3, 'post_status' => 'draft' ) );
+$GLOBALS['T_on_set_terms'] = function ( $id, $tax ) { $GLOBALS['T_object_terms'][ $id ][ $tax ] = array(); };
+$r = call( 'taxonomy-assign', array( 'post_id' => $p, 'taxonomy' => 'post_tag', 'terms' => array( $ta ) ) );
+check( '... a plugin that undid the change: write_failed, no history_id, no row (nothing changed)', 'write_failed' === code( $r ) && ! isset( $r->get_error_data()['history_id'] ) && array() === hrows(), $r );
+
+echo "Task 11 I1 / M2: a permanent delete whose copy would not be exact is refused (a3)\n";
+site();
+$p = t_add_post( array( 'post_author' => 3, 'post_status' => 'draft' ) );
+t_add_meta( $p, 'gallery_data', str_repeat( 'y', 9 * 1024 * 1024 ) );
+$pv = call( 'meta-delete-preview', array( 'post_id' => $p, 'key' => 'gallery_data' ) );
+$r  = call( 'meta-delete', array( 'post_id' => $p, 'key' => 'gallery_data', 'confirmation' => is_array( $pv ) ? $pv['confirmation'] : '' ) );
+check( 'meta-delete of a 9 MB value: history_unavailable ("over the size limit"), the value is kept, the truncated row is removed', 'history_unavailable' === code( $r ) && false !== strpos( msg( $r ), 'over the size limit' ) && 9 * 1024 * 1024 === strlen( meta( $p, 'gallery_data' )[0] ?? '' ) && array() === hrows(), array( code( $r ), msg( $r ), count( hrows() ) ) );
+site();
+$t = t_add_term( 'post_tag', 'Big' );
+$GLOBALS['T_term_meta'][ $t ]['blob'] = array( str_repeat( 'z', 9 * 1024 * 1024 ) );
+$pv = call( 'taxonomy-delete-preview', array( 'taxonomy' => 'post_tag', 'id' => $t ) );
+$r  = call( 'taxonomy-delete', array( 'taxonomy' => 'post_tag', 'id' => $t, 'confirmation' => is_array( $pv ) ? $pv['confirmation'] : '' ) );
+check( 'taxonomy-delete of a term with 9 MB of term meta: history_unavailable, the term is kept, no row left', 'history_unavailable' === code( $r ) && null !== term( $t ) && array() === hrows(), array( code( $pv ), code( $r ), msg( $r ) ) );
+site();
+$t = t_add_term( 'post_tag', "Gr\xFCn" );
+$pv = call( 'taxonomy-delete-preview', array( 'taxonomy' => 'post_tag', 'id' => $t ) );
+$r  = call( 'taxonomy-delete', array( 'taxonomy' => 'post_tag', 'id' => $t, 'confirmation' => is_array( $pv ) ? $pv['confirmation'] : '' ) );
+check( 'taxonomy-delete of a term whose name is Latin-1 (not UTF-8): history_unavailable ("not be exact"), the term is kept, no row left', is_array( $pv ) && 'history_unavailable' === code( $r ) && false !== strpos( msg( $r ), 'not be exact' ) && null !== term( $t ) && array() === hrows(), array( code( $pv ), code( $r ), msg( $r ) ) );
+site();
+$t = t_add_term( 'post_tag', 'Fine' );
+$pv = call( 'taxonomy-delete-preview', array( 'taxonomy' => 'post_tag', 'id' => $t ) );
+$r  = call( 'taxonomy-delete', array( 'taxonomy' => 'post_tag', 'id' => $t, 'confirmation' => $pv['confirmation'] ) );
+check( '... a term with nothing odd is still deleted, with its row', is_array( $r ) && null === term( $t ) && 1 === count( hrows() ) );
+
+echo "Task 11 M1: a change the preview showed makes the code stale (a2)\n";
+site();
+$parent = t_add_term( 'category', 'Parent' );
+$pv  = call( 'taxonomy-delete-preview', array( 'taxonomy' => 'category', 'id' => $parent ) );
+$kid = t_add_term( 'category', 'Kid', $parent );
+$r   = call( 'taxonomy-delete', array( 'taxonomy' => 'category', 'id' => $parent, 'confirmation' => $pv['confirmation'] ) );
+check( 'a child term added after the preview: confirmation_invalid stale, nothing deleted', 'stale' === reason( $r ) && null !== term( $parent ) && $parent === (int) term( $kid )->parent, $r );
+$t3 = t_add_term( 'post_tag', 'Desc' );
+$pv = call( 'taxonomy-delete-preview', array( 'taxonomy' => 'post_tag', 'id' => $t3 ) );
+$GLOBALS['T_terms'][ $t3 ]->description = 'A long description someone just wrote';
+$r = call( 'taxonomy-delete', array( 'taxonomy' => 'post_tag', 'id' => $t3, 'confirmation' => $pv['confirmation'] ) );
+check( 'the description changed after the preview: stale', 'stale' === reason( $r ) && null !== term( $t3 ), $r );
+$t4 = t_add_term( 'post_tag', 'Swap' );
+$a = t_add_post( array( 'post_author' => 3 ) ); $b = t_add_post( array( 'post_author' => 3 ) );
+call( 'taxonomy-assign', array( 'post_id' => $a, 'taxonomy' => 'post_tag', 'terms' => array( $t4 ) ) );
+$pv = call( 'taxonomy-delete-preview', array( 'taxonomy' => 'post_tag', 'id' => $t4 ) );
+call( 'taxonomy-assign', array( 'post_id' => $a, 'taxonomy' => 'post_tag', 'terms' => array( $t4 ), 'mode' => 'remove' ) );
+call( 'taxonomy-assign', array( 'post_id' => $b, 'taxonomy' => 'post_tag', 'terms' => array( $t4 ) ) );
+$r = call( 'taxonomy-delete', array( 'taxonomy' => 'post_tag', 'id' => $t4, 'confirmation' => $pv['confirmation'] ) );
+check( 'the items swapped after the preview with the count unchanged: stale', array( $a ) === $pv['posts'] && 'stale' === reason( $r ) && null !== term( $t4 ), array( $pv['posts'] ?? null, $r ) );
 
 echo "\n" . ( $n - $failed ) . " of $n passed\n";
 exit( $failed ? 1 : 0 );

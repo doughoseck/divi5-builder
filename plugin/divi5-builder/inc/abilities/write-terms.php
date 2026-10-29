@@ -254,7 +254,15 @@ if ( ! function_exists( 'd5b_wt_tax' ) ) {
 		$after = d5b_wt_object_term_ids( (int) $p->ID, $tax );
 		$want  = 'remove' === $mode ? array_values( array_diff( $before, $ids ) ) : ( 'add' === $mode ? array_values( array_unique( array_merge( $before, $ids ) ) ) : $ids );
 		sort( $want );
-		if ( $want !== $after ) { return new WP_Error( 'write_failed', 'WordPress did not set the terms as asked (a plugin may have changed them).', array( 'terms' => $after ) ); }
+		if ( $want !== $after ) {
+			// Not what was asked; when the terms changed all the same, the change is recorded and the answer names the row.
+			$data = array( 'terms' => $after );
+			if ( $after !== $before ) {
+				$hid = d5b_wc_history_id( 'divi5-builder/taxonomy-assign', $p, 'assign', array( 'taxonomy' => $tax, 'term_ids' => $before ), array( 'taxonomy' => $tax, 'term_ids' => $after, 'mode' => $mode, 'asked' => $want ), 0, d5b_wc_summary( 'Partly set ' . $tax . ' terms of', (string) $p->post_type, $p ) );
+				$data += $hid > 0 ? array( 'history_id' => $hid ) : array( '_history_failed' => true );
+			}
+			return new WP_Error( 'write_failed', 'WordPress did not set the terms as asked (a plugin may have changed them).' . ( $after !== $before ? ' The terms did change: data.terms holds them now' . ( isset( $data['history_id'] ) ? ', history row ' . $data['history_id'] . ' the previous ones.' : '; the history row could not be written.' ) : '' ), $data );
+		}
 		$stored = d5b_wc_history( 'divi5-builder/taxonomy-assign', $p, 'assign', array( 'taxonomy' => $tax, 'term_ids' => $before ), array( 'taxonomy' => $tax, 'term_ids' => $after, 'mode' => $mode ), 0, d5b_wc_summary( 'Set ' . $tax . ' terms of', (string) $p->post_type, $p ) );
 		$rows = array();
 		foreach ( $after as $id ) { $term = d5b_wt_term( $id, $tax ); if ( null !== $term ) { $rows[] = d5b_rc_term_detail( $term ); } }
@@ -403,6 +411,8 @@ if ( ! function_exists( 'd5b_wt_tax' ) ) {
 		);
 		$hid = d5b_wt_history( 'taxonomy-delete', 'term', $id, 'delete', $before, array( 'deleted' => true ), d5b_wt_summary( 'Permanently deleted', $term ) );
 		if ( $hid < 1 ) { return d5b_wt_history_unavailable(); }
+		$ok = d5b_wc_delete_record_ok( $hid );
+		if ( true !== $ok ) { return $ok; }
 		$r = wp_delete_term( $id, $tax );
 		if ( true !== $r || null !== d5b_wt_term( $id, $tax ) ) {
 			$err = is_wp_error( $r ) ? 'wp_error:' . $r->get_error_code() : ( 0 === $r ? 'default_term' : ( true === $r ? 'still_present' : 'wp_delete_term_failed' ) );
@@ -425,7 +435,8 @@ if ( ! function_exists( 'd5b_wt_tax' ) ) {
 
 	/** Refuses a key the abilities never write: protected (_) and secret-named. @return true|WP_Error */
 	function d5b_wt_key_allowed( string $key ) {
-		if ( '' === trim( $key ) || 1 !== preg_match( '//u', $key ) ) { return new WP_Error( 'invalid_input', 'key must be a field name (UTF-8 text).' ); }
+		$ok = d5b_wc_meta_key_ok( $key );
+		if ( true !== $ok ) { return $ok; }
 		if ( is_protected_meta( $key, 'post' ) ) { return new WP_Error( 'not_allowed', 'This field is protected (its name starts with an underscore): it belongs to WordPress, Divi or a plugin and is not changed here.' ); }
 		if ( d5b_is_secret_key( $key ) ) { return new WP_Error( 'not_allowed', 'This field name looks like it holds a secret (a key, token or password), so it is not changed here. Edit it in wp-admin.' ); }
 		return true;
@@ -479,7 +490,18 @@ if ( ! function_exists( 'd5b_wt_tax' ) ) {
 		// Every row of the key ends as this one value (a key with several rows is replaced as a whole; the history keeps them all).
 		d5b_wc_apply_meta( $id, array( $key => $value ) );
 		$now = (array) get_post_meta( $id, $key, false );
-		if ( 1 !== count( $now ) ) { return new WP_Error( 'write_failed', 'WordPress did not save the custom field (a plugin may have stopped it).' ); }
+		if ( 1 !== count( $now ) ) {
+			// Not what was asked, but when the stored rows changed all the same the change is recorded (as for comments): the
+			// history row keeps the previous rows and what is stored now, and the answer names it.
+			$read = d5b_wt_meta_rows( $id, $key );
+			$data = null;
+			if ( $read !== $before ) {
+				$hid  = d5b_wt_history( 'meta-set', 'post_meta', $id, array() === $before ? 'create' : 'update',
+					array( 'field' => $key, 'rows' => $before ), array( 'field' => $key, 'value' => d5b_wc_meta_value( $value ), 'readback' => $read ), d5b_wt_meta_summary( 'Partly set', $key, $p ) );
+				$data = $hid > 0 ? array( 'history_id' => $hid ) : array( '_history_failed' => true );
+			}
+			return new WP_Error( 'write_failed', 'WordPress did not save the custom field as asked (a plugin may have stopped or changed it).' . ( null === $data ? '' : ' The field did change: ' . ( isset( $data['history_id'] ) ? 'history row ' . $data['history_id'] . ' holds the previous rows.' : 'the history row could not be written.' ) ), $data );
+		}
 		$hid = d5b_wt_history( 'meta-set', 'post_meta', $id, array() === $before ? 'create' : 'update',
 			array( 'field' => $key, 'rows' => $before ), array( 'field' => $key, 'value' => d5b_wc_meta_value( $value ) ), d5b_wt_meta_summary( 'Set', $key, $p ) );
 		$out = array( 'post_id' => $id, 'field' => $key, 'value' => d5b_rc_meta_clean( $now[0] ), 'replaced_rows' => count( $before ) );
@@ -532,6 +554,8 @@ if ( ! function_exists( 'd5b_wt_tax' ) ) {
 		// The history row comes FIRST, with every row of the key.
 		$hid = d5b_wt_history( 'meta-delete', 'post_meta', $id, 'delete', array( 'field' => $key, 'rows' => $rows ), array( 'field' => $key, 'deleted' => true ), d5b_wt_meta_summary( 'Permanently deleted', $key, $p ) );
 		if ( $hid < 1 ) { return d5b_wt_history_unavailable(); }
+		$ok = d5b_wc_delete_record_ok( $hid );
+		if ( true !== $ok ) { return $ok; }
 		// core's delete_metadata unslashes the key.
 		$r = delete_post_meta( $id, wp_slash( $key ) );
 		if ( ! $r || array() !== (array) get_post_meta( $id, $key, false ) ) {
@@ -585,7 +609,7 @@ if ( ! function_exists( 'd5b_wt_tax' ) ) {
 	$d5b_wt_confirm  = array( 'confirmation' => array( 'type' => 'string', 'description' => 'The confirmation code from the preview, after the user said OK.' ) );
 	$d5b_wt_meta_ids = array(
 		'post_id' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The id of the post, page or other item.' ),
-		'key'     => array( 'type' => 'string', 'maxLength' => 255, 'description' => 'The custom field name. Names starting with an underscore and secret-looking names are refused.' ),
+		'key'     => array( 'type' => 'string', 'maxLength' => 255, 'description' => 'The custom field name: plain ASCII letters, digits, _ - . : only (anything else is refused with invalid_input). Names starting with an underscore and secret-looking names are refused.' ),
 	);
 
 	d5b_wc_def( 'taxonomy-create', 'taxonomy', 'Create a term',

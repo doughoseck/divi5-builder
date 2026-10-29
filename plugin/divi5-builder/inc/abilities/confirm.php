@@ -108,14 +108,33 @@ function d5b_confirm_other_object( $user, $ability, $type, $id, $hash ) {
 }
 
 // ---- Fingerprints: a string that changes when the object does.
-function d5b_fp_term( $term ) { return $term->name . '|' . $term->slug . '|' . $term->parent . '|' . $term->count; }
-/** $menu_id is the menu's term id. */
+/**
+ * A term: name, slug, parent, description, count, its child term ids (WordPress moves them on delete) and the items it is on
+ * (sha1 of the sorted ids: the same count with other items is a change too). Whatever the preview showed is in it.
+ */
+function d5b_fp_term( $term ) {
+	$tax  = (string) $term->taxonomy;
+	$kids = array();
+	if ( is_taxonomy_hierarchical( $tax ) ) {
+		$rows = get_terms( array( 'taxonomy' => $tax, 'parent' => (int) $term->term_id, 'hide_empty' => false ) );
+		foreach ( is_array( $rows ) ? $rows : array() as $c ) { $kids[] = (int) $c->term_id; }
+		sort( $kids );
+	}
+	$objs = get_objects_in_term( (int) $term->term_id, $tax );
+	$objs = is_array( $objs ) ? array_values( array_unique( array_map( 'intval', $objs ) ) ) : array();
+	sort( $objs );
+	return $term->name . '|' . $term->slug . '|' . $term->parent . '|' . sha1( (string) ( $term->description ?? '' ) ) . '|' . $term->count . '|' . implode( ',', $kids ) . '|' . sha1( implode( ',', $objs ) );
+}
+/** $menu_id is the menu's term id: its items (id and last change) and the locations that show it. */
 function d5b_fp_menu( $menu_id ) {
 	$items = wp_get_nav_menu_items( (int) $menu_id, array( 'post_status' => 'any' ) );
 	$rows  = array();
 	foreach ( is_array( $items ) ? $items : array() as $it ) { $rows[] = (int) $it->ID . '@' . $it->post_modified_gmt; }
 	sort( $rows, SORT_STRING );
-	return implode( ',', $rows );
+	$locs = array();
+	foreach ( (array) get_nav_menu_locations() as $loc => $id ) { if ( (int) $id === (int) $menu_id ) { $locs[] = (string) $loc; } }
+	sort( $locs, SORT_STRING );
+	return implode( ',', $rows ) . ( $locs ? '|' . implode( ',', $locs ) : '' );
 }
 /** Every row of the key, in order, with the row count (a deleted key removes all rows; an absent key differs from one empty row). */
 function d5b_fp_meta( $post_id, $key ) {
@@ -123,7 +142,13 @@ function d5b_fp_meta( $post_id, $key ) {
 	$rows = is_array( $rows ) ? array_values( $rows ) : array();
 	return count( $rows ) . ':' . sha1( serialize( $rows ) );
 }
+/** An attachment: its last change, its file and the posts that use it (sha1 of the sorted used_by ids the preview listed). */
 function d5b_fp_media( $id ) {
-	$p = get_post( (int) $id );
-	return ( $p ? $p->post_modified_gmt : '' ) . '|' . get_attached_file( (int) $id );
+	$p    = get_post( (int) $id );
+	$used = array();
+	if ( $p && function_exists( 'd5b_wm_used_by' ) ) {
+		foreach ( d5b_wm_used_by( $p )['posts'] as $row ) { $used[] = (int) $row['id']; }
+		sort( $used );
+	}
+	return ( $p ? $p->post_modified_gmt : '' ) . '|' . get_attached_file( (int) $id ) . '|' . sha1( implode( ',', $used ) );
 }
