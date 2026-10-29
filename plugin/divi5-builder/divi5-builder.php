@@ -36,6 +36,7 @@ foreach ( array(
 	'inc/switches.php',
 	'inc/gate.php',
 	'inc/takeover.php',
+	'inc/blocks-text-fields.php',
 	'inc/blocks.php',
 	'inc/abilities/categories.php',
 	'inc/abilities/register.php',

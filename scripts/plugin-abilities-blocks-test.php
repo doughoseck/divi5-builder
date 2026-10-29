@@ -12,6 +12,7 @@
 $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
 define( 'D5B_VERSION', '2.2.0' );
 require __DIR__ . '/plugin-test-stubs.php';
+require $dir . '/inc/blocks-text-fields.php';
 require $dir . '/inc/blocks.php';
 
 $failed = 0; $n = 0;
@@ -175,18 +176,27 @@ $blf = d5b_blocks_text_fields( $bl['children'][0] );
 check( 'a blurb: title (an object with text, every breakpoint) and content; the icon not', array( 'title.innerContent.desktop.value.text' => 'T', 'title.innerContent.tablet.value.text' => 'Tt', 'content.innerContent.desktop.value' => '<p>B</p>' ) === $blf, $blf );
 $code = d5b_blocks_parse( '<!-- wp:divi/code {"content":{"innerContent":{"desktop":{"value":"\\u003cscript\\u003ex\\u003c/script\\u003e"}}}} /-->' );
 check( 'a code module has no text fields (its content is code, not words)', array() === d5b_blocks_text_fields( $code['children'][0] ) );
-$builtin = d5b_blocks_text_elements( '' );
-foreach ( array( 'divi/heading' => 'title', 'divi/text' => 'content', 'divi/button' => 'button', 'divi/blurb' => 'title', 'divi/cta' => 'content', 'divi/toggle' => 'title', 'divi/testimonial' => 'content', 'divi/slide' => 'title', 'divi/tab' => 'content', 'divi/pricing-table' => 'price', 'divi/number-counter' => 'title', 'divi/countdown-timer' => 'title', 'divi/accordion-item' => 'content', 'divi/team-member' => 'position', 'divi/map-pin' => 'content' ) as $m => $el ) {
-	if ( ! in_array( $el, $builtin[ $m ] ?? array(), true ) ) { check( "the built-in list has $m $el", false ); }
+$els = d5b_blocks_text_elements();
+$miss = array();
+foreach ( array( 'divi/heading' => 'title', 'divi/text' => 'content', 'divi/button' => 'button', 'divi/blurb' => 'title', 'divi/cta' => 'content', 'divi/toggle' => 'title', 'divi/testimonial' => 'content', 'divi/slide' => 'title', 'divi/tab' => 'content', 'divi/pricing-table' => 'price', 'divi/number-counter' => 'title', 'divi/countdown-timer' => 'title', 'divi/accordion-item' => 'content', 'divi/team-member' => 'name', 'divi/map-pin' => 'content' ) as $m => $el ) {
+	if ( ! in_array( $el, $els[ $m ] ?? array(), true ) ) { $miss[] = "$m $el"; }
 }
-check( 'the built-in list covers the brief\'s modules (heading ... map pin)', true );
-$catPath = __DIR__ . '/../catalog/catalog.json';
-if ( is_file( $catPath ) ) {
-	$cat = d5b_blocks_text_elements( $catPath );
-	check( 'with the catalogue: richtext/text fields are added (team-member name), code is not (divi/code content)', in_array( 'name', $cat['divi/team-member'] ?? array(), true ) && ! in_array( 'content', $cat['divi/code'] ?? array(), true ) && ! in_array( 'number', $builtin['divi/number-counter'] ?? array(), true ) && in_array( 'number', $cat['divi/number-counter'] ?? array(), true ) );
-	check( 'with the catalogue: the built-in list is still there (blurb title has no component in the catalogue)', in_array( 'title', $cat['divi/blurb'] ?? array(), true ) );
-	check( 'no .advanced option is a text field (post-nav prevText is divi/text but not innerContent)', ! in_array( 'links', $cat['divi/post-nav'] ?? array(), true ) );
-} else { echo "  SKIP  catalog/catalog.json not built here: only the built-in list was tested\n"; }
+check( 'the text list covers the brief\'s modules (heading ... person name, map pin)', ! $miss, $miss );
+$gen = d5b_blocks_text_fields_generated();
+check( 'the generated list holds the catalogue\'s visitor text (audio artist, timeline date) and the hand list adds the blurb title', in_array( 'artistName', $els['divi/audio'] ?? array(), true ) && in_array( 'date', $els['divi/timeline-item'] ?? array(), true ) && ! in_array( 'title', $gen['divi/blurb'] ?? array(), true ) && in_array( 'title', $els['divi/blurb'] ?? array(), true ) );
+$denied = array();
+foreach ( $gen as $m => $l ) { foreach ( $l as $el ) { if ( in_array( $el, array( 'redirect', 'number', 'barProgress' ), true ) || ( 'divi/post-filter-item' === $m && 'label' === $el ) || in_array( $m, array( 'divi/code', 'divi/fullwidth-code' ), true ) || ( 'divi/map-pin' === $m && 'pin' === $el ) || ( 'divi/contact-form' === $m && 'email' === $el ) ) { $denied[] = "$m $el"; } } }
+check( 'the denylist holds: no redirect/number/barProgress/post-filter-item label, no code, map address or e-mail pattern', ! $denied, $denied );
+$srcPhp0 = file_get_contents( $dir . '/inc/blocks.php' );
+check( 'blocks.php reads nothing from disk at run time (no catalog.json, no file_get_contents)', false === strpos( $srcPhp0, 'catalog.json' ) && false === strpos( $srcPhp0, 'file_get_contents' ) && false === strpos( $srcPhp0, 'is_file' ) );
+$catPath = __DIR__ . '/../catalog/catalog.json'; $nodeBin = find_node();
+if ( is_file( $catPath ) && $nodeBin ) {
+	$p = proc_open( array( $nodeBin, __DIR__ . DIRECTORY_SEPARATOR . 'gen-text-fields.js', '--stdout' ), array( 1 => array( 'pipe', 'w' ), 2 => array( 'pipe', 'w' ) ), $pp );
+	$regen = stream_get_contents( $pp[1] ); fclose( $pp[1] ); fclose( $pp[2] ); proc_close( $p );
+	$committed = file_get_contents( $dir . '/inc/blocks-text-fields.php' );
+	// compared byte for byte, except that a Windows checkout may have turned LF into CRLF
+	check( 'regenerating inc/blocks-text-fields.php from catalog/catalog.json gives the committed file byte for byte', '' !== $regen && $regen === str_replace( "\r\n", "\n", $committed ), strlen( $regen ) . ' vs ' . strlen( $committed ) );
+} else { echo "  SKIP  regenerating the text-field list: " . ( $nodeBin ? 'catalog/catalog.json not built here' : 'node not found' ) . "\n"; }
 
 echo "--- set_text_field\n";
 // new == old must give back the page byte for byte, for every text field of every block of every fixture
@@ -228,6 +238,39 @@ check( 'a node that is not at its place in src is refused invalid_input', refuse
 $dk = '<!-- wp:divi/heading {"title":{"innerContent":{"desktop":{"value":"A"}}},"title":{"innerContent":{"desktop":{"value":"B"}}}} /-->';
 $dkr = d5b_blocks_parse( $dk ); $o = d5b_blocks_set_text_field( $dk, $dkr['children'][0], 'title.innerContent.desktop.value', 'C' );
 check( 'a key given twice: the value that counts (the last) is the one written', is_string( $o ) && false !== strpos( $o, '"value":"A"' ) && false !== strpos( $o, '"value":"C"' ), $o );
+
+echo "--- hostile input stays linear (1 MB pages; bound 4 s, target under 2 s)\n";
+$pad   = function ( $s ) { return $s . str_repeat( 'x', max( 0, 1048576 - strlen( $s ) ) ); };
+$timed = function ( $fn ) { $t = microtime( true ); $r = $fn(); return array( microtime( true ) - $t, $r ); };
+$HOST  = array(
+	'40k stray closers'                  => $pad( str_repeat( '<!-- /wp:divi/row -->', 40000 ) ),
+	'15k interleaved pairs (mis-nested)' => $pad( str_repeat( '<!-- wp:a --><!-- wp:b --><!-- /wp:a --><!-- /wp:b --><!-- /wp:a -->', 15000 ) ),
+	'Divi blocks 20k deep'               => str_repeat( '<!-- wp:divi/text -->', 20000 ) . str_repeat( '<!-- /wp:divi/text -->', 20000 ),
+	'core blocks 20k deep'               => str_repeat( '<!-- wp:group -->', 20000 ) . str_repeat( '<!-- /wp:group -->', 20000 ),
+	'one column of 14k modules'          => '<!-- wp:divi/section --><!-- wp:divi/row --><!-- wp:divi/column -->' . str_repeat( "\n" . $MOD, 14000 ) . "\n<!-- /wp:divi/column --><!-- /wp:divi/row --><!-- /wp:divi/section -->",
+);
+$timings = array();
+foreach ( $HOST as $k => $src ) {
+	list( $tp, $rp ) = $timed( function () use ( $src ) { return d5b_blocks_parse( $src ); } );
+	list( $tt, $rt ) = $timed( function () use ( $src ) { return d5b_blocks_tree( $src ); } );
+	list( $te, $re ) = $timed( function () use ( $src ) { return d5b_blocks_edit( $src, 'remove', '1.1.1.7000', null ); } );
+	$timings[] = sprintf( '%s %.2f/%.2f/%.2f s', $k, $tp, $tt, $te );
+	check( sprintf( '%s (%d KB): parse %.2f s, tree %.2f s, edit %.2f s, each under 4 s', $k, strlen( $src ) >> 10, $tp, $tt, $te ), $tp < 4 && $tt < 4 && $te < 4 );
+	if ( is_wp_error( $rp ) ) {
+		$d = $rp->get_error_data();
+		check( "$k: at most 20 errors written, the rest counted, errors_truncated set", count( $d['errors'] ) <= 21 && ( ( count( $d['errors'] ) > 20 ) === $d['errors_truncated'] ) && ( ! $d['errors_truncated'] || 1 === preg_match( '/^\.\.\. and \d+ more errors$/', end( $d['errors'] ) ) ), array( count( $d['errors'] ), $d['errors_truncated'], end( $d['errors'] ) ) );
+	}
+}
+check( 'the error flood is truncated: 40k stray closers give 20 errors + "... and 39980 more errors"', is_wp_error( $e = d5b_blocks_parse( $HOST['40k stray closers'] ) ) && true === $e->get_error_data()['errors_truncated'] && '... and 39980 more errors' === end( $e->get_error_data()['errors'] ) );
+check( 'the char offsets are still right after the change (the 20th stray closer is at char 19 x 21 = 399)', is_wp_error( $e ) && false !== strpos( $e->get_error_data()['errors'][19], 'at char 399 ' ) );
+$deep = d5b_blocks_parse( $HOST['Divi blocks 20k deep'] );
+check( 'nesting past ' . D5B_BLOCKS_MAX_DEPTH . ' is refused invalid_input, not read', refused( $deep, 'invalid_input', '/nested more than 200 deep/' ) );
+check( 'a page 200 deep still parses and edits', is_string( d5b_blocks_edit( str_repeat( '<!-- wp:divi/text -->', 199 ) . str_repeat( '<!-- /wp:divi/text -->', 199 ), 'remove', '1', null ) ) );
+$deep199 = str_repeat( '<!-- wp:divi/text -->', 199 ) . str_repeat( "caf\u{00e9} ", 170000 ) . str_repeat( '<!-- /wp:divi/text -->', 199 );
+list( $td, $rd ) = $timed( function () use ( $deep199 ) { return d5b_blocks_tree( $deep199 ); } );
+// counting each block's own length would scan the megabyte 199 times (0.7 s here); one pass takes about 0.005 s
+check( sprintf( 'tree counts chars in one pass: 199 deep around 1 MB of text in %.3f s (bound 0.3 s), chars right', $td ), $td < 0.3 && 199 === count( $rd ) && d5b_blocks_u16( substr( $deep199, 21 * 198, strlen( $deep199 ) - 43 * 198 ) ) === $rd[198]['chars'] && d5b_blocks_u16( $deep199 ) === $rd[0]['chars'] );
+check( 'the wide page: tree lists all 14003 blocks, the edit removes module 7000', 14003 === count( d5b_blocks_tree( $HOST['one column of 14k modules'] ) ) && is_string( d5b_blocks_edit( $HOST['one column of 14k modules'], 'remove', '1.1.1.7000', null ) ) );
 
 echo "--- the source\n";
 $srcPhp = file_get_contents( $dir . '/inc/blocks.php' );

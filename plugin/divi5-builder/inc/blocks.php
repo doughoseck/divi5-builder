@@ -30,7 +30,15 @@ if ( ! function_exists( 'd5b_blocks_parse' ) ) {
 	/** JavaScript's \s as bytes of UTF-8, so that the opener regex is the one blocks.js runs. */
 	define( 'D5B_BLOCKS_WS', '(?:[\t\n\x0B\f\r ]|\xC2\xA0|\xE1\x9A\x80|\xE2\x80[\x80-\x8A\xA8\xA9\xAF]|\xE2\x81\x9F|\xE3\x80\x80|\xEF\xBB\xBF)' );
 
-	/** The text-bearing elements of each module when there is no catalogue (and always, added to the catalogue's). */
+	/** At most this many parse errors are written out (the rest are counted): a flood of errors stays linear. */
+	define( 'D5B_BLOCKS_MAX_ERRORS', 20 );
+	/** Blocks nested deeper than this are not read (real Divi pages are about 10 deep; an address is 2 bytes a level). */
+	define( 'D5B_BLOCKS_MAX_DEPTH', 200 );
+
+	/**
+	 * The hand list of text-bearing elements, added to the list generated from the catalogue
+	 * (inc/blocks-text-fields.php): text the catalogue does not mark as visitor text (blurb title, toggle titles, ...).
+	 */
 	define( 'D5B_BLOCKS_TEXT_BUILTIN', array(
 		'divi/heading'            => array( 'title' ),
 		'divi/text'               => array( 'content' ),
@@ -87,29 +95,45 @@ if ( ! function_exists( 'd5b_blocks_parse' ) ) {
 		$nodes  = array( array( 'name' => '#root', 'attrs' => null, 'start' => 0, 'innerStart' => 0, 'innerEnd' => $len, 'end' => $len, 'selfClosing' => false, 'addr' => null, 'children' => array(), 'parent' => null ) );
 		$stack  = array( 0 );
 		$errors = array();
+		$more   = 0;   // errors past the cap: counted, not written
 		$i      = 0;
+		// "at char N" in UTF-16 units, as blocks.js says it: counted forward from the last error, never from 0 again
+		$at_b = 0; $at_u = 0;
+		$char = function ( $byte ) use ( $src, &$at_b, &$at_u ) {
+			if ( $byte < $at_b ) { $at_b = 0; $at_u = 0; }
+			$at_u += d5b_blocks_u16( substr( $src, $at_b, $byte - $at_b ) ); $at_b = $byte;
+			return $at_u;
+		};
+		$err = function ( $make ) use ( &$errors, &$more ) { if ( count( $errors ) < D5B_BLOCKS_MAX_ERRORS ) { $errors[] = $make(); } else { $more++; } };
 		while ( false !== ( $i = strpos( $src, '<!--', $i ) ) ) {
 			$close = strpos( $src, '-->', $i + 4 );
 			if ( false === $close ) { break; }
 			$end = $close + 3;
 			$m   = d5b_blocks_match_opener( substr( $src, $i + 4, $close - $i - 4 ) );
-			if ( false === $m ) { $errors[] = 'the comment at char ' . d5b_blocks_u16( substr( $src, 0, $i ) ) . ' could not be read (regular expression limit)'; $i = $end; continue; }
+			if ( false === $m ) { $err( function () use ( $char, $i ) { return 'the comment at char ' . $char( $i ) . ' could not be read (regular expression limit)'; } ); $i = $end; continue; }
 			if ( null === $m ) { $i = $end; continue; }   // an ordinary HTML comment
 			$name = $m['name'];
 			if ( $m['closing'] ) {
 				$top = $stack[ count( $stack ) - 1 ];
 				if ( 0 === $top || $nodes[ $top ]['name'] !== $name ) {
-					$errors[] = 'closing ' . $name . ' at char ' . d5b_blocks_u16( substr( $src, 0, $i ) ) . ' does not match the open ' . ( 0 === $top ? 'nothing' : $nodes[ $top ]['name'] );
+					$open = 0 === $top ? 'nothing' : $nodes[ $top ]['name'];
+					$err( function () use ( $char, $i, $name, $open ) { return 'closing ' . $name . ' at char ' . $char( $i ) . ' does not match the open ' . $open; } );
 					$i = $end; continue;
 				}
 				$nodes[ $top ]['end'] = $end; $nodes[ $top ]['innerEnd'] = $i;
 				array_pop( $stack );
 			} else {
+				if ( count( $stack ) > D5B_BLOCKS_MAX_DEPTH ) {
+					// an address is two characters a level: a page nested this deep would need gigabytes of addresses
+					$err( function () use ( $char, $i ) { return 'blocks nested more than ' . D5B_BLOCKS_MAX_DEPTH . ' deep at char ' . $char( $i ) . ': not read further'; } );
+					break;
+				}
 				$attrs = null;
 				if ( null !== $m['json'] ) {
 					$attrs = json_decode( $m['json'], true, 100000 );
 					if ( null === $attrs && JSON_ERROR_NONE !== json_last_error() ) {
-						$errors[] = $name . ' at char ' . d5b_blocks_u16( substr( $src, 0, $i ) ) . ': its attributes are not valid JSON (' . json_last_error_msg() . ')';
+						$jm = json_last_error_msg();
+						$err( function () use ( $char, $i, $name, $jm ) { return $name . ' at char ' . $char( $i ) . ': its attributes are not valid JSON (' . $jm . ')'; } );
 						$attrs = null;
 					}
 				}
@@ -121,17 +145,20 @@ if ( ! function_exists( 'd5b_blocks_parse' ) ) {
 			}
 			$i = $end;
 		}
-		foreach ( array_slice( $stack, 1 ) as $b ) { $errors[] = $nodes[ $b ]['name'] . ' opened at char ' . d5b_blocks_u16( substr( $src, 0, $nodes[ $b ]['start'] ) ) . ' is never closed'; }
-		// addresses, as blocks.js walk() gives them
-		$go = function ( $b, $addr ) use ( &$go, &$nodes ) {
-			foreach ( d5b_blocks_divi_children_flat( $nodes, $b ) as $k => $c ) {
+		foreach ( array_slice( $stack, 1 ) as $b ) { $s = $nodes[ $b ]['start']; $bn = $nodes[ $b ]['name']; $err( function () use ( $char, $s, $bn ) { return $bn . ' opened at char ' . $char( $s ) . ' is never closed'; } ); }
+		if ( $more ) { $errors[] = '... and ' . $more . ' more errors'; }
+		// addresses, as blocks.js walk() gives them (iterative: a deep page does not recurse once per level)
+		$todo = array( array( 0, '' ) );
+		while ( $todo ) {
+			list( $b, $addr ) = array_pop( $todo );
+			$kids = array(); d5b_blocks_divi_children_flat( $nodes, $b, $kids );
+			for ( $k = count( $kids ) - 1; $k >= 0; $k-- ) {
 				$a = '' === $addr ? (string) ( $k + 1 ) : $addr . '.' . ( $k + 1 );
-				$nodes[ $c ]['addr'] = $a;
-				$go( $c, $a );
+				$nodes[ $kids[ $k ] ]['addr'] = $a;
+				$todo[] = array( $kids[ $k ], $a );
 			}
-		};
-		$go( 0, '' );
-		return array( $nodes, $errors );
+		}
+		return array( $nodes, $errors, $more > 0 );
 	}
 
 	/** The kind of a block name: section, row, column, placeholder, module or other (blocks.js kindOf). */
@@ -145,47 +172,51 @@ if ( ! function_exists( 'd5b_blocks_parse' ) ) {
 	}
 
 	/** The Divi children of a flat node, looking through the placeholder and any other non-Divi wrapper. */
-	function d5b_blocks_divi_children_flat( array $nodes, $b ) {
-		$out = array();
+	function d5b_blocks_divi_children_flat( array $nodes, $b, array &$out ) {
 		foreach ( $nodes[ $b ]['children'] as $c ) {
 			$k = d5b_blocks_kind( $nodes[ $c ]['name'] );
-			if ( 'placeholder' === $k || 'other' === $k ) { $out = array_merge( $out, d5b_blocks_divi_children_flat( $nodes, $c ) ); } else { $out[] = $c; }
+			if ( 'placeholder' === $k || 'other' === $k ) { d5b_blocks_divi_children_flat( $nodes, $c, $out ); } else { $out[] = $c; }
 		}
-		return $out;
 	}
 
 	/** The same, on a nested node. */
-	function d5b_blocks_divi_children( array $node ) {
-		$out = array();
+	function d5b_blocks_divi_children( array $node, &$out = null ) {
+		if ( null === $out ) { $out = array(); }
 		foreach ( $node['children'] as $c ) {
 			$k = d5b_blocks_kind( $c['name'] );
-			if ( 'placeholder' === $k || 'other' === $k ) { $out = array_merge( $out, d5b_blocks_divi_children( $c ) ); } else { $out[] = $c; }
+			if ( 'placeholder' === $k || 'other' === $k ) { d5b_blocks_divi_children( $c, $out ); } else { $out[] = $c; }
 		}
 		return $out;
 	}
 
-	function d5b_blocks_nest( array $nodes, $b ) {
-		$n = $nodes[ $b ]; unset( $n['parent'] );
-		$kids = array(); foreach ( $n['children'] as $c ) { $kids[] = d5b_blocks_nest( $nodes, $c ); }
-		$n['children'] = $kids;
-		return $n;
+	/** The nested tree from the flat one, bottom up (children before parents), with no recursion. */
+	function d5b_blocks_nest( array $nodes ) {
+		$built = array();
+		for ( $b = count( $nodes ) - 1; $b >= 0; $b-- ) {   // a child always has a higher index than its parent
+			$n = $nodes[ $b ]; unset( $n['parent'] );
+			$kids = array(); foreach ( $n['children'] as $c ) { $kids[] = $built[ $c ]; unset( $built[ $c ] ); }
+			$n['children'] = $kids;
+			$built[ $b ] = $n;
+		}
+		return $built[0];
 	}
 
 	/** Every Divi block of a nested tree, in document order (blocks.js walk()). */
-	function d5b_blocks_walk( array $node ) {
-		$out = array();
-		foreach ( $node['children'] as $c ) { if ( null !== $c['addr'] ) { $out[] = $c; } $out = array_merge( $out, d5b_blocks_walk( $c ) ); }
+	function d5b_blocks_walk( array $node, &$out = null ) {
+		if ( null === $out ) { $out = array(); }
+		foreach ( $node['children'] as $c ) { if ( null !== $c['addr'] ) { $out[] = $c; } d5b_blocks_walk( $c, $out ); }
 		return $out;
 	}
 
 	/**
 	 * Parse post content into the block tree.
-	 * @return array|WP_Error the root node; invalid_input with the first error as the message and all in data.errors.
+	 * @return array|WP_Error the root node; invalid_input with the first error as the message, the first 20 in
+	 *                        data.errors (and a count of the rest), data.errors_truncated when there were more.
 	 */
 	function d5b_blocks_parse( $src ) {
-		list( $nodes, $errors ) = d5b_blocks_parse_flat( (string) $src );
-		if ( $errors ) { return d5b_blocks_error( 'invalid_input', $errors[0], array( 'errors' => $errors ) ); }
-		return d5b_blocks_nest( $nodes, 0 );
+		list( $nodes, $errors, $truncated ) = d5b_blocks_parse_flat( (string) $src );
+		if ( $errors ) { return d5b_blocks_error( 'invalid_input', $errors[0], array( 'errors' => $errors, 'errors_truncated' => $truncated ) ); }
+		return d5b_blocks_nest( $nodes );
 	}
 
 	function d5b_blocks_desk_val( $o ) { return ( is_array( $o ) && isset( $o['desktop'] ) && is_array( $o['desktop'] ) && array_key_exists( 'value', $o['desktop'] ) ) ? $o['desktop']['value'] : null; }
@@ -207,12 +238,19 @@ if ( ! function_exists( 'd5b_blocks_parse' ) ) {
 	function d5b_blocks_tree( $src ) {
 		$src = (string) $src;
 		list( $nodes ) = d5b_blocks_parse_flat( $src );
+		// the flat nodes are in document order, which is walk() order; the UTF-16 position of every start and end is
+		// counted in ONE pass over the page (a block's own length, counted per block, is quadratic on deep pages)
+		$offs = array();
+		foreach ( $nodes as $b ) { if ( null !== $b['addr'] ) { $offs[ $b['start'] ] = 0; if ( $b['end'] >= 0 ) { $offs[ $b['end'] ] = 0; } } }
+		ksort( $offs ); $pb = 0; $pu = 0;
+		foreach ( $offs as $o => $unused ) { $pu += d5b_blocks_u16( substr( $src, $pb, $o - $pb ) ); $pb = $o; $offs[ $o ] = $pu; }
 		$out = array();
-		foreach ( d5b_blocks_walk( d5b_blocks_nest( $nodes, 0 ) ) as $b ) {
+		foreach ( $nodes as $b ) {
+			if ( null === $b['addr'] ) { continue; }
 			$e = array( 'address' => $b['addr'], 'block' => $b['name'] );
 			$l = d5b_blocks_label( $b ); if ( '' !== $l ) { $e['label'] = $l; }
 			$c = d5b_blocks_css_id( $b ); if ( '' !== $c ) { $e['cssId'] = $c; }
-			$e['chars'] = $b['end'] < 0 ? -1 - d5b_blocks_u16( substr( $src, 0, $b['start'] ) ) : d5b_blocks_u16( substr( $src, $b['start'], $b['end'] - $b['start'] ) );
+			$e['chars'] = ( $b['end'] < 0 ? -1 : $offs[ $b['end'] ] ) - $offs[ $b['start'] ];
 			$out[] = $e;
 		}
 		return $out;
@@ -314,36 +352,17 @@ if ( ! function_exists( 'd5b_blocks_parse' ) ) {
 
 	/**
 	 * The text-bearing elements of each module: module name => list of element names (title, content, button ...).
-	 * From catalog/catalog.json (scripts/catalog.js writes it at the repository root) when it is there: an element is
-	 * text-bearing when one of its fields has path "<element>.innerContent", is not hidden, and either has component
-	 * divi/text or divi/richtext, or has no component and dynamic content of type "text". The built-in list is always
-	 * added (the catalogue gives no component for some text, e.g. the blurb title).
-	 * @param string|null $catalog path to catalog.json; null = the default place; '' = the built-in list only
+	 * The list generated from the catalogue at build time (inc/blocks-text-fields.php, scripts/gen-text-fields.js)
+	 * plus the hand list above. Nothing is read from disk at run time.
 	 */
-	function d5b_blocks_text_elements( $catalog = null ) {
-		static $cache = array();
-		if ( null === $catalog ) { $catalog = dirname( __DIR__, 3 ) . '/catalog/catalog.json'; }
-		if ( isset( $cache[ $catalog ] ) ) { return $cache[ $catalog ]; }
-		$map = D5B_BLOCKS_TEXT_BUILTIN;
-		if ( '' !== $catalog && is_file( $catalog ) && is_readable( $catalog ) ) {
-			$cat = json_decode( (string) file_get_contents( $catalog ), true );
-			if ( is_array( $cat ) && isset( $cat['modules'] ) && is_array( $cat['modules'] ) ) {
-				foreach ( $cat['modules'] as $name => $m ) {
-					if ( ! is_array( $m ) || ! isset( $m['elements'] ) || ! is_array( $m['elements'] ) ) { continue; }
-					foreach ( $m['elements'] as $el => $e ) {
-						if ( ! is_array( $e ) || ! isset( $e['fields'] ) || ! is_array( $e['fields'] ) ) { continue; }
-						foreach ( $e['fields'] as $f ) {
-							if ( ! is_array( $f ) || ( $f['path'] ?? '' ) !== $el . '.innerContent' || ! empty( $f['hidden'] ) ) { continue; }
-							$comp = $f['component'] ?? null;
-							if ( in_array( $comp, array( 'divi/text', 'divi/richtext' ), true ) || ( null === $comp && 'text' === ( $f['dynamic'] ?? null ) ) ) {
-								if ( ! in_array( (string) $el, $map[ $name ] ?? array(), true ) ) { $map[ $name ][] = (string) $el; }
-							}
-						}
-					}
-				}
-			}
+	function d5b_blocks_text_elements() {
+		static $map = null;
+		if ( null !== $map ) { return $map; }
+		$map = function_exists( 'd5b_blocks_text_fields_generated' ) ? d5b_blocks_text_fields_generated() : array();
+		foreach ( D5B_BLOCKS_TEXT_BUILTIN as $name => $els ) {
+			foreach ( $els as $el ) { if ( ! in_array( $el, $map[ $name ] ?? array(), true ) ) { $map[ $name ][] = $el; } }
 		}
-		return $cache[ $catalog ] = $map;
+		return $map;
 	}
 
 	/**
@@ -352,8 +371,8 @@ if ( ! function_exists( 'd5b_blocks_parse' ) ) {
 	 * object holding the text (button, blurb title). Every breakpoint and state is listed.
 	 * @return array
 	 */
-	function d5b_blocks_text_fields( array $node, $catalog = null ) {
-		$els = d5b_blocks_text_elements( $catalog )[ $node['name'] ?? '' ] ?? array();
+	function d5b_blocks_text_fields( array $node ) {
+		$els = d5b_blocks_text_elements()[ $node['name'] ?? '' ] ?? array();
 		$out = array();
 		if ( ! $els || ! is_array( $node['attrs'] ?? null ) ) { return $out; }
 		foreach ( $node['attrs'] as $el => $v ) {
