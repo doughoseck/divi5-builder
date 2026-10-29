@@ -395,7 +395,7 @@ function t_content_reset() {
 	$GLOBALS['T_menus'] = array(); $GLOBALS['T_menu_items'] = array(); $GLOBALS['T_menu_locations'] = array(); $GLOBALS['T_registered_menus'] = array();
 	$GLOBALS['T_post_types'] = array(); $GLOBALS['T_taxonomies'] = array();
 	$GLOBALS['T_inserts'] = array(); $GLOBALS['T_updates'] = array(); $GLOBALS['T_deleted'] = array(); $GLOBALS['T_revisions_keep'] = -1; $GLOBALS['T_insert_fail'] = false; $GLOBALS['T_update_fail'] = false; $GLOBALS['T_trash_blocked'] = false;
-	$GLOBALS['T_meta_auth_denied'] = array(); $GLOBALS['T_untrash_cascade'] = array(); $GLOBALS['T_insert_error'] = null;
+	$GLOBALS['T_meta_auth_denied'] = array(); $GLOBALS['T_untrash_cascade'] = array(); $GLOBALS['T_insert_error'] = null; $GLOBALS['T_save_content'] = null;
 	$GLOBALS['T_meta_delete_blocked'] = false; $GLOBALS['T_term_fail'] = false; $GLOBALS['T_term_delete_fail'] = false; $GLOBALS['T_menu_delete_fail'] = false; $GLOBALS['T_theme_mods'] = array(); $GLOBALS['T_term_meta'] = array();
 	$GLOBALS['T_cmeta'] = array(); $GLOBALS['T_comment_calls'] = array(); $GLOBALS['T_comment_blocked'] = false; $GLOBALS['T_comments_deleted'] = array(); $GLOBALS['T_new_comment_error'] = null;
 	foreach ( array( 'post' => array( 1, 1, 0 ), 'page' => array( 1, 1, 1 ), 'attachment' => array( 1, 0, 0 ), 'revision' => array( 0, 0, 0 ), 'nav_menu_item' => array( 0, 0, 0 ), 'wp_block' => array( 0, 1, 0 ), 'wp_template' => array( 0, 1, 0 ), 'et_pb_layout' => array( 1, 1, 0 ) ) as $n => $f ) { t_add_type( $n, (bool) $f[0], (bool) $f[1], (bool) $f[2] ); }
@@ -494,7 +494,11 @@ function get_post_type_object( $t ) { return $GLOBALS['T_post_types'][ $t ] ?? n
 function get_post_types( $args = array(), $output = 'names' ) { return 'objects' === $output ? $GLOBALS['T_post_types'] : array_combine( array_keys( $GLOBALS['T_post_types'] ), array_keys( $GLOBALS['T_post_types'] ) ); }
 function get_taxonomy( $t ) { return $GLOBALS['T_taxonomies'][ $t ] ?? false; }
 // 'the_content' wraps its input, so a hash taken from filtered content cannot equal one taken from the raw content.
-function apply_filters( $tag, $value, ...$args ) { return 'the_content' === $tag ? '<div class="filtered">' . $value . '</div>' : $value; }
+function apply_filters( $tag, $value, ...$args ) {
+	// d5b_ds_class: T_ds_classes (short name => class) stands Divi's design-system classes in, as ds-write-test.php does.
+	if ( 'd5b_ds_class' === $tag ) { return $GLOBALS['T_ds_classes'][ $args[0] ] ?? $value; }
+	return 'the_content' === $tag ? '<div class="filtered">' . $value . '</div>' : $value;
+}
 function wp_strip_all_tags( $s ) { return trim( strip_tags( (string) $s ) ); }
 function get_the_terms( $id, $tax ) {
 	$ids = $GLOBALS['T_object_terms'][ (int) $id ][ $tax ] ?? array();
@@ -703,6 +707,8 @@ function wp_update_post( $arr = array(), $wp_error = false, $fire_after_hooks = 
 	$f = wp_unslash( $arr );
 	$new = clone $old;
 	foreach ( t_post_fields() as $k ) { if ( array_key_exists( $k, $f ) ) { $new->$k = $f[ $k ]; } }
+	// T_save_content: a callable that changes the content as it is saved (a site that re-serialises or damages it).
+	if ( array_key_exists( 'post_content', $f ) && is_callable( $GLOBALS['T_save_content'] ?? null ) ) { $new->post_content = call_user_func( $GLOBALS['T_save_content'], (string) $new->post_content ); }
 	if ( array_key_exists( 'post_date_gmt', $f ) && ! array_key_exists( 'post_date', $f ) ) { $new->post_date = $f['post_date_gmt']; }
 	// core: wp_update_post goes through wp_insert_post, so the merged post meets the same empty check.
 	if ( t_empty_post( (string) $new->post_type, (string) $new->post_title, (string) $new->post_content, (string) $new->post_excerpt ) ) { return $wp_error ? new WP_Error( 'empty_content', 'Content, title, and excerpt are empty.' ) : 0; }

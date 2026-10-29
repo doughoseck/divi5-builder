@@ -56,6 +56,7 @@ foreach ( array(
 	'inc/abilities/write-media.php',
 	'inc/abilities/write-terms.php',
 	'inc/abilities/write-menus.php',
+	'inc/abilities/write-divi.php',
 	'inc/settings.php',
 	'parts/page-building.php',
 	'parts/media-audit.php',

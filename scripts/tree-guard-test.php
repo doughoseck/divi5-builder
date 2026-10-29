@@ -18,8 +18,9 @@ if ( ! class_exists( 'WP_Block_Parser' ) ) { fwrite( STDERR, "STOP: no WP_Block_
 function parse_blocks( $content ) { $p = new WP_Block_Parser(); return $p->parse( $content ); }
 
 $src = file_get_contents( __DIR__ . '/../plugin/divi5-builder/parts/page-building.php' );
-if ( ! preg_match( '/\$tb_tree = (function \( \$content \) \{.*?\n\t\};)/s', $src, $m ) ) { fwrite( STDERR, "STOP: \$tb_tree not found in the plugin\n" ); exit( 2 ); }
-$tb_tree = eval( 'return ' . $m[1] );
+// 2.2.0: the comparison is the named function d5b_tb_tree() (shared by the route and the divi-tb-write ability).
+if ( ! preg_match( '/\tfunction d5b_tb_tree\( \$content \) (\{.*?\r?\n\t\})\r?\n/s', $src, $m ) ) { fwrite( STDERR, "STOP: d5b_tb_tree not found in the plugin\n" ); exit( 2 ); }
+$tb_tree = eval( 'return function ( $content ) ' . $m[1] . ';' );
 
 $sent   = str_replace( "\r\n", "\n", trim( file_get_contents( $argv[2] ) ) );
 $stored = str_replace( "\r\n", "\n", trim( file_get_contents( $argv[3] ) ) );
