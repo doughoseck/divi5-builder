@@ -21,7 +21,11 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
   const STATE = process.env.FAKE_WP_STATE;
   // A stateful model of the write and read abilities the live write script uses (issue #32, task 11). st.mdl = {} switches it on
   // (st.mdl.items, .revs, .hist, .codes, .calls are its state; .mediaTrash false = a site with no media trash, .transport overrides
-  // the upload's transport, .noHistory = ability short names that write no history row, .badWrite = short names answered 500).
+  // the upload's transport, .noHistory = ability short names that write no history row, .badWrite = short names answered 500,
+  // .badBefore = { ability short name: 'missing' | 'too_large' | 'withheld' } spoils the before copy of that ability's rows).
+  // As the plugin: an update needs expect_hash only when it changes the content; a wrong confirmation code is 409; a media
+  // summary names the file (input.filename, else the URL's); history-changes-list pages (page, per_page, has_more) and
+  // history-change-get returns one row with its before and after.
   // Read abilities are readonly, so core takes only GET for them and only POST for the writes (405 otherwise), as the real site does.
   // Every answer carries a planted secret (SECRET-LEAK-VALUE) that the script must never print.
   const modelRun = (st, name, method, q, body) => {
@@ -29,7 +33,7 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
     const short = name.replace(/^divi5-builder\//, '');
     m.calls.push(method + ' ' + short);
     const E = (s, code, data) => [s, { code, message: 'ERR-MSG-' + code, data: Object.assign({ status: s }, data || {}) }];
-    const READ = ['pages-get', 'posts-list', 'revisions-list', 'revisions-get', 'history-changes-list', 'media-delete-preview', 'taxonomy-delete-preview', 'menus-delete-preview'];
+    const READ = ['pages-get', 'posts-list', 'revisions-list', 'revisions-get', 'history-changes-list', 'history-change-get', 'media-delete-preview', 'taxonomy-delete-preview', 'menus-delete-preview'];
     if (READ.includes(short) !== (method === 'GET')) return [405, { code: 'rest_ability_invalid_method' }];
     if ((m.badWrite || []).includes(short)) return E(500, 'internal_error');
     const input = {};
@@ -42,10 +46,14 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
     const res = o => ({ id: o.id, type: o.kind, title: o.title, status: o.status, hash: hash(o), content: 'SECRET-LEAK-VALUE', secret: 'SECRET-LEAK-VALUE' });
     const hist = (ability, o, action, what, rev) => {
       if ((m.noHistory || []).includes(ability)) return;
-      m.hist.unshift({ id: m.hist.length + 1, time_utc: new Date().toISOString().slice(0, 19).replace('T', ' '), user_id: 1, ability: 'divi5-builder/' + ability, audit_id: 1, object_type: o.kind, object_id: o.id, action, revision_id: rev || null, summary: what + ' ' + o.kind + ' ' + o.id + " '" + (o.title || o.name || '') + "'" });
+      // The before copy: the object's fields (no content) for every action but a create; .badBefore spoils it on purpose.
+      let before = action === 'create' ? null : { id: o.id, title: o.title || o.name || '', status: o.status || '' };
+      const spoil = (m.badBefore || {})[ability];
+      if (spoil === 'missing') before = {}; else if (spoil === 'too_large') before = { too_large: true, bytes: 9000000 }; else if (spoil === 'withheld') before.meta = { licence: [{ withheld: 'secret_named_key' }] };
+      m.hist.unshift({ id: m.hist.length + 1, time_utc: new Date().toISOString().slice(0, 19).replace('T', ' '), user_id: 1, ability: 'divi5-builder/' + ability, audit_id: 1, object_type: o.kind, object_id: o.id, action, revision_id: rev || null, summary: what + ' ' + o.kind + ' ' + o.id + " '" + (o.kind === 'media' ? o.file : (o.title || o.name || '')) + "'", before, after: { secret: 'SECRET-LEAK-VALUE' } });
     };
     const confirm = (ability, o) => { const c = 'CONFIRM-' + o.id + '-' + nid(); m.codes[ability + ':' + o.id] = c; return { confirmation: c, expires_at: '2026-10-29T12:10:00+00:00', secret: 'SECRET-LEAK-VALUE' }; };
-    const useCode = (ability, o) => { const k = ability + ':' + o.id; if (!input.confirmation || m.codes[k] !== input.confirmation) return E(403, 'confirmation_invalid', { reason: 'missing' }); delete m.codes[k]; return null; };
+    const useCode = (ability, o) => { const k = ability + ':' + o.id; if (!input.confirmation || m.codes[k] !== input.confirmation) return E(409, 'confirmation_invalid', { reason: 'missing' }); delete m.codes[k]; return null; };
     const needHash = o => (input.expect_hash === hash(o) ? null : E(409, 'stale', { hash: hash(o) }));
     const addRev = o => { (m.revs[o.id] = m.revs[o.id] || []).unshift({ id: nid(), content: o.content || '' }); return m.revs[o.id][0].id; };
     let mm2;
@@ -53,14 +61,15 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
       const kind = mm2[1] === 'posts' ? 'post' : 'page', act = mm2[2];
       if (act === 'create') { const o = { id: nid(), kind, title: String(input.title || ''), status: input.status || 'draft', content: input.content || '' }; m.items[o.id] = o; addRev(o); hist(short, o, 'create', 'Created'); return [200, res(o)]; }
       const o = get(input.id, [kind]); if (!o) return E(404, 'not_found');
-      if (act === 'update') { const s = needHash(o); if (s) return s; if ('title' in input) o.title = input.title; if ('content' in input) o.content = input.content; hist(short, o, 'update', 'Updated'); return [200, res(o)]; }
+      if (act === 'update') { const s = 'content' in input ? needHash(o) : null; if (s) return s; if ('title' in input) o.title = input.title; if ('content' in input) o.content = input.content; hist(short, o, 'update', 'Updated'); return [200, res(o)]; }
       if (act === 'trash') { if (o.status === 'trash') return E(400, 'cannot_trash'); o.prev = o.status; o.status = 'trash'; hist(short, o, 'trash', 'Trashed'); return [200, Object.assign(res(o), { restore_with: 'divi5-builder/' + mm2[1] + '-restore' })]; }
       if (o.status !== 'trash') return E(404, 'not_found'); o.status = o.prev || 'draft'; hist(short, o, 'restore', 'Restored'); return [200, res(o)];
     }
     if (short === 'media-upload') {
       if (!input.url) return E(400, 'invalid_input');
       m.uploadUrls = (m.uploadUrls || []).concat(input.url);
-      const o = { id: nid(), kind: 'media', title: String(input.title || 'upload'), status: 'inherit', content: '', file_url: 'https://fake.test/wp-content/uploads/2026/10/w-logo-blue.png' }; m.items[o.id] = o; hist(short, o, 'create', 'Uploaded');
+      const file = input.filename ? String(input.filename).replace(/[^A-Za-z0-9._-]/g, '') : String(input.url).split('?')[0].split('/').pop();
+      const o = { id: nid(), kind: 'media', title: String(input.title || 'upload'), file, status: 'inherit', content: '', file_url: 'https://fake.test/wp-content/uploads/2026/10/' + file }; m.items[o.id] = o; hist(short, o, 'create', 'Uploaded');
       return [200, Object.assign(res(o), { file_url: o.file_url, transport: m.transport || 'curl' })];
     }
     if (short === 'media-update') { const o = get(input.id, ['media']); if (!o) return E(404, 'not_found'); if ('alt' in input) o.alt = input.alt; hist(short, o, 'update', 'Updated'); return [200, res(o)]; }
@@ -94,8 +103,11 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
     if (short === 'revisions-get') { for (const k of Object.keys(m.revs)) { const r = m.revs[k].find(x => String(x.id) === String(input.id)); if (r) return [200, { id: r.id, parent: +k, content: r.content, hash: md5(r.content) }]; } return E(404, 'not_found'); }
     if (short === 'history-changes-list') {
       let rows = m.hist.slice(); if (input.since) rows = rows.filter(r => r.time_utc.slice(0, 10) >= input.since); if (input.ability) rows = rows.filter(r => r.ability === input.ability);
-      return [200, { items: rows.slice(0, +input.per_page || 20), page: 1, per_page: +input.per_page || 20, has_more: false }];
+      const per = +input.per_page || 20, page = +input.page || 1;
+      m.histPages = (m.histPages || []).concat(page);
+      return [200, { items: rows.slice((page - 1) * per, page * per).map(r => Object.assign({}, r, { before: undefined, after: undefined })), page, per_page: per, has_more: rows.length > page * per }];
     }
+    if (short === 'history-change-get') { const r = m.hist.find(x => String(x.id) === String(input.id)); if (!r) return E(404, 'not_found'); return [200, Object.assign({}, r, { before: r.before || {} })]; }
     if (short === 'divi-text-edit') {
       const o = get(input.post_id, ['page', 'post']); if (!o) return E(404, 'not_found'); const s = needHash(o); if (s) return s;
       if (!input.old || !o.content.includes(input.old)) return E(400, 'not_found', { near_matches: [] });
@@ -520,7 +532,9 @@ console.log('--- rest-post: the run route of a write ability');
   r = wp('rest-post', 'wp-abilities/v1/abilities/divi5-builder/posts-update/run', '--data-file', body);
   check('a refusal from the site is shown and exits non-zero', r.code !== 0 && /409/.test(r.err) && /stale/.test(r.err), r.err);
   const before = (st().abilityPosts || []).length;
-  for (const bad of ['wp-abilities/v1/abilities', 'wp-abilities/v1/abilities/divi5-builder/posts-update', 'wp-abilities/v1/abilities/divi5-builder/posts-update/run/extra', 'wp-abilities/v1/abilities/a/b/c/run', 'wp-abilities/v1/abilities/../x/y/run', 'wp/v1/abilities/a/b/run', 'wp-json/wp-abilities/v1/abilities/a/b/run']) {
+  // Final wave D2: only the divi5-builder/ namespace (another plugin's ability, a look-alike or upper-case namespace too).
+  for (const bad of ['wp-abilities/v1/abilities', 'wp-abilities/v1/abilities/divi5-builder/posts-update', 'wp-abilities/v1/abilities/divi5-builder/posts-update/run/extra', 'wp-abilities/v1/abilities/a/b/c/run', 'wp-abilities/v1/abilities/../x/y/run', 'wp/v1/abilities/a/b/run', 'wp-json/wp-abilities/v1/abilities/a/b/run',
+    'wp-abilities/v1/abilities/other-plugin/delete-everything/run', 'wp-abilities/v1/abilities/core/run-cron/run', 'wp-abilities/v1/abilities/divi5-builder-evil/posts-update/run', 'wp-abilities/v1/abilities/Divi5-Builder/posts-update/run']) {
     r = wp('rest-post', bad, '--data-file', body);
     check('rest-post refuses the path ' + bad, r.code !== 0 && /rest-post needs/.test(r.err) && (st().abilityPosts || []).length === before, r.err);
   }

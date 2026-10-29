@@ -15,16 +15,19 @@
  *
  *   posts   create a draft post and a draft page, update each with the hash, update one with a WRONG hash (stale, HTTP 409), trash
  *           both, restore one (back to draft), trash it again.
- *   media   upload a small PNG from --image-url (default: the site's own /wp-includes/images/w-logo-blue.png), update its alt text,
+ *   media   upload a small PNG from --image-url (default: the site's own /wp-includes/images/w-logo-blue.png) as d5b-live-media-<stamp>.png, update its alt text,
  *           trash it. A site with no media trash answers cannot_trash: the script then previews the permanent delete and stops
  *           (exit 3) with "run again with --confirm <code>"; the next run with --confirm deletes it.
  *   tag     create a tag, assign it to a d5b-live- post (the posts step's draft, or one it creates), preview the delete (exit 3);
  *           with --confirm, delete it.
  *   menu    create a menu, add two custom items, reorder them, preview the delete (exit 3); with --confirm, delete it.
- *   divi    --page <id>: divi-text-edit the first heading (or --old/--new), divi-section-edit replace section 1 with its own markup
- *           (changed false), then revisions-restore to the pre-edit revision; the final hash must equal the original.
- *   history history-changes-list for today: every write this script made (kept in a small ledger file in the temp folder) must
- *           have a row whose summary holds d5b-live-.
+ *   divi    --page <id>: first checks that a revision holds the page as it is now (else: "save the copy page once in wp-admin first",
+ *           exit 2, nothing written); divi-text-edit the first heading (or --old/--new), divi-section-edit replace section 1 with its
+ *           own markup (changed false), then revisions-restore to that revision; the final hash must equal the original.
+ *   history history-changes-list for today, page by page while has_more (at most 10 pages of 50): every write this script made (kept
+ *           in a small ledger file in the temp folder) must have a row, matched by ability and object id (by ability and a d5b-live-
+ *           summary where the id is not known); then history-change-get of each update, trash and delete row must give a before copy
+ *           that is there, not too_large, and withholds nothing unless its summary says so.
  *   all     posts, media, tag, menu, divi (when --page is given), history. Not with --confirm: a code belongs to one step.
  *
  * It never prints a result value beyond ids, titles, statuses, hashes, addresses and short excerpts. A --confirm code is printed once,
@@ -167,7 +170,8 @@ function stepPosts(ctx) {
   guard(ctx, gid);
   must(ctx, 'POST', 'pages-update', { id: gid, expect_hash: page.json.hash, title: n + ' v2' }); rec(ctx, 'pages-update', gid);
   guard(ctx, pid);
-  refused(ctx, 'posts-update', { id: pid, expect_hash: '0'.repeat(32), title: n + ' wrong' }, 'stale', 409);
+  // A content change needs the hash (a title-only update needs none, so it would not be refused): send content.
+  refused(ctx, 'posts-update', { id: pid, expect_hash: '0'.repeat(32), content: n + ' wrong' }, 'stale', 409);
   guard(ctx, pid); const t1 = must(ctx, 'POST', 'posts-trash', { id: pid }); rec(ctx, 'posts-trash', pid);
   guard(ctx, gid); must(ctx, 'POST', 'pages-trash', { id: gid }); rec(ctx, 'pages-trash', gid);
   if (t1.json.status !== 'trash') { ctx.failures++; ctx.lines.push('  FAILED: posts-trash did not report status trash'); }
@@ -188,7 +192,8 @@ function stepMedia(ctx) {
     const n = name(ctx, 'media');
     let url = ctx.imageUrl;
     if (!url) { const home = siteHome(ctx); if (!/^https?:\/\//i.test(home)) throw new Fail('could not read the site address from the REST index; give --image-url'); url = home + '/wp-includes/images/w-logo-blue.png'; }
-    const up = must(ctx, 'POST', 'media-upload', { url, title: n }); const id = idOf(up.json); rec(ctx, 'media-upload', id);
+    // The file is named after the run too: the media history summaries name the file, so they carry d5b-live-.
+    const up = must(ctx, 'POST', 'media-upload', { url, title: n, filename: n + '.png' }); const id = idOf(up.json); rec(ctx, 'media-upload', id);
     know(ctx, id, n);
     if (up.json.transport !== 'curl') { ctx.failures++; ctx.lines.push(`  FAILED: media-upload transport must be curl, got ${tok(up.json.transport)}`); }
     guard(ctx, id); must(ctx, 'POST', 'media-update', { id, alt: n + ' alt' }); rec(ctx, 'media-update', id);
@@ -321,6 +326,16 @@ function stepDivi(ctx) {
     if (!oldT) throw new Fail('could not tell the first heading text safely; give --old <text> --new <text>');
   }
   if (newT === undefined) newT = oldT + ' (edited)';
+  // Before any edit: a revision must hold the page as it is now, or nothing could put it back (the restore at the end needs it).
+  const rl = must(ctx, 'GET', 'revisions-list', { post_id: ctx.page, per_page: 20 });
+  const items = rl.json && Array.isArray(rl.json.items) ? rl.json.items : [];
+  let rid = null;
+  for (const it of items.slice(0, 20)) {
+    if (!it || it.id === undefined) continue;
+    const rv = getAbility(ctx, 'revisions-get', { id: it.id });
+    if (rv.ok && rv.json && rv.json.hash === h0) { rid = it.id; line(ctx, 'revisions-get', rv, []); break; }
+  }
+  if (rid === null) throw new Usage('no revision holds the page as it is now (hash ' + tok(h0) + '): save the copy page once in wp-admin first, then run again. Nothing was changed.');
   guard(ctx, ctx.page);
   const te = must(ctx, 'POST', 'divi-text-edit', { post_id: ctx.page, expect_hash: h0, old: oldT, new: newT }, ['before=' + tok(h0)]); rec(ctx, 'divi-text-edit', ctx.page);
   const h1 = te.json.hash;
@@ -332,17 +347,7 @@ function stepDivi(ctx) {
   guard(ctx, ctx.page);
   const se = must(ctx, 'POST', 'divi-section-edit', { post_id: ctx.page, expect_hash: pg2.json.hash, op: 'replace', at: '1', with: sec });
   if (se.json.changed !== false || se.json.hash !== pg2.json.hash) { ctx.failures++; ctx.lines.push('  FAILED: replacing section 1 with its own markup must answer changed false and keep the hash'); }
-  // A no-op edit writes nothing, so it leaves no history row either.
-  // The pre-edit revision: the newest revision whose content hashes to the original.
-  const rl = must(ctx, 'GET', 'revisions-list', { post_id: ctx.page, per_page: 20 });
-  const items = rl.json && Array.isArray(rl.json.items) ? rl.json.items : [];
-  let rid = null;
-  for (const it of items.slice(0, 20)) {
-    if (!it || it.id === undefined) continue;
-    const rv = getAbility(ctx, 'revisions-get', { id: it.id });
-    if (rv.ok && rv.json && rv.json.hash === h0) { rid = it.id; line(ctx, 'revisions-get', rv, []); break; }
-  }
-  if (rid === null) throw new Fail('no revision with the original hash was found, so the page is not restored; restore it by hand from the revisions screen');
+  // A no-op edit writes nothing, so it leaves no history row either. The restore goes to the revision found before the edit.
   guard(ctx, ctx.page);
   const rr = must(ctx, 'POST', 'revisions-restore', { post_id: ctx.page, revision_id: rid, expect_hash: pg2.json.hash }); rec(ctx, 'revisions-restore', ctx.page);
   const ok = rr.json.hash === h0;
@@ -351,22 +356,69 @@ function stepDivi(ctx) {
   return 'ok';
 }
 
+const HISTORY_PAGES = 10;
+const HISTORY_PER_PAGE = 50;
+
+/** Every change row of today: page after page while has_more says another follows, at most HISTORY_PAGES pages. */
+function historyRows(ctx) {
+  const rows = [];
+  for (let page = 1; page <= HISTORY_PAGES; page++) {
+    const r = must(ctx, 'GET', 'history-changes-list', { since: ctx.day, per_page: HISTORY_PER_PAGE, page }, ['page=' + page]);
+    const items = r.json && Array.isArray(r.json.items) ? r.json.items.filter(x => x && typeof x === 'object') : [];
+    rows.push(...items);
+    if (!(r.json && r.json.has_more === true)) return { rows, complete: true };
+  }
+  return { rows, complete: false };
+}
+
+/** The actions whose row must hold the state from before the change (history-change-get). */
+const NEEDS_BEFORE = ['update', 'trash', 'delete'];
+
+/**
+ * The before copy of one row, checked: present (a non-empty object), not cut for size (too_large), and nothing withheld
+ * (a secret-named key) unless the summary says so. @return '' when good, else why not
+ */
+function beforeProblem(row) {
+  const b = row.before;
+  if (!b || typeof b !== 'object' || Array.isArray(b) || !Object.keys(b).length) return 'no before copy';
+  if (b.too_large === true) return 'before is too_large';
+  if (/"withheld"\s*:/.test(JSON.stringify(b)) && !/withheld/i.test(String(row.summary || ''))) return 'before has a withheld value';
+  return '';
+}
+
 function stepHistory(ctx) {
   const led = readLedger(ctx);
   const want = led.entries.filter(e => e && e.day === ctx.day);
-  const r = must(ctx, 'GET', 'history-changes-list', { since: ctx.day, per_page: 50 });
-  const rows = r.json && Array.isArray(r.json.items) ? r.json.items.filter(x => x && typeof x === 'object') : [];
-  const mine = rows.filter(x => typeof x.summary === 'string' && x.summary.includes(MARK));
-  ctx.lines.push(`${rows.length} change row(s) today, ${mine.length} with ${MARK} in the summary. Rows (id, time, ability, action, summary, revision_id):`);
+  const got = historyRows(ctx);
+  const rows = got.rows;
+  if (!got.complete) ctx.lines.push(`  note: stopped after ${HISTORY_PAGES} pages of ${HISTORY_PER_PAGE}; older rows of today were not read`);
+  const ids = new Set(want.filter(e => e.id !== null).map(e => NS + e.ability + '#' + e.id));
+  // A row is this script's when its summary carries d5b-live- or its ability and object id are a write of the ledger.
+  const isMine = x => (typeof x.summary === 'string' && x.summary.includes(MARK)) || ids.has(String(x.ability) + '#' + Number(x.object_id));
+  const mine = rows.filter(isMine);
+  ctx.lines.push(`${rows.length} change row(s) today, ${mine.length} of this script (${MARK} in the summary, or its ability and object id). Rows (id, time, ability, action, summary, revision_id):`);
   for (const x of mine) ctx.lines.push(`  ${tok(x.id)}  ${tok(x.time_utc)}  ${tok(x.ability)}  ${tok(x.action)}  ${tok(x.summary)}  ${tok(x.revision_id)}`);
   if (!want.length) { ctx.failures++; ctx.lines.push('  FAILED: this script has recorded no write for today, so there is nothing to check; run a step first'); return 'ok'; }
   const used = new Set(); let missing = 0;
   for (const e of want) {
-    const i = mine.findIndex((x, k) => !used.has(k) && x.ability === NS + e.ability && (e.id === null || Number(x.object_id) === e.id));
+    // By ability and object id; a write whose object id the script does not know (menus) by ability and the d5b-live- summary.
+    const i = mine.findIndex((x, k) => !used.has(k) && x.ability === NS + e.ability && (e.id === null ? String(x.summary || '').includes(MARK) : Number(x.object_id) === e.id));
     if (i < 0) { missing++; ctx.lines.push(`  MISSING: no history row for ${e.ability}${e.id === null ? '' : ' on ' + e.id}`); } else used.add(i);
   }
   if (missing) ctx.failures++;
   ctx.lines.push(missing ? `history: ${missing} of ${want.length} write(s) have no row` : `history: all ${want.length} write(s) have a row`);
+  // Each update, trash and delete row must hold the state it replaced.
+  let bad = 0, seen = 0;
+  for (const k of used) {
+    const x = mine[k];
+    if (!NEEDS_BEFORE.includes(x.action)) continue;
+    seen++;
+    const g = getAbility(ctx, 'history-change-get', { id: x.id });
+    const why = !g.ok ? 'refused:' + g.code : beforeProblem(g.json || {});
+    if (why) { bad++; line(ctx, 'history-change-get', g, ['id=' + tok(x.id), tok(x.ability), tok(why)]); }
+  }
+  if (bad) ctx.failures++;
+  ctx.lines.push(bad ? `history: ${bad} of ${seen} update/trash/delete row(s) lack a usable before copy` : `history: all ${seen} update/trash/delete row(s) hold their before copy`);
   return 'ok';
 }
 
