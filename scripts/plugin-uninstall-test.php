@@ -89,9 +89,9 @@ echo "final wave A3/A5: the kept media files (uploads/d5b-history) and the upgra
 $up = str_replace( '\\', '/', sys_get_temp_dir() ) . '/d5b-uninstall-test-' . getmypid();
 $rmr = function ( $d ) use ( &$rmr ) { if ( is_link( $d ) || is_file( $d ) ) { @unlink( $d ); return; } if ( ! is_dir( $d ) ) { return; } foreach ( array_diff( (array) scandir( $d ), array( '.', '..' ) ) as $f ) { $rmr( "$d/$f" ); } @rmdir( $d ); };
 $plant = function ( $base ) {
-	@mkdir( "$base/d5b-history/12", 0755, true ); @mkdir( "$base/d5b-history/40", 0755, true ); @mkdir( "$base/2026/10", 0755, true );
+	@mkdir( "$base/d5b-history/12-0123456789abcdef0123456789abcdef", 0755, true ); @mkdir( "$base/d5b-history/40", 0755, true ); @mkdir( "$base/2026/10", 0755, true );
 	file_put_contents( "$base/d5b-history/.htaccess", "Require all denied\n" ); file_put_contents( "$base/d5b-history/index.html", '' );
-	file_put_contents( "$base/d5b-history/12/photo.jpg", 'a' ); file_put_contents( "$base/d5b-history/12/photo-300x200.jpg", 'b' ); file_put_contents( "$base/d5b-history/40/doc.pdf", 'c' );
+	file_put_contents( "$base/d5b-history/12-0123456789abcdef0123456789abcdef/photo.jpg", 'a' ); file_put_contents( "$base/d5b-history/12-0123456789abcdef0123456789abcdef/photo-300x200.jpg", 'b' ); file_put_contents( "$base/d5b-history/40/doc.pdf", 'c' );
 	file_put_contents( "$base/2026/10/live.jpg", 'live' );
 };
 $rmr( $up );

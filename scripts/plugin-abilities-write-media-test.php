@@ -502,14 +502,15 @@ if ( ! getenv( 'T_MEDIA_TRASH' ) ) {
 	$r  = call( 'media-delete', array( 'id' => $a, 'confirmation' => $pv['confirmation'] ) );
 	$h  = hlast();
 	$hid = (int) ( $h['id'] ?? 0 );
-	$kept = "$up/d5b-history/$hid";
+	$kdir = (string) ( $r['file_kept'] ?? '' );
+	$kept = "$up/$kdir";
 	$names = array( 'keep.jpg', 'keep-300x200.jpg', 'keep-orig.jpg', 'keep-e1.jpg' );
 	$all_kept = true; foreach ( $names as $f ) { if ( ! is_file( "$kept/$f" ) || "bytes of $f" !== file_get_contents( "$kept/$f" ) || file_exists( "$up/2026/10/$f" ) ) { $all_kept = false; } }
-	check( 'the delete answers deleted with file_kept d5b-history/<row id>; the item is gone', is_array( $r ) && true === $r['deleted'] && "d5b-history/$hid" === $r['file_kept'] && $hid === $r['history_id'] && null === post( $a ), $r );
+	check( 'the delete answers deleted with file_kept d5b-history/<row id>-<32 random hex> (unguessable); the item is gone', is_array( $r ) && true === $r['deleted'] && 1 === preg_match( '#^d5b-history/' . $hid . '-[0-9a-f]{32}$#D', $kdir ) && $hid === $r['history_id'] && null === post( $a ), $r );
 	check( '... the file, its size, the pre-scale original and the edit backup are MOVED there with their names and bytes (none left in 2026/10)', $all_kept, array_values( array_diff( (array) @scandir( $kept ), array( '.', '..' ) ) ) );
 	check( '... moved BEFORE WordPress deleted: its unlinks found nothing on disk', array() === $GLOBALS['T_files_unlinked'], $GLOBALS['T_files_unlinked'] );
 	check( '... the history row records file_copy: the folder and every file (uploads-relative), none missing',
-		array( 'deleted' => true, 'file_copy' => array( 'dir' => "d5b-history/$hid", 'files' => array( '2026/10/keep.jpg', '2026/10/keep-300x200.jpg', '2026/10/keep-orig.jpg', '2026/10/keep-e1.jpg' ), 'missing' => array() ) ) === $h['after'], $h['after'] );
+		array( 'deleted' => true, 'file_copy' => array( 'dir' => $kdir, 'files' => array( '2026/10/keep.jpg', '2026/10/keep-300x200.jpg', '2026/10/keep-orig.jpg', '2026/10/keep-e1.jpg' ), 'missing' => array() ) ) === $h['after'], $h['after'] );
 	$ht = (string) @file_get_contents( "$up/d5b-history/.htaccess" );
 	check( '... d5b-history holds an .htaccess with Require all denied and Deny from all, and an empty index.html', false !== strpos( $ht, 'Require all denied' ) && false !== strpos( $ht, 'Deny from all' ) && is_file( "$up/d5b-history/index.html" ) && '' === file_get_contents( "$up/d5b-history/index.html" ), $ht );
 
@@ -522,9 +523,9 @@ if ( ! getenv( 'T_MEDIA_TRASH' ) ) {
 	$GLOBALS['T_rename_fail'] = array();
 	$back = true; foreach ( array( 'back.jpg', 'back-300x200.jpg', 'back-orig.jpg', 'back-e1.jpg' ) as $f ) { if ( "bytes of $f" !== @file_get_contents( "$up/2026/10/$f" ) ) { $back = false; } }
 	$moved_first = count( array_filter( $GLOBALS['T_renames'], function ( $x ) use ( $up ) { return "$up/2026/10/back.jpg" === $x[0]; } ) ) > 0;
-	$dirs = array_values( array_filter( (array) scandir( "$up/d5b-history" ), function ( $f ) { return ctype_digit( (string) $f ); } ) );
+	$dirs = array_values( array_filter( (array) scandir( "$up/d5b-history" ), function ( $f ) { return 1 === preg_match( '/^\d+-[0-9a-f]{32}$/', (string) $f ); } ) );
 	check( 'the third move fails: history_unavailable, nothing deleted, the two moved files are back in place with their bytes, the folder is gone, the row is removed',
-		'history_unavailable' === code( $r ) && null !== post( $b ) && $moved_first && $back && array( (string) $hid ) === $dirs && count( hrows() ) === $rows0 && ! in_array( $b, $GLOBALS['T_deleted'], true ), array( code( $r ), msg( $r ), $dirs, $back ) );
+		'history_unavailable' === code( $r ) && null !== post( $b ) && $moved_first && $back && array( basename( $kdir ) ) === $dirs && count( hrows() ) === $rows0 && ! in_array( $b, $GLOBALS['T_deleted'], true ), array( code( $r ), msg( $r ), $dirs, $back ) );
 
 	echo "Final wave A3: WordPress refusing the delete puts the files back\n";
 	$c  = $disk_att( 'stop' );
@@ -540,17 +541,22 @@ if ( ! getenv( 'T_MEDIA_TRASH' ) ) {
 	$pv = call( 'media-delete-preview', array( 'id' => $d ) );
 	$r  = call( 'media-delete', array( 'id' => $d, 'confirmation' => $pv['confirmation'] ) );
 	$young = (int) $r['history_id'];
+	$ydir  = "$up/" . $r['file_kept'];
+	check( 'a second delete gets a different random part (and its own row id)', 1 === preg_match( '#^d5b-history/' . $young . '-([0-9a-f]{32})$#D', $r['file_kept'], $y2 ) && substr( $kdir, -32 ) !== $y2[1], array( $kdir, $r['file_kept'] ) );
 	unset( $GLOBALS['wpdb']->tables['wp_d5b_history_saved'] );
 	$saved = $GLOBALS['wpdb']->tables['wp_d5b_history'];
 	unset( $GLOBALS['wpdb']->tables['wp_d5b_history'] );
 	d5b_history_prune();
-	check( 'with the history table missing the prune removes no folder', is_dir( "$up/d5b-history/$hid" ) && is_dir( "$up/d5b-history/$young" ) );
+	check( 'with the history table missing the prune removes no folder', is_dir( $kept ) && is_dir( $ydir ) );
 	$GLOBALS['wpdb']->tables['wp_d5b_history'] = $saved;
 	foreach ( $GLOBALS['wpdb']->tables['wp_d5b_history'] as &$row ) { if ( (int) $row['id'] === $hid ) { $row['created_at'] = gmdate( 'Y-m-d H:i:s', time() - 31 * 86400 ); } }
 	unset( $row );
 	d5b_history_prune();
-	check( 'a row older than 30 days is pruned and d5b-history/<its id>/ with its files goes; a younger row keeps its folder; .htaccess and index.html stay',
-		null === d5b_history_get( $hid ) && ! file_exists( "$up/d5b-history/$hid" ) && is_file( "$up/d5b-history/$young/young.jpg" ) && is_file( "$up/d5b-history/.htaccess" ) && is_file( "$up/d5b-history/index.html" ) );
+	check( 'a row older than 30 days is pruned and d5b-history/<its id>-<random>/ (the name in file_copy.dir) with its files goes; a younger row keeps its folder; .htaccess and index.html stay',
+		null === d5b_history_get( $hid ) && ! file_exists( $kept ) && is_file( "$ydir/young.jpg" ) && is_file( "$up/d5b-history/.htaccess" ) && is_file( "$up/d5b-history/index.html" ) );
+	@mkdir( "$up/d5b-history/987654-" . str_repeat( 'ab', 16 ) ); file_put_contents( "$up/d5b-history/987654-" . str_repeat( 'ab', 16 ) . '/old.jpg', 'x' ); @mkdir( "$up/d5b-history/987654" );
+	d5b_history_prune();
+	check( '... the sweep removes the folders of an id with no row (random-named and plain), the young one stays', ! file_exists( "$up/d5b-history/987654-" . str_repeat( 'ab', 16 ) ) && ! file_exists( "$up/d5b-history/987654" ) && is_file( "$ydir/young.jpg" ) );
 	unset( $GLOBALS['T_upload_basedir'] );
 	$rm( $up );
 

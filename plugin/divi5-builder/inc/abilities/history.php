@@ -330,38 +330,46 @@ if ( ! function_exists( 'd5b_history_files_prepare' ) ) {
 
 if ( ! function_exists( 'd5b_history_files_remove' ) ) {
 	/**
-	 * Removes d5b-history/<id>/ and the files in it (the folder holds plain files only; a link is removed, never followed).
-	 * @return bool true when the folder is gone (or was never there)
+	 * Removes every folder of history row $id: d5b-history/<id>-<32 random hex>/ (the name a media delete records in
+	 * file_copy.dir) and a plain d5b-history/<id>/, with the files in them (plain files only; a link is removed, never followed).
+	 * @return bool true when no such folder is left
 	 */
 	function d5b_history_files_remove( int $id ): bool {
 		$root = d5b_history_files_root();
-		if ( '' === $root || $id < 1 ) { return false; }
-		$dir = $root . '/' . $id;
-		if ( is_link( $dir ) ) { return @unlink( $dir ); }
-		if ( ! is_dir( $dir ) ) { return true; }
-		foreach ( (array) @scandir( $dir ) as $f ) {
-			if ( '.' === $f || '..' === $f || ! is_string( $f ) ) { continue; }
-			$path = $dir . '/' . $f;
-			if ( is_link( $path ) || is_file( $path ) ) { @unlink( $path ); }
+		if ( '' === $root || $id < 1 || is_link( $root ) || ! is_dir( $root ) ) { return '' !== $root && $id > 0 && ! is_dir( $root ); }
+		$all = true;
+		foreach ( (array) @scandir( $root ) as $name ) {
+			if ( ! is_string( $name ) || 1 !== preg_match( '/^' . $id . '(-[0-9a-f]{32})?$/D', $name ) ) { continue; }
+			$dir = $root . '/' . $name;
+			if ( is_link( $dir ) ) { $all = @unlink( $dir ) && $all; continue; }
+			if ( ! is_dir( $dir ) ) { continue; }
+			foreach ( (array) @scandir( $dir ) as $f ) {
+				if ( '.' === $f || '..' === $f || ! is_string( $f ) ) { continue; }
+				$path = $dir . '/' . $f;
+				if ( is_link( $path ) || is_file( $path ) ) { @unlink( $path ); }
+			}
+			$all = ( @rmdir( $dir ) || ! is_dir( $dir ) ) && $all;
 		}
-		return @rmdir( $dir ) || ! is_dir( $dir );
+		return $all;
 	}
 }
 
 if ( ! function_exists( 'd5b_history_files_prune' ) ) {
 	/**
-	 * Removes every d5b-history/<id>/ folder whose history row is gone (pruned after 30 days, or removed because the delete it
+	 * Removes every d5b-history/<id>-<random>/ (or <id>/) folder whose history row is gone (pruned after 30 days, or removed because the delete it
 	 * was written for was refused). Only while the history table is there: a missing table must not empty the folder.
 	 * @return int folders removed
 	 */
 	function d5b_history_files_prune(): int {
 		$root = d5b_history_files_root();
 		if ( '' === $root || is_link( $root ) || ! is_dir( $root ) || ! d5b_history_table_exists() ) { return 0; }
-		$n = 0;
+		$n = 0; $ids = array();
 		foreach ( (array) @scandir( $root ) as $f ) {
-			if ( ! is_string( $f ) || 1 !== preg_match( '/^[1-9][0-9]{0,19}$/D', $f ) ) { continue; }
-			if ( null !== d5b_history_get( (int) $f ) ) { continue; }
-			if ( d5b_history_files_remove( (int) $f ) ) { $n++; }
+			if ( is_string( $f ) && 1 === preg_match( '/^([1-9][0-9]{0,18})(-[0-9a-f]{32})?$/D', $f, $m ) ) { $ids[ (int) $m[1] ] = true; }
+		}
+		foreach ( array_keys( $ids ) as $id ) {
+			if ( null !== d5b_history_get( $id ) ) { continue; }
+			if ( d5b_history_files_remove( $id ) ) { $n++; }
 		}
 		return $n;
 	}

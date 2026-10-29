@@ -641,7 +641,7 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 	/**
 	 * Keeps the files of attachment $id for 30 days: before WordPress deletes them, each one (d5b_wm_file_list that is a
 	 * plain file inside the uploads folder) is MOVED (renamed, not copied; the name kept) into
-	 * wp-content/uploads/d5b-history/<history row id>/. When any move fails, what was moved is moved back and the answer is
+	 * wp-content/uploads/d5b-history/<history row id>-<32 random hex>/. When any move fails, what was moved is moved back and the answer is
 	 * history_unavailable. The prune removes the folder with its row.
 	 * @return array|WP_Error array( dir (relative to uploads, or null when nothing was there), files (uploads-relative paths
 	 *         kept), missing (listed but not on disk) ) and, for the caller only, _moved (path => kept path) and _base
@@ -663,9 +663,12 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 		if ( array() === $have ) { return array( 'dir' => null, 'files' => array(), 'missing' => $missing, '_moved' => array(), '_base' => $base ); }
 		if ( ! d5b_history_files_prepare() ) { return $fail( 'the folder wp-content/uploads/d5b-history could not be made' ); }
 		$root = d5b_history_files_root();
-		$dir  = $root . '/' . $hid;
-		if ( file_exists( $dir ) || is_link( $dir ) ) { return $fail( 'd5b-history/' . $hid . ' already exists' ); }
-		if ( ! @mkdir( $dir, 0755 ) ) { return $fail( 'd5b-history/' . $hid . ' could not be made' ); }
+		// <row id>-<32 random hex>: not guessable, so the kept file cannot be fetched where .htaccess is ignored (nginx).
+		try { $rand = bin2hex( random_bytes( 16 ) ); } catch ( Throwable $e ) { return $fail( 'no random name could be made' ); }
+		$name = $hid . '-' . $rand;
+		$dir  = $root . '/' . $name;
+		if ( file_exists( $dir ) || is_link( $dir ) ) { return $fail( 'd5b-history/' . $name . ' already exists' ); }
+		if ( ! @mkdir( $dir, 0755 ) ) { return $fail( 'a folder in d5b-history could not be made' ); }
 		$real_dir = str_replace( '\\', '/', (string) realpath( $dir ) );
 		if ( '' === $real_dir || 0 !== strpos( $real_dir, $base . '/' ) ) { @rmdir( $dir ); return $fail( 'd5b-history resolves outside the uploads folder' ); }
 		$moved = array();
@@ -677,7 +680,7 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 			}
 			$moved[ $rel ] = $dst;
 		}
-		return array( 'dir' => 'd5b-history/' . $hid, 'files' => $have, 'missing' => $missing, '_moved' => $moved, '_base' => $base );
+		return array( 'dir' => 'd5b-history/' . $name, 'files' => $have, 'missing' => $missing, '_moved' => $moved, '_base' => $base, '_dir' => $dir );
 	}
 
 	/**
@@ -733,12 +736,12 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 		}
 		$exact = d5b_wc_delete_record_ok( $hid );
 		if ( true !== $exact ) { return $exact; }
-		// Then the files are moved (not copied) into d5b-history/<row id>/, kept 30 days; the row says where.
+		// Then the files are moved (not copied) into d5b-history/<row id>-<random hex>/, kept 30 days; the row says where.
 		$kept = d5b_wm_keep_files( $hid, $id );
 		if ( is_wp_error( $kept ) ) { d5b_history_delete( $hid ); return $kept; }
 		$copy = array( 'dir' => $kept['dir'], 'files' => $kept['files'], 'missing' => $kept['missing'] );
 		if ( ! d5b_history_set_after( $hid, array( 'deleted' => true, 'file_copy' => $copy ) ) ) {
-			d5b_wm_put_back( $kept['_base'], $kept['_moved'], null === $kept['dir'] ? '' : d5b_history_files_root() . '/' . $hid );
+			d5b_wm_put_back( $kept['_base'], $kept['_moved'], (string) ( $kept['_dir'] ?? '' ) );
 			d5b_history_delete( $hid );
 			return new WP_Error( 'history_unavailable', 'Where the file was kept could not be recorded in the change history, so the permanent delete was refused. Nothing was deleted.' );
 		}
@@ -747,10 +750,10 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 		if ( ! $r || null !== get_post( $id ) ) {
 			// There is no history update: a second row records the failure, the first keeps the full state. The files go back
 			// where they were, so the item that is still there keeps its file.
-			$back = d5b_wm_put_back( $kept['_base'], $kept['_moved'], null === $kept['dir'] ? '' : d5b_history_files_root() . '/' . $hid );
+			$back = d5b_wm_put_back( $kept['_base'], $kept['_moved'], (string) ( $kept['_dir'] ?? '' ) );
 			$err  = ! $r ? 'wp_delete_attachment_failed' : 'still_present';
 			$fid  = d5b_wm_history( 'media-delete', $p, 'delete_failed', null, array( 'deleted' => false, 'error' => $err, 'history_id' => $hid, 'files_put_back' => $back ), d5b_wm_summary( 'Failed to delete', $p ) );
-			return new WP_Error( 'write_failed', 'WordPress did not finish the delete (a plugin may have stopped it): the media item may be partly deleted (some of its data may be gone). ' . ( $back ? 'Its files were put back. ' : 'Some of its files could not be put back: they are in wp-content/uploads/d5b-history/' . $hid . '. ' ) . 'History row ' . $hid . ' holds its full state' . ( $fid > 0 ? '; row ' . $fid . ' records the failure.' : '.' ), array( 'history_id' => $hid ) );
+			return new WP_Error( 'write_failed', 'WordPress did not finish the delete (a plugin may have stopped it): the media item may be partly deleted (some of its data may be gone). ' . ( $back ? 'Its files were put back. ' : 'Some of its files could not be put back: they are in wp-content/uploads/' . $kept['dir'] . '. ' ) . 'History row ' . $hid . ' holds its full state' . ( $fid > 0 ? '; row ' . $fid . ' records the failure.' : '.' ), array( 'history_id' => $hid ) );
 		}
 		return array( 'deleted' => true, 'id' => $id, 'file_url' => $url, 'history_id' => $hid, 'file_kept' => $copy['dir'] );
 	}
@@ -809,7 +812,7 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 		$d5b_wm_id, array( 'id' ), 'd5b_wm_h_delete_preview', 'd5b_wm_can_delete', array( 'readonly' => true ) );
 
 	d5b_wc_def( 'media-delete', 'media', 'Delete a media item for good',
-		'Step two of a permanent delete: deletes one media item and its file (every size) from the server, and returns deleted true with the history row id. Only with the confirmation code from media-delete-preview, by the same user, for the same item, unchanged since the preview, used once, within 10 minutes; anything else is refused with confirmation_invalid and data.reason, and nothing is deleted. The change history row is written BEFORE the delete and keeps every detail, the metadata, the URL, the sizes and the posts that used it; the file is kept for 30 days in wp-content/uploads/d5b-history and can be put back by hand (the file and every size are moved to d5b-history/<history row id>/ before WordPress deletes the item; file_kept in the result and file_copy in the history row name the folder). When that row cannot be written, or the file cannot be moved there, the delete is refused (history_unavailable) and nothing is deleted. Refused with not_allowed on a site with a media trash (use media-trash), and for an item with a custom field holding a secret-named key (the history could not keep it; delete it in wp-admin).',
+		'Step two of a permanent delete: deletes one media item and its file (every size) from the server, and returns deleted true with the history row id. Only with the confirmation code from media-delete-preview, by the same user, for the same item, unchanged since the preview, used once, within 10 minutes; anything else is refused with confirmation_invalid and data.reason, and nothing is deleted. The change history row is written BEFORE the delete and keeps every detail, the metadata, the URL, the sizes and the posts that used it; the file is kept for 30 days in wp-content/uploads/d5b-history and can be put back by hand (the file and every size are moved to d5b-history/<history row id>-<random>/, a name nobody can guess, before WordPress deletes the item; file_kept in the result and file_copy in the history row name the folder). When that row cannot be written, or the file cannot be moved there, the delete is refused (history_unavailable) and nothing is deleted. Refused with not_allowed on a site with a media trash (use media-trash), and for an item with a custom field holding a secret-named key (the history could not keep it; delete it in wp-admin).',
 		$d5b_wm_id + array( 'confirmation' => array( 'type' => 'string', 'description' => 'The confirmation code from media-delete-preview, after the user said OK.' ) ),
 		array( 'id', 'confirmation' ), 'd5b_wm_h_delete', 'd5b_wm_can_delete', array( 'destructive' => true ) );
 
