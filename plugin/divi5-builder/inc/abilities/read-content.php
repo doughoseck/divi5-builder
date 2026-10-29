@@ -54,12 +54,45 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		return null;
 	}
 
+	/** The length of a UTF-8 string in characters. */
+	function d5b_rc_chars( string $s ): int {
+		return function_exists( 'mb_strlen' ) ? (int) mb_strlen( $s, 'UTF-8' ) : (int) preg_match_all( '/./us', $s );
+	}
+
+	/** True for an array with the keys 0, 1, 2 ... in order (a JSON list); an empty array is a list. */
+	function d5b_rc_is_list( array $a ): bool {
+		return array_keys( $a ) === range( 0, count( $a ) - 1 ) || array() === $a;
+	}
+
+	/**
+	 * An ISO 8601 date and time as 'Y-m-d H:i:s' UTC, or null. Without a zone (Z or +hh:mm) it is the site's local time,
+	 * as core's REST API reads its own 'date' field.
+	 */
+	function d5b_rc_date_gmt( string $v ): ?string {
+		if ( 1 !== preg_match( '/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(Z|[+\-]\d{2}:?\d{2})?$/', $v, $m ) ) { return null; }
+		$sec = isset( $m[6] ) && '' !== $m[6] ? $m[6] : '00';
+		if ( ! checkdate( (int) $m[2], (int) $m[3], (int) $m[1] ) || (int) $m[4] > 23 || (int) $m[5] > 59 || (int) $sec > 59 ) { return null; }
+		$local = $m[1] . '-' . $m[2] . '-' . $m[3] . ' ' . $m[4] . ':' . $m[5] . ':' . $sec;
+		if ( ! isset( $m[7] ) || '' === $m[7] ) { return (string) get_gmt_from_date( $local, 'Y-m-d H:i:s' ); }
+		try {
+			$dt = new DateTime( $local . ( 'Z' === $m[7] ? '+00:00' : $m[7] ) );
+		} catch ( Exception $e ) {
+			return null;
+		}
+		$dt->setTimezone( new DateTimeZone( 'UTC' ) );
+		return $dt->format( 'Y-m-d H:i:s' );
+	}
+
 	/**
 	 * Checks and cleans an input array against $spec (key => kind). Returns the cleaned values of the keys that were
 	 * given, or a WP_Error 'invalid_input'. null and '' count as not given. Unknown keys are an error.
 	 * Kinds: id (positive whole number), int (zero or more), str (text up to 200 characters), strs (list of text),
 	 * slug (a post type or taxonomy name), key (a meta key), mime, menu (an id, slug or name), bool (see d5b_rc_bool),
 	 * enum:a|b|c.
+	 * Write kinds (2.2.0): text (UTF-8 text up to 1 MB, kept as given, '' counts as given), text:N (the same, at most N
+	 * characters), ids (a list of up to 100 positive whole numbers, [] counts as given), map (an object of up to 50 fields
+	 * with scalar values), idmap (an object of up to 20 names, each a list of up to 100 ids), date (ISO 8601; returned as
+	 * 'Y-m-d H:i:s' UTC, a date without a zone is the site's local time).
 	 *
 	 * @return array|WP_Error
 	 */
@@ -73,7 +106,9 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 		$out = array();
 		foreach ( $spec as $key => $kind ) {
 			$v = $in[ $key ] ?? null;
-			if ( null === $v || '' === $v || array() === $v ) {
+			// Only the write kinds keep an empty value: '' clears a text field, [] clears a list of terms.
+			$keeps = ( '' === $v && ( 'text' === $kind || 0 === strpos( $kind, 'text:' ) ) ) || ( array() === $v && 'ids' === $kind );
+			if ( ! $keeps && ( null === $v || '' === $v || array() === $v ) ) {
 				if ( in_array( $key, $required, true ) ) { return new WP_Error( 'invalid_input', $key . ' is required.' ); }
 				continue;
 			}
@@ -118,6 +153,49 @@ if ( ! function_exists( 'd5b_rc_def' ) ) {
 				$allowed = explode( '|', substr( $kind, 5 ) );
 				if ( ! is_string( $v ) || ! in_array( $v, $allowed, true ) ) { return new WP_Error( 'invalid_input', $key . ' must be one of: ' . implode( ', ', $allowed ) . '.' ); }
 				$out[ $key ] = $v;
+			} elseif ( 'text' === $kind || 0 === strpos( $kind, 'text:' ) ) {
+				$max = 'text' === $kind ? 0 : (int) substr( $kind, 5 );
+				if ( ! is_string( $v ) || 1 !== preg_match( '//u', $v ) ) { return new WP_Error( 'invalid_input', $key . ' must be text (UTF-8).' ); }
+				if ( 0 === $max ? strlen( $v ) > 1048576 : d5b_rc_chars( $v ) > $max ) { return new WP_Error( 'invalid_input', $key . ' is too long: at most ' . ( 0 === $max ? '1 MB' : $max . ' characters' ) . '.' ); }
+				$out[ $key ] = $v;
+			} elseif ( 'ids' === $kind ) {
+				if ( ! is_array( $v ) || count( $v ) > 100 || ! d5b_rc_is_list( $v ) ) { return new WP_Error( 'invalid_input', $key . ' must be a list of at most 100 ids.' ); }
+				$list = array();
+				foreach ( $v as $one ) {
+					$n = d5b_rc_id_of( $one );
+					if ( $n < 1 ) { return new WP_Error( 'invalid_input', $key . ' must be a list of positive whole numbers.' ); }
+					$list[] = $n;
+				}
+				$out[ $key ] = array_values( array_unique( $list ) );
+			} elseif ( 'map' === $kind ) {
+				if ( ! is_array( $v ) || count( $v ) > 50 || d5b_rc_is_list( $v ) ) { return new WP_Error( 'invalid_input', $key . ' must be an object of at most 50 fields.' ); }
+				$map = array();
+				foreach ( $v as $k => $x ) {
+					$k = (string) $k;
+					if ( '' === $k || strlen( $k ) > 255 ) { return new WP_Error( 'invalid_input', $key . ' has a field name that is empty or longer than 255 characters.' ); }
+					if ( ! is_scalar( $x ) || ( is_string( $x ) && ( strlen( $x ) > 65536 || 1 !== preg_match( '//u', $x ) ) ) ) { return new WP_Error( 'invalid_input', $key . ' values must be text (at most 64 KB), numbers or true/false.' ); }
+					$map[ $k ] = $x;
+				}
+				$out[ $key ] = $map;
+			} elseif ( 'idmap' === $kind ) {
+				if ( ! is_array( $v ) || count( $v ) > 20 || d5b_rc_is_list( $v ) ) { return new WP_Error( 'invalid_input', $key . ' must be an object of at most 20 names, each with a list of ids.' ); }
+				$map = array();
+				foreach ( $v as $k => $list ) {
+					$k = (string) $k;
+					if ( 1 !== preg_match( '/^[A-Za-z0-9_\-]{1,100}$/', $k ) || ! is_array( $list ) || count( $list ) > 100 || ! d5b_rc_is_list( $list ) ) { return new WP_Error( 'invalid_input', $key . ' must map names to lists of at most 100 ids.' ); }
+					$ids = array();
+					foreach ( $list as $one ) {
+						$n = d5b_rc_id_of( $one );
+						if ( $n < 1 ) { return new WP_Error( 'invalid_input', $key . ' must map names to lists of positive whole numbers.' ); }
+						$ids[] = $n;
+					}
+					$map[ $k ] = array_values( array_unique( $ids ) );
+				}
+				$out[ $key ] = $map;
+			} elseif ( 'date' === $kind ) {
+				$d = is_string( $v ) ? d5b_rc_date_gmt( $v ) : null;
+				if ( null === $d ) { return new WP_Error( 'invalid_input', $key . ' must be a date and time in ISO 8601, like 2026-11-02T09:00:00 (site time) or 2026-11-02T07:00:00Z.' ); }
+				$out[ $key ] = $d;
 			} else {
 				return $bad;
 			}

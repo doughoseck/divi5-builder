@@ -354,11 +354,12 @@ fresh( true ); $GLOBALS['T_user_id'] = 0;
 check( 'an anonymous caller: forbidden, HTTP 403 (run and permission paths)', 403 === status_of( $r = d5b_ability_run( 'divi5-builder/posts-list', array() ) ) && 'forbidden' === $r->get_error_code() && 403 === status_of( d5b_ability_permit( 'divi5-builder/posts-list', array() ) ) );
 check( 'forbidden_anonymous, should it ever be a code, maps to 403 too', 403 === d5b_ability_http_status( 'forbidden_anonymous' ) );
 // The codes the shipped handlers return: every one is in the table (not the 500 fallback), so no refusal answers 500.
+// internal_error and write_failed (WordPress itself did not make a write that passed every check) are real 500s.
 $codes = array();
 foreach ( new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir . '/inc/abilities', FilesystemIterator::SKIP_DOTS ) ) as $f ) {
 	if ( preg_match_all( "/new WP_Error\(\s*'([a-z_]+)'/", (string) file_get_contents( (string) $f ), $mm ) ) { foreach ( $mm[1] as $c ) { $codes[ $c ] = true; } }
 }
-$unmapped = array_values( array_filter( array_keys( $codes ), function ( $c ) { return 500 === d5b_ability_http_status( $c ) && 'internal_error' !== $c; } ) );
+$unmapped = array_values( array_filter( array_keys( $codes ), function ( $c ) { return 500 === d5b_ability_http_status( $c ) && 'internal_error' !== $c && 'write_failed' !== $c; } ) );
 check( 'every WP_Error code in inc/abilities has its own status (no odd codes left: invalid_type, invalid_taxonomy, forbidden_status are gone)', array() === $unmapped && ! isset( $codes['invalid_type'] ) && ! isset( $codes['invalid_taxonomy'] ) && ! isset( $codes['forbidden_status'] ) && ! isset( $codes['ability_not_found'] ), array( $unmapped, array_keys( $codes ) ) );
 
 fresh( true );

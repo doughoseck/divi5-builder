@@ -48,6 +48,8 @@ foreach ( array(
 	'inc/abilities/read-site.php',
 	'inc/abilities/read-divi.php',
 	'inc/abilities/read-history.php',
+	'inc/abilities/write-common.php',
+	'inc/abilities/write-posts.php',
 	'inc/settings.php',
 	'parts/page-building.php',
 	'parts/media-audit.php',

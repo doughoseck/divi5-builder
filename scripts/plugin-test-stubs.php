@@ -137,9 +137,13 @@ function plugin_basename( $file ) {
 function sanitize_text_field( $s ) { return trim( strip_tags( (string) $s ) ); }
 function sanitize_key( $s ) { return preg_replace( '/[^a-z0-9_\-]/', '', strtolower( (string) $s ) ); }
 function wp_generate_uuid4() { return '00000000-0000-4000-8000-000000000000'; }
-function update_post_meta( $id, $k, $v ) { return true; }
+// As core (meta.php): the key and the value are UNSLASHED, every existing value of the key is replaced. Kept in T_meta.
+function update_post_meta( $id, $k, $v, $prev = '' ) { $GLOBALS['T_meta'][ (int) $id ][ wp_unslash( $k ) ] = array( wp_unslash( $v ) ); return true; }
+function add_post_meta( $id, $k, $v, $unique = false ) { $k = wp_unslash( $k ); if ( $unique && ! empty( $GLOBALS['T_meta'][ (int) $id ][ $k ] ) ) { return false; } $GLOBALS['T_meta'][ (int) $id ][ $k ][] = wp_unslash( $v ); return true; }
+function delete_post_meta( $id, $k, $v = '' ) { $had = isset( $GLOBALS['T_meta'][ (int) $id ][ $k ] ); unset( $GLOBALS['T_meta'][ (int) $id ][ $k ] ); return $had; }
 // get_post_meta: see the content stand-ins at the end of this file.
-function is_protected_meta( $k, $t = null ) { return '_' === $k[0]; }
+// As core: control characters are dropped from the key first; protected = starts with _ (core then runs the is_protected_meta filter).
+function is_protected_meta( $k, $t = null ) { $s = preg_replace( "/[^\x20-\x7E\p{L}]/u", '', (string) $k ); return strlen( (string) $s ) > 0 && '_' === $s[0]; }
 // get_post: see the content stand-ins at the end of this file.
 function wp_upload_dir() { return array( 'basedir' => ABSPATH . 'wp-content/uploads', 'baseurl' => 'https://x.example/wp-content/uploads' ); }
 
@@ -168,7 +172,9 @@ function add_submenu_page( $parent, $title, $menu, $cap, $slug, $cb = '' ) { $GL
 function esc_html( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
 function esc_attr( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
 function esc_url( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
-function wp_unslash( $v ) { return is_array( $v ) ? array_map( 'wp_unslash', $v ) : stripslashes( (string) $v ); }
+// As core: strings only (map_deep with stripslashes_from_strings_only); numbers and booleans stay what they are.
+function wp_unslash( $v ) { return is_array( $v ) ? array_map( 'wp_unslash', $v ) : ( is_string( $v ) ? stripslashes( $v ) : $v ); }
+function wp_slash( $v ) { if ( is_array( $v ) ) { return array_map( 'wp_slash', $v ); } return is_string( $v ) ? addslashes( $v ) : $v; }
 
 // ---- database, cron and user stand-ins for the audit log (#32, Task 3). t_reset() clears them.
 //   $wpdb              T_Wpdb: tables kept in memory (name => list of rows). Understands exactly the statements the audit code
@@ -312,8 +318,10 @@ if ( ! getenv( 'D5B_NO_ABILITIES_API' ) ) {
 		elseif ( empty( $args['label'] ) || empty( $args['description'] ) || ! is_callable( $args['execute_callback'] ?? null ) ) { $why = 'missing label, description or execute_callback'; }
 		if ( '' !== $why ) { $GLOBALS['T_ability_errors'][] = "ability $name refused: $why"; return null; }
 		$GLOBALS['T_abilities'][ $name ] = $args;
-		return (object) array( 'name' => $name );
+		return new T_Ability( $name, $args );
 	}
+	// core's wp_get_ability: the registered ability, or null.
+	function wp_get_ability( $name ) { return isset( $GLOBALS['T_abilities'][ $name ] ) ? new T_Ability( $name, $GLOBALS['T_abilities'][ $name ] ) : null; }
 	function wp_register_ability_category( $slug, $args = array() ) {
 		$why = '';
 		if ( ! doing_action( 'wp_abilities_api_categories_init' ) ) { $why = 'outside wp_abilities_api_categories_init'; }
@@ -343,11 +351,27 @@ function t_content_reset() {
 	$GLOBALS['T_posts'] = array(); $GLOBALS['T_meta'] = array(); $GLOBALS['T_terms'] = array(); $GLOBALS['T_object_terms'] = array(); $GLOBALS['T_comments'] = array(); $GLOBALS['T_next_id'] = 100; $GLOBALS['T_queries'] = array();
 	$GLOBALS['T_menus'] = array(); $GLOBALS['T_menu_items'] = array(); $GLOBALS['T_menu_locations'] = array(); $GLOBALS['T_registered_menus'] = array();
 	$GLOBALS['T_post_types'] = array(); $GLOBALS['T_taxonomies'] = array();
+	$GLOBALS['T_inserts'] = array(); $GLOBALS['T_updates'] = array(); $GLOBALS['T_deleted'] = array(); $GLOBALS['T_revisions_keep'] = -1; $GLOBALS['T_insert_fail'] = false; $GLOBALS['T_update_fail'] = false; $GLOBALS['T_trash_blocked'] = false;
 	foreach ( array( 'post' => array( 1, 1, 0 ), 'page' => array( 1, 1, 1 ), 'attachment' => array( 1, 0, 0 ), 'revision' => array( 0, 0, 0 ), 'nav_menu_item' => array( 0, 0, 0 ), 'wp_block' => array( 0, 1, 0 ), 'wp_template' => array( 0, 1, 0 ), 'et_pb_layout' => array( 1, 1, 0 ) ) as $n => $f ) { t_add_type( $n, (bool) $f[0], (bool) $f[1], (bool) $f[2] ); }
 	foreach ( array( 'category' => array( 1, 1 ), 'post_tag' => array( 1, 1 ), 'nav_menu' => array( 0, 1 ), 'wp_theme' => array( 0, 0 ) ) as $n => $f ) { t_add_taxonomy( $n, (bool) $f[0], (bool) $f[1] ); }
 }
-function t_add_type( $name, $public = true, $rest = true, $hier = false ) { $GLOBALS['T_post_types'][ $name ] = (object) array( 'name' => $name, 'label' => ucfirst( $name ), 'public' => $public, 'show_in_rest' => $rest, 'hierarchical' => $hier ); }
-function t_add_taxonomy( $name, $public = true, $rest = true ) { $GLOBALS['T_taxonomies'][ $name ] = (object) array( 'name' => $name, 'label' => ucfirst( $name ), 'public' => $public, 'show_in_rest' => $rest, 'hierarchical' => 'category' === $name ); }
+// cap: core's capability_type 'post' mapping (create_posts = edit_posts); every stand-in type uses the *_posts names, so a
+// type cap is the same name the 2.1.0 tests grant. $caps overrides single entries (a test can give page the *_pages names).
+// supports: post and page as core registers them (revisions, thumbnail); wp_block has revisions; other types title + editor.
+function t_add_type( $name, $public = true, $rest = true, $hier = false, $supports = null, array $caps = array() ) {
+	$cap = array( 'edit_post' => 'edit_post', 'read_post' => 'read_post', 'delete_post' => 'delete_post', 'edit_posts' => 'edit_posts', 'edit_others_posts' => 'edit_others_posts',
+		'delete_posts' => 'delete_posts', 'publish_posts' => 'publish_posts', 'read_private_posts' => 'read_private_posts', 'delete_private_posts' => 'delete_private_posts',
+		'delete_published_posts' => 'delete_published_posts', 'delete_others_posts' => 'delete_others_posts', 'edit_private_posts' => 'edit_private_posts', 'edit_published_posts' => 'edit_published_posts', 'create_posts' => 'edit_posts' );
+	if ( null === $supports ) {
+		$supports = in_array( $name, array( 'post', 'page' ), true ) ? array( 'title', 'editor', 'excerpt', 'revisions', 'thumbnail' ) : ( 'wp_block' === $name ? array( 'title', 'editor', 'revisions' ) : array( 'title', 'editor' ) );
+	}
+	$GLOBALS['T_post_types'][ $name ] = (object) array( 'name' => $name, 'label' => ucfirst( $name ), 'public' => $public, 'show_in_rest' => $rest, 'hierarchical' => $hier, 'supports' => $supports, 'cap' => (object) array_merge( $cap, $caps ) );
+}
+// object_type: the post types the taxonomy is registered for (category and post_tag: post, as core). cap->assign_terms = edit_posts.
+function t_add_taxonomy( $name, $public = true, $rest = true, $types = null ) {
+	if ( null === $types ) { $types = in_array( $name, array( 'category', 'post_tag' ), true ) ? array( 'post' ) : array(); }
+	$GLOBALS['T_taxonomies'][ $name ] = (object) array( 'name' => $name, 'label' => ucfirst( $name ), 'public' => $public, 'show_in_rest' => $rest, 'hierarchical' => 'category' === $name, 'object_type' => $types, 'cap' => (object) array( 'assign_terms' => 'edit_posts', 'manage_terms' => 'manage_categories' ) );
+}
 function t_add_post( array $f = array() ) {
 	$id = isset( $f['ID'] ) ? (int) $f['ID'] : $GLOBALS['T_next_id']++;
 	$GLOBALS['T_posts'][ $id ] = (object) array_merge( array(
@@ -379,6 +403,17 @@ function t_post_cap( $cap, $id ) {
 	$p = $GLOBALS['T_posts'][ $id ] ?? null;
 	if ( null === $p ) { return false; }
 	$own = (int) $p->post_author === (int) $GLOBALS['T_user_id'];
+	if ( 'delete_post' === $cap ) {
+		// map_meta_cap, simplified: a published (or future, or trashed-while-published) item needs delete_published_posts;
+		// another user's item needs delete_others_posts (and delete_private_posts when private).
+		if ( 'revision' === $p->post_type ) { return t_post_cap( 'delete_post', (int) $p->post_parent ); }
+		$st = 'trash' === $p->post_status ? (string) get_post_meta( $p->ID, '_wp_trash_meta_status', true ) : (string) $p->post_status;
+		$need = array( $own ? 'delete_posts' : 'delete_others_posts' );
+		if ( in_array( $st, array( 'publish', 'future' ), true ) ) { $need[] = 'delete_published_posts'; }
+		if ( ! $own && 'private' === $st ) { $need[] = 'delete_private_posts'; }
+		foreach ( $need as $c ) { if ( ! t_has_cap( $c ) ) { return false; } }
+		return true;
+	}
 	if ( 'edit_post' === $cap ) {
 		if ( 'revision' === $p->post_type ) { return t_post_cap( 'edit_post', (int) $p->post_parent ); }
 		if ( ! $own ) { return t_has_cap( 'edit_others_posts' ); }
@@ -390,7 +425,7 @@ function t_post_cap( $cap, $id ) {
 	return t_post_cap( 'edit_post', $id );
 }
 function current_user_can( $cap, $id = null ) {
-	if ( null !== $id && ( 'read_post' === $cap || 'edit_post' === $cap ) ) { return t_post_cap( $cap, (int) $id ); }
+	if ( null !== $id && ( 'read_post' === $cap || 'edit_post' === $cap || 'delete_post' === $cap ) ) { return t_post_cap( $cap, (int) $id ); }
 	return t_has_cap( $cap );
 }
 function get_post( $id = null ) { return is_object( $id ) ? $id : ( $GLOBALS['T_posts'][ (int) $id ] ?? null ); }
@@ -438,9 +473,13 @@ function wp_get_nav_menu_object( $m ) { foreach ( $GLOBALS['T_menus'] as $o ) { 
 function wp_get_nav_menu_items( $m ) { $o = wp_get_nav_menu_object( $m ); return $o ? ( $GLOBALS['T_menu_items'][ $o->term_id ] ?? array() ) : false; }
 function get_nav_menu_locations() { return $GLOBALS['T_menu_locations']; }
 function get_registered_nav_menus() { return $GLOBALS['T_registered_menus']; }
+// As core (revision.php): newest first (order ASC on request); with check_enabled (the default) nothing when revisions are
+// off for the post (its type does not support them, or WP_POST_REVISIONS is 0, here T_revisions_keep = 0).
 function wp_get_post_revisions( $id, $args = array() ) {
-	$rows = array_filter( $GLOBALS['T_posts'], function ( $p ) use ( $id ) { return 'revision' === $p->post_type && (int) $p->post_parent === (int) $id; } );
-	krsort( $rows );
+	$parent = $GLOBALS['T_posts'][ (int) ( is_object( $id ) ? $id->ID : $id ) ] ?? null;
+	if ( ( $args['check_enabled'] ?? true ) && null !== $parent && ! wp_revisions_enabled( $parent ) ) { return array(); }
+	$rows = array_filter( $GLOBALS['T_posts'], function ( $p ) use ( $id ) { return 'revision' === $p->post_type && (int) $p->post_parent === (int) ( is_object( $id ) ? $id->ID : $id ); } );
+	if ( 'ASC' === strtoupper( (string) ( $args['order'] ?? 'DESC' ) ) ) { ksort( $rows ); } else { krsort( $rows ); }
 	return $rows;
 }
 // WordPress's query, reduced to what the read abilities send: type, status, search, author, parent, category, tag, mime, paging,
@@ -475,4 +514,188 @@ class WP_Query {
 		$this->posts = array_slice( $rows, ( max( 1, (int) ( $a['paged'] ?? 1 ) ) - 1 ) * $per, $per );
 		if ( 'ids' === ( $a['fields'] ?? '' ) ) { $this->posts = array_map( function ( $p ) { return $p->ID; }, $this->posts ); }
 	}
+}
+
+// ---- Abilities API execution (#32, 2.2.0): what core's WP_Ability does with an input before the callbacks run
+// (class-wp-ability.php, 6.9). normalize_input: a null input becomes the schema's 'default' when the schema has one.
+// validate_input: with no schema only null passes (ability_missing_input_schema otherwise); with one, the value is checked
+// as rest_validate_value_from_schema does, REDUCED here to: type object (an array; null is not an object), required
+// properties, additionalProperties false. Property types, enums and lengths are NOT checked by this stand-in.
+class T_Ability {
+	public $name; public $args;
+	function __construct( $name, array $args ) { $this->name = $name; $this->args = $args; }
+	function get_name() { return $this->name; }
+	function get_input_schema() { return $this->args['input_schema'] ?? array(); }
+	function normalize_input( $input = null ) {
+		if ( null !== $input ) { return $input; }
+		$s = $this->get_input_schema();
+		return ( ! empty( $s ) && array_key_exists( 'default', $s ) ) ? $s['default'] : null;
+	}
+	function validate_input( $input = null ) {
+		$s = $this->get_input_schema();
+		if ( empty( $s ) ) { return null === $input ? true : new WP_Error( 'ability_missing_input_schema', 'Ability "' . $this->name . '" does not define an input schema required to validate the provided input.' ); }
+		$why = '';
+		if ( 'object' === ( $s['type'] ?? '' ) ) {
+			if ( ! is_array( $input ) && '' !== $input && ! ( $input instanceof stdClass ) ) { $why = 'input is not of type object.'; }
+			else {
+				$in = (array) $input;
+				foreach ( (array) ( $s['required'] ?? array() ) as $r ) { if ( ! array_key_exists( $r, $in ) ) { $why = $r . ' is a required property of input.'; break; } }
+				if ( '' === $why && false === ( $s['additionalProperties'] ?? true ) ) {
+					foreach ( array_keys( $in ) as $k ) { if ( ! isset( $s['properties'][ $k ] ) ) { $why = $k . ' is not a valid property of Object.'; break; } }
+				}
+			}
+		}
+		return '' === $why ? true : new WP_Error( 'ability_invalid_input', 'Ability "' . $this->name . '" has invalid input. Reason: ' . $why );
+	}
+	function check_permissions( $input = null ) { return call_user_func( $this->args['permission_callback'], $input ); }
+	function execute( $input = null ) {
+		$input = $this->normalize_input( $input );
+		$ok = $this->validate_input( $input );
+		if ( is_wp_error( $ok ) ) { return $ok; }
+		$perm = $this->check_permissions( $input );
+		if ( true !== $perm ) { return is_wp_error( $perm ) ? $perm : new WP_Error( 'ability_invalid_permissions', 'Ability "' . $this->name . '" does not have necessary permission.' ); }
+		return call_user_func( $this->args['execute_callback'], $input );
+	}
+}
+
+// ---- content WRITE stand-ins (#32, 2.2.0, Task 3). Behave as core where the plugin depends on it:
+//   wp_insert_post / wp_update_post UNSLASH the post fields (the caller must wp_slash), meta_input goes through
+//   update_post_meta (which unslashes once more, so it is taken from the still-slashed array, as core does); a post with
+//   title, content and excerpt all empty is refused (empty_content); publish with a date a minute or more ahead becomes
+//   future and future with a past date becomes publish; a new post gets the default category; wp_update_post replaces the
+//   post object (an object read before the update keeps the old values, as a WP_Post from the cache does) and then makes a
+//   revision as core's post_updated hook does.
+//   wp_save_post_revision: only when the type supports revisions and they are on (T_revisions_keep: -1 all, 0 off, N keep
+//   N, pruning the oldest non-autosave ones), and only when title, content or excerpt differ from the latest revision.
+//   wp_trash_post: refuses a trashed post; with EMPTY_TRASH_DAYS 0 it deletes for good (core); otherwise stores
+//   _wp_trash_meta_status, _wp_trash_meta_time and _wp_desired_post_slug and adds __trashed to the slug.
+//   wp_untrash_post: draft (inherit for an attachment) by default, then every wp_untrash_post_status filter added with
+//   add_filter (new status, id, previous status); clears the trash meta and puts the slug back.
+//   set_post_thumbnail: an image attachment sets _thumbnail_id, any other attachment removes it (core: wp_get_attachment_image).
+//   wp_set_post_terms: replaces (or appends) the term ids; an unknown taxonomy is invalid_taxonomy.
+// Failures on demand: T_insert_fail, T_update_fail (a WP_Error, as the database would), T_trash_blocked (pre_trash_post).
+//   T_inserts / T_updates   every array given to wp_insert_post / wp_update_post (still slashed)
+//   T_deleted               ids deleted for good by wp_delete_post
+function wp_revisions_to_keep( $post ) {
+	$p = is_object( $post ) ? $post : get_post( $post );
+	if ( ! $p || ! post_type_supports( $p->post_type, 'revisions' ) ) { return 0; }
+	return (int) ( $GLOBALS['T_revisions_keep'] ?? -1 );
+}
+function wp_revisions_enabled( $post ) { return 0 !== wp_revisions_to_keep( $post ); }
+function wp_is_post_autosave( $post ) { $p = is_object( $post ) ? $post : get_post( $post ); return ( $p && 'revision' === $p->post_type && false !== strpos( (string) $p->post_name, '-autosave-v' ) ) ? (int) $p->post_parent : false; }
+function post_type_supports( $type, $feature ) { $o = $GLOBALS['T_post_types'][ $type ] ?? null; return null !== $o && in_array( $feature, (array) ( $o->supports ?? array() ), true ); }
+function get_object_taxonomies( $type, $output = 'names' ) {
+	$type = is_object( $type ) ? $type->post_type : $type; $out = array();
+	foreach ( $GLOBALS['T_taxonomies'] as $n => $t ) { if ( in_array( $type, (array) ( $t->object_type ?? array() ), true ) ) { $out[ $n ] = 'objects' === $output ? $t : $n; } }
+	return 'objects' === $output ? $out : array_values( $out );
+}
+function is_object_in_taxonomy( $type, $tax ) { return in_array( $tax, get_object_taxonomies( $type ), true ); }
+// Close to core's sanitize_title_with_dashes for plain ASCII input.
+function sanitize_title( $s ) { $s = strtolower( strip_tags( (string) $s ) ); $s = preg_replace( '/[^a-z0-9 _\-]/', '', $s ); $s = preg_replace( '/[\s\-]+/', '-', trim( $s ) ); return trim( $s, '-' ); }
+// The stand-in site runs on UTC.
+function get_gmt_from_date( $s, $f = 'Y-m-d H:i:s' ) { return gmdate( $f, strtotime( $s . ' UTC' ) ); }
+function get_date_from_gmt( $s, $f = 'Y-m-d H:i:s' ) { return gmdate( $f, strtotime( $s . ' UTC' ) ); }
+function remove_filter( $h, $cb, $p = 10 ) { foreach ( $GLOBALS['T_filters'][ $h ] ?? array() as $i => $c ) { if ( $c === $cb ) { unset( $GLOBALS['T_filters'][ $h ][ $i ] ); $GLOBALS['T_filters'][ $h ] = array_values( $GLOBALS['T_filters'][ $h ] ); return true; } } return false; }
+function t_post_fields() { return array( 'post_title', 'post_content', 'post_excerpt', 'post_status', 'post_name', 'post_parent', 'post_author', 'post_date', 'post_date_gmt', 'menu_order', 'comment_status', 'ping_status', 'post_password', 'post_mime_type' ); }
+function t_status_by_date( $status, $gmt ) {
+	if ( 'publish' === $status && '' !== (string) $gmt && strtotime( $gmt . ' UTC' ) - time() >= 60 ) { return 'future'; }
+	if ( 'future' === $status && '' !== (string) $gmt && strtotime( $gmt . ' UTC' ) - time() < 60 ) { return 'publish'; }
+	return $status;
+}
+function wp_insert_post( $arr, $wp_error = false, $fire_after_hooks = true ) {
+	$GLOBALS['T_inserts'][] = $arr;
+	if ( ! empty( $arr['ID'] ) ) { return wp_update_post( $arr, $wp_error ); }
+	if ( ! empty( $GLOBALS['T_insert_fail'] ) ) { return $wp_error ? new WP_Error( 'db_insert_error', 'Could not insert post into the database.' ) : 0; }
+	$f = wp_unslash( $arr );
+	$type = $f['post_type'] ?? 'post';
+	if ( 'attachment' !== $type && '' === trim( (string) ( $f['post_title'] ?? '' ) ) && '' === trim( (string) ( $f['post_content'] ?? '' ) ) && '' === trim( (string) ( $f['post_excerpt'] ?? '' ) ) ) {
+		return $wp_error ? new WP_Error( 'empty_content', 'Content, title, and excerpt are empty.' ) : 0;
+	}
+	$now = gmdate( 'Y-m-d H:i:s' );
+	$gmt = (string) ( $f['post_date_gmt'] ?? '' ); $local = (string) ( $f['post_date'] ?? '' );
+	if ( '' === $local ) { $local = '' !== $gmt ? $gmt : $now; } if ( '' === $gmt ) { $gmt = $local; }
+	$fields = array( 'post_type' => $type, 'post_status' => t_status_by_date( $f['post_status'] ?? 'draft', $gmt ), 'post_author' => (int) ( $f['post_author'] ?? $GLOBALS['T_user_id'] ),
+		'post_title' => (string) ( $f['post_title'] ?? '' ), 'post_content' => (string) ( $f['post_content'] ?? '' ), 'post_excerpt' => (string) ( $f['post_excerpt'] ?? '' ),
+		'post_name' => (string) ( $f['post_name'] ?? '' ), 'post_parent' => (int) ( $f['post_parent'] ?? 0 ), 'post_date' => $local, 'post_date_gmt' => $gmt,
+		'post_modified' => $now, 'post_modified_gmt' => $now, 'comment_status' => 'open', 'ping_status' => 'open', 'menu_order' => (int) ( $f['menu_order'] ?? 0 ) );
+	$id = t_add_post( $fields );
+	$dc = (int) get_option( 'default_category', 0 );
+	if ( 'post' === $type && isset( $GLOBALS['T_terms'][ $dc ] ) ) { $GLOBALS['T_object_terms'][ $id ]['category'] = array( $dc ); }
+	foreach ( (array) ( $arr['meta_input'] ?? array() ) as $k => $v ) { update_post_meta( $id, $k, $v ); }
+	return $id;
+}
+function wp_update_post( $arr = array(), $wp_error = false, $fire_after_hooks = true ) {
+	if ( is_object( $arr ) ) { $arr = wp_slash( get_object_vars( $arr ) ); }
+	$GLOBALS['T_updates'][] = $arr;
+	$id = (int) ( $arr['ID'] ?? 0 ); $old = $GLOBALS['T_posts'][ $id ] ?? null;
+	if ( null === $old ) { return $wp_error ? new WP_Error( 'invalid_post', 'Invalid post ID.' ) : 0; }
+	if ( ! empty( $GLOBALS['T_update_fail'] ) ) { return $wp_error ? new WP_Error( 'db_update_error', 'Could not update post in the database.' ) : 0; }
+	$f = wp_unslash( $arr );
+	$new = clone $old;
+	foreach ( t_post_fields() as $k ) { if ( array_key_exists( $k, $f ) ) { $new->$k = $f[ $k ]; } }
+	if ( array_key_exists( 'post_date_gmt', $f ) && ! array_key_exists( 'post_date', $f ) ) { $new->post_date = $f['post_date_gmt']; }
+	$new->post_status = t_status_by_date( (string) $new->post_status, (string) ( $new->post_date_gmt ?? '' ) );
+	$new->post_modified = $new->post_modified_gmt = gmdate( 'Y-m-d H:i:s' );
+	$GLOBALS['T_posts'][ $id ] = $new;
+	foreach ( (array) ( $arr['meta_input'] ?? array() ) as $k => $v ) { update_post_meta( $id, $k, $v ); }
+	if ( 'revision' !== $new->post_type ) { wp_save_post_revision( $id ); }
+	return $id;
+}
+function wp_save_post_revision( $id ) {
+	$p = get_post( $id );
+	if ( ! $p || 'auto-draft' === $p->post_status || 'revision' === $p->post_type || ! wp_revisions_enabled( $p ) ) { return null; }
+	foreach ( wp_get_post_revisions( $p->ID ) as $r ) {
+		if ( wp_is_post_autosave( $r ) ) { continue; }
+		if ( $r->post_title === $p->post_title && $r->post_content === $p->post_content && $r->post_excerpt === $p->post_excerpt ) { return null; }
+		break;
+	}
+	$rid = t_add_post( array( 'post_type' => 'revision', 'post_status' => 'inherit', 'post_parent' => (int) $p->ID, 'post_name' => $p->ID . '-revision-v1', 'post_author' => (int) $GLOBALS['T_user_id'],
+		'post_title' => $p->post_title, 'post_content' => $p->post_content, 'post_excerpt' => $p->post_excerpt, 'post_date_gmt' => gmdate( 'Y-m-d H:i:s' ), 'post_modified_gmt' => gmdate( 'Y-m-d H:i:s' ) ) );
+	$keep = wp_revisions_to_keep( $p );
+	if ( $keep >= 0 ) {
+		$all = array_values( array_filter( wp_get_post_revisions( $p->ID, array( 'order' => 'ASC' ) ), function ( $r ) { return ! wp_is_post_autosave( $r ); } ) );
+		for ( $i = 0; $i < count( $all ) - $keep; $i++ ) { unset( $GLOBALS['T_posts'][ $all[ $i ]->ID ] ); }
+	}
+	return $rid;
+}
+function wp_delete_post( $id, $force = false ) { $p = $GLOBALS['T_posts'][ (int) $id ] ?? null; if ( ! $p ) { return null; } unset( $GLOBALS['T_posts'][ (int) $id ], $GLOBALS['T_meta'][ (int) $id ] ); $GLOBALS['T_deleted'][] = (int) $id; return $p; }
+function wp_trash_post( $id = 0 ) {
+	$p = $GLOBALS['T_posts'][ (int) $id ] ?? null;
+	if ( ! $p || 'trash' === $p->post_status ) { return false; }
+	if ( defined( 'EMPTY_TRASH_DAYS' ) && ! EMPTY_TRASH_DAYS ) { return wp_delete_post( $id, true ); }
+	if ( ! empty( $GLOBALS['T_trash_blocked'] ) ) { return null; }
+	add_post_meta( $p->ID, '_wp_trash_meta_status', $p->post_status );
+	add_post_meta( $p->ID, '_wp_trash_meta_time', time() );
+	$new = clone $p; $new->post_status = 'trash';
+	if ( '' !== (string) $p->post_name ) { add_post_meta( $p->ID, '_wp_desired_post_slug', $p->post_name ); $new->post_name = $p->post_name . '__trashed'; }
+	$GLOBALS['T_posts'][ $p->ID ] = $new;
+	return $new;
+}
+function wp_untrash_post( $id = 0 ) {
+	$p = $GLOBALS['T_posts'][ (int) $id ] ?? null;
+	if ( ! $p || 'trash' !== $p->post_status ) { return false; }
+	$prev = (string) get_post_meta( $p->ID, '_wp_trash_meta_status', true );
+	$status = 'attachment' === $p->post_type ? 'inherit' : 'draft';
+	foreach ( $GLOBALS['T_filters']['wp_untrash_post_status'] ?? array() as $cb ) { $status = call_user_func( $cb, $status, (int) $p->ID, $prev ); }
+	delete_post_meta( $p->ID, '_wp_trash_meta_status' ); delete_post_meta( $p->ID, '_wp_trash_meta_time' );
+	$new = clone $p; $new->post_status = $status;
+	$slug = (string) get_post_meta( $p->ID, '_wp_desired_post_slug', true );
+	if ( '' !== $slug ) { $new->post_name = $slug; delete_post_meta( $p->ID, '_wp_desired_post_slug' ); }
+	$GLOBALS['T_posts'][ $p->ID ] = $new;
+	return $new;
+}
+function get_post_thumbnail_id( $post = null ) { $p = get_post( $post ); return $p ? (int) get_post_meta( $p->ID, '_thumbnail_id', true ) : false; }
+function set_post_thumbnail( $post, $thumbnail_id ) {
+	$p = get_post( $post ); $t = get_post( $thumbnail_id );
+	if ( ! $p || ! $t || 'attachment' !== $t->post_type ) { return false; }
+	if ( 0 === strpos( (string) $t->post_mime_type, 'image/' ) ) { return update_post_meta( $p->ID, '_thumbnail_id', (int) $thumbnail_id ); }
+	return delete_post_meta( $p->ID, '_thumbnail_id' );
+}
+function delete_post_thumbnail( $post ) { $p = get_post( $post ); return $p ? delete_post_meta( $p->ID, '_thumbnail_id' ) : false; }
+function wp_set_post_terms( $post_id = 0, $terms = '', $taxonomy = 'post_tag', $append = false ) {
+	if ( ! get_taxonomy( $taxonomy ) ) { return new WP_Error( 'invalid_taxonomy', 'Invalid taxonomy.' ); }
+	$ids = array_values( array_unique( array_map( 'intval', (array) $terms ) ) );
+	$had = $GLOBALS['T_object_terms'][ (int) $post_id ][ $taxonomy ] ?? array();
+	$GLOBALS['T_object_terms'][ (int) $post_id ][ $taxonomy ] = $append ? array_values( array_unique( array_merge( $had, $ids ) ) ) : $ids;
+	return array_map( 'strval', $ids );
 }

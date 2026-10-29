@@ -1,0 +1,224 @@
+<?php
+/**
+ * Shared helpers for the write abilities (#32, release 2.2.0): the stale check, the masked-read check, the Divi-content
+ * check, the status rule, the change-history "before" of a post-like object and the write response.
+ *
+ * This file only defines functions. Every later write task reuses them.
+ *
+ * The rules they carry (design 2026-10-29, "The one rule" and "Guardrails"):
+ *  - No stale overwrite: a content write carries expect_hash, md5 of the raw post_content (d5b_rc_hash).
+ *  - A masked read is never written back: incoming text holding the scrubber's [redacted] marker, where the stored text
+ *    does not, is refused.
+ *  - Divi block markup needs unfiltered_html, because kses would corrupt the block JSON.
+ *  - Draft by default; publish, future and private need the type's publish_posts.
+ *  - The history keeps the full "before": every field, and the content itself unless a revision with byte-identical
+ *    content exists (then revision_id points at it).
+ */
+if ( ! defined( 'ABSPATH' ) ) { exit; }
+
+if ( ! function_exists( 'd5b_wc_check_hash' ) ) {
+
+	/** post_modified_gmt as ISO 8601 UTC ('' when the post has none). */
+	function d5b_wc_iso( string $gmt ): string {
+		if ( '' === $gmt || '0000-00-00 00:00:00' === $gmt ) { return ''; }
+		$t = strtotime( $gmt . ' UTC' );
+		return false === $t ? '' : gmdate( 'Y-m-d\TH:i:s\Z', $t );
+	}
+
+	/**
+	 * The stale check. $expect null (not given) is invalid_input; a hash that does not match the stored content is 'stale'
+	 * with data.last_saved (post_modified_gmt, ISO 8601) and data.hash (the current hash), so the client can read again.
+	 * @return true|WP_Error
+	 */
+	function d5b_wc_check_hash( $p, ?string $expect ) {
+		if ( null === $expect || '' === $expect ) {
+			return new WP_Error( 'invalid_input', 'expect_hash is required when content is changed: read the item first and pass its hash.' );
+		}
+		$now = d5b_rc_hash( $p );
+		if ( hash_equals( $now, strtolower( $expect ) ) ) { return true; }
+		return new WP_Error( 'stale', 'The content changed since it was read (the hash does not match). Read it again, apply the change to the new content and pass the new hash.', array( 'last_saved' => d5b_wc_iso( (string) $p->post_modified_gmt ), 'hash' => $now ) );
+	}
+
+	/**
+	 * The masked-read check: text that holds the scrubber's [redacted] marker came from a masked read unless the stored
+	 * text holds it too. The client cannot be trusted to say where its text came from, so this is the check.
+	 * @return true|WP_Error
+	 */
+	function d5b_wc_check_masked( string $incoming, string $stored ) {
+		if ( false === strpos( $incoming, '[redacted]' ) || false !== strpos( $stored, '[redacted]' ) ) { return true; }
+		return new WP_Error( 'masked_read', 'This text holds [redacted], which the plugin puts where it hid a secret on reading. Writing it back would overwrite the hidden value, so it is refused. Change only the parts you need without the masked text, or edit it in wp-admin.' );
+	}
+
+	/** True when the text holds a Divi 5 block (<!-- wp:divi/...). */
+	function d5b_wc_has_divi( string $content ): bool {
+		return 1 === preg_match( '#<!--\s*wp:divi/#i', $content );
+	}
+
+	/**
+	 * Divi block markup from a caller without unfiltered_html is refused: kses would corrupt the block JSON on save and the
+	 * corrupted page would become the next "before". Plain content is not affected.
+	 * @return true|WP_Error
+	 */
+	function d5b_wc_check_divi_html( string $content ) {
+		if ( ! d5b_wc_has_divi( $content ) || current_user_can( 'unfiltered_html' ) ) { return true; }
+		return new WP_Error( 'needs_unfiltered_html', 'This content holds Divi blocks, and saving them needs the unfiltered_html capability (an administrator or editor on a single site). Without it WordPress would strip parts of the block data.' );
+	}
+
+	/**
+	 * Draft and pending are always allowed; publish, future and private need the type's publish_posts capability.
+	 * @return true|WP_Error
+	 */
+	function d5b_wc_status_allowed( string $type, string $status ) {
+		if ( in_array( $status, array( 'draft', 'pending' ), true ) ) { return true; }
+		if ( ! in_array( $status, array( 'publish', 'future', 'private' ), true ) ) {
+			return new WP_Error( 'invalid_input', 'status must be one of: draft, pending, publish, future, private.' );
+		}
+		if ( current_user_can( d5b_rc_type_cap( $type, 'publish_posts' ) ) ) { return true; }
+		return new WP_Error( 'not_allowed', 'You may not publish this kind of content (status ' . $status . ' needs the publish capability). Save it as draft or pending instead.' );
+	}
+
+	/** The term ids of the post in every taxonomy registered for its type, sorted: taxonomy => ids. */
+	function d5b_wc_terms_of( $p ): array {
+		$out = array();
+		foreach ( (array) get_object_taxonomies( (string) $p->post_type ) as $tax ) {
+			$tax   = is_object( $tax ) ? (string) $tax->name : (string) $tax;
+			$terms = get_the_terms( (int) $p->ID, $tax );
+			$ids   = array();
+			if ( is_array( $terms ) ) { foreach ( $terms as $t ) { $ids[] = (int) $t->term_id; } }
+			sort( $ids );
+			$out[ $tax ] = $ids;
+		}
+		ksort( $out );
+		return $out;
+	}
+
+	/** The custom fields a write may touch (not protected, not secret-named): key => list of values, as get_post_meta gives them. */
+	function d5b_wc_meta_of( $p ): array {
+		$out = array();
+		foreach ( array_keys( (array) get_post_meta( (int) $p->ID ) ) as $k ) {
+			$k = (string) $k;
+			if ( is_protected_meta( $k, 'post' ) || d5b_is_secret_key( $k ) ) { continue; }
+			$out[ $k ] = d5b_rc_meta_clean( array_values( (array) get_post_meta( (int) $p->ID, $k, false ) ) );
+		}
+		ksort( $out );
+		return $out;
+	}
+
+	/** Every field of a post-like object other than its content, as the history keeps it (key names follow the inputs). */
+	function d5b_wc_snapshot( $p ): array {
+		$id = (int) $p->ID;
+		return array(
+			'type' => (string) $p->post_type, 'title' => (string) $p->post_title, 'slug' => (string) $p->post_name, 'status' => (string) $p->post_status,
+			'excerpt' => (string) $p->post_excerpt, 'author' => (int) $p->post_author, 'parent' => (int) $p->post_parent,
+			'date' => (string) ( $p->post_date ?? '' ), 'date_gmt' => (string) ( $p->post_date_gmt ?? '' ), 'menu_order' => (int) ( $p->menu_order ?? 0 ),
+			'comment_status' => (string) ( $p->comment_status ?? '' ), 'ping_status' => (string) ( $p->ping_status ?? '' ),
+			'terms' => d5b_wc_terms_of( $p ), 'meta' => d5b_wc_meta_of( $p ), 'featured_image' => (int) get_post_thumbnail_id( $id ),
+			// Divi's own flags are protected meta, but divi: true writes them, so the history keeps them.
+			'divi_flags' => array( '_et_pb_use_builder' => (string) get_post_meta( $id, '_et_pb_use_builder', true ), '_et_pb_use_divi_5' => (string) get_post_meta( $id, '_et_pb_use_divi_5', true ) ),
+		);
+	}
+
+	/** The snapshot plus the content: what the "after" of a write is compared against. */
+	function d5b_wc_state( $p ): array {
+		return d5b_wc_snapshot( $p ) + array( 'content' => (string) $p->post_content );
+	}
+
+	/**
+	 * The latest revision (autosaves left out: they are overwritten) whose post_content is byte-identical to the post's,
+	 * else 0. wp_get_post_revisions returns nothing when revisions are off for the type.
+	 */
+	function d5b_wc_matching_revision( $p ): int {
+		$content = (string) $p->post_content;
+		foreach ( (array) wp_get_post_revisions( (int) $p->ID ) as $r ) {
+			if ( ! is_object( $r ) || 'revision' !== ( $r->post_type ?? '' ) || (int) $r->post_parent !== (int) $p->ID ) { continue; }
+			if ( function_exists( 'wp_is_post_autosave' ) && wp_is_post_autosave( $r ) ) { continue; }
+			// A revision's content never changes once made, so any identical one holds the old content; newest first.
+			if ( (string) $r->post_content === $content ) { return (int) $r->ID; }
+		}
+		return 0;
+	}
+
+	/** The history "before": every field, and the content only when no matching revision holds it. */
+	function d5b_wc_post_before( $p ): array {
+		$before = d5b_wc_snapshot( $p );
+		if ( 0 === d5b_wc_matching_revision( $p ) ) { $before['content'] = (string) $p->post_content; }
+		return $before;
+	}
+
+	/** The fields of $new that differ from $old (the "after" of a write). */
+	function d5b_wc_diff( array $old, array $new ): array {
+		$out = array();
+		foreach ( $new as $k => $v ) { if ( ! array_key_exists( $k, $old ) || $old[ $k ] !== $v ) { $out[ $k ] = $v; } }
+		return $out;
+	}
+
+	/**
+	 * The wp_insert_post / wp_update_post array from accepted input (title, content, excerpt, status, slug, parent, author,
+	 * date, meta, divi). Terms and the featured image are set separately. The caller slashes it (wp_slash): core unslashes.
+	 */
+	function d5b_wc_apply_fields( array $a, $existing ): array {
+		$arr = array();
+		if ( is_object( $existing ) ) { $arr['ID'] = (int) $existing->ID; }
+		$map = array( 'title' => 'post_title', 'content' => 'post_content', 'excerpt' => 'post_excerpt', 'status' => 'post_status', 'parent' => 'post_parent', 'author' => 'post_author' );
+		foreach ( $map as $in => $field ) { if ( array_key_exists( $in, $a ) ) { $arr[ $field ] = $a[ $in ]; } }
+		if ( isset( $a['slug'] ) ) { $arr['post_name'] = sanitize_title( (string) $a['slug'] ); }
+		if ( isset( $a['date'] ) ) {
+			$arr['post_date_gmt'] = (string) $a['date'];
+			$arr['post_date']     = (string) get_date_from_gmt( (string) $a['date'], 'Y-m-d H:i:s' );
+			$arr['edit_date']     = true;
+		}
+		$meta = isset( $a['meta'] ) && is_array( $a['meta'] ) ? $a['meta'] : array();
+		if ( ! empty( $a['divi'] ) ) { $meta['_et_pb_use_builder'] = 'on'; $meta['_et_pb_use_divi_5'] = 'on'; }
+		if ( $meta ) { $arr['meta_input'] = $meta; }
+		return $arr;
+	}
+
+	/** The response of every post-like write: the detail row (id, url, hash, status and the rest). */
+	function d5b_wc_result( $p ): array {
+		return d5b_rc_detail( $p );
+	}
+
+	/**
+	 * A post of one of $types the caller may read (switch of its type on) AND holds $cap on (edit_post, delete_post), or null.
+	 */
+	function d5b_wc_post( $id, array $types, string $cap = 'edit_post' ) {
+		$p = d5b_rc_post( $id, $types );
+		return ( null !== $p && current_user_can( $cap, (int) $p->ID ) ) ? $p : null;
+	}
+
+	/** Why d5b_wc_post said no: not_allowed for an item the caller can read but not change, else as d5b_rc_deny. */
+	function d5b_wc_deny( $id, array $types ): WP_Error {
+		if ( null !== d5b_rc_post( $id, $types ) ) { return new WP_Error( 'not_allowed', 'You may not change this item.' ); }
+		return d5b_rc_deny( $id, $types );
+	}
+
+	/** False when the site has no trash (EMPTY_TRASH_DAYS is 0): wp_trash_post would then delete permanently. */
+	function d5b_wc_trash_available(): bool {
+		return ! defined( 'EMPTY_TRASH_DAYS' ) || (bool) constant( 'EMPTY_TRASH_DAYS' );
+	}
+
+	/** One history row; true when it was stored. */
+	function d5b_wc_history( string $ability, $p, string $action, ?array $before, array $after, int $revision_id, string $summary ): bool {
+		if ( ! function_exists( 'd5b_history_write' ) ) { return false; }
+		return d5b_history_write( array(
+			'ability' => $ability, 'object_type' => (string) $p->post_type, 'object_id' => (int) $p->ID, 'action' => $action,
+			'before' => $before, 'after' => $after, 'revision_id' => $revision_id, 'summary' => $summary,
+		) ) > 0;
+	}
+
+	/** "Updated page 42 'Contact us'". */
+	function d5b_wc_summary( string $verb, string $what, $p ): string {
+		$title = d5b_rc_cut( preg_replace( '/\s+/', ' ', (string) $p->post_title ), 80 );
+		return $verb . ' ' . $what . ' ' . (int) $p->ID . ( '' === $title ? '' : " '" . $title . "'" );
+	}
+
+	/** Adds one write definition with its annotations (readonly false; destructive only for a trash or a delete). */
+	function d5b_wc_def( string $name, string $category, string $label, string $description, array $props, array $required, $handler, $permission, array $annotations ): void {
+		d5b_ability_add( array(
+			'name' => 'divi5-builder/' . $name, 'category' => $category, 'label' => $label, 'description' => $description,
+			'input_schema' => d5b_rc_schema( $props, $required ), 'output_schema' => array( 'type' => 'object' ),
+			'handler' => $handler, 'permission' => $permission,
+			'annotations' => array_merge( array( 'readonly' => false, 'destructive' => false, 'idempotent' => false ), $annotations ),
+		) );
+	}
+}

@@ -183,7 +183,7 @@ if ( ! function_exists( 'd5b_ability_http_status' ) ) {
 			'stale' => 409, 'masked_read' => 409, 'confirmation_invalid' => 409, 'crosses_markup' => 409, 'ambiguous' => 409, 'cannot_trash' => 409,
 			'needs_unfiltered_html' => 403, 'history_unavailable' => 503,
 			'unavailable' => 503, 'audit_unavailable' => 503,
-			'internal_error' => 500,
+			'internal_error' => 500, 'write_failed' => 500,
 		);
 		return $map[ $code ] ?? $default;
 	}
