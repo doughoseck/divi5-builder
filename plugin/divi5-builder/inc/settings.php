@@ -149,7 +149,7 @@ if ( ! function_exists( 'd5b_settings_render_audit' ) ) {
 				. '</td><td>' . esc_html( (string) $r['duration_ms'] ) . '</td><td>' . esc_html( $r['ip'] ) . '</td><td><code>' . esc_html( $args ) . '</code></td></tr>';
 		}
 		echo '</tbody></table>';
-		echo '<p class="description">' . esc_html( 'started = the call began and did not finish (or is the current one); forbidden = refused; error:<code> = the ability answered with an error' ) . '</p>';
+		echo '<p class="description">' . esc_html( 'started = the call began and did not finish (or is the current one); forbidden = refused; ok_no_history = it worked but its change history could not be saved; error:<code> = the ability answered with an error' ) . '</p>';
 	}
 }
 

@@ -28,7 +28,7 @@ function get_posts( $a ) {
 function metadata_exists( $t, $id, $k ) { return isset( $GLOBALS['T_meta'][ (int) $id ][ $k ] ); }
 function maybe_unserialize( $v ) { return $v; }
 
-foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/read-content', 'inc/abilities/read-divi', 'inc/abilities/read-history', 'parts/page-building' ) as $f ) { require $dir . '/' . $f . '.php'; }
+foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/history', 'inc/abilities/read-content', 'inc/abilities/read-divi', 'inc/abilities/read-history', 'parts/page-building' ) as $f ) { require $dir . '/' . $f . '.php'; }
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . substr( is_string( $detail ) ? $detail : json_encode( $detail ), 0, 700 ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }

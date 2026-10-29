@@ -156,6 +156,28 @@ if ( ! function_exists( 'd5b_ability_scrub' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_ability_scrub_keys' ) ) {
+	/**
+	 * Key removal only: every entry whose key names a secret (d5b_is_secret_key) is dropped, at any depth. No text masking, so
+	 * content stays byte for byte as it was (the change history must be able to restore it). Objects become arrays as in
+	 * d5b_ability_scrub; nesting deeper than 32 levels is "[too deep]".
+	 */
+	function d5b_ability_scrub_keys( $value, int $depth = 0 ) {
+		if ( is_object( $value ) ) {
+			$value = $value instanceof JsonSerializable ? $value->jsonSerialize() : get_object_vars( $value );
+			if ( is_object( $value ) ) { $value = get_object_vars( $value ); }
+		}
+		if ( ! is_array( $value ) ) { return $value; }
+		if ( $depth >= 32 ) { return '[too deep]'; }
+		$out = array();
+		foreach ( $value as $k => $v ) {
+			if ( d5b_is_secret_key( $k ) ) { continue; }
+			$out[ $k ] = d5b_ability_scrub_keys( $v, $depth + 1 );
+		}
+		return $out;
+	}
+}
+
 if ( ! function_exists( 'd5b_ability_scrub_raw' ) ) {
 	/** The whole value treated as raw third-party data (the row and parallel rules apply everywhere in it). */
 	function d5b_ability_scrub_raw( $value ) {

@@ -240,6 +240,12 @@ class T_Wpdb {
 		}
 		return false;
 	}
+	function get_row( $sql, $output = 'OBJECT' ) {
+		$this->note( $sql );
+		if ( ! preg_match( '/^SELECT \* FROM (\S+) WHERE id = (\d+)$/', $sql, $m ) || ! isset( $this->tables[ $m[1] ] ) ) { return null; }
+		foreach ( $this->tables[ $m[1] ] as $r ) { if ( (int) $r['id'] === (int) $m[2] ) { return $r; } }
+		return null;
+	}
 	function get_results( $sql, $output = 'OBJECT' ) {
 		$this->note( $sql );
 		if ( ! preg_match( '/^SELECT .+ FROM (\S+)(?: WHERE (.+?))? ORDER BY id DESC LIMIT (\d+) OFFSET (\d+)$/', $sql, $m ) ) { return null; }
@@ -249,16 +255,21 @@ class T_Wpdb {
 		$q = "'((?:[^'\\\\]|\\\\.)*)'";
 		if ( preg_match( "/ability = $q/", $w, $x ) ) { $v = stripslashes( $x[1] ); $rows = array_filter( $rows, function ( $r ) use ( $v ) { return $r['ability'] === $v; } ); }
 		if ( preg_match( "/status = $q/", $w, $x ) ) { $v = stripslashes( $x[1] ); $rows = array_filter( $rows, function ( $r ) use ( $v ) { return $r['status'] === $v; } ); }
+		if ( preg_match( "/object_type = $q/", $w, $x ) ) { $v = stripslashes( $x[1] ); $rows = array_filter( $rows, function ( $r ) use ( $v ) { return $r['object_type'] === $v; } ); }
+		if ( preg_match( '/object_id = (\d+)/', $w, $x ) ) { $v = (int) $x[1]; $rows = array_filter( $rows, function ( $r ) use ( $v ) { return (int) $r['object_id'] === $v; } ); }
 		if ( preg_match( '/user_id = (\d+)/', $w, $x ) ) { $v = (int) $x[1]; $rows = array_filter( $rows, function ( $r ) use ( $v ) { return (int) $r['user_id'] === $v; } ); }
 		if ( preg_match( "/created_at >= $q/", $w, $x ) ) { $v = stripslashes( $x[1] ); $rows = array_filter( $rows, function ( $r ) use ( $v ) { return strcmp( $r['created_at'], $v ) >= 0; } ); }
-		return array_values( array_slice( array_values( $rows ), (int) $m[4], (int) $m[3] ) );
+		$out = array_values( array_slice( array_values( $rows ), (int) $m[4], (int) $m[3] ) );
+		// the column list, as SQL returns only what was asked for
+		if ( preg_match( '/^SELECT (.+?) FROM /', $sql, $cols ) && '*' !== trim( $cols[1] ) ) { $want = array_flip( array_map( 'trim', explode( ',', $cols[1] ) ) ); $out = array_map( function ( $r ) use ( $want ) { return array_intersect_key( $r, $want ); }, $out ); }
+		return $out;
 	}
 }
 // T_cleared_on: the blog id current at each wp_clear_scheduled_hook call; T_transient_deletes: array( name, blog id ) per delete_transient
 // (cron events and transients are per site in WordPress; here they are one store, so these record which site each call was made on).
 function t_wpdb_reset() { $GLOBALS['wpdb'] = new T_Wpdb(); $GLOBALS['T_dbdelta'] = array(); $GLOBALS['T_cron'] = array(); $GLOBALS['T_user_id'] = 0; $GLOBALS['T_dbdelta_fail'] = false; $GLOBALS['T_transients'] = array(); $GLOBALS['T_cleared_on'] = array(); $GLOBALS['T_transient_deletes'] = array(); }
 t_wpdb_reset();
-function dbDelta( $sql ) { $GLOBALS['T_dbdelta'][] = $sql; if ( ! empty( $GLOBALS['T_dbdelta_throw'] ) ) { throw new RuntimeException( 'dbDelta exploded' ); } if ( preg_match( '/CREATE TABLE (\S+)/', $sql, $m ) && empty( $GLOBALS['T_dbdelta_fail'] ) && ! isset( $GLOBALS['wpdb']->tables[ $m[1] ] ) ) { $GLOBALS['wpdb']->tables[ $m[1] ] = array(); } return array(); }
+function dbDelta( $sql ) { $GLOBALS['T_dbdelta'][] = $sql; if ( ! empty( $GLOBALS['T_dbdelta_throw'] ) ) { throw new RuntimeException( 'dbDelta exploded' ); } if ( empty( $GLOBALS['T_dbdelta_fail'] ) && preg_match_all( '/CREATE TABLE (\S+)/', $sql, $mm ) ) { foreach ( $mm[1] as $t ) { if ( ! isset( $GLOBALS['wpdb']->tables[ $t ] ) ) { $GLOBALS['wpdb']->tables[ $t ] = array(); } } } return array(); }
 function wp_next_scheduled( $hook ) { return $GLOBALS['T_cron'][ $hook ] ?? false; }
 function wp_schedule_event( $ts, $recurrence, $hook ) { $GLOBALS['T_cron'][ $hook ] = $ts; return true; }
 function wp_clear_scheduled_hook( $hook ) { $GLOBALS['T_cleared_on'][] = $GLOBALS['T_blog_id'] ?? 1; unset( $GLOBALS['T_cron'][ $hook ] ); return 1; }

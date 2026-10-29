@@ -10,7 +10,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( ! defined( 'D5B_DB_VERSION' ) ) { define( 'D5B_DB_VERSION', '1' ); }
+if ( ! defined( 'D5B_DB_VERSION' ) ) { define( 'D5B_DB_VERSION', '2' ); }
 
 if ( ! function_exists( 'd5b_audit_table' ) ) {
 	function d5b_audit_table(): string {
@@ -73,6 +73,7 @@ if ( ! function_exists( 'd5b_audit_maybe_install' ) ) {
 		if ( ! function_exists( 'dbDelta' ) || ! d5b_audit_install_allowed() ) { return; }
 		d5b_audit_install_state( 'tried' );
 		$table   = d5b_audit_table();
+		$history = d5b_history_table();
 		$charset = method_exists( $wpdb, 'get_charset_collate' ) ? $wpdb->get_charset_collate() : '';
 		dbDelta( "CREATE TABLE {$table} (
   id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
@@ -86,9 +87,27 @@ if ( ! function_exists( 'd5b_audit_maybe_install' ) ) {
   PRIMARY KEY  (id),
   KEY created_at (created_at),
   KEY ability (ability)
+) {$charset};
+CREATE TABLE {$history} (
+  id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  created_at datetime NOT NULL,
+  user_id bigint(20) unsigned NOT NULL DEFAULT 0,
+  ability varchar(191) NOT NULL DEFAULT '',
+  audit_id bigint(20) unsigned NOT NULL DEFAULT 0,
+  object_type varchar(64) NOT NULL DEFAULT '',
+  object_id bigint(20) unsigned NOT NULL DEFAULT 0,
+  action varchar(16) NOT NULL DEFAULT '',
+  `before` longtext NOT NULL,
+  `after` longtext NOT NULL,
+  revision_id bigint(20) unsigned NULL DEFAULT NULL,
+  summary varchar(191) NOT NULL DEFAULT '',
+  PRIMARY KEY  (id),
+  KEY created_at (created_at),
+  KEY ability (ability),
+  KEY object (object_type,object_id)
 ) {$charset};" );
-		// Only remember the version when the table is really there, so a failed create is tried again.
-		if ( d5b_audit_table_exists() ) {
+		// Only remember the version when both tables are really there, so a failed create is tried again.
+		if ( d5b_audit_table_exists() && d5b_history_table_exists() ) {
 			update_option( 'd5b_db_version', D5B_DB_VERSION, false );
 			if ( function_exists( 'delete_transient' ) ) { delete_transient( 'd5b_audit_install_failed' ); }
 		} elseif ( function_exists( 'set_transient' ) ) {
@@ -447,7 +466,7 @@ if ( ! function_exists( 'd5b_audit_write' ) ) {
 }
 
 if ( ! function_exists( 'd5b_audit_prune' ) ) {
-	/** Deletes rows older than 30 days. @return int rows deleted */
+	/** Deletes rows older than 30 days from the audit log and the change history. @return int audit rows deleted */
 	function d5b_audit_prune(): int {
 		global $wpdb;
 		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return 0; }
@@ -455,6 +474,7 @@ if ( ! function_exists( 'd5b_audit_prune' ) ) {
 		$quiet  = method_exists( $wpdb, 'suppress_errors' ) ? $wpdb->suppress_errors( true ) : null;
 		$n      = $wpdb->query( $wpdb->prepare( 'DELETE FROM ' . d5b_audit_table() . ' WHERE created_at < %s', $cutoff ) );
 		if ( null !== $quiet ) { $wpdb->suppress_errors( $quiet ); }
+		if ( function_exists( 'd5b_history_prune' ) ) { d5b_history_prune(); }
 		return is_int( $n ) ? $n : 0;
 	}
 }

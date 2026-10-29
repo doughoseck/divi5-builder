@@ -179,7 +179,9 @@ if ( ! function_exists( 'd5b_ability_http_status' ) ) {
 		$map = array(
 			'invalid_input' => 400, 'page_too_deep' => 400,
 			'forbidden' => 403, 'forbidden_anonymous' => 403, 'not_allowed' => 403,
-			'not_found' => 404,
+			'not_found' => 404, 'backup_not_found' => 404,
+			'stale' => 409, 'masked_read' => 409, 'confirmation_invalid' => 409, 'crosses_markup' => 409, 'ambiguous' => 409, 'cannot_trash' => 409,
+			'needs_unfiltered_html' => 403, 'history_unavailable' => 503,
 			'unavailable' => 503, 'audit_unavailable' => 503,
 			'internal_error' => 500,
 		);
@@ -236,6 +238,26 @@ if ( ! function_exists( 'd5b_ability_permit' ) ) {
 		d5b_ability_audit( $name, $args, 'forbidden', d5b_ability_ms_since( $start ) );
 		// A refusal: an error the definition gave without a status is a 403 (core sets its own on this path anyway).
 		return is_wp_error( $out ) ? d5b_ability_with_status( d5b_ability_clean_error( $out ), 403 ) : false;
+	}
+}
+
+if ( ! function_exists( 'd5b_ability_audit_current_state' ) ) {
+	/**
+	 * The audit row id of the call that is running now. With $set it stores that id and returns the PREVIOUS one (so a
+	 * nested call can restore the outer id); without it, it returns the current one. 0 outside a call.
+	 */
+	function d5b_ability_audit_current_state( ?int $set = null ): int {
+		static $current = 0;
+		$prev = $current;
+		if ( null !== $set ) { $current = max( 0, $set ); }
+		return $prev;
+	}
+}
+
+if ( ! function_exists( 'd5b_ability_audit_current_id' ) ) {
+	/** The audit row id of the running ability call (the change history links to it), 0 outside a call. */
+	function d5b_ability_audit_current_id(): int {
+		return d5b_ability_audit_current_state( null );
 	}
 }
 
@@ -354,19 +376,28 @@ if ( ! function_exists( 'd5b_ability_run' ) ) {
 			return d5b_ability_with_status( new WP_Error( 'audit_unavailable', 'The activity log cannot be written on this site, so the ability was not run.' ) );
 		}
 		$audit_args = $args;
+		$outer_id   = d5b_ability_audit_current_state( $id );
 		try {
-			$result = call_user_func( $defs[ $name ]['handler'], $args );
+			$result     = call_user_func( $defs[ $name ]['handler'], $args );
+			$no_history = false;
+			// A write handler sets _history_failed when its change history row could not be stored; the key never leaves here.
+			if ( is_array( $result ) && array_key_exists( '_history_failed', $result ) ) {
+				$no_history = true === $result['_history_failed'];
+				unset( $result['_history_failed'] );
+			}
 			if ( is_wp_error( $result ) ) { $result = d5b_ability_clean_error( $result ); }
 			else { $result = d5b_ability_scrub_result( $defs[ $name ], $result ); }
-			$status = is_wp_error( $result ) ? d5b_ability_error_status( (string) $result->get_error_code() ) : 'ok';
+			$status = is_wp_error( $result ) ? d5b_ability_error_status( (string) $result->get_error_code() ) : ( $no_history ? 'ok_no_history' : 'ok' );
 		} catch ( Throwable $e ) {
 			// The class and message go to the audit row only; the caller gets a fixed message.
 			$audit_args['_exception'] = get_class( $e ) . ': ' . $e->getMessage();
 			$result = new WP_Error( 'internal_error', 'Something went wrong on the site. The details are in the activity log.' );
 			$status = 'internal_error';
+		} finally {
+			d5b_ability_audit_current_state( $outer_id );
 		}
 		// The stored args are written again only when they change (_exception) or a refusal caps them smaller.
-		d5b_ability_audit_finish( $id, $status, d5b_ability_ms_since( $start ), 'ok' === $status ? null : $audit_args );
+		d5b_ability_audit_finish( $id, $status, d5b_ability_ms_since( $start ), in_array( $status, array( 'ok', 'ok_no_history' ), true ) ? null : $audit_args );
 		return is_wp_error( $result ) ? d5b_ability_with_status( $result ) : $result;
 	}
 }

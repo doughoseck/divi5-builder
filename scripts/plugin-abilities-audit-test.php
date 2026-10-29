@@ -23,6 +23,8 @@ require $dir . '/inc/abilities/categories.php';
 require $dir . '/inc/abilities/register.php';
 require $dir . '/inc/abilities/secrets.php';
 require $dir . '/inc/abilities/audit.php';
+require $dir . '/inc/abilities/scrub.php';
+require $dir . '/inc/abilities/history.php';
 require $dir . '/inc/settings.php';
 
 // ---- child: a handler that dies for real (memory exhausted, or exit). The shutdown function prints what the table holds.
@@ -52,9 +54,9 @@ function html( $fn ) { ob_start(); $fn(); return ob_get_clean(); }
 
 echo "install\n";
 fresh();
-check( 'before install there is no table and no version', array() === $wpdb->tables && false === get_option( 'd5b_db_version' ) && '1' === D5B_DB_VERSION );
+check( 'before install there is no table and no version', array() === $wpdb->tables && false === get_option( 'd5b_db_version' ) && '2' === D5B_DB_VERSION );
 d5b_audit_maybe_install();
-check( 'install creates the table once and sets d5b_db_version', array_key_exists( 'wp_d5b_audit', $wpdb->tables ) && '1' === get_option( 'd5b_db_version' ) && 1 === count( $GLOBALS['T_dbdelta'] ), array( array_keys( $wpdb->tables ), $GLOBALS['T_dbdelta'] ) );
+check( 'install creates the table once and sets d5b_db_version', array_key_exists( 'wp_d5b_audit', $wpdb->tables ) && '2' === get_option( 'd5b_db_version' ) && 1 === count( $GLOBALS['T_dbdelta'] ), array( array_keys( $wpdb->tables ), $GLOBALS['T_dbdelta'] ) );
 d5b_audit_maybe_install();
 check( 'a second call does nothing (dbDelta not run again)', 1 === count( $GLOBALS['T_dbdelta'] ) );
 $sql = $GLOBALS['T_dbdelta'][0];
@@ -63,7 +65,7 @@ check( 'the daily prune event is scheduled', isset( $GLOBALS['T_cron']['d5b_audi
 d5b_audit_deactivate();
 check( 'deactivation clears the event (the table and the log stay)', ! isset( $GLOBALS['T_cron']['d5b_audit_prune'] ) && isset( $wpdb->tables['wp_d5b_audit'] ) );
 fresh(); update_option( 'd5b_db_version', '0' ); d5b_audit_maybe_install();
-check( 'an older stored version installs again', 1 === count( $GLOBALS['T_dbdelta'] ) && '1' === get_option( 'd5b_db_version' ) );
+check( 'an older stored version installs again', 1 === count( $GLOBALS['T_dbdelta'] ) && '2' === get_option( 'd5b_db_version' ) );
 
 echo "write\n";
 installed();
@@ -171,14 +173,14 @@ $wpdb->fail_insert = true;
 check( 'a database that throws on insert: write returns 0, never throws', 0 === d5b_audit_write( 'a/b', array(), 'ok', 1 ) );
 $wpdb->fail_insert = false; $GLOBALS['T_dbdelta_fail'] = false;
 delete_transient( 'd5b_audit_install_failed' ); d5b_audit_install_state( 'reset' ); // the back-off has passed, a later request
-check( 'write with no table: the table is made on the spot and the row stored', d5b_audit_write( 'a/b', array(), 'ok', 1 ) > 0 && 1 === count( rows() ) && '1' === get_option( 'd5b_db_version' ) );
+check( 'write with no table: the table is made on the spot and the row stored', d5b_audit_write( 'a/b', array(), 'ok', 1 ) > 0 && 1 === count( rows() ) && '2' === get_option( 'd5b_db_version' ) );
 echo "self-repair: table dropped, version still says installed\n";
 installed();
 unset( $wpdb->tables['wp_d5b_audit'] ); d5b_audit_install_state( 'reset' ); // a later request
 d5b_audit_maybe_install();
-check( 'maybe_install alone does not notice (version matches), as designed', array() === $wpdb->tables );
+check( 'maybe_install alone does not notice (version matches), as designed', ! isset( $wpdb->tables['wp_d5b_audit'] ) );
 $ok = d5b_audit_write( 'a/b', array( 'x' => 1 ), 'ok', 1 );
-check( 'the next write repairs the table and stores the row', $ok > 0 && 1 === count( rows() ) && '1' === get_option( 'd5b_db_version' ), array( $ok, $wpdb->tables ) );
+check( 'the next write repairs the table and stores the row', $ok > 0 && 1 === count( rows() ) && '2' === get_option( 'd5b_db_version' ), array( $ok, $wpdb->tables ) );
 check( 'the repair retried the insert only once (no loop) and used prepared SHOW TABLES with an escaped name', array() === $wpdb->unprepared && false !== strpos( implode( "\n", $wpdb->queries ), 'wp' . str_repeat( chr( 92 ), 2 ) . '_d5b' ), $wpdb->queries );
 echo "subsite: switches are network-wide, no admin_init ever ran there\n";
 installed(); t_set_multisite( true );
@@ -187,7 +189,7 @@ d5b_abilities_set_master( true, 'net' );
 d5b_ability_add( array( 'name' => 'divi5-builder/posts-a', 'category' => 'posts', 'label' => 'a', 'description' => 'x', 'handler' => function ( array $i ) { return array( 'v' => 1 ); }, 'permission' => function ( array $i ) { return true; } ) );
 add_action( 'wp_abilities_api_categories_init', 'd5b_abilities_register_categories' ); add_action( 'wp_abilities_api_init', 'd5b_abilities_register' );
 t_fire( 'wp_abilities_api_categories_init' ); t_fire( 'wp_abilities_api_init' );
-check( 'registering abilities on a subsite creates that site\'s audit table', isset( $wpdb->tables['wp_2_d5b_audit'] ) && '1' === get_option( 'd5b_db_version' ), array_keys( $wpdb->tables ) );
+check( 'registering abilities on a subsite creates that site\'s audit table', isset( $wpdb->tables['wp_2_d5b_audit'] ) && '2' === get_option( 'd5b_db_version' ), array_keys( $wpdb->tables ) );
 $res = d5b_ability_run( 'divi5-builder/posts-a', array( 'id' => 1 ) );
 check( 'one ability run on the subsite makes exactly one row in that subsite\'s table, none on the main site', array( 'v' => 1 ) === $res && 1 === count( $wpdb->tables['wp_2_d5b_audit'] ) && 0 === count( $wpdb->tables['wp_d5b_audit'] ), array_map( 'count', $wpdb->tables ) );
 t_set_multisite( false );
@@ -211,7 +213,7 @@ d5b_audit_maybe_install();
 check( 'once the transient has expired the next attempt runs dbDelta again', 2 === count( $GLOBALS['T_dbdelta'] ) );
 $GLOBALS['T_dbdelta_fail'] = false; $GLOBALS['T_transients']['d5b_audit_install_failed'][1] = time() - 1; d5b_audit_install_state( 'reset' );
 d5b_audit_maybe_install();
-check( 'a successful install clears the transient and stores the version', isset( $wpdb->tables['wp_d5b_audit'] ) && ! isset( $GLOBALS['T_transients']['d5b_audit_install_failed'] ) && '1' === get_option( 'd5b_db_version' ) );
+check( 'a successful install clears the transient and stores the version', isset( $wpdb->tables['wp_d5b_audit'] ) && ! isset( $GLOBALS['T_transients']['d5b_audit_install_failed'] ) && '2' === get_option( 'd5b_db_version' ) );
 fresh(); $GLOBALS['T_dbdelta_fail'] = true; d5b_audit_write( 'a/b', array(), 'ok', 1 );
 $GLOBALS['T_dbdelta_fail'] = false; delete_transient( 'd5b_audit_install_failed' );
 $wpdb->prefix = 'wp_3_'; delete_option( 'd5b_db_version' ); d5b_audit_maybe_install();
@@ -235,7 +237,7 @@ fresh(); unset( $GLOBALS['wpdb'] );
 check( 'no $wpdb at all: write 0, list empty, prune 0, install quiet', 0 === d5b_audit_write( 'a/b', array(), 'ok', 1 ) && array() === d5b_audit_list( array() ) && 0 === d5b_audit_prune() && null === d5b_audit_maybe_install() );
 t_wpdb_reset();
 fresh(); $wpdb = $GLOBALS['wpdb'];
-$wpdb->tables = array(); update_option( 'd5b_db_version', '1' ); // version says installed, table is gone (dropped by hand)
+$wpdb->tables = array(); update_option( 'd5b_db_version', '2' ); // version says installed, table is gone (dropped by hand)
 check( 'run through the wrapper still returns when the table is missing', ( function () {
 	d5b_abilities_set_master( true, 't' );
 	d5b_ability_add( array( 'name' => 'divi5-builder/posts-a', 'category' => 'posts', 'label' => 'a', 'description' => 'x', 'handler' => function ( array $i ) { return array( 'v' => 1 ); }, 'permission' => function ( array $i ) { return true; } ) );
@@ -322,7 +324,7 @@ check( 'stored quotes in args are escaped', false === strpos( $out, '"quoted"' )
 // The login column names a missing user "deleted user": that text is not a control, so it is left out of the scan.
 check( 'read-only: no delete, clear or purge control, and no POST form', 1 !== preg_match( '/delete|clear|purge|remove/i', str_replace( '<td>deleted user</td>', '', $out ) ) && false === stripos( $out, 'method="post"' ), $out );
 check( 'the login column: user 4 does not exist, so "deleted user"', false !== strpos( $out, '<th>Login</th>' ) && false !== strpos( $out, '<td>4</td><td>deleted user</td>' ), $out );
-check( 'the legend under the list, word for word', false !== strpos( $out, esc_html( 'started = the call began and did not finish (or is the current one); forbidden = refused; error:<code> = the ability answered with an error' ) ), $out );
+check( 'the legend under the list, word for word', false !== strpos( $out, esc_html( 'started = the call began and did not finish (or is the current one); forbidden = refused; ok_no_history = it worked but its change history could not be saved; error:<code> = the ability answered with an error' ) ), $out );
 $GLOBALS['T_users'][4] = (object) array( 'ID' => 4, 'user_login' => 'ed<i>' );
 $GLOBALS['T_user_id'] = 0; d5b_audit_write( 'anon/x', array(), 'forbidden_anonymous', 1 ); $GLOBALS['T_user_id'] = 4;
 $out = html( 'd5b_settings_render_audit' );
@@ -589,7 +591,7 @@ t_set_multisite( false );
 echo "source checks\n";
 $src = file_get_contents( $dir . '/inc/abilities/audit.php' );
 check( 'audit.php defines functions only: no add_action / add_filter / register_* / wp_schedule_event at load time', 0 === preg_match( '/^(?!\s*(\/\/|\*|\/\*)).*\b(add_action|add_filter|register_[a-z_]+_hook)\s*\(/m', $src ) );
-check( 'D5B_DB_VERSION is defined guarded', 1 === preg_match( '/if \( ! defined\( \'D5B_DB_VERSION\' \) \) \{ define\( \'D5B_DB_VERSION\', \'1\' \); \}/', $src ) );
+check( 'D5B_DB_VERSION is defined guarded', 1 === preg_match( '/if \( ! defined\( \'D5B_DB_VERSION\' \) \) \{ define\( \'D5B_DB_VERSION\', \'2\' \); \}/', $src ) );
 check( 'no direct use of $_GET / $_POST / $_REQUEST in audit.php (the table name comes from $wpdb->prefix)', 0 === preg_match( '/\$_(GET|POST|REQUEST)\b/', $src ) && false !== strpos( $src, "\$wpdb->prefix . 'd5b_audit'" ) );
 
 echo "\n$n checks, $failed failed\n";

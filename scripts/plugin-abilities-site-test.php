@@ -74,7 +74,7 @@ function d5b_audit_write( string $ability, array $args, string $status, int $dur
 function d5b_audit_update( int $id, string $status, int $duration_ms, ?array $args = null ): bool { if ( ! isset( $GLOBALS['T_audit'][ $id - 1 ] ) ) { return false; } $GLOBALS['T_audit'][ $id - 1 ]['status'] = $status; return true; }
 // --no-updates (a child run): parts/updates.php is not loaded, so wpsu_detect_caches does not exist.
 $no_updates = isset( $argv[1] ) && '--no-updates' === $argv[1];
-foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/read-content', 'inc/abilities/read-structure', 'inc/abilities/read-site', 'parts/updates' ) as $f ) {
+foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/history', 'inc/abilities/read-content', 'inc/abilities/read-structure', 'inc/abilities/read-site', 'parts/updates' ) as $f ) {
 	if ( $no_updates && 'parts/updates' === $f ) { continue; }
 	require $dir . '/' . $f . '.php';
 }
@@ -193,7 +193,7 @@ $flagged = array_values( array_filter( $plain, 'd5b_is_secret_key' ) );
 check( 'ordinary field names are not secrets (keep list and the "sk" word rule hold)', array() === $flagged, $flagged );
 check( 'normalisation: X-API-KEY, api-key and "Api Key " all read as one key', d5b_is_secret_key( 'X-API-KEY' ) && 'xapikey' === d5b_secret_key_norm( 'X-API-KEY' ) && 'apikey' === d5b_secret_key_norm( 'api-key' ) && 'apikey' === d5b_secret_key_norm( 'Api Key ' ) );
 $src = file_get_contents( $dir . '/inc/abilities/scrub.php' ) . file_get_contents( $dir . '/inc/abilities/audit.php' );
-check( 'the scrubber and the audit redactor have no key regex of their own any more (both call d5b_is_secret_key)', false === strpos( $src, "pass|secret|token|key|auth" ) && false === strpos( $src, 'pass(word)?$' ) && false === strpos( $src, 'function d5b_ability_scrub_key' ) );
+check( 'the scrubber and the audit redactor have no key regex of their own any more (both call d5b_is_secret_key)', false === strpos( $src, "pass|secret|token|key|auth" ) && false === strpos( $src, 'pass(word)?$' ) && false === strpos( $src, 'function d5b_ability_scrub_key(' ) );
 
 echo "name/value pairs\n";
 $r = d5b_ability_scrub_raw( array(
