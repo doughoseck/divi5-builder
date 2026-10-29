@@ -224,7 +224,8 @@ if ( ! function_exists( 'd5b_wc_check_hash' ) ) {
 		foreach ( $meta as $k => $v ) {
 			$k = (string) $k;
 			if ( count( (array) get_post_meta( $id, $k, false ) ) > 1 ) {
-				delete_post_meta( $id, $k );
+				// core's delete_metadata unslashes the key too: a key with a backslash would miss its own rows unslashed.
+				delete_post_meta( $id, wp_slash( $k ) );
 				add_post_meta( $id, wp_slash( $k ), wp_slash( $v ) );
 			} else {
 				update_post_meta( $id, wp_slash( $k ), wp_slash( $v ) );

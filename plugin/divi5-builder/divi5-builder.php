@@ -52,6 +52,8 @@ foreach ( array(
 	'inc/abilities/write-posts.php',
 	'inc/abilities/write-comments.php',
 	'inc/abilities/write-media.php',
+	'inc/abilities/write-terms.php',
+	'inc/abilities/write-menus.php',
 	'inc/settings.php',
 	'parts/page-building.php',
 	'parts/media-audit.php',

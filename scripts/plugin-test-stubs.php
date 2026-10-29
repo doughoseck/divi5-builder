@@ -142,7 +142,18 @@ function wp_generate_uuid4() { return '00000000-0000-4000-8000-000000000000'; }
 // With no previous value core updates EVERY row of the key (a key with 2 rows keeps 2 rows, both with the new value).
 function update_post_meta( $id, $k, $v, $prev = '' ) { $k = wp_unslash( $k ); $n = max( 1, count( $GLOBALS['T_meta'][ (int) $id ][ $k ] ?? array() ) ); $GLOBALS['T_meta'][ (int) $id ][ $k ] = array_fill( 0, $n, wp_unslash( $v ) ); return true; }
 function add_post_meta( $id, $k, $v, $unique = false ) { $k = wp_unslash( $k ); if ( $unique && ! empty( $GLOBALS['T_meta'][ (int) $id ][ $k ] ) ) { return false; } $GLOBALS['T_meta'][ (int) $id ][ $k ][] = wp_unslash( $v ); return true; }
-function delete_post_meta( $id, $k, $v = '' ) { $had = isset( $GLOBALS['T_meta'][ (int) $id ][ $k ] ); unset( $GLOBALS['T_meta'][ (int) $id ][ $k ] ); return $had; }
+// As core's delete_metadata: the key and the value are UNSLASHED; with a value only the rows equal to it go, without one every
+// row of the key. False when nothing matched. T_meta_delete_blocked: a plugin stopped it (the delete_post_metadata filter).
+function delete_post_meta( $id, $k, $v = '' ) {
+	$k = wp_unslash( $k );
+	if ( ! empty( $GLOBALS['T_meta_delete_blocked'] ) || ! isset( $GLOBALS['T_meta'][ (int) $id ][ $k ] ) ) { return false; }
+	if ( '' === $v || null === $v || false === $v ) { unset( $GLOBALS['T_meta'][ (int) $id ][ $k ] ); return true; }
+	$v = wp_unslash( $v ); $rows = $GLOBALS['T_meta'][ (int) $id ][ $k ]; $keep = array();
+	foreach ( $rows as $row ) { if ( maybe_serialize( $row ) !== maybe_serialize( $v ) ) { $keep[] = $row; } }
+	if ( count( $keep ) === count( $rows ) ) { return false; }
+	if ( array() === $keep ) { unset( $GLOBALS['T_meta'][ (int) $id ][ $k ] ); } else { $GLOBALS['T_meta'][ (int) $id ][ $k ] = $keep; }
+	return true;
+}
 // get_post_meta: see the content stand-ins at the end of this file.
 // As core: control characters are dropped from the key first; protected = starts with _ (core then runs the is_protected_meta filter).
 function is_protected_meta( $k, $t = null ) { $s = preg_replace( "/[^\x20-\x7E\p{L}]/u", '', (string) $k ); return strlen( (string) $s ) > 0 && '_' === $s[0]; }
@@ -385,6 +396,7 @@ function t_content_reset() {
 	$GLOBALS['T_post_types'] = array(); $GLOBALS['T_taxonomies'] = array();
 	$GLOBALS['T_inserts'] = array(); $GLOBALS['T_updates'] = array(); $GLOBALS['T_deleted'] = array(); $GLOBALS['T_revisions_keep'] = -1; $GLOBALS['T_insert_fail'] = false; $GLOBALS['T_update_fail'] = false; $GLOBALS['T_trash_blocked'] = false;
 	$GLOBALS['T_meta_auth_denied'] = array(); $GLOBALS['T_untrash_cascade'] = array(); $GLOBALS['T_insert_error'] = null;
+	$GLOBALS['T_meta_delete_blocked'] = false; $GLOBALS['T_term_fail'] = false; $GLOBALS['T_term_delete_fail'] = false; $GLOBALS['T_menu_delete_fail'] = false; $GLOBALS['T_theme_mods'] = array();
 	$GLOBALS['T_cmeta'] = array(); $GLOBALS['T_comment_calls'] = array(); $GLOBALS['T_comment_blocked'] = false; $GLOBALS['T_comments_deleted'] = array(); $GLOBALS['T_new_comment_error'] = null;
 	foreach ( array( 'post' => array( 1, 1, 0 ), 'page' => array( 1, 1, 1 ), 'attachment' => array( 1, 0, 0 ), 'revision' => array( 0, 0, 0 ), 'nav_menu_item' => array( 0, 0, 0 ), 'wp_block' => array( 0, 1, 0 ), 'wp_template' => array( 0, 1, 0 ), 'et_pb_layout' => array( 1, 1, 0 ) ) as $n => $f ) { t_add_type( $n, (bool) $f[0], (bool) $f[1], (bool) $f[2] ); }
 	foreach ( array( 'category' => array( 1, 1 ), 'post_tag' => array( 1, 1 ), 'nav_menu' => array( 0, 1 ), 'wp_theme' => array( 0, 0 ) ) as $n => $f ) { t_add_taxonomy( $n, (bool) $f[0], (bool) $f[1] ); }
@@ -463,7 +475,8 @@ function t_post_cap( $cap, $id ) {
 // edit_post_meta( id, key ): as map_meta_cap, edit_post on the post, a key that is not protected, and the
 // auth_post_meta_{key} filter (here: the key is not in T_meta_auth_denied).
 function current_user_can( $cap, $id = null, $key = null ) {
-	if ( 'edit_post_meta' === $cap ) { return null !== $id && t_post_cap( 'edit_post', (int) $id ) && ! is_protected_meta( (string) $key, 'post' ) && ! in_array( (string) $key, $GLOBALS['T_meta_auth_denied'] ?? array(), true ); }
+	// core maps add_post_meta and delete_post_meta exactly as edit_post_meta.
+	if ( 'edit_post_meta' === $cap || 'delete_post_meta' === $cap || 'add_post_meta' === $cap ) { return null !== $id && t_post_cap( 'edit_post', (int) $id ) && ! is_protected_meta( (string) $key, 'post' ) && ! in_array( (string) $key, $GLOBALS['T_meta_auth_denied'] ?? array(), true ); }
 	if ( null !== $id && ( 'read_post' === $cap || 'edit_post' === $cap || 'delete_post' === $cap ) ) { return t_post_cap( $cap, (int) $id ); }
 	return t_has_cap( $cap );
 }
@@ -490,7 +503,8 @@ function get_the_terms( $id, $tax ) {
 function get_term( $id, $tax = '' ) { $t = $GLOBALS['T_terms'][ (int) $id ] ?? null; return ( null !== $t && ( '' === $tax || $t->taxonomy === $tax ) ) ? $t : null; }
 function get_terms( $args = array() ) {
 	$rows = array_values( array_filter( $GLOBALS['T_terms'], function ( $t ) use ( $args ) {
-		return $t->taxonomy === ( $args['taxonomy'] ?? '' ) && ( empty( $args['search'] ) || false !== stripos( $t->name, $args['search'] ) );
+		return $t->taxonomy === ( $args['taxonomy'] ?? '' ) && ( empty( $args['search'] ) || false !== stripos( $t->name, $args['search'] ) )
+			&& ( ! isset( $args['parent'] ) || '' === $args['parent'] || (int) $t->parent === (int) $args['parent'] );
 	} ) );
 	if ( 'count' === ( $args['fields'] ?? '' ) ) { return (string) count( $rows ); }
 	return array_slice( $rows, (int) ( $args['offset'] ?? 0 ), isset( $args['number'] ) ? (int) $args['number'] : null );
@@ -509,8 +523,17 @@ function get_comments( $args = array() ) {
 }
 function wp_get_nav_menus() { return array_values( $GLOBALS['T_menus'] ); }
 function wp_get_nav_menu_object( $m ) { foreach ( $GLOBALS['T_menus'] as $o ) { if ( (string) $o->term_id === (string) $m || $o->slug === $m || $o->name === $m ) { return $o; } } return false; }
-function wp_get_nav_menu_items( $m ) { $o = wp_get_nav_menu_object( $m ); return $o ? ( $GLOBALS['T_menu_items'][ $o->term_id ] ?? array() ) : false; }
-function get_nav_menu_locations() { return $GLOBALS['T_menu_locations']; }
+// A menu whose items a test planted in T_menu_items (plain objects) answers from there, as in 2.1.0; otherwise the items are the
+// nav_menu_item posts in the menu (T_object_terms[ item ]['nav_menu']), decorated and ordered as core's wp_get_nav_menu_items
+// does (see the menu stand-ins at the end of this file).
+function wp_get_nav_menu_items( $m, $args = array() ) {
+	$o = wp_get_nav_menu_object( $m );
+	if ( ! $o ) { return false; }
+	if ( isset( $GLOBALS['T_menu_items'][ $o->term_id ] ) ) { return $GLOBALS['T_menu_items'][ $o->term_id ]; }
+	return t_nav_items( (int) $o->term_id, $args['post_status'] ?? 'publish' );
+}
+// As core: the locations are the theme mod nav_menu_locations (kept in T_menu_locations).
+function get_nav_menu_locations() { $l = get_theme_mod( 'nav_menu_locations' ); return is_array( $l ) ? $l : array(); }
 function get_registered_nav_menus() { return $GLOBALS['T_registered_menus']; }
 // As core (revision.php): newest first (order ASC on request); with check_enabled (the default) nothing when revisions are
 // off for the post (its type does not support them, or WP_POST_REVISIONS is 0, here T_revisions_keep = 0).
@@ -707,7 +730,14 @@ function wp_save_post_revision( $id ) {
 	}
 	return $rid;
 }
-function wp_delete_post( $id, $force = false ) { $p = $GLOBALS['T_posts'][ (int) $id ] ?? null; if ( ! $p ) { return null; } unset( $GLOBALS['T_posts'][ (int) $id ], $GLOBALS['T_meta'][ (int) $id ] ); $GLOBALS['T_deleted'][] = (int) $id; return $p; }
+// As core: the post goes with its meta and its term relationships (wp_delete_object_term_relationships, then the counts).
+function wp_delete_post( $id, $force = false ) {
+	$p = $GLOBALS['T_posts'][ (int) $id ] ?? null; if ( ! $p ) { return null; }
+	$had = $GLOBALS['T_object_terms'][ (int) $id ] ?? array();
+	unset( $GLOBALS['T_posts'][ (int) $id ], $GLOBALS['T_meta'][ (int) $id ], $GLOBALS['T_object_terms'][ (int) $id ] ); $GLOBALS['T_deleted'][] = (int) $id;
+	foreach ( $had as $ids ) { foreach ( $ids as $t ) { t_recount( (int) $t ); } }
+	return $p;
+}
 function wp_trash_post( $id = 0 ) {
 	$p = $GLOBALS['T_posts'][ (int) $id ] ?? null;
 	if ( ! $p || 'trash' === $p->post_status ) { return false; }
@@ -1055,3 +1085,270 @@ function wp_delete_attachment( $id, $force_delete = false ) {
 	return $p;
 }
 t_media_reset();
+
+// ---- terms and menus (Task 6). As core's taxonomy.php and nav-menu.php (6.4) where the plugin depends on it.
+// Terms live in T_terms (id => object), menus in T_menus (a menu is a nav_menu term); relationships in T_object_terms
+// (object id => taxonomy => term ids). count = the objects that hold the term (core counts published posts only).
+// wp_insert_term / wp_update_term UNSLASH name and description, as core. wp_update_term merges the given args over the term's
+// own (core: array_merge of the slashed term data). wp_delete_term: the default category (and a taxonomy's default term) is
+// never deleted (returns 0); children move to the deleted term's parent; objects lose the term, and in category an object
+// left with no category gets the default one. Failure switches: T_term_fail (insert/update: a database error),
+// T_term_delete_fail (wp_delete_term returns false and changes nothing), T_menu_delete_fail (wp_delete_nav_menu deletes the
+// items but not the menu term, and returns false), T_theme_mod_fail (set_theme_mod changes nothing).
+function t_term_obj( int $id ) { return $GLOBALS['T_terms'][ $id ] ?? ( $GLOBALS['T_menus'][ $id ] ?? null ); }
+function t_term_tax( $o ): string { return (string) ( $o->taxonomy ?? 'nav_menu' ); }
+function t_recount( int $id ): void {
+	$o = t_term_obj( $id ); if ( ! $o ) { return; }
+	$n = 0;
+	foreach ( $GLOBALS['T_object_terms'] as $taxes ) { foreach ( $taxes as $ids ) { if ( in_array( $id, array_map( 'intval', (array) $ids ), true ) ) { $n++; } } }
+	$o->count = $n;
+}
+function taxonomy_exists( $t ) { return false !== get_taxonomy( $t ); }
+function is_taxonomy_hierarchical( $t ) { $o = get_taxonomy( $t ); return $o && ! empty( $o->hierarchical ); }
+function t_terms_of( string $tax ): array {
+	$pool = 'nav_menu' === $tax ? $GLOBALS['T_menus'] : $GLOBALS['T_terms'];
+	return array_filter( $pool, function ( $o ) use ( $tax ) { return t_term_tax( $o ) === $tax; } );
+}
+function term_exists( $term, $tax = '', $parent = null ) {
+	if ( is_int( $term ) ) {
+		$o = t_term_obj( $term );
+		return ( $o && ( '' === $tax || t_term_tax( $o ) === $tax ) ) ? array( 'term_id' => (int) $o->term_id, 'term_taxonomy_id' => (int) $o->term_id ) : null;
+	}
+	$term = trim( wp_unslash( (string) $term ) );
+	foreach ( array( 'slug', 'name' ) as $f ) {
+		foreach ( t_terms_of( (string) $tax ) as $o ) {
+			if ( null !== $parent && (int) $o->parent !== (int) $parent ) { continue; }
+			if ( 'slug' === $f ? $o->slug === sanitize_title( $term ) : 0 === strcasecmp( $o->name, $term ) ) { return array( 'term_id' => (int) $o->term_id, 'term_taxonomy_id' => (int) $o->term_id ); }
+		}
+	}
+	return null;
+}
+function get_term_by( $field, $value, $tax = '' ) {
+	if ( 'id' === $field || 'term_id' === $field ) { $o = t_term_obj( (int) $value ); return ( $o && t_term_tax( $o ) === $tax ) ? $o : false; }
+	foreach ( t_terms_of( (string) $tax ) as $o ) {
+		if ( 'slug' === $field ? $o->slug === sanitize_title( (string) $value ) : ( 'name' === $field && 0 === strcasecmp( $o->name, trim( (string) $value ) ) ) ) { return $o; }
+	}
+	return false;
+}
+function t_unique_slug( string $slug, string $tax, int $except = 0 ): string {
+	$taken = function ( $s ) use ( $tax, $except ) { foreach ( t_terms_of( $tax ) as $o ) { if ( $o->slug === $s && (int) $o->term_id !== $except ) { return true; } } return false; };
+	if ( ! $taken( $slug ) ) { return $slug; }
+	for ( $n = 2; $taken( $slug . '-' . $n ); $n++ ) {}
+	return $slug . '-' . $n;
+}
+function wp_insert_term( $term, $tax, $args = array() ) {
+	if ( ! get_taxonomy( $tax ) ) { return new WP_Error( 'invalid_taxonomy', 'Invalid taxonomy.' ); }
+	$name = trim( wp_unslash( (string) $term ) );
+	if ( '' === $name ) { return new WP_Error( 'empty_term_name', 'A name is required for this term.' ); }
+	if ( ! empty( $GLOBALS['T_term_fail'] ) ) { return new WP_Error( 'db_insert_error', 'Could not insert term into the database.' ); }
+	$parent = (int) ( $args['parent'] ?? 0 );
+	if ( $parent > 0 && ! term_exists( $parent, $tax ) ) { return new WP_Error( 'missing_parent', 'Parent term does not exist.' ); }
+	$provided = '' !== (string) ( $args['slug'] ?? '' );
+	$slug = sanitize_title( $provided ? (string) $args['slug'] : $name );
+	$hier = is_taxonomy_hierarchical( $tax );
+	$name_match = get_term_by( 'name', $name, $tax );
+	if ( $name_match && ( ! $provided || $name_match->slug === $slug || get_term_by( 'slug', $slug, $tax ) ) ) {
+		if ( ! $hier ) { return new WP_Error( 'term_exists', 'A term with the name provided already exists in this taxonomy.', (int) $name_match->term_id ); }
+		foreach ( t_terms_of( $tax ) as $o ) { if ( (int) $o->parent === $parent && 0 === strcasecmp( $o->name, $name ) ) { return new WP_Error( 'term_exists', 'A term with the name provided already exists with this parent.', (int) $o->term_id ); } }
+	}
+	$id = $GLOBALS['T_next_id']++;
+	$o  = (object) array( 'term_id' => $id, 'name' => $name, 'slug' => t_unique_slug( '' === $slug ? (string) $id : $slug, $tax ), 'description' => wp_unslash( (string) ( $args['description'] ?? '' ) ), 'parent' => $parent, 'count' => 0, 'taxonomy' => $tax, 'term_taxonomy_id' => $id );
+	if ( 'nav_menu' === $tax ) { $GLOBALS['T_menus'][ $id ] = $o; } else { $GLOBALS['T_terms'][ $id ] = $o; }
+	return array( 'term_id' => $id, 'term_taxonomy_id' => $id );
+}
+function wp_update_term( $term_id, $tax, $args = array() ) {
+	if ( ! get_taxonomy( $tax ) ) { return new WP_Error( 'invalid_taxonomy', 'Invalid taxonomy.' ); }
+	$o = t_term_obj( (int) $term_id );
+	if ( ! $o || t_term_tax( $o ) !== $tax ) { return new WP_Error( 'invalid_term', 'Empty Term.' ); }
+	if ( ! empty( $GLOBALS['T_term_fail'] ) ) { return new WP_Error( 'db_update_error', 'Could not update term in the database.' ); }
+	$args = array_merge( wp_slash( array( 'name' => $o->name, 'slug' => $o->slug, 'description' => $o->description, 'parent' => (int) $o->parent ) ), $args );
+	$name = trim( wp_unslash( (string) $args['name'] ) );
+	if ( '' === $name ) { return new WP_Error( 'empty_term_name', 'A name is required for this term.' ); }
+	$parent = (int) $args['parent'];
+	if ( $parent > 0 && ! term_exists( $parent, $tax ) ) { return new WP_Error( 'missing_parent', 'Parent term does not exist.' ); }
+	$empty = '' === (string) $args['slug'];
+	$slug  = sanitize_title( $empty ? $name : (string) $args['slug'] );
+	$dup   = get_term_by( 'slug', $slug, $tax );
+	if ( $dup && (int) $dup->term_id !== (int) $o->term_id ) {
+		if ( $empty || $parent !== (int) $o->parent ) { $slug = t_unique_slug( $slug, $tax, (int) $o->term_id ); }
+		else { return new WP_Error( 'duplicate_term_slug', 'The slug "' . $slug . '" is already in use by another term.' ); }
+	}
+	$o->name = $name; $o->slug = $slug; $o->description = wp_unslash( (string) $args['description'] ); $o->parent = $parent;
+	return array( 'term_id' => (int) $o->term_id, 'term_taxonomy_id' => (int) $o->term_id );
+}
+function wp_delete_term( $term, $tax, $args = array() ) {
+	$term = (int) $term;
+	$o = t_term_obj( $term );
+	if ( ! $o || t_term_tax( $o ) !== $tax ) { return false; }
+	if ( 'category' === $tax ) { $default = (int) get_option( 'default_category' ); if ( $default === $term ) { return 0; } }
+	$to = get_taxonomy( $tax );
+	if ( ! empty( $to->default_term ) ) { $default = (int) get_option( 'default_term_' . $tax ); if ( $default === $term ) { return 0; } }
+	if ( isset( $default ) && ! term_exists( $default, $tax ) ) { unset( $default ); }
+	if ( ! empty( $GLOBALS['T_term_delete_fail'] ) ) { return false; }
+	if ( is_taxonomy_hierarchical( $tax ) ) { foreach ( t_terms_of( $tax ) as $c ) { if ( (int) $c->parent === $term ) { $c->parent = (int) $o->parent; } } }
+	foreach ( $GLOBALS['T_object_terms'] as $obj => $taxes ) {
+		$ids = array_map( 'intval', (array) ( $taxes[ $tax ] ?? array() ) );
+		if ( ! in_array( $term, $ids, true ) ) { continue; }
+		$left = array_values( array_diff( $ids, array( $term ) ) );
+		if ( array() === $left && isset( $default ) ) { $left = array( $default ); }
+		$GLOBALS['T_object_terms'][ $obj ][ $tax ] = $left;
+	}
+	unset( $GLOBALS['T_terms'][ $term ], $GLOBALS['T_menus'][ $term ] );
+	if ( isset( $default ) ) { t_recount( $default ); }
+	return true;
+}
+function t_term_ids( $terms, string $tax, bool $create ): array {
+	$ids = array();
+	foreach ( is_array( $terms ) ? $terms : array( $terms ) as $t ) {
+		if ( is_int( $t ) ) { if ( term_exists( $t, $tax ) ) { $ids[] = $t; } continue; }
+		$e = term_exists( (string) $t, $tax );
+		if ( ! $e && $create ) { $e = wp_insert_term( (string) $t, $tax ); if ( is_wp_error( $e ) ) { continue; } }
+		if ( $e ) { $ids[] = (int) $e['term_id']; }
+	}
+	return array_values( array_unique( $ids ) );
+}
+function wp_set_object_terms( $object_id, $terms, $tax, $append = false ) {
+	if ( ! get_taxonomy( $tax ) ) { return new WP_Error( 'invalid_taxonomy', 'Invalid taxonomy.' ); }
+	if ( ! empty( $GLOBALS['T_term_fail'] ) ) { return new WP_Error( 'db_insert_error', 'Could not insert term relationship into the database.' ); }
+	$ids = t_term_ids( $terms, $tax, true );
+	$old = array_map( 'intval', (array) ( $GLOBALS['T_object_terms'][ (int) $object_id ][ $tax ] ?? array() ) );
+	$new = $append ? array_values( array_unique( array_merge( $old, $ids ) ) ) : $ids;
+	$GLOBALS['T_object_terms'][ (int) $object_id ][ $tax ] = $new;
+	foreach ( array_unique( array_merge( $old, $new ) ) as $t ) { t_recount( (int) $t ); }
+	return array_map( 'strval', $new );
+}
+function wp_remove_object_terms( $object_id, $terms, $tax ) {
+	if ( ! get_taxonomy( $tax ) ) { return new WP_Error( 'invalid_taxonomy', 'Invalid taxonomy.' ); }
+	if ( ! empty( $GLOBALS['T_term_fail'] ) ) { return new WP_Error( 'db_delete_error', 'Could not remove term relationship from the database.' ); }
+	$ids = t_term_ids( $terms, $tax, false );
+	$old = array_map( 'intval', (array) ( $GLOBALS['T_object_terms'][ (int) $object_id ][ $tax ] ?? array() ) );
+	$new = array_values( array_diff( $old, $ids ) );
+	$GLOBALS['T_object_terms'][ (int) $object_id ][ $tax ] = $new;
+	foreach ( $old as $t ) { t_recount( (int) $t ); }
+	return count( $new ) < count( $old );
+}
+function get_objects_in_term( $term_ids, $taxonomies, $args = array() ) {
+	$term_ids = array_map( 'intval', (array) $term_ids ); $taxonomies = (array) $taxonomies; $out = array();
+	foreach ( $GLOBALS['T_object_terms'] as $obj => $taxes ) {
+		foreach ( $taxonomies as $tax ) { if ( array_intersect( $term_ids, array_map( 'intval', (array) ( $taxes[ $tax ] ?? array() ) ) ) ) { $out[] = (int) $obj; break; } }
+	}
+	sort( $out );
+	return $out;
+}
+function wp_get_object_terms( $object_ids, $taxonomies, $args = array() ) {
+	$out = array();
+	foreach ( (array) $object_ids as $obj ) { foreach ( (array) $taxonomies as $tax ) { foreach ( (array) ( $GLOBALS['T_object_terms'][ (int) $obj ][ $tax ] ?? array() ) as $t ) { $o = t_term_obj( (int) $t ); if ( $o ) { $out[] = 'ids' === ( $args['fields'] ?? 'all' ) ? (int) $t : $o; } } } }
+	return $out;
+}
+
+// Menus. A menu item is a nav_menu_item post in T_posts with core's meta (_menu_item_type, _menu_item_menu_item_parent,
+// _menu_item_object_id, _menu_item_object, _menu_item_target, _menu_item_classes, _menu_item_xfn, _menu_item_url) and its
+// menu as the nav_menu term. wp_update_nav_menu_item behaves as core 6.4: the data is NOT merged with the item's own (every
+// field not given is reset to its default); a new item is a draft unless menu-item-status is publish; an existing item is
+// published unless menu-item-status is draft; position 0 = after the last item; a custom item's object is itself; a
+// non-custom item keeps no URL and a title equal to its object's title is stored empty. wp_get_nav_menu_items: post_status
+// publish by default ('any' leaves out trash and auto-draft), sorted by menu_order and renumbered 1..n on the copies it
+// returns, each copy decorated as wp_setup_nav_menu_item does. wp_delete_nav_menu: every object in the menu (trashed items
+// too) is deleted for good, then the term, then the menu is taken off every location (set to 0).
+function get_theme_mod( $name, $default = false ) {
+	if ( 'nav_menu_locations' === $name ) { return $GLOBALS['T_menu_locations'] ?? $default; }
+	return array_key_exists( $name, $GLOBALS['T_theme_mods'] ?? array() ) ? $GLOBALS['T_theme_mods'][ $name ] : $default;
+}
+function set_theme_mod( $name, $value ) {
+	if ( ! empty( $GLOBALS['T_theme_mod_fail'] ) ) { return false; }
+	if ( 'nav_menu_locations' === $name ) { $GLOBALS['T_menu_locations'] = $value; } else { $GLOBALS['T_theme_mods'][ $name ] = $value; }
+	return true;
+}
+function is_nav_menu_item( $id = 0 ) { $p = get_post( $id ); return $p && 'nav_menu_item' === $p->post_type; }
+function wp_create_nav_menu( $menu_name ) {
+	$name = trim( wp_unslash( (string) $menu_name ) );
+	if ( get_term_by( 'name', $name, 'nav_menu' ) ) { return new WP_Error( 'menu_exists', 'The menu name <strong>' . esc_html( $name ) . '</strong> conflicts with another menu name. Please try another.' ); }
+	$r = wp_insert_term( $menu_name, 'nav_menu' );
+	return is_wp_error( $r ) ? $r : (int) $r['term_id'];
+}
+function t_setup_nav_item( $p ) {
+	$i = clone $p; $id = (int) $p->ID;
+	$i->db_id = $id; $i->menu_item_parent = (string) get_post_meta( $id, '_menu_item_menu_item_parent', true );
+	$i->object_id = (string) get_post_meta( $id, '_menu_item_object_id', true ); $i->object = (string) get_post_meta( $id, '_menu_item_object', true );
+	$i->type = (string) get_post_meta( $id, '_menu_item_type', true ); $i->target = (string) get_post_meta( $id, '_menu_item_target', true );
+	$i->attr_title = (string) $p->post_excerpt; $i->description = (string) $p->post_content; $i->xfn = (string) get_post_meta( $id, '_menu_item_xfn', true );
+	$i->classes = (array) get_post_meta( $id, '_menu_item_classes', true );
+	$title = (string) $p->post_title; $url = (string) get_post_meta( $id, '_menu_item_url', true );
+	if ( 'post_type' === $i->type ) { $o = get_post( (int) $i->object_id ); if ( '' === $title && $o ) { $title = (string) $o->post_title; } $url = get_permalink( (int) $i->object_id ); }
+	if ( 'taxonomy' === $i->type ) { $o = t_term_obj( (int) $i->object_id ); if ( '' === $title && $o ) { $title = (string) $o->name; } $url = 'https://x.example/?term_id=' . (int) $i->object_id; }
+	$i->title = $title; $i->url = $url;
+	return $i;
+}
+function t_nav_items( int $menu_id, $status ) {
+	$want = 'any' === $status ? null : array_map( 'trim', is_array( $status ) ? $status : explode( ',', (string) $status ) );
+	$items = array();
+	foreach ( get_objects_in_term( $menu_id, 'nav_menu' ) as $id ) {
+		$p = get_post( $id );
+		if ( ! $p || 'nav_menu_item' !== $p->post_type ) { continue; }
+		if ( null === $want ? in_array( $p->post_status, array( 'trash', 'auto-draft' ), true ) : ! in_array( $p->post_status, $want, true ) ) { continue; }
+		$items[] = t_setup_nav_item( $p );
+	}
+	usort( $items, function ( $a, $b ) { return array( (int) $a->menu_order, (int) $a->ID ) <=> array( (int) $b->menu_order, (int) $b->ID ); } );
+	foreach ( $items as $n => $i ) { $i->menu_order = $n + 1; }
+	return $items;
+}
+function wp_update_nav_menu_item( $menu_id = 0, $menu_item_db_id = 0, $menu_item_data = array(), $fire_after_hooks = true ) {
+	$menu_id = (int) $menu_id; $db_id = (int) $menu_item_db_id;
+	if ( $db_id && ! is_nav_menu_item( $db_id ) ) { return new WP_Error( 'update_nav_menu_item_failed', 'The given object ID is not that of a menu item.' ); }
+	$menu = wp_get_nav_menu_object( $menu_id );
+	if ( ! $menu && 0 !== $menu_id ) { return new WP_Error( 'invalid_menu_id', 'Invalid menu ID.' ); }
+	$args = array_merge( array( 'menu-item-object-id' => 0, 'menu-item-object' => '', 'menu-item-parent-id' => 0, 'menu-item-position' => 0, 'menu-item-type' => 'custom', 'menu-item-title' => '', 'menu-item-url' => '',
+		'menu-item-description' => '', 'menu-item-attr-title' => '', 'menu-item-target' => '', 'menu-item-classes' => '', 'menu-item-xfn' => '', 'menu-item-status' => '' ), $menu_item_data );
+	if ( 0 === (int) $args['menu-item-position'] ) {
+		$all = $menu_id ? t_nav_items( $menu_id, 'publish,draft' ) : array(); $last = array_pop( $all );
+		$args['menu-item-position'] = $last ? 1 + $last->menu_order : count( $all );
+	}
+	$orig_parent = $db_id ? (int) get_post( $db_id )->post_parent : 0;
+	if ( 'custom' === $args['menu-item-type'] ) {
+		$args['menu-item-url'] = trim( (string) $args['menu-item-url'] );
+	} else {
+		$args['menu-item-url'] = ''; $orig_title = '';
+		if ( 'taxonomy' === $args['menu-item-type'] ) { $o = t_term_obj( (int) $args['menu-item-object-id'] ); $orig_parent = $o ? (int) $o->parent : 0; $orig_title = $o ? $o->name : ''; }
+		elseif ( 'post_type' === $args['menu-item-type'] ) { $o = get_post( (int) $args['menu-item-object-id'] ); $orig_parent = (int) $o->post_parent; $orig_title = $o->post_title; }
+		if ( wp_unslash( (string) $args['menu-item-title'] ) === $orig_title ) { $args['menu-item-title'] = ''; }
+		if ( '' === $args['menu-item-title'] && '' === $args['menu-item-description'] ) { $args['menu-item-description'] = ' '; }
+	}
+	$post = array( 'menu_order' => $args['menu-item-position'], 'post_content' => $args['menu-item-description'], 'post_excerpt' => $args['menu-item-attr-title'], 'post_parent' => $orig_parent, 'post_title' => $args['menu-item-title'], 'post_type' => 'nav_menu_item' );
+	$update = 0 !== $db_id;
+	if ( ! $update ) {
+		$post['post_status'] = 'publish' === $args['menu-item-status'] ? 'publish' : 'draft';
+		$db_id = wp_insert_post( $post, true );
+		if ( ! $db_id || is_wp_error( $db_id ) ) { return $db_id; }
+	}
+	if ( $menu_id && ( ! $update || ! in_array( $menu_id, array_map( 'intval', (array) ( $GLOBALS['T_object_terms'][ $db_id ]['nav_menu'] ?? array() ) ), true ) ) ) {
+		$r = wp_set_object_terms( $db_id, array( (int) $menu->term_id ), 'nav_menu' );
+		if ( is_wp_error( $r ) ) { return $r; }
+	}
+	if ( 'custom' === $args['menu-item-type'] ) { $args['menu-item-object-id'] = $db_id; $args['menu-item-object'] = 'custom'; }
+	if ( (int) $args['menu-item-parent-id'] === $db_id ) { $args['menu-item-parent-id'] = 0; }
+	update_post_meta( $db_id, '_menu_item_type', sanitize_key( $args['menu-item-type'] ) );
+	update_post_meta( $db_id, '_menu_item_menu_item_parent', (string) (int) $args['menu-item-parent-id'] );
+	update_post_meta( $db_id, '_menu_item_object_id', (string) (int) $args['menu-item-object-id'] );
+	update_post_meta( $db_id, '_menu_item_object', sanitize_key( $args['menu-item-object'] ) );
+	update_post_meta( $db_id, '_menu_item_target', sanitize_key( $args['menu-item-target'] ) );
+	$cls = function ( $c ) { return preg_replace( '/[^A-Za-z0-9_-]/', '', $c ); };
+	update_post_meta( $db_id, '_menu_item_classes', array_map( $cls, explode( ' ', (string) $args['menu-item-classes'] ) ) );
+	update_post_meta( $db_id, '_menu_item_xfn', implode( ' ', array_map( $cls, explode( ' ', (string) $args['menu-item-xfn'] ) ) ) );
+	update_post_meta( $db_id, '_menu_item_url', trim( wp_unslash( (string) $args['menu-item-url'] ) ) );
+	if ( $update ) {
+		$post['ID'] = $db_id; $post['post_status'] = 'draft' === $args['menu-item-status'] ? 'draft' : 'publish';
+		$r = wp_update_post( $post, true );
+		if ( is_wp_error( $r ) ) { return $r; }
+	}
+	return $db_id;
+}
+function wp_delete_nav_menu( $menu ) {
+	$menu = wp_get_nav_menu_object( $menu );
+	if ( ! $menu ) { return false; }
+	foreach ( get_objects_in_term( (int) $menu->term_id, 'nav_menu' ) as $item ) { wp_delete_post( $item ); }
+	$result = empty( $GLOBALS['T_menu_delete_fail'] ) ? wp_delete_term( (int) $menu->term_id, 'nav_menu' ) : false;
+	$locations = get_nav_menu_locations();
+	foreach ( $locations as $loc => $id ) { if ( (int) $id === (int) $menu->term_id ) { $locations[ $loc ] = 0; } }
+	set_theme_mod( 'nav_menu_locations', $locations );
+	return $result;
+}
