@@ -616,6 +616,14 @@ check( 'a contributor\'s posts-update and posts-create with a look-alike key in 
 site();
 $p = t_add_post( array( 'post_author' => 3, 'post_status' => 'draft' ) );
 check( '... a plain key (my-key.v2:x) in meta is written', is_array( call( 'posts-update', array( 'id' => $p, 'meta' => array( 'my-key.v2:x' => 'v' ) ) ) ) && 'v' === meta1( $p, 'my-key.v2:x' ) );
+// Fix round 2: the database compares names without case ("Price" finds the row of "price").
+t_add_meta( $p, 'price', '100' );
+$u0 = count( $GLOBALS['T_updates'] );
+$r = call( 'posts-update', array( 'id' => $p, 'title' => 'T', 'meta' => array( 'Price' => '1' ) ) );
+check( 'posts-update meta {Price} on a post that has price: invalid_input naming price, nothing written', 'invalid_input' === code( $r ) && "a field named 'price' already exists on this post; use that exact name" === $r->get_error_message() && '100' === meta1( $p, 'price' ) && null === meta1( $p, 'Price' ) && $u0 === count( $GLOBALS['T_updates'] ), $r );
+check( '... meta {price} itself works', is_array( call( 'posts-update', array( 'id' => $p, 'meta' => array( 'price' => '101' ) ) ) ) && '101' === meta1( $p, 'price' ) );
+$r = call( 'posts-create', array( 'title' => 'n', 'meta' => array( 'Color' => 'a', 'color' => 'b' ) ) );
+check( 'posts-create with meta Color and color in one input: invalid_input, nothing created', 'invalid_input' === code( $r ), $r );
 
 echo "Task 11 I2: the strictest switch for meta, divi and featured_image (a1)\n";
 site();
@@ -652,18 +660,33 @@ check( '... with a future date it is scheduled', 'future' === ( call( 'posts-cre
 $fut = t_add_post( array( 'post_author' => 3, 'post_status' => 'future', 'post_date_gmt' => gmdate( 'Y-m-d H:i:s', time() + 86400 * 400 ) ) );
 $r = call( 'posts-update', array( 'id' => $fut, 'status' => 'future', 'date' => $past ) );
 check( 'posts-update status future with a past date: invalid_input; still scheduled', 'invalid_input' === code( $r ) && 'future' === post( $fut )->post_status, $r );
+// Fix round 2: a scheduled post is published only when the input says status publish, even for a user who may publish.
+$SCHED = 'this post is scheduled; pass status: publish to publish it now, or give it a future date';
+$u0 = count( $GLOBALS['T_updates'] );
 $r = call( 'posts-update', array( 'id' => $fut, 'date' => $past ) );
-check( 'posts-update with only a past date on a scheduled post, by a user who may publish: allowed (the ruling: a capability check, not a refusal) and published', is_array( $r ) && 'publish' === post( $fut )->post_status, $r );
+check( 'posts-update with only a past date on a scheduled post, by a user who may publish: invalid_input (scheduled), still scheduled, nothing written', 'invalid_input' === code( $r ) && $SCHED === $r->get_error_message() && 'future' === post( $fut )->post_status && $u0 === count( $GLOBALS['T_updates'] ), $r );
+$r = call( 'posts-update', array( 'id' => $fut, 'date' => gmdate( 'Y-m-d\TH:i:s\Z' ) ) );
+check( '... a date of now is refused the same way', 'invalid_input' === code( $r ) && $SCHED === $r->get_error_message() && 'future' === post( $fut )->post_status, $r );
+$GLOBALS['T_posts'][ $fut ]->post_date_gmt = gmdate( 'Y-m-d H:i:s', time() - 3600 );
+$r = call( 'posts-update', array( 'id' => $fut, 'title' => 'only the title' ) );
+check( '... a title-only edit of an overdue scheduled post (core would publish it on save) is refused the same way', 'invalid_input' === code( $r ) && $SCHED === $r->get_error_message() && 'future' === post( $fut )->post_status, $r );
+$r = call( 'posts-update', array( 'id' => $fut, 'title' => 'publish now', 'status' => 'publish' ) );
+check( '... with status: publish given and the capability: published', is_array( $r ) && 'publish' === post( $fut )->post_status, $r );
+$fut2 = t_add_post( array( 'post_author' => 3, 'post_status' => 'future', 'post_date_gmt' => gmdate( 'Y-m-d H:i:s', time() + 86400 * 400 ) ) );
+$r = call( 'posts-update', array( 'id' => $fut2, 'date' => $past, 'status' => 'publish' ) );
+check( '... a past date together with status: publish: published', is_array( $r ) && 'publish' === post( $fut2 )->post_status, $r );
 const EDPUB = array( 'read', 'edit_posts', 'edit_published_posts', 'delete_posts' ); // edits published content, may not publish
 site( EDPUB );
 $fut = t_add_post( array( 'post_author' => 3, 'post_status' => 'future', 'post_date_gmt' => gmdate( 'Y-m-d H:i:s', time() + 86400 * 400 ) ) );
 $u0 = count( $GLOBALS['T_updates'] );
 $r = call( 'posts-update', array( 'id' => $fut, 'date' => $past ) );
-check( 'a user who may edit the scheduled post but not publish: a past date (no status given) is refused not_allowed; still scheduled', 'not_allowed' === code( $r ) && 'future' === post( $fut )->post_status && $u0 === count( $GLOBALS['T_updates'] ), $r );
-$GLOBALS['T_posts'][ $fut ]->post_date_gmt = gmdate( 'Y-m-d H:i:s', time() - 3600 ); // the scheduled time has passed (a missed schedule)
-$r = call( 'posts-update', array( 'id' => $fut, 'title' => 'only the title' ) );
-check( '... a title-only edit of a scheduled post whose time has passed (core would publish it) is refused not_allowed too', 'not_allowed' === code( $r ) && 'future' === post( $fut )->post_status, $r );
+check( 'a user who may edit the scheduled post but not publish: a past date (no status given) is refused; still scheduled', is_wp_error( $r ) && 'future' === post( $fut )->post_status && $u0 === count( $GLOBALS['T_updates'] ), $r );
+$r = call( 'posts-update', array( 'id' => $fut, 'date' => $past, 'status' => 'publish' ) );
+check( '... with status: publish it is not_allowed (no publish capability); still scheduled', 'not_allowed' === code( $r ) && 'future' === post( $fut )->post_status, $r );
 check( '... a later date keeps it scheduled and is allowed', is_array( call( 'posts-update', array( 'id' => $fut, 'date' => $later ) ) ) && 'future' === post( $fut )->post_status );
+$pub = t_add_post( array( 'post_author' => 3, 'post_status' => 'publish' ) );
+$r = call( 'posts-update', array( 'id' => $pub, 'date' => $later ) );
+check( '... a future date on their published post (core would schedule it, which needs the publish capability) is refused not_allowed; still published', 'not_allowed' === code( $r ) && 'publish' === post( $pub )->post_status, $r );
 site( CONTRIB );
 $own = t_add_post( array( 'post_author' => 3, 'post_status' => 'pending' ) );
 $r = call( 'posts-update', array( 'id' => $own, 'date' => $past, 'title' => 'x' ) );

@@ -431,6 +431,21 @@ check( 'api_key is still refused not_allowed (secret-named)', 'not_allowed' === 
 check( 'my-key.v2:x is accepted', is_array( call( 'meta-set', array( 'post_id' => $p, 'key' => 'my-key.v2:x', 'value' => '9' ) ) ) && array( '9' ) === meta( $p, 'my-key.v2:x' ) );
 check( 'd5b_wc_meta_key_ok: 255 characters pass, 256 do not', true === d5b_wc_meta_key_ok( str_repeat( 'a', 255 ) ) && is_wp_error( d5b_wc_meta_key_ok( str_repeat( 'a', 256 ) ) ) && is_wp_error( d5b_wc_meta_key_ok( '' ) ) );
 
+echo "Task 11 fix round 2: case-variant keys (a8, my/case.sql)\n";
+site();
+$p = t_add_post( array( 'post_author' => 3, 'post_status' => 'draft' ) ); t_add_meta( $p, 'price', '100' );
+$PM = "a field named 'price' already exists on this post; use that exact name";
+$r1 = call( 'meta-set', array( 'post_id' => $p, 'key' => 'Price', 'value' => '1' ) );
+$r2 = call( 'meta-delete-preview', array( 'post_id' => $p, 'key' => 'PRICE' ) );
+$r3 = call( 'meta-delete', array( 'post_id' => $p, 'key' => 'Price', 'confirmation' => 'ABCDEFGHJKLM' ) );
+check( 'Price / PRICE on a post that has price: meta-set, meta-delete-preview and meta-delete refused invalid_input naming price; price untouched, no row', 'invalid_input' === code( $r1 ) && $PM === msg( $r1 ) && 'invalid_input' === code( $r2 ) && 'invalid_input' === code( $r3 ) && array( '100' ) === meta( $p, 'price' ) && null === meta( $p, 'Price' ) && array() === hrows(), array( msg( $r1 ), msg( $r2 ), msg( $r3 ) ) );
+check( '... price itself works', is_array( call( 'meta-set', array( 'post_id' => $p, 'key' => 'price', 'value' => '1' ) ) ) && array( '1' ) === meta( $p, 'price' ) );
+t_add_meta( $p, 'Size', 'L' ); t_add_meta( $p, 'size', 'M' ); // both made outside the plugin
+$r1 = call( 'meta-set', array( 'post_id' => $p, 'key' => 'size', 'value' => 'S' ) );
+$r2 = call( 'meta-set', array( 'post_id' => $p, 'key' => 'Size', 'value' => 'S' ) );
+$pv = call( 'meta-delete-preview', array( 'post_id' => $p, 'key' => 'size' ) );
+check( 'Size and size both exist: a write or delete preview of either is refused invalid_input, naming both; nothing changed', 'invalid_input' === code( $r1 ) && 'invalid_input' === code( $r2 ) && 'invalid_input' === code( $pv ) && false !== strpos( msg( $r1 ), "'size'" ) && false !== strpos( msg( $r1 ), "'Size'" ) && false !== strpos( msg( $r2 ), "'size'" ) && false !== strpos( msg( $r2 ), "'Size'" ) && array( 'L' ) === meta( $p, 'Size' ) && array( 'M' ) === meta( $p, 'size' ), array( msg( $r1 ), msg( $r2 ) ) );
+
 echo "Task 11 M4: write_failed after a change carries the history row\n";
 site();
 $p = t_add_post( array( 'post_author' => 3, 'post_status' => 'draft' ) );

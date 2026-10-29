@@ -159,6 +159,34 @@ if ( ! function_exists( 'd5b_wc_check_hash' ) ) {
 		return new WP_Error( 'invalid_input', 'custom field names must be plain ASCII letters, digits, _ - . :' );
 	}
 
+	/** A key folded as MySQL's *_ci collations compare it, as far as PHP can: case, and accents when core's remove_accents is there. */
+	function d5b_wc_meta_key_fold( string $key ): string {
+		return strtolower( function_exists( 'remove_accents' ) ? (string) remove_accents( $key ) : $key );
+	}
+
+	/**
+	 * The database compares custom field names without case (utf8mb4_*_ci): "Price" finds the row of "price", and core's
+	 * update_metadata would change that row while the history saw no "Price" rows. Before any write or delete of $key on the
+	 * post: a stored name that differs from $key only by case is refused, naming it; when $key and such a name both exist
+	 * (made outside the plugin), any write to either is refused, naming both. @return true|WP_Error
+	 */
+	function d5b_wc_meta_key_case_ok( int $post_id, string $key ) {
+		$fold = d5b_wc_meta_key_fold( $key );
+		$same = false; $others = array();
+		foreach ( array_keys( (array) get_post_meta( $post_id ) ) as $k ) {
+			$k = (string) $k;
+			if ( $k === $key ) { $same = true; continue; }
+			if ( d5b_wc_meta_key_fold( $k ) === $fold ) { $others[] = $k; }
+		}
+		if ( array() === $others ) { return true; }
+		$cut = function ( $k ) { return "'" . d5b_rc_cut( $k, 100 ) . "'"; };
+		if ( ! $same && 1 === count( $others ) ) {
+			return new WP_Error( 'invalid_input', 'a field named ' . $cut( $others[0] ) . ' already exists on this post; use that exact name' );
+		}
+		$names = $same ? array_merge( array( $key ), $others ) : $others;
+		return new WP_Error( 'invalid_input', 'fields named ' . implode( ' and ', array_map( $cut, $names ) ) . ' already exist on this post and differ only by case; the database treats them as one name, so none of them is changed here. Change them in wp-admin.' );
+	}
+
 	/**
 	 * After the history row of a permanent delete is written: true when the row is an exact, complete copy. A row with a
 	 * field replaced by its size marker, or text whose invalid UTF-8 had to be replaced, is not; it is removed (so it does

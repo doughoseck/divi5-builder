@@ -100,10 +100,19 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 				if ( ! is_object( $t ) || is_wp_error( $t ) ) { return new WP_Error( 'invalid_input', 'There is no term ' . (int) $tid . ' in "' . $tax . '".' ); }
 			}
 		}
+		$folds = array();
 		foreach ( (array) ( $a['meta'] ?? array() ) as $key => $v ) {
 			$key = (string) $key;
 			$ok  = d5b_wc_meta_key_ok( $key );
 			if ( true !== $ok ) { return $ok; }
+			// The database compares names without case: two names of one input that differ only by case are one field there.
+			$f = d5b_wc_meta_key_fold( $key );
+			if ( isset( $folds[ $f ] ) ) { return new WP_Error( 'invalid_input', "meta names '" . $folds[ $f ] . "' and '" . $key . "' differ only by case; the database treats them as one field. Give one of them." ); }
+			$folds[ $f ] = $key;
+			if ( is_object( $p ) ) {
+				$ok = d5b_wc_meta_key_case_ok( (int) $p->ID, $key );
+				if ( true !== $ok ) { return $ok; }
+			}
 			if ( is_protected_meta( $key, 'post' ) || d5b_is_secret_key( $key ) ) {
 				return new WP_Error( 'not_allowed', 'The custom field "' . substr( preg_replace( '/[^A-Za-z0-9_\-]/', '', $key ), 0, 100 ) . '" is protected (its name starts with _) or names a secret, so it cannot be written here.' );
 			}
@@ -229,6 +238,11 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 		// input gave no status (a past date on a scheduled post, a title edit of a scheduled post whose time has passed).
 		$will = d5b_wc_status_by_date( (string) ( $a['status'] ?? $p->post_status ), isset( $a['date'] ) ? (string) $a['date'] : d5b_wc_post_gmt( $p ) );
 		if ( 'future' === ( $a['status'] ?? '' ) && 'future' !== $will ) { return new WP_Error( 'invalid_input', 'a scheduled post needs a future date' ); }
+		// A scheduled post is published only when the input says so: a date now or past, or any edit after its time (core
+		// publishes it on save), without status publish is refused.
+		if ( 'future' === (string) $p->post_status && 'publish' === $will && 'publish' !== ( $a['status'] ?? '' ) ) {
+			return new WP_Error( 'invalid_input', 'this post is scheduled; pass status: publish to publish it now, or give it a future date' );
+		}
 		if ( $will !== (string) $p->post_status && in_array( $will, array( 'publish', 'future', 'private' ), true ) ) {
 			$ok = d5b_wc_status_allowed( $type, $will );
 			if ( true !== $ok ) { return $ok; }

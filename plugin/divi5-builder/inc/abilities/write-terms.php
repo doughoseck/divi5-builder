@@ -452,6 +452,8 @@ if ( ! function_exists( 'd5b_wt_tax' ) ) {
 		$p = d5b_wc_post( $id, null, 'edit_post' );
 		if ( null === $p ) { return d5b_wc_deny( $id, null ); }
 		if ( ! current_user_can( $meta_cap, (int) $p->ID, $key ) ) { return new WP_Error( 'not_allowed', 'You may not change this custom field.' ); }
+		$ok = d5b_wc_meta_key_case_ok( (int) $p->ID, $key );
+		if ( true !== $ok ) { return $ok; }
 		return $p;
 	}
 
