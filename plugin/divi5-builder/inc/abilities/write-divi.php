@@ -1006,8 +1006,7 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 	foreach ( d5b_wd_ds_writes() as $d5b_short => $d5b_w ) {
 		$d5b_req = array( 'divi-ds-color-set' => array( 'label', 'color' ), 'divi-ds-variable-set' => array( 'type', 'label', 'value' ), 'divi-ds-variable-archive' => array( 'id' ), 'divi-ds-preset-set' => array( 'moduleName', 'name', 'attrs' ) )[ $d5b_short ];
 		d5b_wc_def( $d5b_short, 'divi', $d5b_wd_ds_text[ $d5b_short ][0], $d5b_wd_ds_text[ $d5b_short ][1] . ' A body holding [redacted] from a masked read is refused (masked_read).', $d5b_w[2], $d5b_req,
-			'd5b_wd_h_' . str_replace( '-', '_', substr( $d5b_short, 5 ) ), 'd5b_wd_can_ds',
-			'divi-ds-variable-archive' === $d5b_short ? array( 'destructive' => true ) : array() );
+			'd5b_wd_h_' . str_replace( '-', '_', substr( $d5b_short, 5 ) ), 'd5b_wd_can_ds', array() );
 	}
 	unset( $d5b_wd_ds_text, $d5b_short, $d5b_w, $d5b_req );
 
@@ -1046,7 +1045,7 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 			'op'          => array( 'type' => 'string', 'enum' => array( 'replace', 'before', 'after', 'append', 'remove' ), 'description' => 'replace the block at at with with; insert with before or after it; append with inside it as the last child; remove the block (no with).' ),
 			'at'          => array( 'type' => 'string', 'description' => 'The block: a numeric address from the tree (3 = the third section; 3.2.1.4 = section 3, row 2, column 1, module 4; the placeholder wrapper is not counted), label:<admin label>, or #<css id>.' ),
 			'with'        => array( 'type' => 'string', 'description' => 'Divi 5 block markup (<!-- wp:divi/... -->), at most 1 MB, for every op except remove. It must parse on its own; a whole compiled page is taken as its top-level blocks.' ),
-		), array( 'post_id', 'expect_hash', 'op', 'at' ), 'd5b_wd_h_section_edit', 'd5b_wd_can_edit', array( 'destructive' => true ) );
+		), array( 'post_id', 'expect_hash', 'op', 'at' ), 'd5b_wd_h_section_edit', 'd5b_wd_can_edit', array() );
 
 	d5b_wc_def( 'divi-text-edit', 'divi', 'Change text on a Divi page',
 		'Changes words inside one existing module of a Divi 5 page, post, custom item, canvas, Divi Library item or Theme Builder header, body or footer layout (a footer\'s opening hours, a heading, a button label), without touching the layout. It searches only the text a visitor reads in the modules\' text fields (heading, text, button, blurb, and the other text fields Divi has), with tags and Divi $variable(...)$ tokens (dynamic content) removed and entities decoded, never attribute names, settings, classes, ids or token contents; old must occur exactly once, and is replaced in the field\'s stored HTML, keeping the tags around it. A field stored with the same text for several breakpoints or states (desktop, tablet, hover) counts once and every copy is changed. Returns the item (id, title, status, url, without its content) with its new hash (the expect_hash of the next edit), changed, address and field (where the change was made; also_changed lists the other breakpoint or state copies) and excerpt (120 characters of the field\'s new text around the change, tokens shown as {variable}; not the post excerpt). '

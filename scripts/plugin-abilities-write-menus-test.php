@@ -75,9 +75,9 @@ $refused = array();
 foreach ( array( 'menus-create' => array( 'name' => 'X' ), 'menus-item-add' => array( 'menu' => 7, 'type' => 'custom', 'object' => '/x', 'title' => 'X' ), 'menus-item-update' => array( 'menu' => 7, 'item' => 1, 'title' => 'X' ),
 	'menus-item-remove' => array( 'menu' => 7, 'item' => 1 ), 'menus-item-restore' => array( 'menu' => 7, 'item' => 1 ), 'menus-reorder' => array( 'menu' => 7, 'items' => array( array( 'id' => 1 ) ) ),
 	'menus-assign-location' => array( 'location' => 'primary', 'menu' => 7 ), 'menus-delete-preview' => array( 'menu' => 7 ), 'menus-delete' => array( 'menu' => 7, 'confirmation' => 'X' ) ) as $ab => $in ) {
-	if ( 'FORBIDDEN' !== call( $ab, $in ) || 'forbidden' !== code( handler( $ab, $in ) ) ) { $refused[] = $ab; }
+	if ( 'FORBIDDEN' !== call( $ab, $in ) || 'not_allowed' !== code( handler( $ab, $in ) ) ) { $refused[] = $ab; }
 }
-check( 'without edit_theme_options every menu write is refused by the gate and by its handler (forbidden); nothing changed', array() === $refused && array( 7 ) === array_keys( $GLOBALS['T_menus'] ) && array() === $GLOBALS['T_posts'] && array() === $GLOBALS['T_menu_locations'] && array() === codes_issued(), $refused );
+check( 'without edit_theme_options every menu write is refused by the gate and by its handler (not_allowed, as every other family: final wave B3); nothing changed', array() === $refused && array( 7 ) === array_keys( $GLOBALS['T_menus'] ) && array() === $GLOBALS['T_posts'] && array() === $GLOBALS['T_menu_locations'] && array() === codes_issued(), $refused );
 site();
 d5b_abilities_set_category( 'menus', false, false, 'tester' );
 check( 'Menus switched off: refused', 'FORBIDDEN' === call( 'menus-create', array( 'name' => 'X' ) ) && array() === $GLOBALS['T_menus'] );

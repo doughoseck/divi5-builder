@@ -234,14 +234,17 @@ add_ability( 'posts-nofalse', function ( array $i ) { return array( 'id' => 7, '
 add_ability( 'posts-errh', function ( array $i ) { return new WP_Error( 'stale', 'changed since you read it' ); } );
 $res = d5b_ability_run( 'divi5-builder/posts-failh', array() );
 check( 'a handler that reports a failed history write: the audit row ends ok_no_history', 'ok_no_history' === arows()[0]['status'], arows()[0]['status'] );
-check( '... and _history_failed is stripped from the response, the rest is kept', array( 'id' => 5, 'changed' => true ) === $res, $res );
+check( '... and _history_failed is stripped from the response, the rest is kept, and warnings says it cannot be undone from the history (final wave B4)', array( 'id' => 5, 'changed' => true, 'warnings' => array( 'This change could not be recorded in the change history; it cannot be undone from there.' ) ) === $res, $res );
+add_ability( 'posts-failw', function ( array $i ) { return array( 'id' => 8, 'warnings' => array( 'The terms could not be set.' ), '_history_failed' => true ); } );
+$res = d5b_ability_run( 'divi5-builder/posts-failw', array() );
+check( '... a result that already has warnings keeps them and gets the history one after them', array( 'The terms could not be set.', 'This change could not be recorded in the change history; it cannot be undone from there.' ) === ( $res['warnings'] ?? null ), $res );
 check( '... and the finished row is not rewritten with args (like ok)', '{}' === arows()[0]['args'] || array() === json_decode( arows()[0]['args'], true ), arows()[0]['args'] );
 $res = d5b_ability_run( 'divi5-builder/posts-goodh', array() );
-check( 'a handler whose history write worked: status ok, history_id in the response', 'ok' === arows()[1]['status'] && $res['history_id'] > 0 );
+check( 'a handler whose history write worked: status ok, history_id in the response', 'ok' === arows()[2]['status'] && $res['history_id'] > 0 );
 $res = d5b_ability_run( 'divi5-builder/posts-nofalse', array() );
-check( '_history_failed => false: the key is still stripped and the status is ok', 'ok' === arows()[2]['status'] && array( 'id' => 7 ) === $res, array( arows()[2]['status'], $res ) );
+check( '_history_failed => false: the key is still stripped and the status is ok', 'ok' === arows()[3]['status'] && array( 'id' => 7 ) === $res, array( arows()[3]['status'], $res ) );
 $res = d5b_ability_run( 'divi5-builder/posts-errh', array() );
-check( 'a WP_Error keeps its error: status', 'error:stale' === arows()[3]['status'] && is_wp_error( $res ), arows()[3]['status'] );
+check( 'a WP_Error keeps its error: status', 'error:stale' === arows()[4]['status'] && is_wp_error( $res ), arows()[4]['status'] );
 check( 'a stale error answers with HTTP 409', 409 === $res->get_error_data( 'stale' )['status'], $res->get_error_data( 'stale' ) );
 
 echo "d5b_history_notice_needed\n";
@@ -257,7 +260,7 @@ fresh();
 check( 'no audit table: no notice, no fatal', false === d5b_history_notice_needed() );
 
 echo "HTTP statuses\n";
-foreach ( array( 'stale' => 409, 'masked_read' => 409, 'confirmation_invalid' => 409, 'crosses_markup' => 409, 'ambiguous' => 409, 'cannot_trash' => 409, 'history_unavailable' => 503, 'needs_unfiltered_html' => 403, 'backup_not_found' => 404, 'not_found' => 404 ) as $code => $http ) {
+foreach ( array( 'stale' => 409, 'masked_read' => 409, 'confirmation_invalid' => 409, 'crosses_markup' => 409, 'ambiguous' => 409, 'cannot_trash' => 409, 'history_unavailable' => 503, 'too_large_to_record' => 413, 'needs_unfiltered_html' => 403, 'backup_not_found' => 404, 'not_found' => 404 ) as $code => $http ) {
 	check( "$code answers with $http", $http === d5b_ability_http_status( $code ), d5b_ability_http_status( $code ) );
 }
 check( 'the older codes keep their status', 400 === d5b_ability_http_status( 'invalid_input' ) && 403 === d5b_ability_http_status( 'forbidden' ) && 503 === d5b_ability_http_status( 'audit_unavailable' ) && 500 === d5b_ability_http_status( 'something_else' ) );

@@ -29,7 +29,7 @@ if ( ! function_exists( 'd5b_wn_menu' ) ) {
 	// ---- shared
 
 	function d5b_wn_denied(): ?WP_Error {
-		return current_user_can( 'edit_theme_options' ) ? null : new WP_Error( 'forbidden', 'Changing menus needs the right to edit theme options.' );
+		return current_user_can( 'edit_theme_options' ) ? null : new WP_Error( 'not_allowed', 'Changing menus needs the right to edit theme options.' );
 	}
 
 	/** The menu (a nav_menu term) for an id, slug or name, or null. */

@@ -219,9 +219,9 @@ check( 'all 12 Divi write abilities are defined in the divi category, lint-clean
 $ann = array();
 foreach ( $names as $x ) { $ann[ $x ] = $defs[ 'divi5-builder/' . $x ]['annotations'] ?? null; }
 $want = array_fill_keys( $names, array( 'readonly' => false, 'destructive' => false, 'idempotent' => false ) );
-$want['divi-builder-mode']['idempotent'] = true; $want['divi-ds-variable-archive']['destructive'] = true; $want['divi-ds-backups-list'] = array( 'readonly' => true, 'destructive' => false, 'idempotent' => true );
-$want['divi-section-edit']['destructive'] = true; // op remove takes a block out
-check( 'annotations: builder-mode idempotent, variable-archive and section-edit (remove) destructive, backups-list read-only; every other write neither', $want === $ann, $ann );
+$want['divi-builder-mode']['idempotent'] = true; $want['divi-ds-backups-list'] = array( 'readonly' => true, 'destructive' => false, 'idempotent' => true );
+// final wave B1: variable-archive (reversible) and section-edit are not destructive: only trash, permanent delete and menus-item-remove are
+check( 'annotations: builder-mode idempotent, backups-list read-only; every other write (variable-archive and section-edit too) neither', $want === $ann, $ann );
 $bad = array();
 foreach ( d5b_ability_defs() as $nm => $d ) { if ( false !== strpos( $nm, 'global-colors' ) || false !== strpos( $nm, 'option' ) ) { $bad[] = $nm; } }
 check( '/global-colors and /option have no ability: no registered ability name holds "global-colors" or "option" (all shipped files loaded: ' . count( d5b_ability_defs() ) . ' abilities)', array() === $bad && count( d5b_ability_defs() ) > 60, $bad );

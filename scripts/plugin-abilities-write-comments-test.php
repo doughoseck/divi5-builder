@@ -55,13 +55,13 @@ foreach ( array_merge( $actions, array( 'reply' ) ) as $x ) {
 	if ( null === $d ) { $bad[] = "$x missing"; continue; }
 	if ( 'comments' !== $d['category'] ) { $bad[] = "$x category"; }
 	$an = $d['annotations'] ?? array();
-	$want_destructive = in_array( $x, array( 'trash', 'spam' ), true );
-	$want_idem = in_array( $x, array( 'approve', 'unapprove', 'spam', 'unspam' ), true );
+	$want_destructive = 'trash' === $x; // spam is undone by unspam: not destructive (final wave B1)
+	$want_idem = in_array( $x, array( 'approve', 'unapprove' ), true ); // not spam/unspam (core's run route: destructive+idempotent = DELETE)
 	if ( false !== ( $an['readonly'] ?? null ) || $want_destructive !== ( $an['destructive'] ?? null ) || $want_idem !== ( $an['idempotent'] ?? null ) ) { $bad[] = "$x annotations " . json_encode( $an ); }
 	if ( 'd5b_cm_h_' . $x !== $d['handler'] || ! is_callable( $d['handler'] ) || ! is_callable( $d['permission'] ) ) { $bad[] = "$x handler"; }
 	if ( ! preg_match( '/return/i', $d['description'] ) || ! preg_match( '/refus/i', $d['description'] ) ) { $bad[] = "$x description"; }
 }
-check( 'the 7 comment writes are defined in the comments category; readonly false; destructive for trash and spam; idempotent for the four status settings', array() === $bad, $bad );
+check( 'the 7 comment writes are defined in the comments category; readonly false; destructive for trash only; idempotent for approve and unapprove only', array() === $bad, $bad );
 check( 'moderation takes only id; reply takes post_id, parent, content (post_id and content required, content 1..65525)',
 	array( 'id' ) === array_keys( $defs['divi5-builder/comments-trash']['input_schema']['properties'] ) && array( 'id' ) === $defs['divi5-builder/comments-trash']['input_schema']['required']
 	&& array( 'post_id', 'parent', 'content' ) === array_keys( $defs['divi5-builder/comments-reply']['input_schema']['properties'] ) && array( 'post_id', 'content' ) === $defs['divi5-builder/comments-reply']['input_schema']['required']

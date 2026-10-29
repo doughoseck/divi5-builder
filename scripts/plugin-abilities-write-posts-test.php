@@ -706,7 +706,7 @@ $big = t_add_post( array( 'post_author' => 3, 'post_content' => str_repeat( 'b',
 $u0 = count( $GLOBALS['T_updates'] );
 $r1 = call( 'posts-update', array( 'id' => $big, 'title' => 'x' ) );
 $r2 = call( 'posts-trash', array( 'id' => $big ) );
-check( 'a post whose content is over 8 MB: update and trash are refused history_unavailable, nothing written, no row', 'history_unavailable' === code( $r1 ) && 'history_unavailable' === code( $r2 ) && $u0 === count( $GLOBALS['T_updates'] ) && 'publish' === post( $big )->post_status && array() === hrows(), array( code( $r1 ), code( $r2 ) ) );
+check( 'a post whose content is over 8 MB: update and trash are refused too_large_to_record (HTTP 413, final wave B2), nothing written, no row', 'too_large_to_record' === code( $r1 ) && 'too_large_to_record' === code( $r2 ) && 413 === ( $r1->get_error_data()['status'] ?? null ) && $u0 === count( $GLOBALS['T_updates'] ) && 'publish' === post( $big )->post_status && array() === hrows(), array( code( $r1 ), code( $r2 ) ) );
 site();
 $bad = "Caf\xE9 au lait";
 $p = t_add_post( array( 'post_author' => 3, 'post_content' => $bad ) );

@@ -212,7 +212,7 @@ if ( ! function_exists( 'd5b_ability_http_status' ) ) {
 			'forbidden' => 403, 'forbidden_anonymous' => 403, 'not_allowed' => 403,
 			'not_found' => 404, 'backup_not_found' => 404,
 			'stale' => 409, 'masked_read' => 409, 'confirmation_invalid' => 409, 'crosses_markup' => 409, 'ambiguous' => 409, 'cannot_trash' => 409,
-			'needs_unfiltered_html' => 403, 'history_unavailable' => 503,
+			'needs_unfiltered_html' => 403, 'history_unavailable' => 503, 'too_large_to_record' => 413,
 			'unavailable' => 503, 'audit_unavailable' => 503,
 			'internal_error' => 500, 'write_failed' => 500,
 		);
@@ -443,6 +443,12 @@ if ( ! function_exists( 'd5b_ability_run' ) ) {
 			if ( is_array( $result ) && array_key_exists( '_history_failed', $result ) ) {
 				$no_history = true === $result['_history_failed'];
 				unset( $result['_history_failed'] );
+				// The caller is told: the change was made, but nothing in the history can undo it.
+				if ( $no_history ) {
+					$warn = isset( $result['warnings'] ) && is_array( $result['warnings'] ) ? array_values( $result['warnings'] ) : array();
+					$warn[] = 'This change could not be recorded in the change history; it cannot be undone from there.';
+					$result['warnings'] = $warn;
+				}
 			}
 			if ( is_wp_error( $result ) ) { $result = d5b_ability_clean_error( $result ); }
 			else { $result = d5b_ability_scrub_result( $defs[ $name ], $result ); }

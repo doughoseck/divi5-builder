@@ -205,14 +205,15 @@ if ( ! function_exists( 'd5b_wc_check_hash' ) ) {
 
 	/**
 	 * The content of a post-like item must fit the change history whole (8 MB of JSON on its own): the copy of the content is
-	 * never cut. Over that the write is refused with history_unavailable. @return true|WP_Error
+	 * never cut. Over that the write is refused with too_large_to_record (HTTP 413: trying again will not help, unlike
+	 * history_unavailable). @return true|WP_Error
 	 */
 	function d5b_wc_check_content_size( string $content ) {
 		if ( ! function_exists( 'd5b_history_encode' ) ) { return true; }
 		$sub  = false;
 		$json = d5b_history_encode( $content, $sub );
 		if ( null !== $json && strlen( $json ) <= d5b_history_limit() ) { return true; }
-		return new WP_Error( 'history_unavailable', 'The content of this item is over the 8 MB the change history can keep, so the change was refused: the copy needed to undo it could not be kept. Change it in wp-admin.' );
+		return new WP_Error( 'too_large_to_record', 'The content of this item is over the 8 MB the change history can keep, so the change was refused: the copy needed to undo it could not be kept. Change it in wp-admin.' );
 	}
 
 	/**
