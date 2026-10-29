@@ -553,6 +553,14 @@ if ( ! getenv( 'T_MEDIA_TRASH' ) ) {
 		null === d5b_history_get( $hid ) && ! file_exists( "$up/d5b-history/$hid" ) && is_file( "$up/d5b-history/$young/young.jpg" ) && is_file( "$up/d5b-history/.htaccess" ) && is_file( "$up/d5b-history/index.html" ) );
 	unset( $GLOBALS['T_upload_basedir'] );
 	$rm( $up );
+
+	echo "Final wave D5: the download's temporary file goes also when the HTTP layer throws\n";
+	site();
+	http( 'http://good.example/boom.png', 200, PNG );
+	add_action( 'http_api_curl', function () { throw new RuntimeException( 'a plugin exploded in http_api_curl' ); }, 99, 3 );
+	$r = call( 'media-upload', array( 'url' => 'http://good.example/boom.png' ) );
+	unset( $GLOBALS['T_actions']['http_api_curl'], $GLOBALS['T_priorities']['http_api_curl'] );
+	check( 'an exception inside the download: internal_error, nothing stored, and no temporary file is left behind', 'internal_error' === code( $r ) && array() === atts() && count( $GLOBALS['T_tempfiles'] ) > 0 && array() === temps_left(), array( code( $r ), temps_left() ) );
 }
 
 echo "\n" . ( $n - $failed ) . " of $n passed\n";

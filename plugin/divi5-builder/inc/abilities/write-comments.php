@@ -126,7 +126,9 @@ if ( ! function_exists( 'd5b_cm_comment' ) ) {
 		$new   = d5b_rc_comment_status( $np );
 		$where  = ' comment ' . $id . ' on post ' . (int) $np->comment_post_ID;
 		$summary = 'spam' === $what ? 'Marked' . $where . ' as spam' : ( 'unspam' === $what ? 'Marked' . $where . ' as not spam' : $plan['verb'] . $where );
-		$stored = d5b_cm_history( 'divi5-builder/comments-' . $what, $np, $plan['action'], $before, array( 'status' => $new ), $summary );
+		// The summary is of the action asked for; when WordPress led somewhere else (a restore back to spam), it says where.
+		if ( ! in_array( $new, $plan['want'], true ) ) { $summary .= ' (now ' . $new . ')'; }
+		$stored =d5b_cm_history( 'divi5-builder/comments-' . $what, $np, $plan['action'], $before, array( 'status' => $new ), $summary );
 		return d5b_cm_out( $np, true, $stored );
 	}
 
@@ -171,6 +173,9 @@ if ( ! function_exists( 'd5b_cm_comment' ) ) {
 		$c = (int) $id > 0 ? get_comment( (int) $id ) : null;
 		if ( ! is_object( $c ) ) { return new WP_Error( 'write_failed', 'WordPress did not save the comment.' ); }
 		$summary = ( $parent ? 'Replied to comment ' . $parent : 'Commented' ) . ' on post ' . (int) $p->ID . ' (comment ' . (int) $c->comment_ID . ')';
+		// A reply WordPress (or an anti-spam plugin) put straight into spam or the trash says so.
+		$cs = d5b_rc_comment_status( $c );
+		if ( in_array( $cs, array( 'spam', 'trash' ), true ) ) { $summary .= ' (now ' . $cs . ')'; }
 		$stored  = d5b_cm_history( 'divi5-builder/comments-reply', $c, 'create', null, d5b_cm_before( $c ), $summary );
 		return d5b_cm_out( $c, true, $stored );
 	}

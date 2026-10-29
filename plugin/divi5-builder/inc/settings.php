@@ -206,7 +206,16 @@ if ( ! function_exists( 'd5b_settings_render_history' ) ) {
 				foreach ( array( 'before' => 'Before', 'after' => 'After' ) as $side => $label ) {
 					$json = json_encode( $full[ $side ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR );
 					$json = is_string( $json ) ? $json : '{}';
+					// At most 64 KB per side on the page (a side can be MBs); the full copy is one history-change-get away. The text
+					// is cut with 8 KB to spare BEFORE the masker (a secret across the 64 KB line is still seen whole), then at 64 KB.
+					$all = strlen( $json );
+					$cap = 65536;
+					if ( $all > $cap ) { $json = function_exists( 'mb_strcut' ) ? mb_strcut( $json, 0, $cap + 8192, 'UTF-8' ) : substr( $json, 0, $cap + 8192 ); }
 					if ( function_exists( 'd5b_audit_mask_strict' ) ) { $json = d5b_audit_mask_strict( $json ); }
+					if ( $all > $cap ) {
+						$json  = function_exists( 'mb_strcut' ) ? mb_strcut( $json, 0, $cap, 'UTF-8' ) : substr( $json, 0, $cap );
+						$json .= "\u{2026}(" . max( 0, $all - strlen( $json ) ) . ' more bytes; use history-change-get)';
+					}
 					echo '<p><strong>' . esc_html( $label ) . '</strong></p><pre style="max-height:300px;overflow:auto;white-space:pre-wrap">' . esc_html( $json ) . '</pre>';
 				}
 				echo '</details>';

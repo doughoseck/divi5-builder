@@ -273,32 +273,37 @@ if ( ! function_exists( 'd5b_wm_safe_url' ) ) {
 			}
 			$tmp = wp_tempnam( 'd5b-upload' );
 			if ( ! is_string( $tmp ) || '' === $tmp ) { return new WP_Error( 'write_failed', 'No temporary file could be made for the download.' ); }
-			$r = d5b_wm_pinned_get( $url, $ok, array(
-				'redirection' => 0, 'timeout' => 20, 'stream' => true, 'filename' => $tmp,
-				'limit_response_size' => $max + 1, 'reject_unsafe_urls' => true,
-			) );
-			if ( is_wp_error( $r ) ) {
-				d5b_wm_unlink( $tmp );
-				if ( 'unavailable' === $r->get_error_code() ) { return $r; }
-				return new WP_Error( 'invalid_input', 'The download failed: ' . $r->get_error_message() );
+			// The temporary file is removed on every way out of this hop (an error, a redirect, an exception thrown by the HTTP
+			// layer or a filter) except the one that hands it to the caller.
+			$keep = false;
+			try {
+				$r = d5b_wm_pinned_get( $url, $ok, array(
+					'redirection' => 0, 'timeout' => 20, 'stream' => true, 'filename' => $tmp,
+					'limit_response_size' => $max + 1, 'reject_unsafe_urls' => true,
+				) );
+				if ( is_wp_error( $r ) ) {
+					if ( 'unavailable' === $r->get_error_code() ) { return $r; }
+					return new WP_Error( 'invalid_input', 'The download failed: ' . $r->get_error_message() );
+				}
+				$code = (int) wp_remote_retrieve_response_code( $r );
+				if ( in_array( $code, array( 301, 302, 303, 307, 308 ), true ) ) {
+					$loc = wp_remote_retrieve_header( $r, 'location' );
+					if ( ! is_string( $loc ) || '' === trim( $loc ) ) { return new WP_Error( 'invalid_input', 'The server answered with a redirect (HTTP ' . $code . ') but no single Location.' ); }
+					if ( $hop >= 3 ) { return new WP_Error( 'invalid_input', 'More than 3 redirects: the download was stopped.' ); }
+					$url = d5b_wm_absolute( trim( $loc ), $url );
+					continue;
+				}
+				if ( 200 !== $code ) {
+					return new WP_Error( 'invalid_input', 'The server answered HTTP ' . $code . ': only 200 is accepted.' );
+				}
+				$len = wp_remote_retrieve_header( $r, 'content-length' );
+				if ( is_string( $len ) && ctype_digit( $len ) && (int) $len > $max ) { return d5b_wm_too_large(); }
+				$disp = wp_remote_retrieve_header( $r, 'content-disposition' );
+				$keep = true;
+				return array( 'file' => $tmp, 'url' => $url, 'disposition' => is_string( $disp ) ? $disp : '', 'transport' => 'curl' );
+			} finally {
+				if ( ! $keep ) { d5b_wm_unlink( $tmp ); }
 			}
-			$code = (int) wp_remote_retrieve_response_code( $r );
-			if ( in_array( $code, array( 301, 302, 303, 307, 308 ), true ) ) {
-				d5b_wm_unlink( $tmp );
-				$loc = wp_remote_retrieve_header( $r, 'location' );
-				if ( ! is_string( $loc ) || '' === trim( $loc ) ) { return new WP_Error( 'invalid_input', 'The server answered with a redirect (HTTP ' . $code . ') but no single Location.' ); }
-				if ( $hop >= 3 ) { return new WP_Error( 'invalid_input', 'More than 3 redirects: the download was stopped.' ); }
-				$url = d5b_wm_absolute( trim( $loc ), $url );
-				continue;
-			}
-			if ( 200 !== $code ) {
-				d5b_wm_unlink( $tmp );
-				return new WP_Error( 'invalid_input', 'The server answered HTTP ' . $code . ': only 200 is accepted.' );
-			}
-			$len = wp_remote_retrieve_header( $r, 'content-length' );
-			if ( is_string( $len ) && ctype_digit( $len ) && (int) $len > $max ) { d5b_wm_unlink( $tmp ); return d5b_wm_too_large(); }
-			$disp = wp_remote_retrieve_header( $r, 'content-disposition' );
-			return array( 'file' => $tmp, 'url' => $url, 'disposition' => is_string( $disp ) ? $disp : '', 'transport' => 'curl' );
 		}
 	}
 

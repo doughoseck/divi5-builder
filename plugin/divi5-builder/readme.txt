@@ -27,7 +27,8 @@ One plugin for the divi5-builder skill.
 
 = 2.2.0 =
 * New: abilities that change things, behind the same master switch and the category switches. AI tools can now create, update, trash and restore posts, pages and custom post types, work with media, categories and tags, comments, custom fields and menus, restore revisions, and edit Divi content. Nothing is changed unless the master switch and the category are both on.
-* Nothing is lost for good in one step. Content is trashed, never deleted. Permanent deletes (a term, a menu, a custom field, a media file) take two steps: a preview first, then a confirmation code that works once, for the same user, for 10 minutes.
+* Nothing is lost for good in one step. Content is trashed, never deleted. Permanent deletes (a term, a menu, a custom field, a media file) take two steps: a preview first, then a confirmation code that works once, for the same user, for 10 minutes. A permanently deleted media file is kept for 30 days in wp-content/uploads/d5b-history and can be put back by hand.
+* Updating from 2.1.x: if the AI abilities master switch was on, the update turns it off and the settings page says so, because 2.2.0 abilities can change content. Review the category switches and turn it on again when you are ready.
 * Change history: every change is kept for 30 days with a full copy of what it replaced, so it can be put back. Settings > Divi 5 Builder shows the list, with a link to the WordPress revision compare screen. A change that worked but could not be recorded is flagged in the audit log and on the settings page.
 * Divi: edit one section, or one piece of text, of a page without touching the rest of it.
 * Every content update must carry the hash from the read, so it cannot overwrite a change made in between.

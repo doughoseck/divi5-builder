@@ -646,6 +646,25 @@ check( 'no match shows the empty line', false !== strpos( html( 'd5b_settings_re
 $_GET = array();
 for ( $i = 0; $i < 70; $i++ ) { put_change( 'bulk/' . $i, 1, 10 + $i ); }
 check( 'the screen shows the newest 50 changes only', 50 === substr_count( html( 'd5b_settings_render_history' ), '<details>' ) );
+// Final wave D1: at most 64 KB per side on the page, with how much more and where to get it.
+installed(); t_set_caps( array( 'manage_options' ) ); $_GET = array();
+$big = str_repeat( 'é', 60000 ) . 'TAIL-MARKER' . ' api_key=SECRETVALUE77 ';
+put_change( 'divi5-builder/pages-update', 1, 30, array( 'before' => json_encode( array( 'content' => $big ) ), 'after' => '{"title":"small"}' ) );
+$out = html( 'd5b_settings_render_history' );
+preg_match_all( '#<pre[^>]*>(.*?)</pre>#s', $out, $pres );
+$side = html_entity_decode( $pres[1][0] ?? '', ENT_QUOTES, 'UTF-8' );
+$json_len = strlen( json_encode( array( 'content' => $big ), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) );
+check( 'a side over 64 KB shows its first 64 KB (whole UTF-8 characters) then "…(N more bytes; use history-change-get)"', 1 === preg_match( '/\x{2026}\((\d+) more bytes; use history-change-get\)$/u', $side, $mm ) && strlen( $side ) - strlen( $mm[0] ) <= 65536 && strlen( $side ) - strlen( $mm[0] ) > 65000 && (int) $mm[1] > 50000 && (int) $mm[1] < $json_len && false === strpos( $side, 'TAIL-MARKER' ) && 1 === preg_match( '//u', $side ), array( strlen( $side ), $mm[0] ?? null ) );
+// A secret that straddles the 64 KB line: the masker sees it whole (the text is cut with 8 KB to spare before masking).
+installed(); t_set_caps( array( 'manage_options' ) ); $_GET = array();
+$KEY = 'sk_' . 'live_51HxYzAbCdEfGhIjKlMnOpQr';
+$probe = json_encode( array( 'content' => 'aaaa' ), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+$pad = 65536 - strpos( $probe, 'aaaa' ) - 15; // " sk_live_51HxYz" (15 bytes) ends exactly at the 64 KB line
+put_change( 'divi5-builder/pages-update', 1, 30, array( 'before' => json_encode( array( 'content' => str_repeat( 'a', $pad ) . ' ' . $KEY . ' ' . str_repeat( 'b', 20000 ) ) ) ) );
+preg_match_all( '#<pre[^>]*>(.*?)</pre>#s', html( 'd5b_settings_render_history' ), $p2 );
+$shown = html_entity_decode( $p2[1][0] ?? '', ENT_QUOTES, 'UTF-8' );
+check( 'a Stripe key across the 64 KB line is masked whole before the cut: not even its first 14 characters show', false === strpos( $shown, 'sk_live_51HxYz' ) && false !== strpos( $shown, 'more bytes' ), substr( $shown, 65400, 160 ) );
+check( '... the small side is shown whole, with no cut note',false !== strpos( $pres[1][1] ?? '', 'small' ) && false === strpos( $pres[1][1] ?? '', 'more bytes' ) );
 t_set_multisite( true ); t_set_caps( array( 'manage_options' ) );
 check( 'multisite: manage_options is not enough, network capability required', '' === html( 'd5b_settings_render_history' ) );
 t_set_caps( array( 'manage_network_options' ) );

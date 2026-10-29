@@ -301,10 +301,13 @@ $r2 = call( 'comments-restore', array( 'id' => $c ) );
 $h = hlast();
 check( 'spam, then trash, then restore: core puts it back to spam; the answer says spam with changed true (not write_failed) and a restore row is written (before trash, after spam)',
 	is_array( $r1 ) && 'spam' === ( $h['after']['status'] ?? null ) && is_array( $r2 ) && 'spam' === $r2['status'] && true === $r2['changed'] && 'spam' === appr( $c ) && $h0 + 1 === count( hrows() ) && 'restore' === $h['action'] && 'trash' === $h['before']['status'], array( $r1, $r2, $h ) );
-$c2 = t_add_comment( array( 'comment_post_ID' => $po, 'comment_approved' => 'spam' ) ); add_comment_meta( $c2, '_wp_trash_meta_status', 'trash' );
+check( '... the restore row\'s summary says where it led: "Restored comment N on post M (now spam)" (final wave D4)', 'Restored comment ' . $c . ' on post ' . $po . ' (now spam)' === $h['summary'], $h['summary'] );
+check( '... the trash row before it, which went where expected, has no "(now ...)"', 'Trashed comment ' . $c . ' on post ' . $po === d5b_history_get( (int) $h['id'] - 1 )['summary'] || 'Trashed comment ' . $c . ' on post ' . $po === hrows()[ count( hrows() ) - 2 ]['summary'], hrows()[ count( hrows() ) - 2 ]['summary'] );
+$c2 =t_add_comment( array( 'comment_post_ID' => $po, 'comment_approved' => 'spam' ) ); add_comment_meta( $c2, '_wp_trash_meta_status', 'trash' );
 $h0 = count( hrows() );
 $r = call( 'comments-unspam', array( 'id' => $c2 ) );
 check( 'a change to a status the action did not expect (unspam sent to trash by the remembered status) is still recorded and reported as it is, never write_failed', is_array( $r ) && 'trash' === $r['status'] && true === $r['changed'] && $h0 + 1 === count( hrows() ) && 'trash' === hlast()['after']['status'], $r );
+check( '... its summary: "Marked comment N on post M as not spam (now trash)" (final wave D4)', 'Marked comment ' . $c2 . ' on post ' . $po . ' as not spam (now trash)' === hlast()['summary'], hlast()['summary'] );
 site( READER, 5 );
 $GLOBALS['T_users'][5] = (object) array( 'user_login' => 'bob', 'display_name' => 'Bob', 'user_email' => 'bob@example.org' );
 $po = t_add_post( array( 'post_author' => 3, 'comment_status' => 'open' ) );
@@ -318,6 +321,8 @@ update_option( 'disallowed_keys', "viagra\n" );
 $r = call( 'comments-reply', array( 'post_id' => $po, 'content' => 'buy viagra' ) );
 check( 'the disallowed list on a site with a trash puts the reply in the trash (core: trash when EMPTY_TRASH_DAYS); the answer says trash, changed true, a create row is written',
 	is_array( $r ) && 'trash' === $r['status'] && true === $r['changed'] && 'create' === hlast()['action'] && 'trash' === hlast()['after']['status'], $r );
+check( '... the reply summary names the outcome: "Commented on post M (comment N) (now trash)" (final wave D4)', 'Commented on post ' . $po . ' (comment ' . $r['id'] . ') (now trash)' === hlast()['summary'], hlast()['summary'] );
+check( '... an approved or held reply has no "(now ...)"', false === strpos( hrows()[ count( hrows() ) - 2 ]['summary'], '(now' ), hrows()[ count( hrows() ) - 2 ]['summary'] );
 
 echo "\n" . ( $n - $failed ) . " of $n passed\n";
 exit( $failed ? 1 : 0 );
