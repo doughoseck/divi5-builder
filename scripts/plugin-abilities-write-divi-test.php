@@ -909,12 +909,12 @@ list( $c3, , , $same3 ) = one( '<p>A <b>B</b> C</p>', array( 'old' => '<b>B</b>'
 list( $c4, $a4 ) = one( '<p>A <b>B</b> C</p>', array( 'old' => '<b>B</b>', 'new' => '<i>Y</i>', 'html' => true ) );
 check( 'html: true refuses a result whose tags no longer balance (a broken <strong, a dropped </b>) or whose text outside the replaced part changes (an unclosed comment), nothing written; whole tags swapped are fine', 'invalid_input' === $c1 && $same1 && 'invalid_input' === $c2 && $same2 && 'invalid_input' === $c3 && $same3 && 'ok' === $c4 && '<p>A <i>Y</i> C</p>' === $a4, array( $c1, $c2, $c3, $c4 ) );
 check( 'the tag count: void and self-closed tags and comments are left out; opened minus closed per name', array( 'b' => 1 ) === d5b_wd_tag_balance( '<p>x<br><img src=a /><b>y<!-- <i> --></p>' ) && array() === d5b_wd_tag_balance( '<p><b>x</b></p>' ) );
-$n1 = one( "<p>Hodad\u{2019}s Burgers</p>", array( 'old' => "Hodad's", 'new' => 'X' ) );
-$n2 = one( '<p>Hodad&rsquo;s Burgers</p>', array( 'old' => "Hodad's burgers", 'new' => 'X' ) );
+$n1 = one( "<p>Marta\u{2019}s Burgers</p>", array( 'old' => "Marta's", 'new' => 'X' ) );
+$n2 = one( '<p>Marta&rsquo;s Burgers</p>', array( 'old' => "Marta's burgers", 'new' => 'X' ) );
 $n3 = one( "<p>9am \u{2013} 5pm daily</p>", array( 'old' => '9am - 5pm', 'new' => 'X' ) );
 $n4 = one( '<p>Say &ldquo;hi&rdquo;</p>', array( 'old' => 'Say "hi"', 'new' => 'X' ) );
 $texts = array_map( function ( $x ) { return 'not_found' === $x[0] ? array_column( $x[2]->get_error_data()['near_matches'], 'text' ) : $x[0]; }, array( $n1, $n2, $n3, $n4 ) );
-check( 'near matches fold curly and straight quotes and hyphens and dashes (and case)', array( array( "Hodad\u{2019}s" ), array( "Hodad\u{2019}s Burgers" ), array( "9am \u{2013} 5pm" ), array( "Say \u{201C}hi\u{201D}" ) ) === $texts, $texts );
+check( 'near matches fold curly and straight quotes and hyphens and dashes (and case)', array( array( "Marta\u{2019}s" ), array( "Marta\u{2019}s Burgers" ), array( "9am \u{2013} 5pm" ), array( "Say \u{201C}hi\u{201D}" ) ) === $texts, $texts );
 
 echo "fix round 1: markup, characters and the position map (probe b)\n";
 $TKN = '$variable({"type":"content","value":{"name":"gvid-abc","settings":{}}})$';
@@ -927,8 +927,8 @@ $cases = array(
 	array( 'html:true, old = tag name', '<p>Price <strong>R85</strong></p>', array( 'old' => 'strong', 'new' => 'em', 'html' => true ), 'ambiguous' ),
 	array( 'html:true, new holds a comment that hides text', '<p>Price R85</p>', array( 'old' => 'R85', 'new' => 'R95 <!-- /wp:divi/text --> x', 'html' => true ), '<p>Price R95 <!-- /wp:divi/text --> x</p>' ),
 	array( 'text, new holds a block comment', '<p>Price R85</p>', array( 'old' => 'R85', 'new' => 'R95 <!-- /wp:divi/text --> x' ), '<p>Price R95 &lt;!-- /wp:divi/text --&gt; x</p>' ),
-	array( 'curly apostrophe both', "<p>Hodad\u{2019}s Burgers</p>", array( 'old' => "Hodad\u{2019}s", 'new' => "Bob\u{2019}s" ), "<p>Bob\u{2019}s Burgers</p>" ),
-	array( '&#8217; entity, curly old', '<p>Hodad&#8217;s Burgers</p>', array( 'old' => "Hodad\u{2019}s", 'new' => "Bob\u{2019}s" ), "<p>Bob\u{2019}s Burgers</p>" ),
+	array( 'curly apostrophe both', "<p>Marta\u{2019}s Burgers</p>", array( 'old' => "Marta\u{2019}s", 'new' => "Bob\u{2019}s" ), "<p>Bob\u{2019}s Burgers</p>" ),
+	array( '&#8217; entity, curly old', '<p>Marta&#8217;s Burgers</p>', array( 'old' => "Marta\u{2019}s", 'new' => "Bob\u{2019}s" ), "<p>Bob\u{2019}s Burgers</p>" ),
 	array( '& vs &amp;', '<p>Fish &amp; Chips R85</p>', array( 'old' => 'Fish & Chips', 'new' => 'Fish & Fries' ), '<p>Fish &amp; Fries R85</p>' ),
 	array( 'old = &amp; (literal)', '<p>Fish &amp; Chips R85</p>', array( 'old' => '&amp;', 'new' => 'and' ), 'not_found' ),
 	array( 'nbsp field, space old', '<p>R85&nbsp;each</p>', array( 'old' => 'R85 each', 'new' => 'R95 each' ), 'not_found' ),
