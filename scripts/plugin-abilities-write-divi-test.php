@@ -568,7 +568,7 @@ $r  = call( 'divi-section-edit', array( 'post_id' => $pg, 'expect_hash' => md5( 
 $c  = post( $pg )->post_content;
 $h  = hlast();
 check( 'replace: section 2 is the new section, everything outside it byte-identical', is_array( $r ) && outside_same( $PG, $c, $t2['start'], $t2['end'] ) && substr( $PG, 0, $t2['start'] ) . $SEC . substr( $PG, $t2['end'] ) === $c, is_array( $r ) ? $c : $r );
-check( 'replace: the response holds the new hash, the address and the tree of the page as it is now', is_array( $r ) && md5( $c ) === $r['hash'] && '2' === $r['address'] && 'replace' === $r['op'] && d5b_blocks_tree( $c ) === $r['tree'] && 'Hero' === $r['tree'][0]['label'] && $c === $r['content'], $r );
+check( 'replace: the response holds the new hash, changed, the address and the tree of the page as it is now, and not the page itself', is_array( $r ) && md5( $c ) === $r['hash'] && '2' === $r['address'] && 'replace' === $r['op'] && d5b_blocks_tree( $c ) === $r['tree'] && 'Hero' === $r['tree'][0]['label'] && ! isset( $r['content'] ) && true === $r['changed'], $r );
 check( 'history: action update, the page, summary "Edited section 2 of page N \'Home\'", before.content = the previous page (first update: no revision holds it)', $h && 'divi5-builder/divi-section-edit' === $h['ability'] && 'page' === $h['object_type'] && $pg === $h['object_id'] && 'update' === $h['action'] && "Edited section 2 of page $pg 'Home'" === $h['summary'] && $PG === ( $h['before']['content'] ?? null ) && 0 === (int) $h['revision_id'] && 'ok' === alast()['status'], $h );
 $r2 = call( 'divi-section-edit', array( 'post_id' => $pg, 'expect_hash' => $r['hash'], 'op' => 'remove', 'at' => '3' ) );
 $h  = hlast();
@@ -670,7 +670,7 @@ $z2 = call( 'divi-text-edit', array( 'post_id' => $pg, 'expect_hash' => md5( $PG
 $z3 = call( 'divi-text-edit', array( 'post_id' => $pg, 'expect_hash' => md5( $PG ), 'old' => 'Nowhere at all', 'new' => 'x' ) );
 check( 'zero matches: not_found with near matches (other case; other spacing), as { address, field, text }; none when nothing is near', 'not_found' === code( $z ) && array( array( 'address' => '2.1.1.2', 'field' => 'button.innerContent.desktop.value.text', 'text' => 'Book now' ) ) === $z->get_error_data()['near_matches'] && 'not_found' === code( $z2 ) && array( array( 'address' => '2.1.1.3', 'field' => 'content.innerContent.desktop.value', 'text' => 'Fish & Chips' ) ) === $z2->get_error_data()['near_matches'] && array() === $z3->get_error_data()['near_matches'], array( $z, $z2 ) );
 $am = call( 'divi-text-edit', array( 'post_id' => $pg, 'expect_hash' => md5( $PG ), 'old' => 'Call us', 'new' => 'Ring us' ) );
-check( 'two matches: ambiguous with the address, field and count of each, nothing written', 'ambiguous' === code( $am ) && array( array( 'address' => '3.1.1.1', 'field' => 'content.innerContent.desktop.value', 'count' => 1 ), array( 'address' => '3.1.1.2', 'field' => 'content.innerContent.desktop.value', 'count' => 1 ) ) === $am->get_error_data()['matches'] && $PG === post( $pg )->post_content && $n_h === count( hrows() ), $am );
+check( 'two matches: ambiguous with the address, field and count of each, nothing written', 'ambiguous' === code( $am ) && array( array( 'address' => '3.1.1.1', 'field' => 'content.innerContent.desktop.value', 'breakpoint' => 'desktop', 'state' => 'value', 'count' => 1 ), array( 'address' => '3.1.1.2', 'field' => 'content.innerContent.desktop.value', 'breakpoint' => 'desktop', 'state' => 'value', 'count' => 1 ) ) === $am->get_error_data()['matches'] && $PG === post( $pg )->post_content && $n_h === count( hrows() ), $am );
 $am2 = call( 'divi-text-edit', array( 'post_id' => $pg, 'expect_hash' => md5( $PG ), 'old' => 'or', 'new' => 'x', 'at' => '3.1.1.4' ) );
 check( 'repeated matches in one field count (ambiguous, count > 1)', 'ambiguous' === code( $am2 ) && $am2->get_error_data()['matches'][0]['count'] > 1 );
 $rm  = "<!-- wp:divi/section -->\n<!-- wp:divi/row -->\n<!-- wp:divi/column -->\n" . txt( '<p>Room 444</p>' ) . "\n<!-- /wp:divi/column -->\n<!-- /wp:divi/row -->\n<!-- /wp:divi/section -->";
@@ -728,6 +728,290 @@ foreach ( array( 'vb-5.18.0-variables.html', 'vb-resave-5.15.1/before.html', 'vb
 check( "the walk agrees with the visible text on all $nf text fields of the Visual Builder fixtures", $nf >= 20 && array() === $bad, $bad );
 list( $v, $tok ) = d5b_wd_vis_map( '<p>Open <strong>Mon</strong> &amp; Fri</p>' );
 check( 'spans: "Mon & Fri" maps to "Mon</strong> &amp; Fri" (holds a tag); "& Fri" to "&amp; Fri"; a span ending inside a multi-byte entity is null', array( 8 + 8, 8 + 8 + strlen( 'Mon</strong> &amp; Fri' ) ) === d5b_wd_vis_span( $tok, strpos( $v, 'Mon' ), strlen( $v ) ) && '&amp; Fri' === ( function () use ( $tok, $v ) { $s = d5b_wd_vis_span( $tok, strpos( $v, '&' ), strlen( $v ) ); return substr( '<p>Open <strong>Mon</strong> &amp; Fri</p>', $s[0], $s[1] - $s[0] ); } )() && null === d5b_wd_vis_span( d5b_wd_vis_map( '&eacute;' )[1], 0, 1 ) );
+
+// =====================================================================================================
+// Fix round 1 (review of Task 9), and the reviewer's probes ported.
+function fx( string $f ): string { return file_get_contents( __DIR__ . '/fixtures/' . $f ); }
+function mkpage( string $src, string $type = 'page' ): int { return t_add_post( array( 'post_type' => $type, 'post_title' => 'Menu', 'post_content' => $src ) ); }
+function ed( int $id, array $in, string $ab = 'divi-text-edit' ) { $in += array( 'post_id' => $id, 'expect_hash' => md5( (string) post( $id )->post_content ) ); return call( $ab, $in ); }
+function revs( int $id ): int { $n = 0; foreach ( $GLOBALS['T_posts'] as $p ) { if ( 'revision' === $p->post_type && (int) $p->post_parent === $id ) { $n++; } } return $n; }
+$FB = fx( 'vb-resave-5.15.1/before.html' ); $FA = fx( 'vb-resave-5.15.1/after.html' ); $FV = fx( 'vb-5.18.0-variables.html' );
+$BL = 'content.innerContent.desktop.value'; $TF = 'title.innerContent.desktop.value';
+/**
+ * A phone edit on a page built from a fixture: it succeeds, the page differs from the original in exactly that one JSON
+ * string (every other byte identical), the hash answered is the stored one, the history keeps the old page.
+ */
+function phone( string $label, string $src, array $in, string $old_html, string $new_html ) {
+	site(); $id = mkpage( $src );
+	$r = ed( $id, $in );
+	$c = post( $id )->post_content;
+	$eo = J( $old_html ); $pos = strpos( $src, $eo );
+	$uniq = false !== $pos && false === strpos( $src, $eo, $pos + 1 );
+	$h = hlast();
+	check( "phone edit, $label: only that JSON string changed, hash = md5 of stored, history keeps the old page, excerpt holds new", is_array( $r ) && $uniq && substr( $src, 0, $pos ) . J( $new_html ) . substr( $src, $pos + strlen( $eo ) ) === $c && $r['hash'] === md5( $c ) && $h && $src === ( $h['before']['content'] ?? null ) && d5b_rc_chars( $r['excerpt'] ) <= 120 && ( '' === $in['new'] || false !== strpos( $r['excerpt'], $in['new'] ) ), is_array( $r ) ? array( $uniq, $r['excerpt'] ) : $r );
+}
+echo "fix round 1: realistic phone edits on the Visual Builder fixtures (probe a)\n";
+$h1 = '<p>Lunch special: R85 per person</p>';
+phone( 'price in a blurb body', with_field( $FB, '2.2.1.1', $BL, $h1 ), array( 'old' => 'R85', 'new' => 'R95' ), $h1, '<p>Lunch special: R95 per person</p>' );
+$h2 = '<p>Mon &amp; Tue: 9am - 5pm<br>Wed - Fri: 9am - 9pm<br />Sat &amp; Sun: closed</p>';
+$p2 = with_field( $FA, '3.1.1.2', $BL, $h2 );
+phone( 'opening hours with <br> and &amp;', $p2, array( 'old' => 'Sat & Sun: closed', 'new' => 'Sat & Sun: 10am - 2pm' ), $h2, '<p>Mon &amp; Tue: 9am - 5pm<br>Wed - Fri: 9am - 9pm<br />Sat &amp; Sun: 10am - 2pm</p>' );
+phone( 'one time in the hours', $p2, array( 'old' => '9pm', 'new' => '10pm' ), $h2, '<p>Mon &amp; Tue: 9am - 5pm<br>Wed - Fri: 9am - 10pm<br />Sat &amp; Sun: closed</p>' );
+site(); $id = mkpage( $p2 );
+$e1 = ed( $id, array( 'old' => '5pm Wed', 'new' => '6pm Wed' ) ); $e2 = ed( $id, array( 'old' => '9am', 'new' => '8am' ) );
+check( 'hours: "5pm Wed" across <br> is not_found with "5pm Wed" as a near match (tags read as spaces); "9am" twice is ambiguous', 'not_found' === code( $e1 ) && array( '5pm Wed' ) === array_column( $e1->get_error_data()['near_matches'], 'text' ) && 'ambiguous' === code( $e2 ) && 2 === $e2->get_error_data()['matches'][0]['count'] && $p2 === post( $id )->post_content, array( $e1, $e2 ) );
+phone( 'heading typo (5.18 fixture)', with_field( $FV, '1.1.1.3', $TF, 'Our Delicous Burgers' ), array( 'old' => 'Delicous', 'new' => 'Delicious' ), 'Our Delicous Burgers', 'Our Delicious Burgers' );
+phone( 'button label', $FB, array( 'old' => 'Read the docs', 'new' => 'Order now' ), 'Read the docs', 'Order now' );
+phone( 'blurb title', $FA, array( 'old' => 'Global variables', 'new' => 'Global colours' ), 'Global variables', 'Global colours' );
+$S5 = with_field( $FV, '1.1.1.3', $TF, 'Today: Specials' );
+$S5 = str_replace( '<!-- wp:divi/heading {', '<!-- wp:divi/heading {"module":{"meta":{"adminLabel":{"desktop":{"value":"Specials"}}},"advanced":{"htmlAttributes":{"desktop":{"value":{"class":"Specials","id":"Specials"}}}}},"foo":{"innerContent":{"desktop":{"value":"Specials"}}},', $S5 );
+$S5 = preg_replace( '/<!-- wp:divi\/section \{/', '<!-- wp:divi/section {"zz":{"innerContent":{"desktop":{"value":{"text":"Specials"}}}},', $S5, 1 );
+check( 'the crafted page (Specials in the heading text, admin label, class, id, an unknown element and the section) parses', ! is_wp_error( d5b_blocks_parse( $S5 ) ) && 6 === substr_count( $S5, 'Specials' ) );
+phone( 'Specials only in the heading text changes', $S5, array( 'old' => 'Specials', 'new' => 'Deals' ), 'Today: Specials', 'Today: Deals' );
+
+echo "fix round 1: \$variable(...)\$ tokens are markup\n";
+$VF = field_of( $FV, '1.1.1.2' );
+check( 'the 5.18 fixture field holds two tokens; its visible text leaves them out', 2 === substr_count( $VF, '$variable(' ) && false === strpos( d5b_wd_visible( $VF ), 'variable' ) && "By\u{00A0}.\u{00A0}" === d5b_wd_visible( $VF ), d5b_wd_visible( $VF ) );
+site(); $id = mkpage( $FV ); $n_h = count( hrows() );
+$e = array();
+foreach ( array( 'post_author', 'gvid-zca7w37pd4', 'variable', 'content', 'settings' ) as $o ) { $e[ $o ] = code( ed( $id, array( 'old' => $o, 'new' => 'x', 'at' => '1.1.1.2' ) ) ); }
+check( 'old inside a token (its name, its JSON keys) is not_found: the dynamic-content reference is never rewritten', array_fill_keys( array_keys( $e ), 'not_found' ) === $e && $FV === post( $id )->post_content && $n_h === count( hrows() ), $e );
+$e = ed( $id, array( 'old' => 'POST_AUTHOR', 'new' => 'x' ) );
+check( 'tokens are left out of the near-match windows', 'not_found' === code( $e ) && array() === $e->get_error_data()['near_matches'], $e );
+$r = ed( $id, array( 'old' => 'By', 'new' => 'Written by' ) );
+check( 'text beside a token changes, the tokens stay byte for byte; the excerpt shows them as {variable}', is_array( $r ) && str_replace( '<p>By&nbsp;', '<p>Written by&nbsp;', $VF ) === field_of( post( $id )->post_content, '1.1.1.2' ) && "Written by\u{00A0}{variable}.\u{00A0}{variable}" === $r['excerpt'], $r );
+$TK  = '$variable({"type":"content","value":{"name":"gvid-abc","settings":{}}})$';
+$pgv = mkpage( with_field( $FB, '3.1.1.2', $BL, '<p>Call ' . $TK . ' now, our content ' . $TK . '</p>' ) );
+$x   = ed( $pgv, array( 'old' => "Call  now", 'new' => 'Ring now', 'at' => '3.1.1.2' ) );
+check( 'a match that runs across a token is crosses_markup with the field HTML', 'crosses_markup' === code( $x ) && false !== strpos( $x->get_error_data()['html'], $TK ), $x );
+$r = ed( $pgv, array( 'old' => 'content', 'new' => 'stuff', 'at' => '3.1.1.2' ) );
+check( '"content" in the text and in the tokens\' JSON: only the text is one match and changes', is_array( $r ) && '<p>Call ' . $TK . ' now, our stuff ' . $TK . '</p>' === field_of( post( $pgv )->post_content, '3.1.1.2' ), $r );
+$c = post( $pgv )->post_content;
+$x = ed( $pgv, array( 'old' => 'stuff', 'new' => 'x ' . $TK, 'at' => '3.1.1.2' ) );
+check( 'new holding a $variable( token is refused in text mode (invalid_input, use html: true), nothing written', 'invalid_input' === code( $x ) && false !== strpos( $x->get_error_message(), 'html: true' ) && $c === post( $pgv )->post_content );
+$r = ed( $pgv, array( 'old' => 'stuff', 'new' => 'stuff ' . $TK, 'at' => '3.1.1.2', 'html' => true ) );
+check( 'with html: true a token can be written', is_array( $r ) && 3 === substr_count( field_of( post( $pgv )->post_content, '3.1.1.2' ), '$variable(' ), $r );
+
+echo "fix round 1: an edit that changes nothing writes nothing\n";
+site(); $id = mkpage( $FB ); $h0 = count( hrows() ); $u0 = count( $GLOBALS['T_updates'] ); $rv0 = revs( $id );
+$r = ed( $id, array( 'old' => 'Read the docs', 'new' => 'Read the docs' ) );
+check( 'text-edit old == new: changed false, the same hash, address and excerpt; no wp_update_post, no revision, no history row', is_array( $r ) && false === $r['changed'] && md5( $FB ) === $r['hash'] && '3.1.1.3' === $r['address'] && 'Read the docs' === $r['excerpt'] && ! isset( $r['content'] ) && $FB === post( $id )->post_content && $h0 === count( hrows() ) && $u0 === count( $GLOBALS['T_updates'] ) && $rv0 === revs( $id ), $r );
+$s2 = blk( $FB, '2' ); $own = substr( $FB, $s2['start'], $s2['end'] - $s2['start'] );
+$r = ed( $id, array( 'op' => 'replace', 'at' => '2', 'with' => $own ), 'divi-section-edit' );
+check( 'section-edit replacing a section with its own markup: changed false, hash, address and tree; nothing written', is_array( $r ) && false === $r['changed'] && md5( $FB ) === $r['hash'] && '2' === $r['address'] && d5b_blocks_tree( $FB ) === $r['tree'] && $h0 === count( hrows() ) && $u0 === count( $GLOBALS['T_updates'] ), $r );
+check( 'audited as ok all the same (the call happened)', 'ok' === alast()['status'] );
+site(); $ft = t_add_post( array( 'post_type' => 'et_footer_layout', 'post_title' => 'Footer', 'post_content' => $FA ) );
+ed( $ft, array( 'old' => 'Read the docs', 'new' => 'Menu' ) );
+$h0 = count( hrows() );
+$r = ed( $ft, array( 'old' => 'Menu', 'new' => 'Menu' ) );
+check( 'a no-op on a footer layout does not overwrite the safety copy (still the content before the real edit), no history row', is_array( $r ) && false === $r['changed'] && $FA === end( $GLOBALS['T_meta'][ $ft ]['_d5b_prev_content'] ) && $h0 === count( hrows() ), $r );
+
+echo "fix round 1: the last top-level block cannot be removed\n";
+$s1 = blk( $FB, '1' ); $one = substr( $FB, $s1['start'], $s1['end'] - $s1['start'] );
+site(); $id = mkpage( $FB ); $k = 0;
+while ( $k < 10 && is_array( $r = ed( $id, array( 'op' => 'remove', 'at' => '1' ), 'divi-section-edit' ) ) ) { $k++; }
+$secs = count( d5b_blocks_divi_children( d5b_blocks_parse( $FB ) ) );
+check( "removing sections one by one stops at the last one ($secs sections: " . ( $secs - 1 ) . " removed), refused invalid_input naming replace and the whole-content writes; the page keeps one section", $secs - 1 === $k && 'invalid_input' === code( $r ) && false !== strpos( $r->get_error_message(), 'Replace it instead' ) && false !== strpos( $r->get_error_message(), 'divi-tb-write' ) && 1 === count( d5b_blocks_divi_children( d5b_blocks_parse( post( $id )->post_content ) ) ), array( $k, $r ) );
+foreach ( array( 'with the placeholder' => "<!-- wp:divi/placeholder -->\n" . $one . "\n<!-- /wp:divi/placeholder -->", 'without it' => $one ) as $lab => $fc ) {
+	site(); $ft = t_add_post( array( 'post_type' => 'et_footer_layout', 'post_title' => 'Footer', 'post_content' => $fc ) );
+	check( "a footer layout with one section ($lab): remove is refused, the footer stays, nothing written", 'invalid_input' === code( ed( $ft, array( 'op' => 'remove', 'at' => '1' ), 'divi-section-edit' ) ) && $fc === post( $ft )->post_content && 0 === count( hrows() ) );
+}
+$lone = "<!-- wp:divi/section -->\n<!-- wp:divi/row -->\n<!-- wp:divi/column -->\n" . txt( '<p>A</p>' ) . "\n<!-- /wp:divi/column -->\n<!-- /wp:divi/row -->\n<!-- /wp:divi/section -->";
+site(); $id = mkpage( $lone );
+check( 'the only module of the only section can still be removed (only the last top-level block is kept)', is_array( ed( $id, array( 'op' => 'remove', 'at' => '1.1.1.1' ), 'divi-section-edit' ) ) && 1 === count( d5b_blocks_divi_children( d5b_blocks_parse( post( $id )->post_content ) ) ) );
+
+echo "fix round 1: one match across breakpoints and states\n";
+/** A text module whose content field holds these breakpoint => state => HTML values, then a second module and section. */
+function bp_page( array $vals ): string {
+	$ic = array(); foreach ( $vals as $bp => $sv ) { $st = array(); foreach ( $sv as $s => $h ) { $st[] = '"' . $s . '":' . J( $h ); } $ic[] = '"' . $bp . '":{' . implode( ',', $st ) . '}'; }
+	return "<!-- wp:divi/section -->\n<!-- wp:divi/row -->\n<!-- wp:divi/column -->\n" . '<!-- wp:divi/text {"content":{"innerContent":{' . implode( ',', $ic ) . '}}} /-->' . "\n" . txt( '<p>Other</p>' ) . "\n<!-- /wp:divi/column -->\n<!-- /wp:divi/row -->\n<!-- /wp:divi/section -->\n" . $GLOBALS['SEC'];
+}
+site();
+$bp1 = bp_page( array( 'desktop' => array( 'value' => '<p>Open R85</p>' ), 'tablet' => array( 'value' => '<p>Open R85</p>' ) ) ); $id = mkpage( $bp1 );
+$r = ed( $id, array( 'old' => 'R85', 'new' => 'R95' ) );
+$f = d5b_blocks_text_fields( blk( post( $id )->post_content, '1.1.1.1' ) );
+check( 'desktop and tablet with the same text: one match, one edit changes both; also_changed names the tablet copy; one history row', is_array( $r ) && '<p>Open R95</p>' === $f['content.innerContent.desktop.value'] && '<p>Open R95</p>' === $f['content.innerContent.tablet.value'] && 'content.innerContent.desktop.value' === $r['field'] && array( 'content.innerContent.tablet.value' ) === $r['also_changed'] && 1 === count( hrows() ), $r );
+site();
+$bp2 = bp_page( array( 'desktop' => array( 'value' => '<p>Fish &amp; Chips</p>' ), 'tablet' => array( 'value' => '<p><b>Fish</b> & Chips</p>' ) ) ); $id = mkpage( $bp2 );
+$r = ed( $id, array( 'old' => 'Chips', 'new' => 'Fries' ) );
+$f = d5b_blocks_text_fields( blk( post( $id )->post_content, '1.1.1.1' ) );
+check( 'the same visible text stored as different HTML per breakpoint: each copy is mapped on its own and keeps its own markup', is_array( $r ) && '<p>Fish &amp; Fries</p>' === $f['content.innerContent.desktop.value'] && '<p><b>Fish</b> &amp; Fries</p>' !== $f['content.innerContent.tablet.value'] && '<p><b>Fish</b> & Fries</p>' === $f['content.innerContent.tablet.value'], array( $r, $f ) );
+$c = post( $id )->post_content;
+$x = ed( $id, array( 'old' => 'Fish & Fries', 'new' => 'x' ) );
+check( '... and when one copy crosses markup, nothing is written (crosses_markup names that copy)', 'crosses_markup' === code( $x ) && 'content.innerContent.tablet.value' === $x->get_error_data()['field'] && $c === post( $id )->post_content );
+site();
+$bp3 = bp_page( array( 'desktop' => array( 'value' => '<p>Open R85 daily</p>', 'hover' => '<p>Open R85 daily</p>' ), 'tablet' => array( 'value' => '<p>Open R85</p>' ) ) ); $id = mkpage( $bp3 );
+$x = ed( $id, array( 'old' => 'R85', 'new' => 'R95' ) );
+$m = is_wp_error( $x ) ? $x->get_error_data()['matches'] : array();
+check( 'different texts per breakpoint stay separate matches: ambiguous, data names breakpoint and state, the identical hover copy is listed with its desktop value', 'ambiguous' === code( $x ) && 2 === count( $m ) && 'desktop' === $m[0]['breakpoint'] && 'value' === $m[0]['state'] && array( 'content.innerContent.desktop.hover' ) === ( $m[0]['same_text_in'] ?? null ) && 'tablet' === $m[1]['breakpoint'] && $bp3 === post( $id )->post_content, $m );
+$r = ed( $id, array( 'old' => 'R85 daily', 'new' => 'R95 daily' ) );
+$f = d5b_blocks_text_fields( blk( post( $id )->post_content, '1.1.1.1' ) );
+check( 'a longer old picks the desktop text (value and hover change, tablet stays)', is_array( $r ) && '<p>Open R95 daily</p>' === $f['content.innerContent.desktop.value'] && '<p>Open R95 daily</p>' === $f['content.innerContent.desktop.hover'] && '<p>Open R85</p>' === $f['content.innerContent.tablet.value'], $f );
+site(); $id = mkpage( $bp1 );
+$r = ed( $id, array( 'old' => '<p>Open R85</p>', 'new' => '<p>Open <b>R95</b></p>', 'html' => true ) );
+$f = d5b_blocks_text_fields( blk( post( $id )->post_content, '1.1.1.1' ) );
+check( 'html: true matches per copy too: both copies change', is_array( $r ) && '<p>Open <b>R95</b></p>' === $f['content.innerContent.desktop.value'] && '<p>Open <b>R95</b></p>' === $f['content.innerContent.tablet.value'], $r );
+
+echo "fix round 1: divi-library-get\n";
+site();
+$li = t_add_post( array( 'post_type' => 'et_pb_layout', 'post_title' => 'Saved hero', 'post_content' => $FB ) );
+$g  = call( 'divi-library-get', array( 'id' => $li ) );
+$defs = d5b_ability_defs();
+check( 'divi-library-get: category divi, a read like divi-canvas-get, content keys declared; returns id, title, status, modified, format, bytes, hash, content', isset( $defs['divi5-builder/divi-library-get'] ) && 'divi' === $defs['divi5-builder/divi-library-get']['category'] && 'd5b_dv_h_library_get' === $defs['divi5-builder/divi-library-get']['handler'] && d5b_ability_post_content_keys() === ( $defs['divi5-builder/divi-library-get']['content_keys'] ?? null ) && is_array( $g ) && $FB === $g['content'] && md5( $FB ) === $g['hash'] && 'divi5' === $g['format'] && strlen( $FB ) === $g['bytes'] && 'Saved hero' === $g['title'] && array( 'id', 'title', 'status', 'modified', 'format', 'bytes', 'hash', 'content' ) === array_keys( $g ), $g );
+$r = call( 'divi-text-edit', array( 'post_id' => $li, 'expect_hash' => $g['hash'], 'old' => 'Read the docs', 'new' => 'Docs' ) );
+check( 'its hash is what divi-text-edit takes: the library item is edited through wp_update_post', is_array( $r ) && true === $r['changed'] && 'Docs' === field_of( post( $li )->post_content, '3.1.1.3', 'button.innerContent.desktop.value.text' ), $r );
+$pgx = t_add_post( array( 'post_type' => 'page', 'post_content' => 'P' ) ); $cvx = t_add_post( array( 'post_type' => 'et_pb_canvas', 'post_content' => 'C' ) );
+check( 'a page, a canvas and a missing id are refused (not_found from the handler)', 'FORBIDDEN' === call( 'divi-library-get', array( 'id' => $pgx ) ) && 'not_found' === code( handler( 'divi-library-get', array( 'id' => $pgx ) ) ) && 'not_found' === code( handler( 'divi-library-get', array( 'id' => $cvx ) ) ) && 'not_found' === code( handler( 'divi-library-get', array( 'id' => 99999 ) ) ) );
+site( CONTRIB, 3 );
+$theirs = t_add_post( array( 'post_type' => 'et_pb_layout', 'post_author' => 2, 'post_content' => 'X' ) ); $mine = t_add_post( array( 'post_type' => 'et_pb_layout', 'post_author' => 3, 'post_status' => 'draft', 'post_content' => 'Y' ) );
+check( 'edit_post on the item: another user\'s item is refused, one\'s own draft is read', 'FORBIDDEN' === call( 'divi-library-get', array( 'id' => $theirs ) ) && is_array( call( 'divi-library-get', array( 'id' => $mine ) ) ) );
+site(); d5b_abilities_set_category( 'divi', false, false, 'tester' );
+$li = t_add_post( array( 'post_type' => 'et_pb_layout', 'post_content' => 'Z' ) );
+check( 'with the divi category off it is refused', 'FORBIDDEN' === call( 'divi-library-get', array( 'id' => $li ) ) );
+$d1 = $defs['divi5-builder/divi-section-edit']['description']; $d2 = $defs['divi5-builder/divi-text-edit']['description'];
+$bad = array();
+foreach ( array( 'posts-get, pages-get, cpt-get, divi-canvas-get, divi-library-get or divi-tb-get', 'changed false', 'empty_content', 'not_divi', 'unbalanced_blocks', 'roundtrip_failed', 'without its content' ) as $w ) { if ( false === strpos( $d1, $w ) || false === strpos( $d2, $w ) ) { $bad[] = $w; } }
+check( 'both descriptions name where the hash comes from (divi-library-get included), changed false, the Theme Builder pass-through codes, and that the page is not returned', array() === $bad, $bad );
+
+echo "fix round 1: html: true is checked, near matches fold\n";
+/** The before.html page with this HTML in the text module at 3.1.1.2, as a fresh page; the edit's code, the field after, the answer, unchanged. */
+function one( string $html, array $in ): array {
+	global $FB, $BL;
+	site(); $src = with_field( $FB, '3.1.1.2', $BL, $html ); $id = mkpage( $src );
+	$r = ed( $id, $in + array( 'at' => '3.1.1.2' ) );
+	$after = field_of( post( $id )->post_content, '3.1.1.2' );
+	return array( is_wp_error( $r ) ? $r->get_error_code() : ( is_array( $r ) ? 'ok' : 'FORBIDDEN' ), $after, $r, $src === post( $id )->post_content );
+}
+list( $c1, , , $same1 ) = one( '<p>Price <strong>R85</strong></p>', array( 'old' => '<strong>', 'new' => '<strong', 'html' => true ) );
+list( $c2, , , $same2 ) = one( '<p>A <b>B</b> C</p>', array( 'old' => 'B', 'new' => 'Y<!--', 'html' => true ) );
+list( $c3, , , $same3 ) = one( '<p>A <b>B</b> C</p>', array( 'old' => '<b>B</b>', 'new' => '<b>Y', 'html' => true ) );
+list( $c4, $a4 ) = one( '<p>A <b>B</b> C</p>', array( 'old' => '<b>B</b>', 'new' => '<i>Y</i>', 'html' => true ) );
+check( 'html: true refuses a result whose tags no longer balance (a broken <strong, a dropped </b>) or whose text outside the replaced part changes (an unclosed comment), nothing written; whole tags swapped are fine', 'invalid_input' === $c1 && $same1 && 'invalid_input' === $c2 && $same2 && 'invalid_input' === $c3 && $same3 && 'ok' === $c4 && '<p>A <i>Y</i> C</p>' === $a4, array( $c1, $c2, $c3, $c4 ) );
+check( 'the tag count: void and self-closed tags and comments are left out; opened minus closed per name', array( 'b' => 1 ) === d5b_wd_tag_balance( '<p>x<br><img src=a /><b>y<!-- <i> --></p>' ) && array() === d5b_wd_tag_balance( '<p><b>x</b></p>' ) );
+$n1 = one( "<p>Hodad\u{2019}s Burgers</p>", array( 'old' => "Hodad's", 'new' => 'X' ) );
+$n2 = one( '<p>Hodad&rsquo;s Burgers</p>', array( 'old' => "Hodad's burgers", 'new' => 'X' ) );
+$n3 = one( "<p>9am \u{2013} 5pm daily</p>", array( 'old' => '9am - 5pm', 'new' => 'X' ) );
+$n4 = one( '<p>Say &ldquo;hi&rdquo;</p>', array( 'old' => 'Say "hi"', 'new' => 'X' ) );
+$texts = array_map( function ( $x ) { return 'not_found' === $x[0] ? array_column( $x[2]->get_error_data()['near_matches'], 'text' ) : $x[0]; }, array( $n1, $n2, $n3, $n4 ) );
+check( 'near matches fold curly and straight quotes and hyphens and dashes (and case)', array( array( "Hodad\u{2019}s" ), array( "Hodad\u{2019}s Burgers" ), array( "9am \u{2013} 5pm" ), array( "Say \u{201C}hi\u{201D}" ) ) === $texts, $texts );
+
+echo "fix round 1: markup, characters and the position map (probe b)\n";
+$TKN = '$variable({"type":"content","value":{"name":"gvid-abc","settings":{}}})$';
+$cases = array(
+	array( 'span <strong>', '<p>Open <strong>Mon to Fri</strong> 9 to 5</p>', array( 'old' => 'Mon to Fri 9 to 5', 'new' => 'Mon to Sat 9 to 6' ), 'crosses_markup' ),
+	array( 'html:true', '<p>Open <strong>Mon to Fri</strong> 9 to 5</p>', array( 'old' => '<strong>Mon to Fri</strong> 9 to 5', 'new' => '<strong>Mon to Sat</strong> 9 to 6', 'html' => true ), '<p>Open <strong>Mon to Sat</strong> 9 to 6</p>' ),
+	array( 'new with < (text)', '<p>Price R85</p>', array( 'old' => 'R85', 'new' => '<b>R95</b>' ), '<p>Price &lt;b&gt;R95&lt;/b&gt;</p>' ),
+	array( 'new with <script> (text)', '<p>Price R85</p>', array( 'old' => 'R85', 'new' => '<script>alert(1)</script>' ), '<p>Price &lt;script&gt;alert(1)&lt;/script&gt;</p>' ),
+	array( 'html:true, old also in an attribute', '<p><a href="https://x.test/R85">Price R85</a></p>', array( 'old' => 'R85', 'new' => 'R95', 'html' => true ), 'ambiguous' ),
+	array( 'html:true, old = tag name', '<p>Price <strong>R85</strong></p>', array( 'old' => 'strong', 'new' => 'em', 'html' => true ), 'ambiguous' ),
+	array( 'html:true, new holds a comment that hides text', '<p>Price R85</p>', array( 'old' => 'R85', 'new' => 'R95 <!-- /wp:divi/text --> x', 'html' => true ), '<p>Price R95 <!-- /wp:divi/text --> x</p>' ),
+	array( 'text, new holds a block comment', '<p>Price R85</p>', array( 'old' => 'R85', 'new' => 'R95 <!-- /wp:divi/text --> x' ), '<p>Price R95 &lt;!-- /wp:divi/text --&gt; x</p>' ),
+	array( 'curly apostrophe both', "<p>Hodad\u{2019}s Burgers</p>", array( 'old' => "Hodad\u{2019}s", 'new' => "Bob\u{2019}s" ), "<p>Bob\u{2019}s Burgers</p>" ),
+	array( '&#8217; entity, curly old', '<p>Hodad&#8217;s Burgers</p>', array( 'old' => "Hodad\u{2019}s", 'new' => "Bob\u{2019}s" ), "<p>Bob\u{2019}s Burgers</p>" ),
+	array( '& vs &amp;', '<p>Fish &amp; Chips R85</p>', array( 'old' => 'Fish & Chips', 'new' => 'Fish & Fries' ), '<p>Fish &amp; Fries R85</p>' ),
+	array( 'old = &amp; (literal)', '<p>Fish &amp; Chips R85</p>', array( 'old' => '&amp;', 'new' => 'and' ), 'not_found' ),
+	array( 'nbsp field, space old', '<p>R85&nbsp;each</p>', array( 'old' => 'R85 each', 'new' => 'R95 each' ), 'not_found' ),
+	array( 'nbsp field, nbsp old', '<p>R85&nbsp;each</p>', array( 'old' => "R85\u{00A0}each", 'new' => "R95\u{00A0}each" ), "<p>R95\u{00A0}each</p>" ),
+	array( 'raw nbsp char field', "<p>R85\u{00A0}each</p>", array( 'old' => "R85\u{00A0}each", 'new' => 'R95 each' ), '<p>R95 each</p>' ),
+	array( 'emoji', "<p>Hot \u{1F525} deals \u{1F354}</p>", array( 'old' => "\u{1F525} deals", 'new' => "\u{1F389} offers" ), "<p>Hot \u{1F389} offers \u{1F354}</p>" ),
+	array( 'emoji ZWJ family', "<p>Family \u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467} meal</p>", array( 'old' => "\u{1F469}", 'new' => 'X' ), "<p>Family \u{1F468}\u{200D}X\u{200D}\u{1F467} meal</p>" ),
+	array( 'combining e + acute', "<p>Cafe\u{0301} menu</p>", array( 'old' => 'Cafe', 'new' => 'Bistro' ), "<p>Bistro\u{0301} menu</p>" ),
+	array( 'old in a token', '<p>Hi ' . $TKN . ' there</p>', array( 'old' => 'gvid-abc', 'new' => 'gvid-zzz' ), 'not_found' ),
+	array( 'old "content" in text and token', '<p>Our content ' . $TKN . '</p>', array( 'old' => 'content', 'new' => 'stuff' ), '<p>Our stuff ' . $TKN . '</p>' ),
+	array( 'new injects a token', '<p>Price R85</p>', array( 'old' => 'R85', 'new' => '$variable({"type":"content","value":{"name":"custom_meta_secret","settings":{}}})$' ), 'invalid_input' ),
+	array( 'right after an entity', '<p>Fish &amp;Chips</p>', array( 'old' => 'Chips', 'new' => 'Fries' ), '<p>Fish &amp;Fries</p>' ),
+	array( 'starts on the entity', '<p>Fish &amp;Chips</p>', array( 'old' => '&Chips', 'new' => '+Fries' ), '<p>Fish +Fries</p>' ),
+	array( 'inside a multi-char entity', '<p>a &fjlig; b</p>', array( 'old' => 'f', 'new' => 'X' ), 'crosses_markup' ),
+	array( 'the whole multi-char entity', '<p>a &fjlig; b</p>', array( 'old' => 'fj', 'new' => 'X' ), '<p>a X b</p>' ),
+	array( 'right after a tag', '<p><strong>Bold</strong>Next</p>', array( 'old' => 'Next', 'new' => 'After' ), '<p><strong>Bold</strong>After</p>' ),
+	array( 'right before a tag', '<p>Prev<strong>Bold</strong></p>', array( 'old' => 'Prev', 'new' => 'Before' ), '<p>Before<strong>Bold</strong></p>' ),
+	array( 'field start (no tags)', 'Start middle end', array( 'old' => 'Start', 'new' => 'Begin' ), 'Begin middle end' ),
+	array( 'field end (no tags)', 'Start middle end', array( 'old' => 'end', 'new' => 'finish' ), 'Start middle finish' ),
+	array( 'whole field', 'Start middle end', array( 'old' => 'Start middle end', 'new' => 'All new' ), 'All new' ),
+	array( 'leading spaces trimmed', '   Start middle end  ', array( 'old' => 'end', 'new' => 'fin' ), '   Start middle fin  ' ),
+	array( 'old includes a trimmed space', '   Start middle end  ', array( 'old' => 'end  ', 'new' => 'fin' ), 'not_found' ),
+	array( 'old longer than the field', 'Hi', array( 'old' => 'Hi there friend', 'new' => 'x' ), 'not_found' ),
+	array( 'comment in the field', '<p>A<!-- note -->B R85</p>', array( 'old' => 'AB', 'new' => 'CD' ), 'crosses_markup' ),
+	array( '1 < 2 literal', '<p>1 < 2 R85</p>', array( 'old' => '1 < 2', 'new' => '1 > 0' ), 'crosses_markup' ),
+	array( 'amp without semicolon', '<p>R&B night</p>', array( 'old' => 'R&B', 'new' => 'Jazz' ), '<p>Jazz night</p>' ),
+	array( '&amp;lt; double', '<p>use &amp;lt;b&amp;gt;</p>', array( 'old' => '&lt;b&gt;', 'new' => 'bold' ), '<p>use bold</p>' ),
+	array( 'empty new removes a word', '<p>Only today special</p>', array( 'old' => 'today ', 'new' => '' ), '<p>Only special</p>' ),
+	array( 'new empties the field', '<p>gone</p>', array( 'old' => 'gone', 'new' => '' ), '<p></p>' ),
+	array( 'new empties a text-only field', 'gone', array( 'old' => 'gone', 'new' => '' ), '' ),
+);
+$bad = array();
+foreach ( $cases as list( $lab, $h, $in, $want ) ) {
+	list( $code, $after, $r, $same ) = one( $h, $in );
+	$ok = 'ok' === $code ? $want === $after : ( $want === $code && $same );
+	if ( ! $ok ) { $bad[ $lab ] = array( $code, $after, is_wp_error( $r ) ? $r->get_error_message() : null ); }
+}
+check( count( $cases ) . ' probe cases: each either writes exactly the expected field or refuses with the expected code and writes nothing', array() === $bad, $bad );
+
+echo "fix round 1: section-edit and text-edit odds (probe c)\n";
+site(); $id = mkpage( with_field( with_field( $FB, '3.1.1.2', $BL, '<p>Call us on 021 555 0100</p>' ), '1.1.1.3', $BL, '<p>Call us on 021 555 0100</p>' ) );
+check( 'at nowhere is not_found; at that is not an address is invalid_input', 'not_found' === code( ed( $id, array( 'old' => '021 555 0100', 'new' => 'x', 'at' => '9.9' ) ) ) && 'invalid_input' === code( ed( $id, array( 'old' => '021 555 0100', 'new' => 'x', 'at' => 'garbage' ) ) ) );
+$row = blk( $FB, '2.1' ); $rowm = substr( $FB, $row['start'], $row['end'] - $row['start'] );
+site(); $id = mkpage( $FB );
+check( 'a row in place of a section, a row before a section and a section appended into a section are refused (kind), nothing written', 'invalid_input' === code( ed( $id, array( 'op' => 'replace', 'at' => '2', 'with' => $rowm ), 'divi-section-edit' ) ) && 'invalid_input' === code( ed( $id, array( 'op' => 'before', 'at' => '2', 'with' => $rowm ), 'divi-section-edit' ) ) && 'invalid_input' === code( ed( $id, array( 'op' => 'append', 'at' => '2', 'with' => $own ), 'divi-section-edit' ) ) && $FB === post( $id )->post_content );
+$r = ed( $id, array( 'op' => 'replace', 'at' => '2', 'with' => $FV ), 'divi-section-edit' );
+$nv = count( d5b_blocks_divi_children( d5b_blocks_parse( $FV ) ) ); $nb = count( d5b_blocks_divi_children( d5b_blocks_parse( $FB ) ) );
+check( 'a whole compiled page as with (wrapped in the placeholder) puts its top-level sections in place of section 2', is_array( $r ) && $nb - 1 + $nv === count( d5b_blocks_divi_children( d5b_blocks_parse( post( $id )->post_content ) ) ), $r );
+
+echo "fix round 1: hostile input and size (probe d)\n";
+site(); $id = mkpage( $FB );
+$t0 = microtime( true ); $e1 = ed( $id, array( 'old' => str_repeat( '<', 2000 ), 'new' => 'x' ) ); $e2 = ed( $id, array( 'old' => str_repeat( '<', 2000 ), 'new' => 'x', 'html' => true ) ); $ms = ( microtime( true ) - $t0 ) * 1000;
+check( 'old of 2000 "<" is not_found in both modes, quickly (' . round( $ms ) . ' ms)', 'not_found' === code( $e1 ) && 'not_found' === code( $e2 ) && $ms < 3000 );
+check( 'old " " (one space) is ambiguous, not a crash', 'ambiguous' === code( ed( $id, array( 'old' => ' ', 'new' => 'x' ) ) ) );
+$r = ed( $id, array( 'old' => 'Read the docs', 'new' => str_repeat( "\u{1F354}", 2000 ) ) );
+check( 'new of 2000 emoji is written whole; the excerpt is 120 characters', is_array( $r ) && 120 === d5b_rc_chars( $r['excerpt'] ) && str_repeat( "\u{1F354}", 2000 ) === field_of( post( $id )->post_content, '3.1.1.3', 'button.innerContent.desktop.value.text' ) );
+check( 'new of 2001 emoji is refused', 'invalid_input' === code( ed( $id, array( 'old' => 'Read', 'new' => str_repeat( "\u{1F354}", 2001 ) ) ) ) );
+$big = with_field( $FB, '3.1.1.2', $BL, '<p>' . trim( str_repeat( 'a ', 30000 ) ) . '</p>' );
+site(); $id = mkpage( $big );
+$t0 = microtime( true ); $e = ed( $id, array( 'old' => trim( str_repeat( 'a ', 998 ) ) . ' b', 'new' => 'x' ) ); $ms = ( microtime( true ) - $t0 ) * 1000;
+check( 'near-match search of a 999-word old over a 60 KB field ends quickly (' . round( $ms ) . ' ms) with not_found', 'not_found' === code( $e ) && $ms < 5000 );
+$e = ed( $id, array( 'old' => 'a a', 'new' => 'x' ) );
+check( 'ambiguous in a 60 KB field stops counting at 50', 'ambiguous' === code( $e ) && 50 === $e->get_error_data()['matches'][0]['count'] );
+$f64 = '<p>' . str_repeat( 'Fish &amp; <em>chips</em> &#8217; ', 1800 ) . 'UNIQUE R85</p>';
+site(); $id = mkpage( with_field( $FB, '3.1.1.2', $BL, $f64 ) );
+$t0 = microtime( true ); $r = ed( $id, array( 'old' => 'R85', 'new' => 'R95' ) ); $ms = ( microtime( true ) - $t0 ) * 1000;
+check( 'a 64 KB field full of tags and entities: the unique edit near its end works (' . round( $ms ) . ' ms)', is_array( $r ) && str_replace( 'UNIQUE R85', 'UNIQUE R95', $f64 ) === field_of( post( $id )->post_content, '3.1.1.2' ) && $ms < 5000 );
+site(); $id = mkpage( with_field( $FB, '3.1.1.2', $BL, '<p>' . str_repeat( '<script>x ', 6000 ) . 'UNIQUE R85</p>' ) );
+$t0 = microtime( true ); $r = ed( $id, array( 'old' => 'R85', 'new' => 'R95' ) ); $ms = ( microtime( true ) - $t0 ) * 1000;
+check( '6000 <script> tags with no closing tag (strip_tags reads them as tags, the text between them stays): the edit works in ' . round( $ms ) . ' ms', is_array( $r ) && false !== strpos( field_of( post( $id )->post_content, '3.1.1.2' ), 'UNIQUE R95' ) && $ms < 5000, $r );
+$deep = str_repeat( "<!-- wp:divi/section -->\n", 199 ) . '<!-- wp:divi/text {"content":{"innerContent":{"desktop":{"value":"Deep R85"}}}} /-->' . "\n" . str_repeat( "<!-- /wp:divi/section -->\n", 199 );
+site(); $id = mkpage( $deep );
+check( 'a text 199 blocks deep is edited', is_array( ed( $id, array( 'old' => 'R85', 'new' => 'R95' ) ) ) && false !== strpos( post( $id )->post_content, 'Deep R95' ) );
+$deep2 = str_repeat( "<!-- wp:divi/section -->\n", 201 ) . str_repeat( "<!-- /wp:divi/section -->\n", 201 );
+site(); $id = mkpage( $deep2 );
+check( 'a page nested deeper than the limit is refused invalid_input (it does not parse), not edited', 'invalid_input' === code( ed( $id, array( 'old' => 'R85', 'new' => 'R95' ) ) ) && $deep2 === post( $id )->post_content );
+$mods = array();
+for ( $i = 0; $i < 300; $i++ ) { $mods[] = txt( '<p>Item ' . $i . ': Fish &amp; chips <strong>R' . ( 100 + $i ) . '</strong> with <em>sauce</em></p>', ',"module":{"meta":{"adminLabel":{"desktop":{"value":"Item ' . $i . '"}}}}' ); }
+$s300 = array(); foreach ( array_chunk( $mods, 10 ) as $ch ) { $s300[] = "<!-- wp:divi/section -->\n<!-- wp:divi/row -->\n<!-- wp:divi/column -->\n" . implode( "\n", $ch ) . "\n<!-- /wp:divi/column -->\n<!-- /wp:divi/row -->\n<!-- /wp:divi/section -->"; }
+$P300 = "<!-- wp:divi/placeholder -->\n" . implode( "\n", $s300 ) . "\n<!-- /wp:divi/placeholder -->";
+site(); $id = mkpage( $P300 );
+$t0 = microtime( true ); $r1 = ed( $id, array( 'old' => 'R250', 'new' => 'R255' ) ); $e2 = ed( $id, array( 'old' => 'Fish & chips', 'new' => 'x' ) ); $r3 = ed( $id, array( 'op' => 'replace', 'at' => '6', 'with' => $s300[5] ), 'divi-section-edit' ); $ms = ( microtime( true ) - $t0 ) * 1000;
+check( '300 modules: a unique edit, a 300-way ambiguous refusal and a no-op section replace together in ' . round( $ms ) . ' ms; the section answer is small (no page)', is_array( $r1 ) && 'ambiguous' === code( $e2 ) && 300 === count( $e2->get_error_data()['matches'] ) && is_array( $r3 ) && false === $r3['changed'] && strlen( json_encode( $r3 ) ) < strlen( $P300 ) && $ms < 10000, array( $r1, code( $e2 ), $r3['changed'] ?? $r3 ) );
+
+echo "fix round 1: end-to-end fuzz (probe e)\n";
+mt_srand( 7 );
+$alpha  = array( '<', '>', 'a', 'b', ' ', '&amp;', '&', '"', "'", '/', '!', '-', 'p', '<br>', '<strong>', '</strong>', '&#8217;', '&nbsp;', '<!--', '-->', '<a href="x>y">', "\u{00e9}", '&lt;', '&fjlig;', '&#x41;', '&bogus;', "\n", '< ', '<<', '>>', '$variable({"a":1})$' );
+$words  = array( 'R85', 'Mon', 'Fri', '9am', "caf\u{00e9}", 'Fish', 'Chips', "\u{1F354}", 'x' );
+$alpha2 = array_merge( $alpha, $words, $words, $words );
+$okn = 0; $wrong = array(); $ref = array();
+for ( $k = 0; $k < 400; $k++ ) {
+	$h = '<p>'; $L = mt_rand( 2, 12 ); for ( $i = 0; $i < $L; $i++ ) { $h .= $alpha2[ mt_rand( 0, count( $alpha2 ) - 1 ) ]; } $h .= ' ZQ</p>';
+	$cv = d5b_wd_visible( $h ); if ( '' === $cv ) { continue; }
+	$a = mt_rand( 0, max( 0, strlen( $cv ) - 1 ) ); $old = substr( $cv, $a, mt_rand( 1, 6 ) );
+	if ( '' === $old || ! mb_check_encoding( $old, 'UTF-8' ) || 1 !== substr_count( $cv, $old ) ) { continue; }
+	$new = array( 'NEW', '', 'a&b', '<i>', "\u{00e9}" )[ mt_rand( 0, 4 ) ];
+	list( $code, $after, $r ) = one( $h, array( 'old' => $old, 'new' => $new ) );
+	if ( 'ok' === $code ) {
+		$okn++;
+		$want = trim( substr( $cv, 0, strpos( $cv, $old ) ) . $new . substr( $cv, strpos( $cv, $old ) + strlen( $old ) ) );
+		if ( d5b_wd_visible( $after ) !== $want || substr_count( $after, '$variable(' ) !== substr_count( $h, '$variable(' ) ) { $wrong[] = array( $h, $old, $new, $after ); }
+	} else { $ref[ $code ] = ( $ref[ $code ] ?? 0 ) + 1; }
+}
+check( "fuzz: $okn edits written, each reads as the old text with old replaced by new and keeps every token; the rest refused (" . json_encode( $ref ) . ')', $okn >= 100 && array() === $wrong, array_slice( $wrong, 0, 3 ) );
 
 echo "\n" . ( $failed ? "$failed of $n checks FAILED\n" : "all $n checks passed\n" );
 exit( $failed ? 1 : 0 );

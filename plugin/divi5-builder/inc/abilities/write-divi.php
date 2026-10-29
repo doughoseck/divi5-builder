@@ -453,9 +453,21 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 	 * fields win: divi-text-edit's excerpt is the text around the change (an edit never changes the post excerpt).
 	 */
 	function d5b_wd_edit_out( array $w, array $extra ): array {
-		$out = array_merge( d5b_wc_result( $w['post'] ), $extra );
+		$out = array_merge( d5b_wc_result( $w['post'] ), array( 'changed' => true ), $extra );
+		// The page itself is not returned (it can be 1 MB on a phone): the hash, the address and the tree or excerpt are enough.
+		unset( $out['content'] );
 		if ( $w['warnings'] ) { $out['warnings'] = $w['warnings']; }
 		return d5b_wd_out( $out, $w['stored'] );
+	}
+
+	/**
+	 * The answer to an edit that changes nothing (the new content is byte for byte the old): nothing is written, no
+	 * revision, no history row, and on a layout the safety copy (the only restore point) is not overwritten.
+	 */
+	function d5b_wd_noop_out( $p, array $extra ): array {
+		$out = array_merge( d5b_wc_result( $p ), array( 'changed' => false ), $extra );
+		unset( $out['content'] );
+		return $out;
 	}
 
 	/** The checks both edits make before they look at the content: target, hash, masked read, Divi html. @return array|WP_Error the target */
@@ -501,9 +513,16 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 		if ( is_wp_error( $root ) ) { return $root; }
 		$tgt = d5b_blocks_resolve( $root, $a['at'] );
 		if ( is_wp_error( $tgt ) ) { return $tgt; }
+		// Removing the last top-level block would leave an empty page (an empty footer on every page of the site).
+		if ( 'remove' === $op && false === strpos( $tgt['addr'], '.' ) && 1 === count( d5b_blocks_divi_children( $root ) ) ) {
+			return new WP_Error( 'invalid_input', 'This is the only ' . d5b_blocks_kind( $tgt['name'] ) . ' of the ' . d5b_wd_what( $t['type'] ) . ', and removing it would leave it empty. Replace it instead (op replace), or change the whole content with pages-update, posts-update, cpt-update or divi-tb-write.' );
+		}
 		// The edit itself: the kind check of with, the splice, the parse of the result (d5b_blocks_edit).
 		$out = d5b_blocks_edit( $content, $op, $tgt['addr'], $with );
 		if ( is_wp_error( $out ) ) { return $out; }
+		if ( $out === $content ) {
+			return d5b_wd_noop_out( $t['post'], array( 'op' => $op, 'address' => $tgt['addr'], 'tree' => d5b_blocks_tree( $content ) ) );
+		}
 		// Parse the result again and find the edited block in it: the address the response gives must hold what was written.
 		$nr = d5b_blocks_parse( $out );
 		if ( is_wp_error( $nr ) ) { return new WP_Error( 'invalid_input', 'The edited page would not parse; nothing was written: ' . $nr->get_error_message() ); }
@@ -533,9 +552,20 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 
 	// -- divi-text-edit: the visible text of a field and where each part of it comes from
 
-	/** The text a visitor reads in a field's HTML: tags removed, entities decoded (the spec's definition, verbatim). */
+	/** A Divi dynamic-content token, $variable({...})$, as Divi reads it: up to the first ")$". */
+	define( 'D5B_WD_VAR_RE', '/\$variable\(.*?\)\$/s' );
+
+	/**
+	 * The text a visitor reads in a field's HTML: Divi's $variable(...)$ tokens removed (they are markup: Divi puts the
+	 * variable's value there, and their JSON is never text to edit), tags removed, entities decoded.
+	 */
 	function d5b_wd_visible( string $html ): string {
-		return html_entity_decode( wp_strip_all_tags( $html ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+		return html_entity_decode( wp_strip_all_tags( (string) preg_replace( D5B_WD_VAR_RE, '', $html ) ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+	}
+
+	/** True when the text holds a $variable( token start (refused as new in text mode; a source span holding one is markup). */
+	function d5b_wd_has_var( string $s ): bool {
+		return false !== strpos( $s, '$variable(' );
 	}
 
 	/**
@@ -543,10 +573,12 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 	 * its whole source span, and tags, comments and script or style elements map to nothing. The order of the steps is
 	 * wp_strip_all_tags': script and style removed, tags stripped, the result trimmed (raw whitespace only: an entity is
 	 * not yet decoded when WordPress trims), then the entities decoded.
-	 * @return array array( visible, tokens ): each token array( kind t|e, vis start, vis end, src start, src end ).
+	 * A $variable(...)$ token in the text maps to nothing, like a tag; with $show_vars it reads "{variable}" (kind v), for
+	 * excerpts only.
+	 * @return array array( visible, tokens ): each token array( kind t|e|v, vis start, vis end, src start, src end ).
 	 *               visible equals d5b_wd_visible() whenever the walk agrees with PHP's strip_tags; the caller checks.
 	 */
-	function d5b_wd_vis_map( string $html ): array {
+	function d5b_wd_vis_map( string $html, bool $show_vars = false ): array {
 		$n    = strlen( $html );
 		$raw  = array();   // array( kind, src start, src end, text )
 		$i    = 0;
@@ -573,6 +605,10 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 				}
 				$i = $j < $n ? $j + 1 : $n; $run = -1;
 				continue;
+			}
+			if ( '$' === $c && 1 === preg_match( D5B_WD_VAR_RE . 'A', $html, $m, 0, $i ) ) {
+				if ( $show_vars ) { $raw[] = array( 'v', $i, $i + strlen( $m[0] ), '{variable}' ); }
+				$run = -1; $i += strlen( $m[0] ); continue;
 			}
 			if ( '&' === $c && 1 === preg_match( '/&(?:#[0-9]+|#[xX][0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);/A', $html, $m, 0, $i ) ) {
 				$dec = html_entity_decode( $m[0], ENT_QUOTES | ENT_HTML5, 'UTF-8' );
@@ -631,11 +667,24 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 		return $out;
 	}
 
-	/** Up to 5 windows of the haystacks equal to $old ignoring case and runs of whitespace: list of { address, field, text }. */
+	/** The text near matches are looked for in: every tag read as a space ("5pm<br>Wed" reads "5pm Wed"), tokens left out. */
+	function d5b_wd_near_text( string $html ): string {
+		return d5b_wd_visible( (string) preg_replace( '/<[^>]*>/', ' ', (string) preg_replace( D5B_WD_VAR_RE, '', $html ) ) );
+	}
+
+	/**
+	 * Up to 5 windows of the haystacks equal to $old ignoring case, runs of whitespace, curly or straight quotes, and hyphens
+	 * or dashes: list of { address, field, text }.
+	 */
 	function d5b_wd_near( array $hays, string $old ): array {
-		$words = preg_split( '/[\s\x{00A0}]+/u', trim( $old ), -1, PREG_SPLIT_NO_EMPTY );
+		$single = array( "\u{2018}", "\u{2019}", "\u{201A}", "\u{201B}", "\u{2032}" );
+		$double = array( "\u{201C}", "\u{201D}", "\u{201E}", "\u{2033}" );
+		$dash   = array( "\u{2010}", "\u{2011}", "\u{2012}", "\u{2013}", "\u{2014}", "\u{2015}" );
+		$fold   = str_replace( $dash, '-', str_replace( $double, '"', str_replace( $single, "'", $old ) ) );
+		$words  = preg_split( '/[\s\x{00A0}]+/u', trim( $fold ), -1, PREG_SPLIT_NO_EMPTY );
 		if ( ! $words ) { return array(); }
-		$re  = '/' . implode( '[\s\x{00A0}]+', array_map( function ( $w ) { return preg_quote( $w, '/' ); }, $words ) ) . '/iu';
+		$cls = array( "'" => "['" . implode( '', $single ) . ']', '"' => '["' . implode( '', $double ) . ']', '\\-' => '[\\-' . implode( '', $dash ) . ']' );
+		$re  = '/' . implode( '[\s\x{00A0}]+', array_map( function ( $w ) use ( $cls ) { return strtr( preg_quote( $w, '/' ), $cls ); }, $words ) ) . '/iu';
 		$out = array();
 		foreach ( $hays as $h ) {
 			if ( ! preg_match_all( $re, $h['text'], $m ) ) { continue; }
@@ -654,12 +703,51 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 		return function_exists( 'mb_substr' ) ? mb_substr( $vis, $start, 120, 'UTF-8' ) : substr( $vis, $start, 120 );
 	}
 
+	/** Per tag name, opened minus closed (void elements and self-closed tags left out); names with 0 are left out. */
+	function d5b_wd_tag_balance( string $html ): array {
+		$void = array( 'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr' );
+		$c    = array();
+		preg_match_all( '#<(/?)([a-zA-Z][a-zA-Z0-9-]*)\b[^>]*?(/?)>#', preg_replace( '/<!--.*?-->/s', '', $html ), $m, PREG_SET_ORDER );
+		foreach ( $m as $t ) {
+			$n = strtolower( $t[2] );
+			if ( in_array( $n, $void, true ) || ( '' === $t[1] && '/' === $t[3] ) ) { continue; }
+			$c[ $n ] = ( $c[ $n ] ?? 0 ) + ( '/' === $t[1] ? -1 : 1 );
+		}
+		$c = array_filter( $c );
+		ksort( $c );
+		return $c;
+	}
+
+	/**
+	 * html: true writes new as given, so the result is checked: the visible text before and after the edited span is what
+	 * it was, and every tag name opens and closes as often as before. true, or the reason.
+	 */
+	function d5b_wd_html_ok( string $old_html, int $sa, int $sb, string $new_html, int $repl_len ) {
+		list( $ov, $ot ) = d5b_wd_vis_map( $old_html );
+		list( $nv, $nt ) = d5b_wd_vis_map( $new_html );
+		// A field the walk cannot map (malformed markup) is checked by its tags only.
+		if ( $ov === d5b_wd_visible( $old_html ) && $nv === d5b_wd_visible( $new_html ) ) {
+			$pre_o = substr( $ov, 0, d5b_wd_vis_before( $ot, $sa ) ); $suf_o = (string) substr( $ov, d5b_wd_vis_before( $ot, $sb ) );
+			$pre_n = substr( $nv, 0, d5b_wd_vis_before( $nt, $sa ) ); $suf_n = (string) substr( $nv, d5b_wd_vis_before( $nt, $sa + $repl_len ) );
+			if ( $pre_o !== $pre_n || $suf_o !== $suf_n ) { return 'the text a visitor reads outside the part you replaced would change'; }
+		}
+		if ( d5b_wd_tag_balance( $old_html ) !== d5b_wd_tag_balance( $new_html ) ) { return 'the HTML tags would no longer open and close as they did'; }
+		return true;
+	}
+
+	/** Where a text field path points: element, breakpoint, state (title.innerContent.tablet.hover -> title, tablet, hover). */
+	function d5b_wd_field_parts( string $field ): array {
+		$p = explode( '.', $field );
+		return array( 'element' => $p[0], 'breakpoint' => $p[2] ?? '', 'state' => $p[3] ?? '', 'text' => isset( $p[4] ) );
+	}
+
 	/** @return array|WP_Error */
 	function d5b_wd_h_text_edit( array $in ) {
 		$a = d5b_rc_args( $in, array( 'post_id' => 'id', 'expect_hash' => 'str', 'old' => 'text:2000', 'new' => 'text:2000', 'at' => 'key', 'html' => 'bool' ), array( 'post_id', 'expect_hash', 'old', 'new' ) );
 		if ( is_wp_error( $a ) ) { return $a; }
 		$old = $a['old']; $new = $a['new']; $html = ! empty( $a['html'] );
 		if ( '' === $old ) { return new WP_Error( 'invalid_input', 'old must not be empty: give the exact text to change (1 to 2000 characters).' ); }
+		if ( ! $html && d5b_wd_has_var( $new ) ) { return new WP_Error( 'invalid_input', 'new holds a $variable(...)$ token (Divi dynamic content). As text it would be written literally; use html: true to write variable tokens.' ); }
 		$t = d5b_wd_edit_gate( $a['post_id'], $a['expect_hash'], $new );
 		if ( is_wp_error( $t ) ) { return $t; }
 		$content = (string) $t['post']->post_content;
@@ -673,16 +761,19 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 			$nodes = d5b_blocks_walk( $root );
 		}
 		// Only the text-bearing fields of each module are searched (inc/blocks-text-fields.php plus the hand list): never an
-		// attribute name, an option value, a class or an id.
-		$hits = array(); $hays = array(); $total = 0;
+		// attribute name, an option value, a class or an id. One field stored for several breakpoints or states with the SAME
+		// text is one match (a unit), and every copy is changed; copies with different text are separate matches.
+		$units = array(); $hays = array(); $total = 0;
 		foreach ( $nodes as $nd ) {
 			foreach ( d5b_blocks_text_fields( $nd ) as $field => $fh ) {
 				$hay    = $html ? $fh : d5b_wd_visible( $fh );
-				$hays[] = array( 'address' => $nd['addr'], 'field' => $field, 'text' => $hay );
-				$at     = d5b_wd_offsets( $hay, $old );
-				if ( ! $at ) { continue; }
-				$total += count( $at );
-				$hits[] = array( 'node' => $nd, 'field' => $field, 'html' => $fh, 'hay' => $hay, 'at' => $at );
+				$hays[] = array( 'address' => $nd['addr'], 'field' => $field, 'text' => $html ? $fh : d5b_wd_near_text( $fh ) );
+				$offs   = d5b_wd_offsets( $hay, $old );
+				if ( ! $offs ) { continue; }
+				$fp  = d5b_wd_field_parts( $field );
+				$key = $nd['addr'] . '|' . $fp['element'] . '|' . ( $fp['text'] ? 'text' : '' ) . '|' . md5( $hay );
+				if ( ! isset( $units[ $key ] ) ) { $units[ $key ] = array( 'node' => $nd, 'hay' => $hay, 'at' => $offs, 'copies' => array() ); $total += count( $offs ); }
+				$units[ $key ]['copies'][ $field ] = $fh;
 			}
 		}
 		$where = isset( $a['at'] ) ? 'in the block at ' . $a['at'] : 'on the page';
@@ -692,49 +783,77 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 		}
 		if ( $total > 1 ) {
 			$list = array();
-			foreach ( $hits as $h ) { $list[] = array( 'address' => $h['node']['addr'], 'field' => $h['field'], 'count' => count( $h['at'] ) ); }
-			return new WP_Error( 'ambiguous', 'old occurs ' . $total . ' times ' . $where . ', so which one is meant cannot be told. Repeat with at set to one of the addresses in data.matches, or make old longer so it occurs once.', array( 'matches' => $list ) );
+			foreach ( $units as $u ) {
+				$fields = array_keys( $u['copies'] );
+				$fp     = d5b_wd_field_parts( $fields[0] );
+				$e      = array( 'address' => $u['node']['addr'], 'field' => $fields[0], 'breakpoint' => $fp['breakpoint'], 'state' => $fp['state'], 'count' => count( $u['at'] ) );
+				if ( count( $fields ) > 1 ) { $e['same_text_in'] = array_slice( $fields, 1 ); }
+				$list[] = $e;
+			}
+			return new WP_Error( 'ambiguous', 'old occurs ' . $total . ' times ' . $where . ', so which one is meant cannot be told. Repeat with at set to one of the addresses in data.matches, or make old longer so it occurs once (two matches in one block are in different breakpoints or states, or twice in one text: data.matches names them).', array( 'matches' => $list ) );
 		}
-		$h     = $hits[0];
-		$fh    = $h['html'];
-		$addr  = $h['node']['addr'];
-		$field = $h['field'];
-		$cross = new WP_Error( 'crosses_markup', 'The text ' . $where . ' runs across HTML tags in the field (data.html is the field as stored), so it is not replaced as text. Either shorten old to the part on one side of the tag, or repeat with html: true and old and new as HTML, matched against data.html exactly.', array( 'address' => $addr, 'field' => $field, 'html' => $fh ) );
-		if ( $html ) {
-			$sa = $h['at'][0]; $sb = $sa + strlen( $old ); $repl = $new;
-		} else {
-			list( $vis, $tok ) = d5b_wd_vis_map( $fh );
-			$span = $vis === $h['hay'] ? d5b_wd_vis_span( $tok, $h['at'][0], $h['at'][0] + strlen( $old ) ) : null;
-			if ( null === $span ) { return $cross; }
-			list( $sa, $sb ) = $span;
-			if ( false !== strpos( substr( $fh, $sa, $sb - $sa ), '<' ) ) { return $cross; }
-			// new is text: written as HTML text, so it reads back exactly as given
-			$repl = str_replace( array( '&', '<', '>' ), array( '&amp;', '&lt;', '&gt;' ), $new );
+		$u     = array_values( $units )[0];
+		$addr  = $u['node']['addr'];
+		$at0   = $u['at'][0];
+		// Every copy is mapped on its own: the same visible text can be stored as different HTML per breakpoint.
+		$plans = array();
+		foreach ( $u['copies'] as $field => $fh ) {
+			$cross = new WP_Error( 'crosses_markup', 'The text ' . $where . ' runs across HTML tags or a $variable(...)$ token in the field (data.html is the field as stored), so it is not replaced as text. Either shorten old to the part on one side of the tag, or repeat with html: true and old and new as HTML, matched against data.html exactly.', array( 'address' => $addr, 'field' => $field, 'html' => $fh ) );
+			if ( $html ) {
+				$sa = $at0; $sb = $sa + strlen( $old ); $repl = $new;
+			} else {
+				list( $vis, $tok ) = d5b_wd_vis_map( $fh );
+				$span = $vis === $u['hay'] ? d5b_wd_vis_span( $tok, $at0, $at0 + strlen( $old ) ) : null;
+				if ( null === $span ) { return $cross; }
+				list( $sa, $sb ) = $span;
+				$piece = substr( $fh, $sa, $sb - $sa );
+				if ( false !== strpos( $piece, '<' ) || d5b_wd_has_var( $piece ) ) { return $cross; }
+				// new is text: written as HTML text, so it reads back exactly as given
+				$repl = str_replace( array( '&', '<', '>' ), array( '&amp;', '&lt;', '&gt;' ), $new );
+			}
+			$new_html = substr( $fh, 0, $sa ) . $repl . substr( $fh, $sb );
+			if ( $html ) {
+				$ok = d5b_wd_html_ok( $fh, $sa, $sb, $new_html, strlen( $repl ) );
+				if ( true !== $ok ) { return new WP_Error( 'invalid_input', 'With new in place, ' . $ok . ' (field ' . $field . ' at ' . $addr . '), so nothing was written. Replace whole tags, or change only the text inside them.', array( 'address' => $addr, 'field' => $field, 'html' => $fh ) ); }
+			}
+			$plans[ $field ] = array( 'old_html' => $fh, 'new_html' => $new_html, 'sa' => $sa, 'len' => strlen( $repl ) );
 		}
-		$new_html = substr( $fh, 0, $sa ) . $repl . substr( $fh, $sb );
-		$out = d5b_blocks_set_text_field( $content, $h['node'], $field, $new_html );
-		if ( is_wp_error( $out ) ) { return $out; }
-		// Parse the result again and read the field back: it must hold the new HTML, and (as text) read as the old text with
+		// One copy at a time, each on a fresh parse of the page as it is after the previous one.
+		$out = $content;
+		foreach ( $plans as $field => $pl ) {
+			$pr = d5b_blocks_parse( $out );
+			$nd = is_wp_error( $pr ) ? $pr : d5b_blocks_resolve( $pr, $addr );
+			if ( is_wp_error( $nd ) ) { return new WP_Error( 'invalid_input', 'internal: the block at ' . $addr . ' could not be read again; nothing was written.' ); }
+			$out = d5b_blocks_set_text_field( $out, $nd, $field, $pl['new_html'] );
+			if ( is_wp_error( $out ) ) { return $out; }
+		}
+		// Parse the result again and read every copy back: it must hold its new HTML, and (as text) read as the old text with
 		// old replaced by new. Nothing is written otherwise.
-		$nr   = d5b_blocks_parse( $out );
-		$nb   = is_wp_error( $nr ) ? $nr : d5b_blocks_resolve( $nr, $addr );
-		$back = is_wp_error( $nb ) ? null : ( d5b_blocks_text_fields( $nb )[ $field ] ?? null );
-		if ( $back !== $new_html ) {
-			return new WP_Error( 'invalid_input', 'internal: the edited page does not read back as intended; nothing was written.' );
-		}
-		$after_vis = d5b_wd_visible( $back );
-		if ( ! $html ) {
-			$want = trim( substr( $h['hay'], 0, $h['at'][0] ) . $new . substr( $h['hay'], $h['at'][0] + strlen( $old ) ), " \t\n\r\0\x0B" );
-			if ( $after_vis !== $want ) {
-				return new WP_Error( 'crosses_markup', 'With new in place the field would not read as intended (new joins the text around it into different HTML), so nothing was written. Repeat with html: true and old and new as HTML (data.html is the field as stored).', array( 'address' => $addr, 'field' => $field, 'html' => $fh ) );
+		$nr = d5b_blocks_parse( $out );
+		$nb = is_wp_error( $nr ) ? $nr : d5b_blocks_resolve( $nr, $addr );
+		$fields_back = is_wp_error( $nb ) ? array() : d5b_blocks_text_fields( $nb );
+		foreach ( $plans as $field => $pl ) {
+			$back = $fields_back[ $field ] ?? null;
+			if ( $back !== $pl['new_html'] ) { return new WP_Error( 'invalid_input', 'internal: the edited page does not read back as intended; nothing was written.' ); }
+			if ( ! $html ) {
+				$want = trim( substr( $u['hay'], 0, $at0 ) . $new . substr( $u['hay'], $at0 + strlen( $old ) ), " \t\n\r\0\x0B" );
+				if ( d5b_wd_visible( $back ) !== $want ) {
+					return new WP_Error( 'crosses_markup', 'With new in place the field would not read as intended (new joins the text around it into different HTML), so nothing was written. Repeat with html: true and old and new as HTML (data.html is the field as stored).', array( 'address' => $addr, 'field' => $field, 'html' => $pl['old_html'] ) );
+				}
 			}
 		}
-		list( $nvis, $ntok ) = d5b_wd_vis_map( $new_html );
-		$ex = $nvis === $after_vis ? d5b_wd_excerpt( $nvis, d5b_wd_vis_before( $ntok, $sa ), d5b_wd_vis_before( $ntok, $sa + strlen( $repl ) ) ) : d5b_wd_excerpt( $after_vis, 0, 0 );
-		$el = explode( '.', $field )[0];
+		$field = array_keys( $plans )[0];
+		$pl    = $plans[ $field ];
+		// The excerpt reads tokens as {variable}; a field the walk cannot map gets the start of its visible text.
+		list( $xv, $xt ) = d5b_wd_vis_map( $pl['new_html'], true );
+		$ex = d5b_wd_vis_map( $pl['new_html'] )[0] === d5b_wd_visible( $pl['new_html'] ) ? d5b_wd_excerpt( $xv, d5b_wd_vis_before( $xt, $pl['sa'] ), d5b_wd_vis_before( $xt, $pl['sa'] + $pl['len'] ) ) : d5b_wd_excerpt( d5b_wd_visible( $pl['new_html'] ), 0, 0 );
+		$extra = array( 'address' => $addr, 'field' => $field, 'excerpt' => $ex );
+		if ( count( $plans ) > 1 ) { $extra['also_changed'] = array_slice( array_keys( $plans ), 1 ); }
+		if ( $out === $content ) { return d5b_wd_noop_out( $t['post'], $extra ); }
+		$el = d5b_wd_field_parts( $field )['element'];
 		$w  = d5b_wd_content_write( 'divi5-builder/divi-text-edit', $t, $out, (string) $a['expect_hash'], d5b_wc_summary( 'Changed text in', d5b_wd_what( $t['type'] ), $t['post'] ) . ' (' . $addr . ' ' . $el . ')' );
 		if ( is_wp_error( $w ) ) { return $w; }
-		return d5b_wd_edit_out( $w, array( 'address' => $addr, 'field' => $field, 'excerpt' => $ex ) );
+		return d5b_wd_edit_out( $w, $extra );
 	}
 
 	// ---- audit args
@@ -810,10 +929,10 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 		array( 'id' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The id of the header, body or footer layout.' ) ),
 		array( 'id' ), 'd5b_wd_h_tb_restore', 'd5b_wd_can_tb', array() );
 
-	$d5b_wd_hash_from = 'expect_hash is the hash from the last read of the item (pages-get, posts-get, cpt-get, divi-canvas-get, divi-tb-get) or from the previous edit\'s answer';
+	$d5b_wd_hash_from = 'expect_hash is the hash from posts-get, pages-get, cpt-get, divi-canvas-get, divi-library-get or divi-tb-get, or from the previous edit\'s answer. An edit that would change nothing writes nothing and answers changed false. The page itself is not returned (read it again if you need it). On a Theme Builder layout the write goes through the layout write, which can also refuse with empty_content, not_divi, unbalanced_blocks or roundtrip_failed (the layout is put back as it was)';
 	d5b_wc_def( 'divi-section-edit', 'divi', 'Edit one block of a Divi page',
-		'Changes one block (section, row, column or module) of a Divi 5 page, post, custom item, canvas, Divi Library item or Theme Builder header, body or footer layout, and leaves every byte outside that block as it was. op replace puts with in place of the block at at; before and after insert with next to it; append adds with as its last child; remove takes the block out. Returns the item with its new hash (the expect_hash of the next edit), tree (every block\'s address, block name, label and css id, as the page is now) and address (the edited block; for before, after and append the first new block; for remove the address the block had). '
-		. $d5b_wd_hash_from . '. Refuses, writing nothing: stale when the item changed since that read (data.hash is the current hash: read the item again, look at it, then repeat); invalid_input when with does not parse on its own, holds no Divi block, or is the wrong kind for its place (a section beside a section, a row beside a row, a module beside a module, for append the kind a child of at has), when with is missing (or given for remove), or when the stored page does not parse; not_found when nothing is at at; ambiguous when a label: or # address matches more than one block (data.candidates: repeat with one of those numeric addresses); masked_read when with holds [redacted] from a masked read; needs_unfiltered_html for a caller without that capability; not_allowed for templates and other kinds of item, an item you may not edit, or a switched-off category (the item\'s own, and Divi). Posts and pages get a WordPress revision; the change history keeps the previous content. To change words only, use divi-text-edit.',
+		'Changes one block (section, row, column or module) of a Divi 5 page, post, custom item, canvas, Divi Library item or Theme Builder header, body or footer layout, and leaves every byte outside that block as it was. op replace puts with in place of the block at at; before and after insert with next to it; append adds with as its last child; remove takes the block out. Returns the item (id, title, status, url, without its content) with its new hash (the expect_hash of the next edit), changed, tree (every block\'s address, block name, label and css id, as the page is now) and address (the edited block; for before, after and append the first new block; for remove the address the block had). '
+		. $d5b_wd_hash_from . '. Refuses, writing nothing: stale when the item changed since that read (data.hash is the current hash: read the item again, look at it, then repeat); invalid_input when with does not parse on its own, holds no Divi block, or is the wrong kind for its place (a section beside a section, a row beside a row, a module beside a module, for append the kind a child of at has), when with is missing (or given for remove), when remove would take out the only top-level block (replace it instead), or when the stored page does not parse; not_found when nothing is at at; ambiguous when a label: or # address matches more than one block (data.candidates: repeat with one of those numeric addresses); masked_read when with holds [redacted] from a masked read; needs_unfiltered_html for a caller without that capability; not_allowed for templates and other kinds of item, an item you may not edit, or a switched-off category (the item\'s own, and Divi). Posts and pages get a WordPress revision; the change history keeps the previous content. To change words only, use divi-text-edit.',
 		array(
 			'post_id'     => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The id of the page, post, custom item, canvas, Divi Library item or Theme Builder header, body or footer layout.' ),
 			'expect_hash' => array( 'type' => 'string', 'description' => 'The hash of the content you read (from the get, or from the previous edit). An item changed since is refused with stale.' ),
@@ -823,13 +942,13 @@ if ( ! function_exists( 'd5b_wd_target' ) ) {
 		), array( 'post_id', 'expect_hash', 'op', 'at' ), 'd5b_wd_h_section_edit', 'd5b_wd_can_edit', array( 'destructive' => true ) );
 
 	d5b_wc_def( 'divi-text-edit', 'divi', 'Change text on a Divi page',
-		'Changes words inside one existing module of a Divi 5 page, post, custom item, canvas, Divi Library item or Theme Builder header, body or footer layout (a footer\'s opening hours, a heading, a button label), without touching the layout. It searches only the text a visitor reads in the modules\' text fields (heading, text, button, blurb, and the other text fields Divi has), with tags removed and entities decoded, never attribute names, settings, classes or ids; old must occur exactly once, and is replaced in the field\'s stored HTML, keeping the tags around it. Returns the item with its new hash (the expect_hash of the next edit), address and field (where the change was made) and excerpt (120 characters of the field\'s new text around the change; not the post excerpt). '
-		. $d5b_wd_hash_from . '. Refuses, writing nothing: not_found when old is not there exactly (data.near_matches lists up to 5 places that differ only in case or spacing: repeat with old set to one of them); ambiguous when old occurs more than once (data.matches lists address, field and count: repeat with at set to one of those addresses, or a longer old); crosses_markup when the match runs across a tag, as old "Mon to Fri 9 to 5" against <strong>Mon to Fri</strong> 9 to 5 (data.html is the field as stored: shorten old to one side of the tag, or repeat with html true and old and new as HTML taken from data.html); stale when the item changed since that read (read it again, then repeat); masked_read when new holds [redacted]; needs_unfiltered_html; not_allowed for templates and other kinds of item, an item you may not edit, or a switched-off category; not_found or ambiguous for an at that matches no block or several. To add, move or remove blocks, use divi-section-edit.',
+		'Changes words inside one existing module of a Divi 5 page, post, custom item, canvas, Divi Library item or Theme Builder header, body or footer layout (a footer\'s opening hours, a heading, a button label), without touching the layout. It searches only the text a visitor reads in the modules\' text fields (heading, text, button, blurb, and the other text fields Divi has), with tags and Divi $variable(...)$ tokens (dynamic content) removed and entities decoded, never attribute names, settings, classes, ids or token contents; old must occur exactly once, and is replaced in the field\'s stored HTML, keeping the tags around it. A field stored with the same text for several breakpoints or states (desktop, tablet, hover) counts once and every copy is changed. Returns the item (id, title, status, url, without its content) with its new hash (the expect_hash of the next edit), changed, address and field (where the change was made; also_changed lists the other breakpoint or state copies) and excerpt (120 characters of the field\'s new text around the change, tokens shown as {variable}; not the post excerpt). '
+		. $d5b_wd_hash_from . '. Refuses, writing nothing: not_found when old is not there exactly (data.near_matches lists up to 5 places that differ only in case, spacing, curly or straight quotes, or dashes: repeat with old set to one of them); ambiguous when old occurs more than once (data.matches lists address, field, breakpoint, state and count: repeat with at set to one of those addresses, or a longer old; two matches in one block differ by breakpoint or state, so make old longer); crosses_markup when the match runs across a tag or a $variable token, as old "Mon to Fri 9 to 5" against <strong>Mon to Fri</strong> 9 to 5 (data.html is the field as stored: shorten old to one side of the tag, or repeat with html true and old and new as HTML taken from data.html); invalid_input when new holds a $variable( token without html true, or when an html true edit would change the text outside the replaced part or leave tags unbalanced; stale when the item changed since that read (read it again, then repeat); masked_read when new holds [redacted]; needs_unfiltered_html; not_allowed for templates and other kinds of item, an item you may not edit, or a switched-off category; not_found or ambiguous for an at that matches no block or several. To add, move or remove blocks, use divi-section-edit.',
 		array(
 			'post_id'     => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The id of the page, post, custom item, canvas, Divi Library item or Theme Builder header, body or footer layout.' ),
 			'expect_hash' => array( 'type' => 'string', 'description' => 'The hash of the content you read (from the get, or from the previous edit). An item changed since is refused with stale.' ),
 			'old'         => array( 'type' => 'string', 'minLength' => 1, 'maxLength' => 2000, 'description' => 'The exact text to change, as a visitor reads it (case and spaces count), 1 to 2000 characters. With html true: the exact HTML as stored.' ),
-			'new'         => array( 'type' => 'string', 'maxLength' => 2000, 'description' => 'The text to put in its place, 0 to 2000 characters, as a visitor should read it (& < > are written as text). With html true: HTML, written as given.' ),
+			'new'         => array( 'type' => 'string', 'maxLength' => 2000, 'description' => 'The text to put in its place, 0 to 2000 characters, as a visitor should read it (& < > are written as text; no $variable tokens). With html true: HTML, written as given (tokens allowed).' ),
 			'at'          => array( 'type' => 'string', 'description' => 'Optional: search only this block and the blocks inside it: a numeric address (3.2.1.4), label:<admin label> or #<css id>. Use it when old occurs more than once.' ),
 			'html'        => array( 'type' => 'boolean', 'default' => false, 'description' => 'true matches old against the stored HTML of the fields instead of the visible text, and writes new as HTML. Use it after crosses_markup.' ),
 		), array( 'post_id', 'expect_hash', 'old', 'new' ), 'd5b_wd_h_text_edit', 'd5b_wd_can_edit', array() );
