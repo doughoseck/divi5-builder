@@ -275,6 +275,8 @@ function wp_schedule_event( $ts, $recurrence, $hook ) { $GLOBALS['T_cron'][ $hoo
 function wp_clear_scheduled_hook( $hook ) { $GLOBALS['T_cleared_on'][] = $GLOBALS['T_blog_id'] ?? 1; unset( $GLOBALS['T_cron'][ $hook ] ); return 1; }
 function register_deactivation_hook( $file, $cb ) { $GLOBALS['T_deactivation'][] = array( $file, $cb ); }
 function get_current_user_id() { return $GLOBALS['T_user_id']; }
+function wp_hash( $data ) { return hash_hmac( "sha256", $data, "t-salt" ); }
+function get_attached_file( $id ) { $f = get_post_meta( $id, "_wp_attached_file", true ); return "" === $f ? false : "/var/www/uploads/" . $f; }
 // As core's formatting.php has it (up to 6.8 at least; 6.9 may differ, not checked): strip=true calls iconv('utf-8', 'utf-8')
 // WITHOUT //IGNORE, which fails on a bad byte, so a line with one bad byte comes back false (empty), not cleaned.
 function wp_check_invalid_utf8( $s, $strip = false ) { $s = (string) $s; if ( '' === $s || 1 === @preg_match( '/^./us', $s ) ) { return $s; } return $strip && function_exists( 'iconv' ) ? @iconv( 'utf-8', 'utf-8', $s ) : ''; }

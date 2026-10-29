@@ -42,6 +42,7 @@ foreach ( array(
 	'inc/abilities/audit.php',
 	'inc/abilities/scrub.php',
 	'inc/abilities/history.php',
+	'inc/abilities/confirm.php',
 	'inc/abilities/read-content.php',
 	'inc/abilities/read-structure.php',
 	'inc/abilities/read-site.php',
