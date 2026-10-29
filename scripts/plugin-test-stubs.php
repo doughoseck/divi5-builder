@@ -33,6 +33,7 @@ function t_reset() {
 	if ( function_exists( 't_abilities_reset' ) ) { t_abilities_reset(); }
 	if ( function_exists( 't_wpdb_reset' ) ) { t_wpdb_reset(); }
 	if ( function_exists( 't_content_reset' ) ) { t_content_reset(); }
+	if ( function_exists( 't_media_reset' ) ) { t_media_reset(); }
 }
 // A new request: WordPress starts a request with the gate not yet run.
 function t_new_request() { unset( $GLOBALS['d5b_gate_ran'] ); }
@@ -190,6 +191,7 @@ function wp_slash( $v ) { if ( is_array( $v ) ) { return array_map( 'wp_slash', 
 //   T_user_id          what get_current_user_id returns
 if ( ! defined( 'ARRAY_A' ) ) { define( 'ARRAY_A', 'ARRAY_A' ); }
 class T_Wpdb {
+	public $posts = 'wp_posts'; public $postmeta = 'wp_postmeta';
 	public $prefix = 'wp_'; public $tables = array(); public $queries = array(); public $unprepared = array(); public $fail_insert = false; public $fail_update = false; public $insert_id = 0; public $suppress_now = false; public $suppress_log = array();
 	private $prepared = array(); private $next_id = 1;
 	function get_blog_prefix( $id = null ) { return 'wp_' . ( ( null === $id || 1 === (int) $id ) ? '' : (int) $id . '_' ); }
@@ -234,6 +236,35 @@ class T_Wpdb {
 		$this->note( $sql );
 		if ( preg_match( "/^SHOW TABLES LIKE '(.*)'$/", $sql, $m ) ) { $t = stripslashes( stripslashes( $m[1] ) ); return isset( $this->tables[ $t ] ) ? $t : null; }
 		return null;
+	}
+	// get_col understands the two lookups of the media delete preview, answered from T_meta and T_posts:
+	//   SELECT post_id FROM wp_postmeta WHERE meta_key = 'k' AND meta_value = 'v' LIMIT n
+	//   SELECT ID FROM wp_posts WHERE post_type NOT IN ('a','b') AND post_status <> 'auto-draft' AND (post_content LIKE 'p' OR ...) ORDER BY ID ASC LIMIT n
+	// LIKE as MySQL: % any run, _ one character, a backslash escapes the next character.
+	function get_col( $sql ) {
+		$this->note( $sql );
+		$q = "'((?:[^'\\\\]|\\\\.)*)'";
+		if ( preg_match( "/^SELECT post_id FROM wp_postmeta WHERE meta_key = $q AND meta_value = $q LIMIT (\\d+)$/", $sql, $m ) ) {
+			$k = stripslashes( $m[1] ); $v = stripslashes( $m[2] ); $out = array();
+			foreach ( $GLOBALS['T_meta'] as $id => $keys ) { foreach ( $keys[ $k ] ?? array() as $x ) { if ( (string) $x === $v ) { $out[] = (string) $id; break; } } }
+			sort( $out ); return array_slice( $out, 0, (int) $m[3] );
+		}
+		if ( preg_match( "/^SELECT ID FROM wp_posts WHERE post_type NOT IN \\(([^)]*)\\) AND post_status <> 'auto-draft' AND \\((.+)\\) ORDER BY ID ASC LIMIT (\\d+)$/", $sql, $m ) ) {
+			$skip = array_map( function ( $s ) { return trim( $s, " '" ); }, explode( ',', $m[1] ) );
+			preg_match_all( "/post_content LIKE $q/", $m[2], $likes );
+			$res = array_map( function ( $l ) {
+				$l = stripslashes( $l ); $re = ''; $n = strlen( $l );
+				for ( $i = 0; $i < $n; $i++ ) { $c = $l[ $i ]; if ( '\\' === $c && $i + 1 < $n ) { $re .= preg_quote( $l[ ++$i ], '/' ); } elseif ( '%' === $c ) { $re .= '.*'; } elseif ( '_' === $c ) { $re .= '.'; } else { $re .= preg_quote( $c, '/' ); } }
+				return '/^' . $re . '$/s';
+			}, $likes[1] );
+			$out = array();
+			foreach ( $GLOBALS['T_posts'] as $id => $p ) {
+				if ( in_array( $p->post_type, $skip, true ) || 'auto-draft' === $p->post_status ) { continue; }
+				foreach ( $res as $re ) { if ( preg_match( $re, (string) $p->post_content ) ) { $out[] = (string) $id; break; } }
+			}
+			sort( $out ); return array_slice( $out, 0, (int) $m[3] );
+		}
+		return array();
 	}
 	function query( $sql ) {
 		$this->note( $sql );
@@ -853,3 +884,142 @@ function wp_restore_post_revision( $revision, $fields = null ) {
 	update_post_meta( $id, '_edit_last', get_current_user_id() );
 	return $id;
 }
+
+// ---- media WRITE stand-ins (#32, 2.2.0, Task 5). t_reset() clears them (t_media_reset). Nothing here touches the network:
+// every fetch is answered from T_http and every DNS question from T_dns.
+//   T_http          url => array( code, headers (name => value), body ) or a WP_Error; a url not listed answers a WP_Error
+//                   (http_request_failed), as an unreachable host would
+//   T_http_calls    every array( url, args ) given to wp_remote_get (it also adds 'wp_remote_get' to T_traps)
+//   T_dns           host => list of addresses d5b_wm_dns_lookup returns (the plugin's own lookup, plugged here so the test
+//                   scripts DNS); a host not listed does not resolve.  T_dns_calls  every host asked
+//   T_max_upload    what wp_max_upload_size returns;  T_mimes  what get_allowed_mime_types returns (core's defaults: no svg)
+//   T_files         uploads-relative path => bytes, the files media_handle_sideload stored;  T_files_deleted  paths removed
+//   T_sideloads     every array( file_array, post_id, desc, post_data ) given to media_handle_sideload
+//   T_tempfiles     every temporary file wp_tempnam made (a test checks none is left behind)
+//   T_attach_delete_blocked  wp_delete_attachment returns false and deletes nothing (a plugin stopped it)
+// As core: wp_remote_get with stream + filename writes the body to that file, cut at limit_response_size; media_handle_sideload
+// runs the checks of wp_handle_sideload (empty file, wp_check_filetype_and_ext, allowed type), moves the file under a unique
+// sanitized name, inserts the attachment (post fields UNSLASHED: the caller slashes) and stores its metadata;
+// wp_delete_attachment removes the post, its meta, its files and every _thumbnail_id pointing at it.
+function t_media_reset() {
+	$GLOBALS['T_http'] = array(); $GLOBALS['T_http_calls'] = array(); $GLOBALS['T_dns'] = array(); $GLOBALS['T_dns_calls'] = array();
+	$GLOBALS['T_max_upload'] = 100000; $GLOBALS['T_files'] = array(); $GLOBALS['T_files_deleted'] = array(); $GLOBALS['T_sideloads'] = array();
+	$GLOBALS['T_attach_delete_blocked'] = false;
+	$GLOBALS['T_mimes'] = array( 'jpg|jpeg|jpe' => 'image/jpeg', 'gif' => 'image/gif', 'png' => 'image/png', 'pdf' => 'application/pdf', 'txt|asc|c|cc|h|srt' => 'text/plain' );
+	foreach ( $GLOBALS['T_tempfiles'] ?? array() as $f ) { if ( file_exists( $f ) ) { @unlink( $f ); } }
+	$GLOBALS['T_tempfiles'] = array();
+}
+if ( ! function_exists( 'd5b_wm_dns_lookup' ) ) {
+	function d5b_wm_dns_lookup( string $host ): array { $GLOBALS['T_dns_calls'][] = $host; return array_values( array_map( 'strval', (array) ( $GLOBALS['T_dns'][ strtolower( $host ) ] ?? array() ) ) ); }
+}
+function wp_remote_get( $url, $args = array() ) {
+	$GLOBALS['T_traps'][] = 'wp_remote_get';
+	$GLOBALS['T_http_calls'][] = array( $url, $args );
+	$r = $GLOBALS['T_http'][ $url ] ?? new WP_Error( 'http_request_failed', 'cURL error 6: Could not resolve host (stand-in: no scripted answer).' );
+	if ( $r instanceof WP_Error ) { return $r; }
+	$body = (string) ( $r['body'] ?? '' );
+	if ( isset( $args['limit_response_size'] ) ) { $body = substr( $body, 0, (int) $args['limit_response_size'] ); }
+	if ( ! empty( $args['stream'] ) ) { file_put_contents( $args['filename'], $body ); $body = ''; }
+	return array( 'headers' => array_change_key_case( (array) ( $r['headers'] ?? array() ), CASE_LOWER ), 'body' => $body, 'response' => array( 'code' => (int) ( $r['code'] ?? 200 ), 'message' => '' ), 'cookies' => array(), 'filename' => $args['filename'] ?? null );
+}
+function wp_remote_retrieve_response_code( $r ) { return ( is_wp_error( $r ) || ! isset( $r['response']['code'] ) ) ? '' : (int) $r['response']['code']; }
+function wp_remote_retrieve_headers( $r ) { return ( is_wp_error( $r ) || ! isset( $r['headers'] ) ) ? array() : $r['headers']; }
+function wp_remote_retrieve_header( $r, $h ) { $all = wp_remote_retrieve_headers( $r ); return $all[ strtolower( $h ) ] ?? ''; }
+function wp_tempnam( $filename = '', $dir = '' ) { $t = tempnam( sys_get_temp_dir(), 'd5bt' ); $GLOBALS['T_tempfiles'][] = $t; return $t; }
+function wp_max_upload_size() { return (int) $GLOBALS['T_max_upload']; }
+function get_allowed_mime_types( $user = null ) { return $GLOBALS['T_mimes']; }
+// As core (formatting.php), reduced: the special characters dropped, whitespace runs to '-', trimmed of . - _ at the ends.
+function sanitize_file_name( $f ) {
+	$special = array( '?', '[', ']', '/', '\\', '=', '<', '>', ':', ';', ',', "'", '"', '&', '$', '#', '*', '(', ')', '|', '~', '`', '!', '{', '}', '%', '+', chr( 0 ) );
+	$f = str_replace( $special, '', (string) $f );
+	$f = preg_replace( '/[\r\n\t -]+/', '-', $f );
+	return trim( $f, '.-_' );
+}
+function wp_check_filetype( $filename, $mimes = null ) {
+	foreach ( null === $mimes ? get_allowed_mime_types() : $mimes as $exts => $type ) {
+		if ( preg_match( '!\.(' . $exts . ')$!i', (string) $filename, $m ) ) { return array( 'ext' => strtolower( $m[1] ), 'type' => $type ); }
+	}
+	return array( 'ext' => false, 'type' => false );
+}
+// The real type of some bytes, by magic numbers (as getimagesize / finfo would say).
+function t_magic_mime( $b ) {
+	if ( 0 === strncmp( $b, "\x89PNG\r\n\x1a\n", 8 ) ) { return 'image/png'; }
+	if ( 0 === strncmp( $b, "\xff\xd8\xff", 3 ) ) { return 'image/jpeg'; }
+	if ( 0 === strncmp( $b, 'GIF87a', 6 ) || 0 === strncmp( $b, 'GIF89a', 6 ) ) { return 'image/gif'; }
+	if ( 0 === strncmp( $b, '%PDF-', 5 ) ) { return 'application/pdf'; }
+	if ( false !== stripos( $b, '<svg' ) ) { return 'image/svg+xml'; }
+	if ( false !== stripos( $b, '<?php' ) ) { return 'text/x-php'; }
+	if ( false !== stripos( $b, '<html' ) || false !== stripos( $b, '<script' ) ) { return 'text/html'; }
+	return 1 === preg_match( '/^[\x09\x0a\x0d\x20-\x7e]*$/', $b ) ? 'text/plain' : 'application/octet-stream';
+}
+// As core (functions.php): the type from the extension, then checked against the bytes: an image extension on another kind of
+// image is renamed (proper_filename), on anything else refused; other types must match the bytes (octet-stream only for
+// application/audio/video types, text/plain only for text types); finally the type must be allowed.
+function wp_check_filetype_and_ext( $file, $filename, $mimes = null ) {
+	$wft = wp_check_filetype( $filename, $mimes ); $ext = $wft['ext']; $type = $wft['type']; $proper = false;
+	if ( $type && file_exists( $file ) ) {
+		$real = t_magic_mime( (string) file_get_contents( $file, false, null, 0, 1024 ) );
+		if ( 0 === strpos( $type, 'image/' ) ) {
+			if ( $real !== $type ) {
+				$map = array( 'image/jpeg' => 'jpg', 'image/png' => 'png', 'image/gif' => 'gif' );
+				if ( isset( $map[ $real ] ) ) {
+					$proper = preg_replace( '/\.[^.]+$/', '', (string) $filename ) . '.' . $map[ $real ];
+					$w2 = wp_check_filetype( $proper, $mimes ); $ext = $w2['ext']; $type = $w2['type'];
+				} else { $ext = false; $type = false; }
+			}
+		} elseif ( 'application/octet-stream' === $real ) {
+			if ( ! in_array( strtok( $type, '/' ), array( 'application', 'video', 'audio' ), true ) ) { $ext = false; $type = false; }
+		} elseif ( 'text/plain' === $real ) {
+			if ( ! in_array( $type, array( 'text/plain', 'text/csv', 'text/richtext', 'text/tsv', 'text/vtt' ), true ) ) { $ext = false; $type = false; }
+		} elseif ( $real !== $type ) { $ext = false; $type = false; }
+	}
+	if ( $type && ! in_array( $type, null === $mimes ? get_allowed_mime_types() : $mimes, true ) ) { $ext = false; $type = false; }
+	return array( 'ext' => $ext, 'type' => $type, 'proper_filename' => $proper );
+}
+function wp_insert_attachment( $args, $file = false, $parent_post_id = 0, $wp_error = false, $fire_after_hooks = true ) {
+	if ( ! empty( $GLOBALS['T_insert_fail'] ) ) { return $wp_error ? new WP_Error( 'db_insert_error', 'Could not insert post into the database.' ) : 0; }
+	$f = wp_unslash( $args ); $now = gmdate( 'Y-m-d H:i:s' );
+	$id = t_add_post( array( 'post_type' => 'attachment', 'post_status' => 'inherit', 'post_author' => (int) $GLOBALS['T_user_id'], 'post_parent' => (int) ( $parent_post_id ?: ( $f['post_parent'] ?? 0 ) ),
+		'post_title' => (string) ( $f['post_title'] ?? '' ), 'post_content' => (string) ( $f['post_content'] ?? '' ), 'post_excerpt' => (string) ( $f['post_excerpt'] ?? '' ),
+		'post_name' => sanitize_title( (string) ( $f['post_title'] ?? '' ) ), 'post_mime_type' => (string) ( $f['post_mime_type'] ?? '' ), 'post_date_gmt' => $now, 'post_modified_gmt' => $now ) );
+	if ( $file ) { update_post_meta( $id, '_wp_attached_file', $file ); }
+	return $id;
+}
+function wp_generate_attachment_metadata( $id, $file ) {
+	$rel = (string) get_post_meta( $id, '_wp_attached_file', true ); $b = $GLOBALS['T_files'][ $rel ] ?? '';
+	$info = '' === $b ? false : @getimagesizefromstring( $b );
+	if ( ! $info ) { return array( 'filesize' => strlen( $b ) ); }
+	$stem = preg_replace( '/\.[^.]+$/', '', basename( $rel ) ); $ext = pathinfo( $rel, PATHINFO_EXTENSION );
+	return array( 'width' => (int) $info[0], 'height' => (int) $info[1], 'file' => $rel, 'filesize' => strlen( $b ),
+		'sizes' => array( 'thumbnail' => array( 'file' => $stem . '-150x150.' . $ext, 'width' => 150, 'height' => 150, 'mime-type' => (string) $info['mime'] ) ), 'image_meta' => array( 'title' => '', 'caption' => '' ) );
+}
+function wp_update_attachment_metadata( $id, $data ) { return update_post_meta( $id, '_wp_attachment_metadata', $data ); }
+function media_handle_sideload( $file_array, $post_id = 0, $desc = null, $post_data = array() ) {
+	$GLOBALS['T_sideloads'][] = array( $file_array, $post_id, $desc, $post_data );
+	$tmp = (string) $file_array['tmp_name']; $name = (string) $file_array['name'];
+	if ( ! is_file( $tmp ) || 0 === filesize( $tmp ) ) { return new WP_Error( 'upload_error', 'File is empty. Please upload something more substantial.' ); }
+	$chk = wp_check_filetype_and_ext( $tmp, $name );
+	if ( ! $chk['type'] || ! $chk['ext'] ) { return new WP_Error( 'upload_error', 'Sorry, you are not allowed to upload this file type.' ); }
+	if ( $chk['proper_filename'] ) { $name = $chk['proper_filename']; }
+	$name = sanitize_file_name( $name ); $rel = gmdate( 'Y/m' ) . '/' . $name;
+	for ( $i = 1; isset( $GLOBALS['T_files'][ $rel ] ); $i++ ) { $rel = gmdate( 'Y/m' ) . '/' . preg_replace( '/(\.[^.]+)$/', '-' . $i . '$1', $name ); }
+	$GLOBALS['T_files'][ $rel ] = file_get_contents( $tmp ); @unlink( $tmp );
+	$att = array_merge( array( 'post_mime_type' => $chk['type'], 'post_parent' => $post_id, 'post_title' => preg_replace( '/\.[^.]+$/', '', basename( $name ) ), 'post_content' => '' ), $post_data );
+	$id = wp_insert_attachment( $att, $rel, $post_id, true );
+	if ( is_wp_error( $id ) ) { unset( $GLOBALS['T_files'][ $rel ] ); return $id; }
+	wp_update_attachment_metadata( $id, wp_generate_attachment_metadata( $id, $rel ) );
+	return $id;
+}
+function wp_delete_attachment( $id, $force_delete = false ) {
+	$p = $GLOBALS['T_posts'][ (int) $id ] ?? null;
+	if ( ! $p || 'attachment' !== $p->post_type || ! empty( $GLOBALS['T_attach_delete_blocked'] ) ) { return false; }
+	if ( ! $force_delete && defined( 'MEDIA_TRASH' ) && MEDIA_TRASH && 'trash' !== $p->post_status ) { return wp_trash_post( $id ); }
+	$rel = (string) get_post_meta( $id, '_wp_attached_file', true ); $meta = wp_get_attachment_metadata( $id );
+	foreach ( array_merge( array( $rel ), array_map( function ( $s ) use ( $rel ) { return dirname( $rel ) . '/' . $s['file']; }, (array) ( $meta['sizes'] ?? array() ) ) ) as $f ) {
+		if ( '' !== $f ) { unset( $GLOBALS['T_files'][ $f ] ); $GLOBALS['T_files_deleted'][] = $f; }
+	}
+	foreach ( $GLOBALS['T_meta'] as $pid => $keys ) { if ( isset( $keys['_thumbnail_id'] ) && in_array( (string) $id, array_map( 'strval', $keys['_thumbnail_id'] ), true ) ) { unset( $GLOBALS['T_meta'][ $pid ]['_thumbnail_id'] ); } }
+	unset( $GLOBALS['T_posts'][ (int) $id ], $GLOBALS['T_meta'][ (int) $id ] ); $GLOBALS['T_deleted'][] = (int) $id;
+	return $p;
+}
+t_media_reset();

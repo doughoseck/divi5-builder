@@ -50,7 +50,7 @@ class WP_Site_Health { function __construct() { $GLOBALS['T_traps'][] = 'site-he
 function wp_update_plugins() { $GLOBALS['T_traps'][] = 'wp_update_plugins'; }
 function wp_update_themes() { $GLOBALS['T_traps'][] = 'wp_update_themes'; }
 function wp_version_check() { $GLOBALS['T_traps'][] = 'wp_version_check'; }
-function wp_remote_get() { $GLOBALS['T_traps'][] = 'wp_remote_get'; return array(); }
+// wp_remote_get: the shared stand-in records itself in T_traps too (and answers nothing it was not scripted to).
 function wp_remote_post() { $GLOBALS['T_traps'][] = 'wp_remote_post'; return array(); }
 if ( ! function_exists( 'get_userdata' ) ) { function get_userdata( $id ) { return $GLOBALS['T_users'][ (int) $id ] ?? false; } }
 function get_plugins() { return $GLOBALS['T_plugins']; }
