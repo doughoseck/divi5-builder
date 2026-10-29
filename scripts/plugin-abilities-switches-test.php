@@ -282,5 +282,23 @@ check( 'scanned the plugin source (not vacuous), including inc/abilities/', $sca
 check( 'static scan: no other file names d5b_switches or calls a switch setter', array() === $bad, $bad );
 check( 'the categories file defines functions only (no hooks)', 0 === preg_match( '/\b(add_action|add_filter|register_[a-z_]+)\s*\(/', file_get_contents( $dir . '/inc/abilities/categories.php' ) ) );
 
+echo "final wave A5: the upgrade notice on the settings page\n";
+fresh(); t_set_caps( array( 'manage_options' ) ); $GLOBALS['T_user_login'] = 'doug';
+d5b_abilities_set_master( true, 'doug' ); d5b_abilities_set_category( 'posts', true, false, 'doug' );
+d5b_abilities_upgrade_consent();
+$h = html( 'd5b_settings_render' );
+check( 'after the upgrade: the page shows the notice text with a Dismiss button, and the master line says the plugin turned it off and why',
+	false !== strpos( $h, esc_html( d5b_abilities_upgrade_notice_text() ) ) && false !== strpos( $h, 'name="d5b_dismiss_upgrade_notice"' ) && false !== strpos( $h, 'by the plugin (turned off by the update to 2.2.0' ) && 0 === preg_match( '/name="d5b_abilities_master"[^>]*checked/', $h ), $h );
+$before = stored();
+post_abilities( array( 'd5b_dismiss_upgrade_notice' => '1' ) );
+run_save();
+check( 'Dismiss deletes the notice option and changes no switch (its form carries none)', false === d5b_abilities_upgrade_notice_on() && $before === stored() && true === d5b_abilities_switches()['categories']['posts']['on'] && 1 === count( $GLOBALS['T_redirects'] ), stored() );
+check( '... and the page no longer shows it', false === strpos( html( 'd5b_settings_render' ), 'name="d5b_dismiss_upgrade_notice"' ) );
+fresh(); t_set_caps( array() );
+update_option( 'd5b_abilities_upgrade_notice', 1 );
+post_abilities( array( 'd5b_dismiss_upgrade_notice' => '1' ) );
+run_save();
+check( 'Dismiss without the settings capability changes nothing', true === d5b_abilities_upgrade_notice_on() );
+
 echo "\n$n checks, $failed failed\n";
 exit( $failed ? 1 : 0 );

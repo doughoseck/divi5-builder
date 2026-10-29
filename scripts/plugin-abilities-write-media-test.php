@@ -104,9 +104,9 @@ check( 'the 6 media writes are defined in the media category with the agreed ann
 check( 'upload takes url, base64, filename, title, alt, caption, description, parent; delete requires id and confirmation',
 	array( 'url', 'base64', 'filename', 'title', 'alt', 'caption', 'description', 'parent' ) === array_keys( $defs['divi5-builder/media-upload']['input_schema']['properties'] )
 	&& array( 'id', 'confirmation' ) === $defs['divi5-builder/media-delete']['input_schema']['required'] );
-check( 'the descriptions say what matters: upload names the address rules, the redirect limit and the DNS rebinding limit; delete says the file itself is not kept',
+check( 'the descriptions say what matters: upload names the address rules, the redirect limit and the DNS rebinding limit; delete says the file is kept 30 days in d5b-history',
 	1 === preg_match( '/private, loopback, link-local/', $defs['divi5-builder/media-upload']['description'] ) && false !== strpos( $defs['divi5-builder/media-upload']['description'], 'at most 3 redirects' ) && false !== stripos( $defs['divi5-builder/media-upload']['description'], 'rebinding' )
-	&& false !== strpos( $defs['divi5-builder/media-delete']['description'], 'NOT the file itself' ) && false !== strpos( $defs['divi5-builder/media-trash']['description'], 'media-delete-preview' ) );
+	&& false !== strpos( $defs['divi5-builder/media-delete']['description'], 'the file is kept for 30 days in wp-content/uploads/d5b-history and can be put back by hand' ) && false !== strpos( $defs['divi5-builder/media-trash']['description'], 'media-delete-preview' ) );
 
 echo "URL safety: refused before any request\n";
 site();
@@ -439,7 +439,7 @@ $url = $pv['item']['file_url'];
 $r = call( 'media-delete', array( 'id' => $a, 'confirmation' => $pv['confirmation'] ) );
 $h = hlast();
 check( 'a valid delete removes the attachment, its file and its sizes, and the featured image that pointed at it', is_array( $r ) && true === $r['deleted'] && null === post( $a ) && ! isset( $GLOBALS['T_files']['2026/10/photo.jpg'] ) && ! isset( $GLOBALS['T_files']['2026/10/photo-300x200.jpg'] ) && array() === get_post_meta( $feat, '_thumbnail_id' ), $r );
-check( 'the history row (id returned) holds the metadata, URL, sizes, file, the posts that used it, file_copied false; action delete', is_array( $r ) && (int) $h['id'] === $r['history_id'] && 'delete' === $h['action'] && $a === (int) $h['object_id'] && $url === $h['before']['url'] && '2026/10/photo.jpg' === $h['before']['file'] && 'photo-300x200.jpg' === $h['before']['metadata']['sizes']['medium']['file'] && isset( $h['before']['sizes']['medium'] ) && false === $h['before']['file_copied'] && in_array( $feat, array_column( $h['before']['used_by'], 'id' ), true ) && 'Old alt' === $h['before']['alt'] && 'A description' === $h['before']['description'], $h );
+check( 'the history row (id returned) holds the metadata, URL, sizes, file, the posts that used it; after.file_copy says no file was on disk to keep (this site\'s files are not on disk); action delete', is_array( $r ) && (int) $h['id'] === $r['history_id'] && 'delete' === $h['action'] && $a === (int) $h['object_id'] && $url === $h['before']['url'] && '2026/10/photo.jpg' === $h['before']['file'] && 'photo-300x200.jpg' === $h['before']['metadata']['sizes']['medium']['file'] && isset( $h['before']['sizes']['medium'] ) && array( 'dir' => null, 'files' => array(), 'missing' => array( '2026/10/photo.jpg', '2026/10/photo-300x200.jpg' ) ) === ( $h['after']['file_copy'] ?? false ) && null === $r['file_kept'] && in_array( $feat, array_column( $h['before']['used_by'], 'id' ), true ) && 'Old alt' === $h['before']['alt'] && 'A description' === $h['before']['description'], $h );
 check( 'the summary: "Permanently deleted media N \'photo.jpg\'"', "Permanently deleted media $a 'photo.jpg'" === $h['summary'], $h['summary'] );
 check( 'deleting again is not_found', 'FORBIDDEN' === call( 'media-delete', array( 'id' => $a, 'confirmation' => $pv['confirmation'] ) ) && 'not_found' === code( handler( 'media-delete', array( 'id' => $a, 'confirmation' => $pv['confirmation'] ) ) ) );
 site( READER );
@@ -468,6 +468,91 @@ if ( ! getenv( 'T_MEDIA_TRASH' ) ) {
 	$pv = call( 'media-delete-preview', array( 'id' => $a ) );
 	$r  = call( 'media-delete', array( 'id' => $a, 'confirmation' => is_array( $pv ) ? $pv['confirmation'] : '' ) );
 	check( 'media-delete of an item with a 9 MB custom field: history_unavailable ("over the size limit"), the item and its file are kept, no row left', 'history_unavailable' === code( $r ) && false !== strpos( msg( $r ), 'over the size limit' ) && null !== post( $a ) && isset( $GLOBALS['T_files']['2026/10/c.jpg'] ) && array() === hrows() && array() === $GLOBALS['T_deleted'], array( code( $pv ), code( $r ), msg( $r ) ) );
+
+	echo "Final wave A2: an item with custom fields the history cannot keep is not deleted for good\n";
+	$want = d5b_wc_secret_error( 'media item has a custom field that' )->get_error_message();
+	foreach ( array( 'a secret-named custom field (_download_token)' => array( '_download_token', 'tok-123' ), 'a value holding a secret-named key (licence.api_key)' => array( 'licence', array( 'api_key' => 'K', 'holder' => 'Ann' ) ) ) as $label => $kv ) {
+		site();
+		$a = att( array(), '2026/10/s.jpg' );
+		t_add_meta( $a, $kv[0], $kv[1] );
+		$pv = call( 'media-delete-preview', array( 'id' => $a ) );
+		$codes = array_filter( array_keys( $GLOBALS['T_transients'] ), function ( $k ) { return 0 === strpos( $k, 'd5b_confirm_' ); } );
+		$r  = handler( 'media-delete', array( 'id' => $a, 'confirmation' => 'X' ) );
+		check( "$label: preview and delete refused not_allowed with the terms/menus message, no code issued, nothing deleted, no history row", 'not_allowed' === code( $pv ) && $want === msg( $pv ) && 'not_allowed' === code( $r ) && $want === msg( $r ) && array() === $codes && null !== post( $a ) && array() === hrows(), array( code( $pv ), msg( $pv ), code( $r ) ) );
+	}
+
+	echo "Final wave A3: the file is kept 30 days in uploads/d5b-history/<row id>/ (moved before the delete)\n";
+	$up = str_replace( '\\', '/', sys_get_temp_dir() ) . '/d5b-media-test-' . getmypid();
+	$rm = function ( $d ) use ( &$rm ) { if ( is_link( $d ) || is_file( $d ) ) { @unlink( $d ); return; } if ( ! is_dir( $d ) ) { return; } foreach ( array_diff( (array) scandir( $d ), array( '.', '..' ) ) as $f ) { $rm( $d . '/' . $f ); } @rmdir( $d ); };
+	/** An attachment whose files are REALLY on disk in $up: the file, one size, the pre-scale original and an edit backup. */
+	$disk_att = function ( string $stem ) use ( $up ) {
+		$a = att( array(), "2026/10/$stem.jpg" );
+		$GLOBALS['T_meta'][ $a ]['_wp_attachment_metadata'][0]['original_image'] = "$stem-orig.jpg";
+		t_add_meta( $a, '_wp_attachment_backup_sizes', array( 'full-orig' => array( 'file' => "$stem-e1.jpg", 'width' => 8, 'height' => 6 ) ) );
+		@mkdir( "$up/2026/10", 0755, true );
+		foreach ( array( "$stem.jpg", "$stem-300x200.jpg", "$stem-orig.jpg", "$stem-e1.jpg" ) as $f ) { file_put_contents( "$up/2026/10/$f", "bytes of $f" ); }
+		return $a;
+	};
+	$rm( $up );
+	site();
+	$GLOBALS['T_upload_basedir'] = $up;
+	$a  = $disk_att( 'keep' );
+	$pv = call( 'media-delete-preview', array( 'id' => $a ) );
+	check( 'the preview says the file is kept 30 days in wp-content/uploads/d5b-history', is_array( $pv ) && false !== strpos( $pv['note'], 'kept for 30 days in wp-content/uploads/d5b-history' ), $pv );
+	$r  = call( 'media-delete', array( 'id' => $a, 'confirmation' => $pv['confirmation'] ) );
+	$h  = hlast();
+	$hid = (int) ( $h['id'] ?? 0 );
+	$kept = "$up/d5b-history/$hid";
+	$names = array( 'keep.jpg', 'keep-300x200.jpg', 'keep-orig.jpg', 'keep-e1.jpg' );
+	$all_kept = true; foreach ( $names as $f ) { if ( ! is_file( "$kept/$f" ) || "bytes of $f" !== file_get_contents( "$kept/$f" ) || file_exists( "$up/2026/10/$f" ) ) { $all_kept = false; } }
+	check( 'the delete answers deleted with file_kept d5b-history/<row id>; the item is gone', is_array( $r ) && true === $r['deleted'] && "d5b-history/$hid" === $r['file_kept'] && $hid === $r['history_id'] && null === post( $a ), $r );
+	check( '... the file, its size, the pre-scale original and the edit backup are MOVED there with their names and bytes (none left in 2026/10)', $all_kept, array_values( array_diff( (array) @scandir( $kept ), array( '.', '..' ) ) ) );
+	check( '... moved BEFORE WordPress deleted: its unlinks found nothing on disk', array() === $GLOBALS['T_files_unlinked'], $GLOBALS['T_files_unlinked'] );
+	check( '... the history row records file_copy: the folder and every file (uploads-relative), none missing',
+		array( 'deleted' => true, 'file_copy' => array( 'dir' => "d5b-history/$hid", 'files' => array( '2026/10/keep.jpg', '2026/10/keep-300x200.jpg', '2026/10/keep-orig.jpg', '2026/10/keep-e1.jpg' ), 'missing' => array() ) ) === $h['after'], $h['after'] );
+	$ht = (string) @file_get_contents( "$up/d5b-history/.htaccess" );
+	check( '... d5b-history holds an .htaccess with Require all denied and Deny from all, and an empty index.html', false !== strpos( $ht, 'Require all denied' ) && false !== strpos( $ht, 'Deny from all' ) && is_file( "$up/d5b-history/index.html" ) && '' === file_get_contents( "$up/d5b-history/index.html" ), $ht );
+
+	echo "Final wave A3: a move that fails puts back what was moved and refuses\n";
+	$b  = $disk_att( 'back' );
+	$pv = call( 'media-delete-preview', array( 'id' => $b ) );
+	$GLOBALS['T_rename_fail'] = array( "$up/2026/10/back-orig.jpg" );
+	$rows0 = count( hrows() );
+	$r  = call( 'media-delete', array( 'id' => $b, 'confirmation' => $pv['confirmation'] ) );
+	$GLOBALS['T_rename_fail'] = array();
+	$back = true; foreach ( array( 'back.jpg', 'back-300x200.jpg', 'back-orig.jpg', 'back-e1.jpg' ) as $f ) { if ( "bytes of $f" !== @file_get_contents( "$up/2026/10/$f" ) ) { $back = false; } }
+	$moved_first = count( array_filter( $GLOBALS['T_renames'], function ( $x ) use ( $up ) { return "$up/2026/10/back.jpg" === $x[0]; } ) ) > 0;
+	$dirs = array_values( array_filter( (array) scandir( "$up/d5b-history" ), function ( $f ) { return ctype_digit( (string) $f ); } ) );
+	check( 'the third move fails: history_unavailable, nothing deleted, the two moved files are back in place with their bytes, the folder is gone, the row is removed',
+		'history_unavailable' === code( $r ) && null !== post( $b ) && $moved_first && $back && array( (string) $hid ) === $dirs && count( hrows() ) === $rows0 && ! in_array( $b, $GLOBALS['T_deleted'], true ), array( code( $r ), msg( $r ), $dirs, $back ) );
+
+	echo "Final wave A3: WordPress refusing the delete puts the files back\n";
+	$c  = $disk_att( 'stop' );
+	$pv = call( 'media-delete-preview', array( 'id' => $c ) );
+	$GLOBALS['T_attach_delete_blocked'] = true;
+	$r  = call( 'media-delete', array( 'id' => $c, 'confirmation' => $pv['confirmation'] ) );
+	$GLOBALS['T_attach_delete_blocked'] = false;
+	$fail = hlast();
+	check( 'write_failed; the item and its files are back where they were; the failure row says files_put_back', 'write_failed' === code( $r ) && null !== post( $c ) && 'bytes of stop.jpg' === @file_get_contents( "$up/2026/10/stop.jpg" ) && 'bytes of stop-e1.jpg' === @file_get_contents( "$up/2026/10/stop-e1.jpg" ) && true === ( $fail['after']['files_put_back'] ?? null ) && false !== strpos( msg( $r ), 'Its files were put back' ), array( msg( $r ), $fail['after'] ?? null ) );
+
+	echo "Final wave A3: the prune removes the folder with its row\n";
+	$d  = $disk_att( 'young' );
+	$pv = call( 'media-delete-preview', array( 'id' => $d ) );
+	$r  = call( 'media-delete', array( 'id' => $d, 'confirmation' => $pv['confirmation'] ) );
+	$young = (int) $r['history_id'];
+	unset( $GLOBALS['wpdb']->tables['wp_d5b_history_saved'] );
+	$saved = $GLOBALS['wpdb']->tables['wp_d5b_history'];
+	unset( $GLOBALS['wpdb']->tables['wp_d5b_history'] );
+	d5b_history_prune();
+	check( 'with the history table missing the prune removes no folder', is_dir( "$up/d5b-history/$hid" ) && is_dir( "$up/d5b-history/$young" ) );
+	$GLOBALS['wpdb']->tables['wp_d5b_history'] = $saved;
+	foreach ( $GLOBALS['wpdb']->tables['wp_d5b_history'] as &$row ) { if ( (int) $row['id'] === $hid ) { $row['created_at'] = gmdate( 'Y-m-d H:i:s', time() - 31 * 86400 ); } }
+	unset( $row );
+	d5b_history_prune();
+	check( 'a row older than 30 days is pruned and d5b-history/<its id>/ with its files goes; a younger row keeps its folder; .htaccess and index.html stay',
+		null === d5b_history_get( $hid ) && ! file_exists( "$up/d5b-history/$hid" ) && is_file( "$up/d5b-history/$young/young.jpg" ) && is_file( "$up/d5b-history/.htaccess" ) && is_file( "$up/d5b-history/index.html" ) );
+	unset( $GLOBALS['T_upload_basedir'] );
+	$rm( $up );
 }
 
 echo "\n" . ( $n - $failed ) . " of $n passed\n";

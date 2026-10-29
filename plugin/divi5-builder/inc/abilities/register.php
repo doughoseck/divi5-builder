@@ -379,6 +379,27 @@ if ( ! function_exists( 'd5b_ability_set_content_keys' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_ability_history_ready' ) ) {
+	/**
+	 * True when the change history table is there, so a write may run. When it is missing, one attempt is made to create it
+	 * again (d5b_audit_maybe_install, which backs off for an hour after a refused CREATE) and the answer is checked again.
+	 * A yes is remembered for the rest of the request (one SHOW TABLES per request); a no is asked again on the next write.
+	 * $reset forgets the yes (tests). True when the history code is not loaded at all (nothing to check against).
+	 */
+	function d5b_ability_history_ready( bool $reset = false ): bool {
+		static $ready = false;
+		if ( $reset ) { $ready = false; return false; }
+		if ( $ready || ! function_exists( 'd5b_history_table_exists' ) ) { return true; }
+		if ( d5b_history_table_exists() ) { return $ready = true; }
+		if ( function_exists( 'd5b_audit_maybe_install' ) && function_exists( 'd5b_audit_install_allowed' ) && d5b_audit_install_allowed() ) {
+			// The stored version says the tables were made: forget it so the install runs (as d5b_history_write does).
+			if ( function_exists( 'delete_option' ) ) { delete_option( 'd5b_db_version' ); }
+			d5b_audit_maybe_install();
+		}
+		return $ready = d5b_history_table_exists();
+	}
+}
+
 if ( ! function_exists( 'd5b_ability_run' ) ) {
 	/**
 	 * Runs one ability: the gate again (a direct PHP call skips core's permission callback), then the audit row with
@@ -407,6 +428,13 @@ if ( ! function_exists( 'd5b_ability_run' ) ) {
 			return d5b_ability_with_status( new WP_Error( 'audit_unavailable', 'The activity log cannot be written on this site, so the ability was not run.' ) );
 		}
 		$audit_args = d5b_ability_audit_args( $name, $args );
+		// A write (readonly false) needs the change history: without its table nothing could be put back, so it is refused
+		// before the handler runs (SECURITY.md: a missing history table refuses writes).
+		$annotations = isset( $defs[ $name ]['annotations'] ) && is_array( $defs[ $name ]['annotations'] ) ? $defs[ $name ]['annotations'] : array();
+		if ( false === ( $annotations['readonly'] ?? true ) && ! d5b_ability_history_ready() ) {
+			d5b_ability_audit_finish( $id, 'history_unavailable', d5b_ability_ms_since( $start ), $audit_args );
+			return d5b_ability_with_status( new WP_Error( 'history_unavailable', 'The change history table is missing, so changes are refused; see the plugin settings.' ) );
+		}
 		$outer_id   = d5b_ability_audit_current_state( $id );
 		try {
 			$result     = call_user_func( $defs[ $name ]['handler'], $args );

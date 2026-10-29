@@ -112,6 +112,9 @@ if ( ! function_exists( 'd5b_wp_kinds' ) ) {
 			if ( is_object( $p ) ) {
 				$ok = d5b_wc_meta_key_case_ok( (int) $p->ID, $key );
 				if ( true !== $ok ) { return $ok; }
+				// As meta-set: a field whose current value holds a secret-named key could not be kept by the history, so it is
+				// not overwritten here either (the one rule).
+				if ( ! d5b_wc_secret_free( array_values( (array) get_post_meta( (int) $p->ID, $key, false ) ) ) ) { return d5b_wc_secret_error( 'field' ); }
 			}
 			if ( is_protected_meta( $key, 'post' ) || d5b_is_secret_key( $key ) ) {
 				return new WP_Error( 'not_allowed', 'The custom field "' . substr( preg_replace( '/[^A-Za-z0-9_\-]/', '', $key ), 0, 100 ) . '" is protected (its name starts with _) or names a secret, so it cannot be written here.' );

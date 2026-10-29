@@ -47,6 +47,14 @@ if ( ! function_exists( 'd5b_settings_render' ) ) {
 		if ( function_exists( 'd5b_history_notice_needed' ) && d5b_history_notice_needed() ) {
 			echo '<div class="notice notice-warning"><p>' . esc_html( 'A change was made in the last 24 hours that could not be recorded in the change history. Check the audit log rows marked ok_no_history.' ) . '</p></div>';
 		}
+		if ( function_exists( 'd5b_abilities_upgrade_notice_on' ) && d5b_abilities_upgrade_notice_on() ) {
+			// Shown until dismissed: its own small form (the same nonce and handler; the handler changes no switch for it).
+			echo '<div class="notice notice-warning"><p>' . esc_html( d5b_abilities_upgrade_notice_text() ) . '</p>';
+			echo '<form method="post" action="' . esc_url( $action ) . '">';
+			wp_nonce_field( 'd5b_switches' );
+			echo '<input type="hidden" name="action" value="d5b_save_switches" /><input type="hidden" name="d5b_dismiss_upgrade_notice" value="1" />';
+			echo '<p><input type="submit" class="button" value="Dismiss" /></p></form></div>';
+		}
 		echo '<p>Version ' . esc_html( D5B_VERSION ) . '. ';
 		echo defined( 'ET_BUILDER_5_DIR' ) ? 'Divi 5 detected.' : 'Divi 5 not detected: routes that need Divi will answer with an error.';
 		echo '</p>';
@@ -100,7 +108,9 @@ if ( ! function_exists( 'd5b_settings_render_abilities' ) ) {
 		echo '<label><input type="checkbox" id="d5b-abilities-master" name="d5b_abilities_master" value="1"' . ( $master['on'] ? ' checked="checked"' : '' ) . ' /> Switched on</label>';
 		echo '<p class="description">' . esc_html( 'Lets AI clients connected to this site (over the REST API) read site content and settings through this plugin. Nothing is shared until you switch this on. Every call is logged for 30 days. Secrets are filtered out by name and shape; the filter is careful but not perfect, so switch on only what you need. With this on, connected AI clients can also create and change content in the categories you tick. Every change is kept in the change history for 30 days.' ) . '</p>';
 		if ( '' !== $master['changed_at'] || '' !== $master['changed_by'] ) {
-			echo '<p class="description">Last switched ' . ( $master['on'] ? 'on' : 'off' ) . ' ' . esc_html( $master['changed_at'] ) . ' by ' . esc_html( $master['changed_by'] ) . '</p>';
+			// changed_by '0' is the plugin itself (the 2.2.0 update), with its reason.
+			$who = '0' === $master['changed_by'] ? 'the plugin (' . ( $master['reason'] ?? '' ) . ')' : $master['changed_by'];
+			echo '<p class="description">Last switched ' . ( $master['on'] ? 'on' : 'off' ) . ' ' . esc_html( $master['changed_at'] ) . ' by ' . esc_html( $who ) . '</p>';
 		}
 		echo '</td></tr>';
 		if ( array() !== $cats ) {
@@ -289,6 +299,14 @@ if ( ! function_exists( 'd5b_settings_save' ) ) {
 			wp_die( 'You are not allowed to change these settings.', '', array( 'response' => 403 ) );
 			return;
 		}
+		$base = is_multisite() ? network_admin_url( 'settings.php' ) : admin_url( 'options-general.php' );
+		if ( isset( $_POST['d5b_dismiss_upgrade_notice'] ) ) {
+			// The upgrade notice's own form: it carries no switch, so no switch is looked at.
+			if ( is_multisite() ) { delete_site_option( 'd5b_abilities_upgrade_notice' ); } else { delete_option( 'd5b_abilities_upgrade_notice' ); }
+			wp_safe_redirect( $base . '?page=divi5-builder' );
+			d5b_settings_exit();
+			return;
+		}
 		$posted = isset( $_POST['d5b_on'] ) && is_array( $_POST['d5b_on'] ) ? wp_unslash( $_POST['d5b_on'] ) : array();
 		$login  = (string) wp_get_current_user()->user_login;
 		// Walk the switchable parts, not the posted keys: page_building and unknown keys can never get through.
@@ -297,7 +315,6 @@ if ( ! function_exists( 'd5b_settings_save' ) ) {
 			if ( $want !== $row['on'] ) { d5b_switch_set( $key, $want, $login ); }
 		}
 		d5b_settings_save_abilities( $login );
-		$base = is_multisite() ? network_admin_url( 'settings.php' ) : admin_url( 'options-general.php' );
 		wp_safe_redirect( $base . '?page=divi5-builder&updated=1' );
 		d5b_settings_exit();
 	}

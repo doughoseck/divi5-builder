@@ -654,4 +654,16 @@ if ( ! function_exists( 'd5b_wt_tax' ) ) {
 
 	// Raw third-party data: custom field values are shaped by other plugins, so the row rule applies there (as meta-get).
 	d5b_ability_set_raw_paths( array( 'meta-set' => array( 'value' ), 'meta-delete-preview' => array( 'rows' ) ) );
+
+	/**
+	 * The audit args of the custom field abilities: the input "key" is stored as "field". The audit's key filter drops a key
+	 * named key (a secret word) with its value, so the field name would otherwise never reach the audit log.
+	 */
+	function d5b_wt_meta_audit_args( array $args ): array {
+		if ( array_key_exists( 'key', $args ) ) {
+			$args = array( 'field' => $args['key'] ) + array_diff_key( $args, array( 'key' => 1 ) );
+		}
+		return $args;
+	}
+	d5b_ability_set_audit_args( array( 'meta-set' => 'd5b_wt_meta_audit_args', 'meta-delete-preview' => 'd5b_wt_meta_audit_args', 'meta-delete' => 'd5b_wt_meta_audit_args' ) );
 }

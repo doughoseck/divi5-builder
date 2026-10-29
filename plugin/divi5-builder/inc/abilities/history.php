@@ -277,8 +277,98 @@ if ( ! function_exists( 'd5b_history_get' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_history_set_after' ) ) {
+	/** Replaces the "after" of one row (a media delete records where it kept the file). @return bool true when the row now holds it */
+	function d5b_history_set_after( int $id, array $after ): bool {
+		global $wpdb;
+		if ( $id < 1 || ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return false; }
+		try {
+			$fa   = null;
+			$json = d5b_history_side_json( $after, $fa );
+			if ( $fa['truncated'] ) { return false; }
+			$quiet = method_exists( $wpdb, 'suppress_errors' ) ? $wpdb->suppress_errors( true ) : null;
+			$n     = $wpdb->update( d5b_history_table(), array( 'after' => $json ), array( 'id' => $id ), array( '%s' ), array( '%d' ) );
+			if ( null !== $quiet ) { $wpdb->suppress_errors( $quiet ); }
+			if ( false === $n ) { return false; }
+			// 0 rows "affected" also when the value was already the same: read it back.
+			$row = d5b_history_get( $id );
+			return null !== $row && json_decode( $json, true ) === $row['after'];
+		} catch ( Throwable $e ) {
+			return false;
+		}
+	}
+}
+
+if ( ! function_exists( 'd5b_history_files_root' ) ) {
+	/**
+	 * The folder where a permanent media delete keeps the file for 30 days: wp-content/uploads/d5b-history (per site, in
+	 * that site's uploads folder), one sub-folder per history row id. '' when the uploads folder is not known.
+	 */
+	function d5b_history_files_root(): string {
+		if ( ! function_exists( 'wp_upload_dir' ) ) { return ''; }
+		$u    = wp_upload_dir( null, false );
+		$base = is_array( $u ) && is_string( $u['basedir'] ?? null ) ? rtrim( str_replace( '\\', '/', $u['basedir'] ), '/' ) : '';
+		return '' === $base ? '' : $base . '/d5b-history';
+	}
+}
+
+if ( ! function_exists( 'd5b_history_files_prepare' ) ) {
+	/**
+	 * Makes the d5b-history folder and closes it to the web (an Apache rule for both 2.2 and 2.4, and an empty index.html so
+	 * nothing is listed), once. A root that is a link is refused. @return bool true when the folder is there and is a folder
+	 */
+	function d5b_history_files_prepare(): bool {
+		$root = d5b_history_files_root();
+		if ( '' === $root ) { return false; }
+		if ( is_link( $root ) ) { return false; }
+		if ( ! is_dir( $root ) && ! @mkdir( $root, 0755, true ) && ! is_dir( $root ) ) { return false; }
+		if ( ! file_exists( $root . '/.htaccess' ) ) { @file_put_contents( $root . '/.htaccess', "Require all denied\n<IfModule !mod_authz_core.c>\nDeny from all\n</IfModule>\n" ); }
+		if ( ! file_exists( $root . '/index.html' ) ) { @file_put_contents( $root . '/index.html', '' ); }
+		return is_dir( $root ) && ! is_link( $root );
+	}
+}
+
+if ( ! function_exists( 'd5b_history_files_remove' ) ) {
+	/**
+	 * Removes d5b-history/<id>/ and the files in it (the folder holds plain files only; a link is removed, never followed).
+	 * @return bool true when the folder is gone (or was never there)
+	 */
+	function d5b_history_files_remove( int $id ): bool {
+		$root = d5b_history_files_root();
+		if ( '' === $root || $id < 1 ) { return false; }
+		$dir = $root . '/' . $id;
+		if ( is_link( $dir ) ) { return @unlink( $dir ); }
+		if ( ! is_dir( $dir ) ) { return true; }
+		foreach ( (array) @scandir( $dir ) as $f ) {
+			if ( '.' === $f || '..' === $f || ! is_string( $f ) ) { continue; }
+			$path = $dir . '/' . $f;
+			if ( is_link( $path ) || is_file( $path ) ) { @unlink( $path ); }
+		}
+		return @rmdir( $dir ) || ! is_dir( $dir );
+	}
+}
+
+if ( ! function_exists( 'd5b_history_files_prune' ) ) {
+	/**
+	 * Removes every d5b-history/<id>/ folder whose history row is gone (pruned after 30 days, or removed because the delete it
+	 * was written for was refused). Only while the history table is there: a missing table must not empty the folder.
+	 * @return int folders removed
+	 */
+	function d5b_history_files_prune(): int {
+		$root = d5b_history_files_root();
+		if ( '' === $root || is_link( $root ) || ! is_dir( $root ) || ! d5b_history_table_exists() ) { return 0; }
+		$n = 0;
+		foreach ( (array) @scandir( $root ) as $f ) {
+			if ( ! is_string( $f ) || 1 !== preg_match( '/^[1-9][0-9]{0,19}$/D', $f ) ) { continue; }
+			if ( null !== d5b_history_get( (int) $f ) ) { continue; }
+			if ( d5b_history_files_remove( (int) $f ) ) { $n++; }
+		}
+		return $n;
+	}
+}
+
 if ( ! function_exists( 'd5b_history_prune' ) ) {
-	/** Deletes rows older than 30 days. @return int rows deleted */
+	/** Deletes rows older than 30 days, and the kept media files of the rows that are gone. @return int rows deleted */
 	function d5b_history_prune(): int {
 		global $wpdb;
 		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return 0; }
@@ -286,6 +376,7 @@ if ( ! function_exists( 'd5b_history_prune' ) ) {
 		$quiet  = method_exists( $wpdb, 'suppress_errors' ) ? $wpdb->suppress_errors( true ) : null;
 		$n      = $wpdb->query( $wpdb->prepare( 'DELETE FROM ' . d5b_history_table() . ' WHERE created_at < %s', $cutoff ) );
 		if ( null !== $quiet ) { $wpdb->suppress_errors( $quiet ); }
+		try { d5b_history_files_prune(); } catch ( Throwable $e ) { unset( $e ); }
 		return is_int( $n ) ? $n : 0;
 	}
 }

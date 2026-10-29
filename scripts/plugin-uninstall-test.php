@@ -85,6 +85,31 @@ $adel = array_values( array_unique( array_map( function ( $d ) { return $d[1]; }
 check( 'the d5b_anon transient is deleted on every one of the 250 sites', range( 1, 250 ) === $adel, count( $adel ) );
 check( 'only deletes, never a write', array() === array_filter( $GLOBALS['T_writes'], function ( $w ) { return 0 !== strpos( $w[0], 'delete_' ); } ), $GLOBALS['T_writes'] );
 
+echo "final wave A3/A5: the kept media files (uploads/d5b-history) and the upgrade notice option\n";
+$up = str_replace( '\\', '/', sys_get_temp_dir() ) . '/d5b-uninstall-test-' . getmypid();
+$rmr = function ( $d ) use ( &$rmr ) { if ( is_link( $d ) || is_file( $d ) ) { @unlink( $d ); return; } if ( ! is_dir( $d ) ) { return; } foreach ( array_diff( (array) scandir( $d ), array( '.', '..' ) ) as $f ) { $rmr( "$d/$f" ); } @rmdir( $d ); };
+$plant = function ( $base ) {
+	@mkdir( "$base/d5b-history/12", 0755, true ); @mkdir( "$base/d5b-history/40", 0755, true ); @mkdir( "$base/2026/10", 0755, true );
+	file_put_contents( "$base/d5b-history/.htaccess", "Require all denied\n" ); file_put_contents( "$base/d5b-history/index.html", '' );
+	file_put_contents( "$base/d5b-history/12/photo.jpg", 'a' ); file_put_contents( "$base/d5b-history/12/photo-300x200.jpg", 'b' ); file_put_contents( "$base/d5b-history/40/doc.pdf", 'c' );
+	file_put_contents( "$base/2026/10/live.jpg", 'live' );
+};
+$rmr( $up );
+t_reset(); t_set_multisite( false ); $GLOBALS['T_upload_basedir'] = $up;
+$GLOBALS['T_options'] = array( 'd5b_abilities_upgrade_notice' => 1, 'd5b_other' => 'kept' );
+$plant( $up );
+uninstall();
+check( 'single site: uploads/d5b-history is gone with every kept file; the site\'s own uploads stay', ! file_exists( "$up/d5b-history" ) && 'live' === @file_get_contents( "$up/2026/10/live.jpg" ) );
+check( '... and the d5b_abilities_upgrade_notice option is deleted', ! array_key_exists( 'd5b_abilities_upgrade_notice', $GLOBALS['T_options'] ) && 'kept' === $GLOBALS['T_options']['d5b_other'] );
+$rmr( $up );
+t_reset(); t_set_multisite( true ); $GLOBALS['T_upload_basedir'] = $up;
+for ( $i = 1; $i <= 3; $i++ ) { $GLOBALS['T_blogs'][ $i ] = array( 'home' => 'https://s' . $i . '.example' ); }
+$plant( $up ); $plant( "$up/sites/3" );
+uninstall();
+check( 'network: every site\'s d5b-history goes (site 1 in uploads, site 3 in uploads/sites/3); their own uploads stay', ! file_exists( "$up/d5b-history" ) && ! file_exists( "$up/sites/3/d5b-history" ) && is_file( "$up/2026/10/live.jpg" ) && is_file( "$up/sites/3/2026/10/live.jpg" ) && 1 === $GLOBALS['T_blog_id'] );
+unset( $GLOBALS['T_upload_basedir'] );
+$rmr( $up );
+
 echo "without a database object\n";
 t_reset(); t_set_multisite( false ); unset( $GLOBALS['wpdb'] ); $GLOBALS['T_options'] = array( 'd5b_switches' => 1, 'd5b_db_version' => '1' );
 uninstall();

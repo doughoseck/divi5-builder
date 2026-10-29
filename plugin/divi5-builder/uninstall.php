@@ -4,13 +4,41 @@
  *
  * Removes every option the plugin stored: d5b_switches, d5b_takeover, d5b_legacy_seen and d5b_db_version, and drops the
  * audit log table (d5b_audit), the change history table (d5b_history), its daily event and its d5b_audit_install_failed and d5b_anon transients, on every site of a network. On a multisite network,
- * the network options and each site's own options (sites read in batches of 100). Only deletes, never writes,
- * so a later reinstall starts with every switch off, as on a new site. Nothing else is touched: the old plugins'
- * files and the media clean-up quarantine folder stay where they are.
+ * the network options and each site's own options (sites read in batches of 100). Also removes the
+ * d5b_abilities_upgrade_notice option and, per site, the folder wp-content/uploads/d5b-history (the files of permanently
+ * deleted media, kept 30 days with their history rows). Only deletes, never writes, so a later reinstall starts with every
+ * switch off, as on a new site. Nothing else is touched: the old plugins' files and the media clean-up quarantine folder
+ * stay where they are.
  */
 if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) { exit; }
 
-$d5b_names = array( 'd5b_switches', 'd5b_takeover', 'd5b_legacy_seen', 'd5b_db_version' );
+/**
+ * Removes the current site's wp-content/uploads/d5b-history: its .htaccess and index.html, and each <history id>/ folder with
+ * the files in it. Two levels only, as the plugin makes it; a link is removed, never followed.
+ */
+$d5b_rm_history_files = function () {
+	if ( ! function_exists( 'wp_upload_dir' ) ) { return; }
+	$u    = wp_upload_dir( null, false );
+	$base = is_array( $u ) && is_string( $u['basedir'] ?? null ) ? rtrim( str_replace( '\\', '/', $u['basedir'] ), '/' ) : '';
+	if ( '' === $base ) { return; }
+	$root = $base . '/d5b-history';
+	if ( is_link( $root ) ) { @unlink( $root ); return; }
+	if ( ! is_dir( $root ) ) { return; }
+	foreach ( (array) @scandir( $root ) as $f ) {
+		if ( ! is_string( $f ) || '.' === $f || '..' === $f ) { continue; }
+		$p = $root . '/' . $f;
+		if ( is_link( $p ) || is_file( $p ) ) { @unlink( $p ); continue; }
+		if ( ! is_dir( $p ) ) { continue; }
+		foreach ( (array) @scandir( $p ) as $g ) {
+			if ( ! is_string( $g ) || '.' === $g || '..' === $g ) { continue; }
+			if ( is_link( $p . '/' . $g ) || is_file( $p . '/' . $g ) ) { @unlink( $p . '/' . $g ); }
+		}
+		@rmdir( $p );
+	}
+	@rmdir( $root );
+};
+
+$d5b_names = array( 'd5b_switches', 'd5b_takeover', 'd5b_legacy_seen', 'd5b_db_version', 'd5b_abilities_upgrade_notice' );
 foreach ( $d5b_names as $d5b_name ) { delete_option( $d5b_name ); }
 
 if ( is_multisite() ) {
@@ -40,6 +68,7 @@ if ( isset( $wpdb ) && is_object( $wpdb ) ) {
 					wp_clear_scheduled_hook( 'd5b_audit_prune' );
 					delete_transient( 'd5b_audit_install_failed' );
 					delete_transient( 'd5b_anon' );
+					$d5b_rm_history_files();
 					restore_current_blog();
 				}
 			}
@@ -47,10 +76,12 @@ if ( isset( $wpdb ) && is_object( $wpdb ) ) {
 		} while ( 100 === count( $d5b_ids ) );
 	} else {
 		$wpdb->query( 'DROP TABLE IF EXISTS `' . $wpdb->prefix . 'd5b_audit`' );
-			$wpdb->query( 'DROP TABLE IF EXISTS `' . $wpdb->prefix . 'd5b_history`' );
+		$wpdb->query( 'DROP TABLE IF EXISTS `' . $wpdb->prefix . 'd5b_history`' );
 		wp_clear_scheduled_hook( 'd5b_audit_prune' );
 		delete_transient( 'd5b_audit_install_failed' );
 		delete_transient( 'd5b_anon' );
 	}
 }
-unset( $d5b_names, $d5b_name, $d5b_offset, $d5b_ids, $d5b_id );
+// The kept media files of a single site (a network's are removed above, site by site, when its tables are).
+if ( ! is_multisite() || ! isset( $wpdb ) || ! is_object( $wpdb ) ) { $d5b_rm_history_files(); }
+unset( $d5b_names, $d5b_name, $d5b_offset, $d5b_ids, $d5b_id, $d5b_rm_history_files );

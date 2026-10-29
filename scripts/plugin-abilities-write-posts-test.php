@@ -725,5 +725,42 @@ check( 'posts-create: the audit args hold none of password=hunter2 (title), a St
 $res = json_encode( $r );
 check( '... and the result masks the Google key and the webhook secret by shape (both profiles have them)', false === strpos( $res, $GKEY ) && false === strpos( $res, $WHSEC ) );
 
+echo "Final wave A1: the meta input never overwrites a field whose value holds a secret-named key (as meta-set)\n";
+site();
+foreach ( array( 'posts', 'meta' ) as $c ) { d5b_abilities_set_category( $c, true, false, 'tester' ); }
+$id = t_add_post( array( 'post_author' => 3, 'post_title' => 'Widget' ) );
+t_add_meta( $id, 'widget_settings', array( 'api_key' => 'SECRET-123', 'colour' => 'red' ) );
+t_add_meta( $id, 'note', 'plain' );
+$h0 = count( hrows() );
+$r  = call( 'posts-update', array( 'id' => $id, 'meta' => array( 'widget_settings' => 'blue' ) ) );
+check( 'posts-update meta over a value holding a secret-named key: not_allowed with the meta-set message, nothing written, no history row', 'not_allowed' === code( $r ) && d5b_wc_secret_error( 'field' )->get_error_message() === $r->get_error_message() && array( 'api_key' => 'SECRET-123', 'colour' => 'red' ) === meta1( $id, 'widget_settings' ) && count( hrows() ) === $h0, is_wp_error( $r ) ? $r->get_error_message() : $r );
+$r = call( 'posts-update', array( 'id' => $id, 'title' => 'Widget 2', 'meta' => array( 'note' => 'x', 'widget_settings' => 'blue' ) ) );
+check( '... also as the second field of the input: the whole update is refused (title unchanged, note unchanged)', 'not_allowed' === code( $r ) && 'Widget' === post( $id )->post_title && 'plain' === meta1( $id, 'note' ) );
+$id2 = t_add_post( array( 'post_author' => 3, 'post_title' => 'Two rows' ) );
+t_add_meta( $id2, 'cfg', 'fine' ); t_add_meta( $id2, 'cfg', array( 'token' => 'T-9' ) );
+check( '... a secret-named key in the SECOND row of the field counts too', 'not_allowed' === code( call( 'posts-update', array( 'id' => $id2, 'meta' => array( 'cfg' => 'x' ) ) ) ) );
+check( '... a secret-free field is still set', is_array( call( 'posts-update', array( 'id' => $id, 'meta' => array( 'note' => 'changed' ) ) ) ) && 'changed' === meta1( $id, 'note' ) );
+
+echo "Final wave A4: a missing history table refuses every write before its handler runs\n";
+site();
+$pg = t_add_post( array( 'post_type' => 'page', 'post_author' => 3, 'post_title' => 'Keep me', 'post_content' => 'Body' ) );
+d5b_ability_history_ready( true );
+unset( $GLOBALS['wpdb']->tables['wp_d5b_history'] ); $GLOBALS['T_dbdelta_fail'] = true; d5b_audit_install_state( 'reset' );
+$a0 = count( arows() );
+$r  = call( 'pages-update', array( 'id' => $pg, 'title' => 'Changed' ) );
+$au = array_values( arows() );
+check( 'history table gone and CREATE denied: pages-update refused history_unavailable (503), the page unchanged, ONE audit row history_unavailable',
+	'history_unavailable' === code( $r ) && 503 === ( $r->get_error_data()['status'] ?? null ) && 'Keep me' === post( $pg )->post_title && count( $au ) === $a0 + 1 && 'history_unavailable' === end( $au )['status'] && false !== strpos( is_wp_error( $r ) ? $r->get_error_message() : "", "change history table is missing" ), array( code( $r ), end( $au ) ) );
+check( '... the install was tried once (dbDelta asked) and backs off (the d5b_audit_install_failed transient is set)', array() !== $GLOBALS['T_dbdelta'] && false !== get_transient( 'd5b_audit_install_failed' ) );
+check( '... a read still runs (pages-get is readonly)', is_array( call( 'pages-get', array( 'id' => $pg ) ) ) );
+$c0 = count( $GLOBALS['T_posts'] );
+check( '... posts-create is refused too, nothing created', 'history_unavailable' === code( call( 'posts-create', array( 'title' => 'New' ) ) ) && count( $GLOBALS['T_posts'] ) === $c0 );
+site();
+$pg = t_add_post( array( 'post_type' => 'page', 'post_author' => 3, 'post_title' => 'Keep me', 'post_content' => 'Body' ) );
+d5b_ability_history_ready( true );
+unset( $GLOBALS['wpdb']->tables['wp_d5b_history'] ); d5b_audit_install_state( 'reset' );
+$r = call( 'pages-update', array( 'id' => $pg, 'title' => 'Changed' ) );
+check( 'history table gone but CREATE allowed: the table is made again and the write runs with its history row', is_array( $r ) && 'Changed' === post( $pg )->post_title && isset( $GLOBALS['wpdb']->tables['wp_d5b_history'] ) && 1 === count( hrows() ), $r );
+
 echo "\n" . ( $n - $failed ) . " of $n passed\n";
 exit( $failed ? 1 : 0 );

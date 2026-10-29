@@ -515,5 +515,18 @@ call( 'taxonomy-assign', array( 'post_id' => $b, 'taxonomy' => 'post_tag', 'term
 $r = call( 'taxonomy-delete', array( 'taxonomy' => 'post_tag', 'id' => $t4, 'confirmation' => $pv['confirmation'] ) );
 check( 'the items swapped after the preview with the count unchanged: stale', array( $a ) === $pv['posts'] && 'stale' === reason( $r ) && null !== term( $t4 ), array( $pv['posts'] ?? null, $r ) );
 
+echo "Final wave D3: the field name of meta-set / meta-delete survives the audit's key filter (as field)\n";
+site();
+foreach ( array( 'posts', 'meta' ) as $c ) { d5b_abilities_set_category( $c, true, false, 'tester' ); }
+$p = t_add_post( array( 'post_author' => 3 ) );
+call( 'meta-set', array( 'post_id' => $p, 'key' => 'colour_choice', 'value' => 'teal' ) );
+$pv = call( 'meta-delete-preview', array( 'post_id' => $p, 'key' => 'colour_choice' ) );
+call( 'meta-delete', array( 'post_id' => $p, 'key' => 'colour_choice', 'confirmation' => 'wrong-code' ) );
+$audit = array_values( $GLOBALS['wpdb']->tables[ d5b_audit_table() ] ?? array() );
+$named = array();
+foreach ( $audit as $row ) { $a = json_decode( (string) ( $row['args'] ?? '' ), true ); $named[ $row['ability'] ] = $a['field'] ?? null; }
+check( 'meta-set, meta-delete-preview and meta-delete audit rows carry field: colour_choice', 'colour_choice' === ( $named['divi5-builder/meta-set'] ?? null ) && 'colour_choice' === ( $named['divi5-builder/meta-delete-preview'] ?? null ) && 'colour_choice' === ( $named['divi5-builder/meta-delete'] ?? null ), $named );
+check( '... and the map keeps the other args (post_id, value) and leaves no key arg', array( 'field' => 'k', 'post_id' => 4, 'value' => 'v' ) === d5b_wt_meta_audit_args( array( 'post_id' => 4, 'key' => 'k', 'value' => 'v' ) ) );
+
 echo "\n" . ( $n - $failed ) . " of $n passed\n";
 exit( $failed ? 1 : 0 );

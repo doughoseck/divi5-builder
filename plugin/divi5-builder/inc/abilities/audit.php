@@ -108,7 +108,10 @@ CREATE TABLE {$history} (
 ) {$charset};" );
 		// Only remember the version when both tables are really there, so a failed create is tried again.
 		if ( d5b_audit_table_exists() && d5b_history_table_exists() ) {
+			$was = get_option( 'd5b_db_version' );
 			update_option( 'd5b_db_version', D5B_DB_VERSION, false );
+			// From 2.1.x (schema 1) to 2.2.0 (schema 2): a master switch given for reads only is turned off.
+			if ( '1' === $was && '2' === D5B_DB_VERSION && function_exists( 'd5b_abilities_upgrade_consent' ) ) { d5b_abilities_upgrade_consent(); }
 			if ( function_exists( 'delete_transient' ) ) { delete_transient( 'd5b_audit_install_failed' ); }
 		} elseif ( function_exists( 'set_transient' ) ) {
 			set_transient( 'd5b_audit_install_failed', 1, 3600 ); // CREATE denied: do not try again for an hour

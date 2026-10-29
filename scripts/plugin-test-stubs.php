@@ -158,7 +158,13 @@ function delete_post_meta( $id, $k, $v = '' ) {
 // As core: control characters are dropped from the key first; protected = starts with _ (core then runs the is_protected_meta filter).
 function is_protected_meta( $k, $t = null ) { $s = preg_replace( "/[^\x20-\x7E\p{L}]/u", '', (string) $k ); return strlen( (string) $s ) > 0 && '_' === $s[0]; }
 // get_post: see the content stand-ins at the end of this file.
-function wp_upload_dir() { return array( 'basedir' => ABSPATH . 'wp-content/uploads', 'baseurl' => 'https://x.example/wp-content/uploads' ); }
+// T_upload_basedir (optional): a real folder a test uses as the uploads folder (the media delete moves real files into it).
+// As core on a network: a site other than the main one has its own folder, uploads/sites/<blog id>.
+function wp_upload_dir( $time = null, $create_dir = true, $refresh = false ) {
+	$b = $GLOBALS['T_upload_basedir'] ?? ABSPATH . 'wp-content/uploads';
+	$s = ( ! empty( $GLOBALS['T_multisite'] ) && (int) ( $GLOBALS['T_blog_id'] ?? 1 ) !== (int) ( $GLOBALS['T_main_site'] ?? 1 ) ) ? '/sites/' . (int) $GLOBALS['T_blog_id'] : '';
+	return array( 'basedir' => $b . $s, 'baseurl' => 'https://x.example/wp-content/uploads' . $s );
+}
 
 // ---- admin page stand-ins (Task 4). t_reset() does not clear these; t_admin_reset() does.
 //   T_referer_ok      what check_admin_referer returns (real WordPress dies on failure; the code under test must stop either way)
@@ -956,6 +962,17 @@ function t_media_reset() {
 	$GLOBALS['T_mimes'] = array( 'jpg|jpeg|jpe' => 'image/jpeg', 'gif' => 'image/gif', 'png' => 'image/png', 'pdf' => 'application/pdf', 'txt|asc|c|cc|h|srt' => 'text/plain' );
 	foreach ( $GLOBALS['T_tempfiles'] ?? array() as $f ) { if ( file_exists( $f ) ) { @unlink( $f ); } }
 	$GLOBALS['T_tempfiles'] = array();
+	$GLOBALS['T_files_unlinked'] = array(); $GLOBALS['T_rename_fail'] = array(); $GLOBALS['T_renames'] = array();
+}
+// The media delete's file move, plugged here: a REAL rename (the tests use a real temporary uploads folder,
+// T_upload_basedir), except that a source path listed in T_rename_fail fails as a refused rename would (false, nothing
+// moved). T_renames lists every array( from, to ) asked. T_files_unlinked: the paths wp_delete_attachment found on disk.
+if ( ! function_exists( 'd5b_wm_rename' ) ) {
+	function d5b_wm_rename( string $from, string $to ): bool {
+		$GLOBALS['T_renames'][] = array( $from, $to );
+		if ( in_array( $from, $GLOBALS['T_rename_fail'] ?? array(), true ) ) { return false; }
+		return @rename( $from, $to );
+	}
 }
 if ( ! function_exists( 'd5b_wm_dns_lookup' ) ) {
 	function d5b_wm_dns_lookup( string $host ): array { $GLOBALS['T_dns_calls'][] = $host; return array_values( array_map( 'strval', (array) ( $GLOBALS['T_dns'][ strtolower( $host ) ] ?? array() ) ) ); }
@@ -1094,8 +1111,15 @@ function wp_delete_attachment( $id, $force_delete = false ) {
 	if ( ! $p || 'attachment' !== $p->post_type || ! empty( $GLOBALS['T_attach_delete_blocked'] ) ) { return false; }
 	if ( ! $force_delete && defined( 'MEDIA_TRASH' ) && MEDIA_TRASH && 'trash' !== $p->post_status ) { return wp_trash_post( $id ); }
 	$rel = (string) get_post_meta( $id, '_wp_attached_file', true ); $meta = wp_get_attachment_metadata( $id );
-	foreach ( array_merge( array( $rel ), array_map( function ( $s ) use ( $rel ) { return dirname( $rel ) . '/' . $s['file']; }, (array) ( $meta['sizes'] ?? array() ) ) ) as $f ) {
-		if ( '' !== $f ) { unset( $GLOBALS['T_files'][ $f ] ); $GLOBALS['T_files_deleted'][] = $f; }
+	// As core's wp_delete_attachment_files: the file, each size, the original of a scaled image and the edit backups; on disk
+	// too (wp_delete_file in the uploads folder), and a file that is not there is passed over without an error.
+	$backup = get_post_meta( $id, '_wp_attachment_backup_sizes', true );
+	$names  = array_merge( array_column( (array) ( $meta['sizes'] ?? array() ), 'file' ), is_string( $meta['original_image'] ?? null ) ? array( $meta['original_image'] ) : array(), is_array( $backup ) ? array_column( $backup, 'file' ) : array() );
+	foreach ( array_merge( array( $rel ), array_map( function ( $s ) use ( $rel ) { return dirname( $rel ) . '/' . $s; }, $names ) ) as $f ) {
+		if ( '' === $f ) { continue; }
+		unset( $GLOBALS['T_files'][ $f ] ); $GLOBALS['T_files_deleted'][] = $f;
+		$disk = wp_upload_dir()['basedir'] . '/' . $f;
+		if ( is_file( $disk ) ) { @unlink( $disk ); $GLOBALS['T_files_unlinked'][] = $f; }
 	}
 	foreach ( $GLOBALS['T_meta'] as $pid => $keys ) { if ( isset( $keys['_thumbnail_id'] ) && in_array( (string) $id, array_map( 'strval', $keys['_thumbnail_id'] ), true ) ) { unset( $GLOBALS['T_meta'][ $pid ]['_thumbnail_id'] ); } }
 	unset( $GLOBALS['T_posts'][ (int) $id ], $GLOBALS['T_meta'][ (int) $id ] ); $GLOBALS['T_deleted'][] = (int) $id;

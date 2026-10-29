@@ -100,7 +100,7 @@ if ( ! function_exists( 'd5b_abilities_switches' ) ) {
 		$str = function ( $row, $key ) { return is_array( $row ) && isset( $row[ $key ] ) && is_string( $row[ $key ] ) ? $row[ $key ] : ''; };
 		$m   = isset( $ab['master'] ) && is_array( $ab['master'] ) ? $ab['master'] : array();
 		$out = array(
-			'master'     => array( 'on' => isset( $m['on'] ) && true === $m['on'], 'changed_at' => $str( $m, 'changed_at' ), 'changed_by' => $str( $m, 'changed_by' ) ),
+			'master'     => array( 'on' => isset( $m['on'] ) && true === $m['on'], 'changed_at' => $str( $m, 'changed_at' ), 'changed_by' => $str( $m, 'changed_by' ), 'reason' => $str( $m, 'reason' ) ),
 			'categories' => array(),
 		);
 		// A 'categories' value that is not an array means nothing can be trusted: every category reads off.
@@ -136,7 +136,7 @@ if ( ! function_exists( 'd5b_abilities_category_on' ) ) {
 }
 
 if ( ! function_exists( 'd5b_abilities_risky_on' ) ) {
-	/** False whenever the master or the category is off. Unused in 2.1.0 (no risky abilities yet). */
+	/** False whenever the master or the category is off. Unused until 2.3.0: the risky switches arrive with 2.3.0 (2.2.0 has no risky abilities). */
 	function d5b_abilities_risky_on( string $slug ): bool {
 		$a = d5b_abilities_switches();
 		if ( true !== $a['master']['on'] || ! isset( $a['categories'][ $slug ] ) || true !== $a['categories'][ $slug ]['on'] ) { return false; }
@@ -145,11 +145,15 @@ if ( ! function_exists( 'd5b_abilities_risky_on' ) ) {
 }
 
 if ( ! function_exists( 'd5b_abilities_set_master' ) ) {
-	/** Switch the master on or off and record who and when. Keeps every other key of the option. */
-	function d5b_abilities_set_master( bool $on, string $user_login ): void {
+	/**
+	 * Switch the master on or off and record who and when. Keeps every other key of the option. $reason (optional) says why
+	 * when no person did it (the plugin itself, changed_by '0': the 2.2.0 update turning it off).
+	 */
+	function d5b_abilities_set_master( bool $on, string $user_login, string $reason = '' ): void {
 		$all = d5b_switches_stored();
 		$ab  = isset( $all['abilities'] ) && is_array( $all['abilities'] ) ? $all['abilities'] : array();
 		$ab['master'] = array( 'on' => $on, 'changed_at' => gmdate( 'Y-m-d\TH:i:s\Z' ), 'changed_by' => $user_login );
+		if ( '' !== $reason ) { $ab['master']['reason'] = $reason; }
 		$all['abilities'] = $ab;
 		d5b_switches_store( $all );
 	}
@@ -172,5 +176,31 @@ if ( ! function_exists( 'd5b_abilities_set_category' ) ) {
 		$ab['categories'][ $slug ] = array( 'on' => $on, 'risky_on' => $risky_on, 'changed_at' => gmdate( 'Y-m-d\TH:i:s\Z' ), 'changed_by' => $user_login );
 		$all['abilities'] = $ab;
 		d5b_switches_store( $all );
+	}
+}
+
+if ( ! function_exists( 'd5b_abilities_upgrade_notice_text' ) ) {
+	function d5b_abilities_upgrade_notice_text(): string {
+		return 'divi5-builder 2.2.0 adds AI abilities that can create and change content. The AI abilities master switch was turned off during the update; review the category switches and turn it on again when you are ready.';
+	}
+}
+
+if ( ! function_exists( 'd5b_abilities_upgrade_consent' ) ) {
+	/**
+	 * The update from 2.1.x (schema 1, read-only abilities) to 2.2.0 (schema 2, abilities that write), called by
+	 * d5b_audit_maybe_install when it moves d5b_db_version from '1' to '2': a master switch that was on was given for reads
+	 * only, so it is turned off (changed_by '0', with the reason) and the settings page shows a notice until it is dismissed
+	 * (d5b_abilities_upgrade_notice, stored where the switches are). A master already off: nothing.
+	 */
+	function d5b_abilities_upgrade_consent(): void {
+		if ( ! d5b_abilities_master_on() ) { return; }
+		d5b_abilities_set_master( false, '0', 'turned off by the update to 2.2.0, which adds abilities that create and change content' );
+		if ( is_multisite() ) { update_site_option( 'd5b_abilities_upgrade_notice', 1 ); } else { update_option( 'd5b_abilities_upgrade_notice', 1, false ); }
+	}
+}
+
+if ( ! function_exists( 'd5b_abilities_upgrade_notice_on' ) ) {
+	function d5b_abilities_upgrade_notice_on(): bool {
+		return (bool) ( is_multisite() ? get_site_option( 'd5b_abilities_upgrade_notice', 0 ) : get_option( 'd5b_abilities_upgrade_notice', 0 ) );
 	}
 }
