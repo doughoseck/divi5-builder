@@ -57,7 +57,7 @@ function get_plugins() { return $GLOBALS['T_plugins']; }
 function get_site_transient( $n ) { return $GLOBALS['T_site_transients'][ $n ] ?? false; }
 function wp_get_theme() { return $GLOBALS['T_theme']; }
 function wp_get_themes() { return $GLOBALS['T_themes']; }
-function _get_cron_array() { return $GLOBALS['T_cron_array']; }
+// _get_cron_array (T_cron_array) is in the shared stubs.
 function wp_get_sidebars_widgets() { return $GLOBALS['T_sidebars']; }
 function wp_is_block_theme() { return $GLOBALS['T_block_theme']; }
 function get_block_templates( $q = array(), $type = 'wp_template' ) { return array_values( array_filter( $GLOBALS['T_block_templates'], function ( $t ) use ( $type ) { return $t->type === $type; } ) ); }
@@ -542,7 +542,7 @@ $GLOBALS['T_cron_array'] = array(
 	90000 => array( 'once_hook' => array( 'k2' => array( 'schedule' => false, 'args' => array() ) ) ),
 );
 $r = call( 'cron-list' );
-check( 'cron-list: hook, schedule, next run (UTC ISO 8601) and the argument COUNT', is_array( $r ) && 2 === $r['total'] && array( 'hook' => 'daily_hook', 'schedule' => 'daily', 'next_run' => '1970-01-02T00:00:00Z', 'arg_count' => 2 ) === $r['events'][0] && 'single' === $r['events'][1]['schedule'] && 0 === $r['events'][1]['arg_count'], $r );
+check( 'cron-list: hook, schedule, next run (UTC ISO 8601) and the argument COUNT', is_array( $r ) && 2 === $r['total'] && array( 'hook' => 'daily_hook', 'schedule' => 'daily', 'next_run' => '1970-01-02T00:00:00Z', 'arg_count' => 2, 'timestamp' => 86400, 'args_key' => 'k1' ) === $r['events'][0] && 'single' === $r['events'][1]['schedule'] && 0 === $r['events'][1]['arg_count'], $r );
 check( 'cron-list: no argument value anywhere in the output', false === strpos( json_encode( $r ), 'sv-cron-arg' ) && false === strpos( json_encode( $r ), 'tokenvalue' ), json_encode( $r ) );
 $big = array(); for ( $i = 0; $i < 600; $i++ ) { $big[ 1000 + $i ] = array( 'h' . $i => array( 'k' => array( 'schedule' => false, 'args' => array() ) ) ); }
 $GLOBALS['T_cron_array'] = $big;

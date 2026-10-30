@@ -60,6 +60,7 @@ foreach ( array(
 	'inc/abilities/write-settings.php',
 	'inc/abilities/write-appearance.php',
 	'inc/abilities/write-widgets.php',
+	'inc/abilities/write-site.php',
 	'inc/settings.php',
 	'parts/page-building.php',
 	'parts/media-audit.php',

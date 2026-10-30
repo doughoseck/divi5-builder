@@ -194,9 +194,9 @@ check( 'multisite: a 2.2.0 consent already given does not stop the 2.3.0 step (i
 echo "the shipped definitions\n";
 foreach ( array( 'blocks-text-fields', 'blocks', 'abilities/secrets', 'abilities/audit', 'abilities/scrub', 'abilities/history', 'abilities/confirm',
 	'abilities/read-content', 'abilities/read-structure', 'abilities/read-site', 'abilities/read-divi', 'abilities/read-history',
-	'abilities/write-common', 'abilities/write-posts', 'abilities/write-comments', 'abilities/write-media', 'abilities/write-terms', 'abilities/write-menus', 'abilities/write-divi', 'abilities/write-settings', 'abilities/write-appearance', 'abilities/write-widgets' ) as $f ) { require_once $dir . '/inc/' . $f . '.php'; }
+	'abilities/write-common', 'abilities/write-posts', 'abilities/write-comments', 'abilities/write-media', 'abilities/write-terms', 'abilities/write-menus', 'abilities/write-divi', 'abilities/write-settings', 'abilities/write-appearance', 'abilities/write-widgets', 'abilities/write-site' ) as $f ) { require_once $dir . '/inc/' . $f . '.php'; }
 $risky = array(); foreach ( d5b_ability_defs() as $name => $d ) { if ( array_key_exists( 'risky', $d ) ) { $risky[] = $name; } }
-check( 'the shipped risky definitions so far: settings-set-homepage and the three appearance ones (settings-set is normal; it refuses risky keys itself)', array( 'divi5-builder/settings-set-homepage', 'divi5-builder/appearance-theme-mod-set', 'divi5-builder/appearance-theme-mod-delete', 'divi5-builder/appearance-custom-css-set' ) === $risky && true === d5b_ability_defs()['divi5-builder/settings-set-homepage']['risky'] && count( d5b_ability_defs() ) > 50, $risky );
+check( 'the shipped risky definitions so far: settings-set-homepage, the three appearance ones and cron-run (settings-set is normal; it refuses risky keys itself)', array( 'divi5-builder/settings-set-homepage', 'divi5-builder/appearance-theme-mod-set', 'divi5-builder/appearance-theme-mod-delete', 'divi5-builder/appearance-custom-css-set', 'divi5-builder/cron-run' ) === $risky && true === d5b_ability_defs()['divi5-builder/settings-set-homepage']['risky'] && count( d5b_ability_defs() ) > 50, $risky );
 
 echo "only the switch files write the switches\n";
 $allow = array( 'inc/switches.php', 'inc/settings.php' );

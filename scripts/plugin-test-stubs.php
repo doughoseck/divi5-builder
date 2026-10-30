@@ -36,6 +36,7 @@ function t_reset() {
 	if ( function_exists( 't_media_reset' ) ) { t_media_reset(); }
 	if ( function_exists( 't_settings_reset' ) ) { t_settings_reset(); }
 	if ( function_exists( 't_widgets_reset' ) && class_exists( 'WP_Widget_Factory', false ) ) { t_widgets_reset(); }
+	if ( function_exists( 't_cron_reset' ) ) { t_cron_reset(); }
 }
 // A new request: WordPress starts a request with the gate not yet run.
 function t_new_request() { unset( $GLOBALS['d5b_gate_ran'] ); }
@@ -349,7 +350,8 @@ function get_attached_file( $id ) { $f = get_post_meta( $id, "_wp_attached_file"
 // WITHOUT //IGNORE, which fails on a bad byte, so a line with one bad byte comes back false (empty), not cleaned.
 function wp_check_invalid_utf8( $s, $strip = false ) { $s = (string) $s; if ( '' === $s || 1 === @preg_match( '/^./us', $s ) ) { return $s; } return $strip && function_exists( 'iconv' ) ? @iconv( 'utf-8', 'utf-8', $s ) : ''; }
 // T_transients: name => array( value, expires at, ttl ); a test expires one by lowering its expires-at.
-function set_transient( $n, $v, $ttl = 0 ) { if ( ! empty( $GLOBALS['T_transient_fail'] ) ) { return false; } $GLOBALS['T_transients'][ $n ] = array( $v, time() + $ttl, $ttl ); return true; }
+// As core, an expiration of 0 never expires (the doing_cron lock is set that way).
+function set_transient( $n, $v, $ttl = 0 ) { if ( ! empty( $GLOBALS['T_transient_fail'] ) ) { return false; } $GLOBALS['T_transients'][ $n ] = array( $v, (int) $ttl > 0 ? time() + (int) $ttl : PHP_INT_MAX, $ttl ); return true; }
 // T_on_get: name => callable run once right after that transient is read (a concurrent request acting between a read and a write).
 function get_transient( $n ) { $t = $GLOBALS['T_transients'][ $n ] ?? null; $v = ( null === $t || $t[1] < time() ) ? false : $t[0]; if ( isset( $GLOBALS['T_on_get'][ $n ] ) ) { $cb = $GLOBALS['T_on_get'][ $n ]; unset( $GLOBALS['T_on_get'][ $n ] ); $cb(); } return $v; }
 function delete_transient( $n ) { $GLOBALS['T_transient_deletes'][] = array( $n, $GLOBALS['T_blog_id'] ?? 1 ); $had = false !== get_transient( $n ); unset( $GLOBALS['T_transients'][ $n ] ); return $had; }
@@ -1648,3 +1650,49 @@ function t_widgets_reset() {
 	$GLOBALS['T_frozen_options'] = array();
 }
 t_widgets_reset();
+
+// ---- WP-Cron (cron-list, cron-run). T_cron_array is core's cron array (timestamp => hook => key => event; a test may set
+// false). T_cron_ops records, in order, every reschedule, unschedule and hook run. T_cron_hooks: hook => list of callables
+// do_action_ref_array runs with the event's args. T_cron_fail: 'reschedule' / 'unschedule' => true makes that call fail
+// (WP_Error when $wp_error, as core).
+if ( ! defined( 'WP_CRON_LOCK_TIMEOUT' ) ) { define( 'WP_CRON_LOCK_TIMEOUT', 60 ); }
+function t_cron_reset() { $GLOBALS['T_cron_array'] = array(); $GLOBALS['T_cron_ops'] = array(); $GLOBALS['T_cron_hooks'] = array(); $GLOBALS['T_cron_fail'] = array(); }
+t_cron_reset();
+function _get_cron_array() { return $GLOBALS['T_cron_array'] ?? array(); }
+function _set_cron_array( $cron, $wp_error = false ) { $GLOBALS['T_cron_array'] = $cron; return true; }
+function t_cron_intervals() { return array( 'hourly' => 3600, 'twicedaily' => 43200, 'daily' => 86400, 'weekly' => 604800 ); }
+/** As core: the next run is the first one after now, counted from $timestamp in steps of the interval. */
+function wp_reschedule_event( $timestamp, $recurrence, $hook, $args = array(), $wp_error = false ) {
+	$GLOBALS['T_cron_ops'][] = array( 'reschedule', $hook, (int) $timestamp, $recurrence );
+	$interval = t_cron_intervals()[ $recurrence ] ?? 0;
+	if ( ! empty( $GLOBALS['T_cron_fail']['reschedule'] ) || 0 === $interval ) { return $wp_error ? new WP_Error( 'invalid_schedule', 'Event schedule does not exist.' ) : false; }
+	$now  = time();
+	$next = (int) $timestamp >= $now ? $now + $interval : $now + ( $interval - ( ( $now - (int) $timestamp ) % $interval ) );
+	$cron = is_array( $GLOBALS['T_cron_array'] ) ? $GLOBALS['T_cron_array'] : array();
+	$cron[ $next ][ $hook ][ md5( serialize( $args ) ) ] = array( 'schedule' => $recurrence, 'args' => $args, 'interval' => $interval );
+	ksort( $cron );
+	$GLOBALS['T_cron_array'] = $cron;
+	return true;
+}
+function wp_unschedule_event( $timestamp, $hook, $args = array(), $wp_error = false ) {
+	$GLOBALS['T_cron_ops'][] = array( 'unschedule', $hook, (int) $timestamp );
+	if ( ! empty( $GLOBALS['T_cron_fail']['unschedule'] ) ) { return $wp_error ? new WP_Error( 'could_not_set', 'The cron event list could not be saved.' ) : false; }
+	$key  = md5( serialize( $args ) );
+	$cron = is_array( $GLOBALS['T_cron_array'] ) ? $GLOBALS['T_cron_array'] : array();
+	unset( $cron[ $timestamp ][ $hook ][ $key ] );
+	if ( empty( $cron[ $timestamp ][ $hook ] ) ) { unset( $cron[ $timestamp ][ $hook ] ); }
+	if ( empty( $cron[ $timestamp ] ) ) { unset( $cron[ $timestamp ] ); }
+	$GLOBALS['T_cron_array'] = $cron;
+	return true;
+}
+function do_action_ref_array( $hook, $args ) {
+	$GLOBALS['T_cron_ops'][] = array( 'run', $hook, $args );
+	foreach ( $GLOBALS['T_cron_hooks'][ $hook ] ?? array() as $cb ) { call_user_func_array( $cb, (array) $args ); }
+}
+/** Adds a scheduled event the way core stores it; returns its key. */
+function t_cron_add( int $ts, string $hook, $schedule = false, array $args = array() ) {
+	$key = md5( serialize( $args ) );
+	$GLOBALS['T_cron_array'][ $ts ][ $hook ][ $key ] = $schedule ? array( 'schedule' => $schedule, 'args' => $args, 'interval' => t_cron_intervals()[ $schedule ] ?? 3600 ) : array( 'schedule' => false, 'args' => $args );
+	ksort( $GLOBALS['T_cron_array'] );
+	return $key;
+}

@@ -241,6 +241,19 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		return array( 'good' => $good, 'recommended' => $rec, 'critical' => $crit, 'total' => $good + $rec + $crit, 'cached' => true );
 	}
 
+	/**
+	 * One scheduled event as cron-list lists it (cron-run's history keeps the same). The number of arguments only: they
+	 * often hold addresses, ids and tokens. timestamp and args_key (core's md5 of the serialised args, the event's key in
+	 * the cron array) identify the event exactly for cron-run. Named args_key, not key: "key" is a secret name to the
+	 * scrubber and the history's key filter, which would drop it.
+	 */
+	function d5b_rs_cron_row( string $hook, int $ts, string $key, $ev ): array {
+		$ev = is_array( $ev ) ? $ev : array();
+		return array( 'hook' => $hook, 'schedule' => ! empty( $ev['schedule'] ) ? (string) $ev['schedule'] : 'single',
+			'next_run' => gmdate( 'Y-m-d\TH:i:s\Z', $ts ), 'arg_count' => is_array( $ev['args'] ?? null ) ? count( $ev['args'] ) : 0,
+			'timestamp' => $ts, 'args_key' => $key );
+	}
+
 	function d5b_rs_h_cron_list( array $in ) {
 		$e = d5b_rs_guard( 'health' ); if ( $e ) { return $e; }
 		$a = d5b_rc_args( $in, array() ); if ( is_wp_error( $a ) ) { return $a; }
@@ -250,13 +263,10 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		foreach ( $cron as $ts => $hooks ) {
 			if ( ! is_array( $hooks ) ) { continue; }
 			foreach ( $hooks as $hook => $items ) {
-				foreach ( (array) $items as $ev ) {
+				foreach ( (array) $items as $key => $ev ) {
 					$total++;
 					if ( count( $events ) >= 500 ) { continue; }
-					$ev = is_array( $ev ) ? $ev : array();
-					// The number of arguments only: they often hold addresses, ids and tokens.
-					$events[] = array( 'hook' => (string) $hook, 'schedule' => ! empty( $ev['schedule'] ) ? (string) $ev['schedule'] : 'single',
-						'next_run' => gmdate( 'Y-m-d\TH:i:s\Z', (int) $ts ), 'arg_count' => is_array( $ev['args'] ?? null ) ? count( $ev['args'] ) : 0 );
+					$events[] = d5b_rs_cron_row( (string) $hook, (int) $ts, (string) $key, $ev );
 				}
 			}
 		}
@@ -421,7 +431,7 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		'Returns the counts from the last Site Health run that WordPress stored (good, recommended, critical). Does not run the tests. Refuses callers without manage_options, and on a network without manage_network. Answers no_cached_result when Site Health has never been opened.',
 		$d5b_rs_none, array(), 'd5b_rs_h_health_status', d5b_rs_perm( 'health' ) );
 	d5b_rc_def( 'cron-list', 'health', 'List scheduled events',
-		'Returns the scheduled events (WP-Cron): hook, schedule name, next run in UTC and the number of arguments, never the argument values; at most 500 events. Refuses callers without manage_options, and on a network without manage_network.',
+		'Returns the scheduled events (WP-Cron): hook, schedule name, next run in UTC, timestamp, args_key (the id of the event\'s arguments; cron-run takes it) and the number of arguments, never the argument values; at most 500 events. Refuses callers without manage_options, and on a network without manage_network.',
 		$d5b_rs_none, array(), 'd5b_rs_h_cron_list', d5b_rs_perm( 'health' ) );
 	d5b_rc_def( 'error-log', 'health', 'Read the debug log',
 		'Returns the end of the WordPress debug log: the last 200 lines within the last 64 KB, with passwords, tokens and keys masked. Takes no path. Refuses callers without manage_options, and on a network without manage_network (the log is shared by every site). Answers no_debug_log when there is no log.',
