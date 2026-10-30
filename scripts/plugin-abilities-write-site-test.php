@@ -116,8 +116,22 @@ check( 'the right hook at another timestamp: not_found', 'not_found' === code( $
 t_cron_add( 1700000100, 'd5b_audit_prune', 'daily' );
 $r = call( 'cron-run', array( 'hook' => 'd5b_audit_prune', 'timestamp' => 1700000100 ) );
 check( 'a d5b_ hook is refused not_allowed, even when scheduled; nothing runs', 'not_allowed' === code( $r ) && array() === ops(), array( code( $r ), ops() ) );
-$r = call( 'cron-run', array( 'hook' => 'bad hook!', 'timestamp' => 1700000100 ) );
-check( 'a hook name with other characters: invalid_input', 'invalid_input' === code( $r ) );
+t_cron_add( 1700000100, 'D5B_Shouting', 'daily' );
+$r = call( 'cron-run', array( 'hook' => 'D5B_Shouting', 'timestamp' => 1700000100 ) );
+check( 'the d5b_ refusal ignores case (D5B_...)', 'not_allowed' === code( $r ) && array() === ops(), code( $r ) );
+foreach ( d5b_wsite_lifecycle_hooks() as $lh ) { t_cron_add( 1700000100, $lh, false ); }
+$life = array(); foreach ( array( 'muplugins_loaded', 'plugins_loaded', 'setup_theme', 'after_setup_theme', 'init', 'wp_loaded', 'rest_api_init', 'admin_init', 'wp', 'parse_request', 'send_headers', 'template_redirect', 'shutdown' ) as $lh ) { $life[ $lh ] = code( call( 'cron-run', array( 'hook' => $lh, 'timestamp' => 1700000100 ) ) ); }
+check( 'the 13 core lifecycle hooks are refused not_allowed even when scheduled; nothing runs', array_fill_keys( array_keys( $life ), 'not_allowed' ) === $life && 13 === count( $life ) && array() === ops(), $life );
+check( '... with a message that says to run it from wp-cron', false !== strpos( call( 'cron-run', array( 'hook' => 'init', 'timestamp' => 1700000100 ) )->get_error_message(), 'lifecycle hook; run it from wp-cron' ) );
+$r = call( 'cron-run', array( 'hook' => "bad\nhook", 'timestamp' => 1700000100 ) );
+check( 'a hook name with a control character: invalid_input', 'invalid_input' === code( $r ) );
+$r = call( 'cron-run', array( 'hook' => str_repeat( 'h', 192 ), 'timestamp' => 1700000100 ) );
+check( 'a hook name over 191 bytes: invalid_input', 'invalid_input' === code( $r ) );
+t_cron_add( 1700000150, 'odd hook/name!', false );
+$GLOBALS['T_cron_hooks']['odd hook/name!'][] = function () { $GLOBALS['T_ran'][] = 'odd'; };
+$r = call( 'cron-run', array( 'hook' => 'odd hook/name!', 'timestamp' => 1700000150 ) );
+check( 'any other scheduled name runs (spaces, slashes: the exact lookup is the guard)', is_array( $r ) && true === $r['ran'] && array( 'odd' ) === $GLOBALS['T_ran'], $r );
+$GLOBALS['T_cron_ops'] = array(); $GLOBALS['T_ran'] = array();
 $ka = t_cron_add( 1700000300, 'twin_hook', false, array( 1 ) );
 $kb = t_cron_add( 1700000300, 'twin_hook', false, array( 2 ) );
 $GLOBALS['T_cron_hooks']['twin_hook'][] = function ( $x ) { $GLOBALS['T_ran'][] = 'twin:' . $x; };
@@ -167,7 +181,26 @@ site();
 $GLOBALS['T_cron_fail']['reschedule'] = true;
 t_cron_add( 1700000100, 'rec_hook', 'hourly' );
 $r = call( 'cron-run', array( 'hook' => 'rec_hook', 'timestamp' => 1700000100 ) );
-check( 'a reschedule WordPress refuses: the run goes on as wp-cron.php does, rescheduled false and a warning', is_array( $r ) && true === $r['ran'] && false === $r['rescheduled'] && true === $r['unscheduled'] && ! empty( $r['warnings'] ), $r );
+check( 'a reschedule WordPress refuses: the run goes on as wp-cron.php does, rescheduled false', is_array( $r ) && true === $r['ran'] && false === $r['rescheduled'] && true === $r['unscheduled'], $r );
+check( '... and the warning says plainly it is no longer scheduled and its plugin must add it again', is_array( $r ) && 1 === count( $r['warnings'] ?? array() ) && false !== strpos( $r['warnings'][0], 'no longer scheduled' ) && false !== strpos( $r['warnings'][0], 'must add it again' ), $r['warnings'] ?? null );
+$ev_args = array_values( array_filter( $GLOBALS['T_do_actions'], function ( $a ) { return 'cron_reschedule_event_error' === $a[0]; } ) );
+check( 'core\'s cron_reschedule_event_error fired once with ( WP_Error, hook, event )', 1 === count( $ev_args ) && $ev_args[0][1][0] instanceof WP_Error && 'rec_hook' === $ev_args[0][1][1] && 'hourly' === $ev_args[0][1][2]['schedule'], $ev_args );
+site();
+$GLOBALS['T_cron_fail']['unschedule'] = true;
+t_cron_add( 1700000100, 'rec_hook', 'hourly' );
+$r = call( 'cron-run', array( 'hook' => 'rec_hook', 'timestamp' => 1700000100 ) );
+$ev_args = array_values( array_filter( $GLOBALS['T_do_actions'], function ( $a ) { return 'cron_unschedule_event_error' === $a[0]; } ) );
+check( 'an unschedule WordPress refuses: the run goes on, unscheduled false, a warning, cron_unschedule_event_error fired with ( WP_Error, hook, event )', is_array( $r ) && true === $r['ran'] && false === $r['unscheduled'] && ! empty( $r['warnings'] ) && 1 === count( $ev_args ) && $ev_args[0][1][0] instanceof WP_Error && 'rec_hook' === $ev_args[0][1][1] && is_array( $ev_args[0][1][2] ), array( $r, $ev_args ) );
+
+echo "cron-run: what the task sees and prints\n";
+site();
+$GLOBALS['T_cron_hooks']['loud_hook'][] = function () { echo 'hello from a task'; ob_start(); echo '!!'; $GLOBALS['T_doing_cron_seen'] = in_array( '__return_true', $GLOBALS['T_filters']['wp_doing_cron'] ?? array(), true ); };
+t_cron_add( 1700000100, 'loud_hook', 'daily' );
+$lvl = ob_get_level();
+ob_start(); $r = call( 'cron-run', array( 'hook' => 'loud_hook', 'timestamp' => 1700000100 ) ); $leak = ob_get_clean();
+check( 'a task that echoes (and leaves a buffer open): nothing reaches the response, output_bytes counts it', '' === $leak && is_array( $r ) && 19 === $r['output_bytes'] && $lvl === ob_get_level(), array( $leak, $r ) );
+check( 'the printed text is nowhere in the response or the history', false === strpos( json_encode( array( $r, hlast() ) ), 'hello from' ) );
+check( 'wp_doing_cron is true while the task runs, and the filter is removed after', true === $GLOBALS['T_doing_cron_seen'] && ! in_array( '__return_true', $GLOBALS['T_filters']['wp_doing_cron'] ?? array(), true ) );
 
 // ---- cron-run: the lock
 echo "cron-run: lock\n";
@@ -184,6 +217,52 @@ set_transient( 'doing_cron', sprintf( '%.22F', $GLOBALS['T_clock'] - 61 ) );
 $r = call( 'cron-run', array( 'hook' => 'real_hook', 'timestamp' => 1700000100 ) );
 check( 'a stale lock (61 s, over WP_CRON_LOCK_TIMEOUT): runs', is_array( $r ) && true === $r['ran'] && array( 'real_hook' ) === $GLOBALS['T_ran'], $r );
 check( 'and the lock is released after', false === lock() );
+site();
+$GLOBALS['T_ran'] = array();
+$GLOBALS['T_cron_hooks']['real_hook'][] = function () { $GLOBALS['T_ran'][] = 'real_hook'; };
+t_cron_add( 1700000100, 'real_hook', 'hourly' );
+set_transient( 'doing_cron', sprintf( '%.22F', $GLOBALS['T_clock'] - 60 ) );
+$r = call( 'cron-run', array( 'hook' => 'real_hook', 'timestamp' => 1700000100 ) );
+check( 'a lock exactly WP_CRON_LOCK_TIMEOUT old counts as stale (core\'s >): runs', is_array( $r ) && true === $r['ran'], $r );
+
+// Another process took over the lock while the task ran: the database (or the shared object cache) holds its value, this
+// request's get_transient still says ours.
+site();
+$GLOBALS['T_cron_hooks']['real_hook'][] = function () { $GLOBALS['T_db_transients']['doing_cron'] = '1700000099.5000000000000000000000'; };
+t_cron_add( 1700000100, 'real_hook', 'hourly' );
+$r = call( 'cron-run', array( 'hook' => 'real_hook', 'timestamp' => 1700000100 ) );
+$dels = array_filter( $GLOBALS['T_transient_deletes'], function ( $d ) { return 'doing_cron' === $d[0]; } );
+check( 'another process overwrote the lock in the database: we do NOT delete it', is_array( $r ) && true === $r['ran'] && array() === $dels, array( $r, $dels ) );
+site();
+$GLOBALS['T_ext_cache'] = true;
+$GLOBALS['T_cron_hooks']['real_hook'][] = function () { $GLOBALS['T_object_cache']['transient']['doing_cron'] = '1700000099.5000000000000000000000'; };
+t_cron_add( 1700000100, 'real_hook', 'hourly' );
+$r = call( 'cron-run', array( 'hook' => 'real_hook', 'timestamp' => 1700000100 ) );
+$dels = array_filter( $GLOBALS['T_transient_deletes'], function ( $d ) { return 'doing_cron' === $d[0]; } );
+check( 'with a persistent object cache another process\'s lock (read with force) is not deleted either', is_array( $r ) && array() === $dels && in_array( true, $GLOBALS['T_cache_forced'], true ), array( $dels, $GLOBALS['T_cache_forced'] ) );
+site();
+$GLOBALS['T_ext_cache'] = true;
+$GLOBALS['T_cron_hooks']['real_hook'][] = function () { $GLOBALS['T_object_cache']['transient']['doing_cron'] = $GLOBALS['T_transients']['doing_cron'][0]; };
+t_cron_add( 1700000100, 'real_hook', 'hourly' );
+call( 'cron-run', array( 'hook' => 'real_hook', 'timestamp' => 1700000100 ) );
+check( 'with a persistent object cache that holds our lock, it is released', false === lock() );
+
+// The event went away between the first look and the lock (WP-Cron ran it): looked up again under the lock.
+site();
+$GLOBALS['T_ran'] = array();
+$GLOBALS['T_cron_hooks']['real_hook'][] = function () { $GLOBALS['T_ran'][] = 'real_hook'; };
+t_cron_add( 1700000100, 'real_hook', 'hourly' );
+$GLOBALS['T_on_get']['doing_cron'] = function () { $GLOBALS['T_cron_array'] = array(); };
+$r = call( 'cron-run', array( 'hook' => 'real_hook', 'timestamp' => 1700000100 ) );
+check( 'the event is found again under the lock: gone -> not_found, nothing changed or run, lock released', 'not_found' === code( $r ) && array() === ops() && array() === $GLOBALS['T_ran'] && false === lock(), array( code( $r ), ops() ) );
+
+// The history row comes first: when it cannot be written nothing changes.
+site();
+t_cron_add( 1700000100, 'real_hook', 'hourly' );
+$GLOBALS['T_on_get']['doing_cron'] = function () { $GLOBALS['wpdb']->fail_insert = true; };
+$r = call( 'cron-run', array( 'hook' => 'real_hook', 'timestamp' => 1700000100 ) );
+$GLOBALS['wpdb']->fail_insert = false;
+check( 'a history row that cannot be written: history_unavailable before any schedule change; lock released', 'history_unavailable' === code( $r ) && array() === ops() && isset( $GLOBALS['T_cron_array'][1700000100]['real_hook'] ) && false === lock(), array( code( $r ), ops() ) );
 site();
 $GLOBALS['T_cron_hooks']['boom_hook'][] = function () { $GLOBALS['T_cron_ops'][] = array( 'hook body' ); throw new RuntimeException( 'kaboom secret-detail' ); };
 t_cron_add( 1700000100, 'boom_hook', 'daily' );
@@ -208,22 +287,51 @@ $GLOBALS['T_cron_hooks']['ok_hook'][] = function () { $GLOBALS['T_clock'] += 19.
 t_cron_add( 1700000100, 'ok_hook', 'daily' );
 $r = call( 'cron-run', array( 'hook' => 'ok_hook', 'timestamp' => 1700000100 ) );
 check( '19.9 s is within the budget', is_array( $r ) && 19900 === $r['duration_ms'] && false === $r['over_budget'], $r );
+site();
+$GLOBALS['T_cron_hooks']['edge_hook'][] = function () { $GLOBALS['T_clock'] += 20.0; };
+t_cron_add( 1700000100, 'edge_hook', 'daily' );
+$r = call( 'cron-run', array( 'hook' => 'edge_hook', 'timestamp' => 1700000100 ) );
+check( 'exactly 20 s is still within the budget (over means more than 20000 ms)', is_array( $r ) && 20000 === $r['duration_ms'] && false === $r['over_budget'], $r );
+site();
+$GLOBALS['T_cron_hooks']['edge_hook'][] = function () { $GLOBALS['T_clock'] += 20.002; };
+t_cron_add( 1700000100, 'edge_hook', 'daily' );
+$r = call( 'cron-run', array( 'hook' => 'edge_hook', 'timestamp' => 1700000100 ) );
+check( '20.002 s is over the budget', is_array( $r ) && 20002 === $r['duration_ms'] && true === $r['over_budget'], $r );
 check( 'ONE shutdown handler for the whole request, however many runs', 1 === count( $GLOBALS['T_shutdowns'] ), count( $GLOBALS['T_shutdowns'] ) );
 check( 'the shutdown handler does nothing when no run is in progress', ( function () { $before = arows(); call_user_func( $GLOBALS['T_shutdowns'][0] ); return $before === arows() && 'ok' === end( $before )['status']; } )() );
 
-// A fatal inside the hook: the hook calls the shutdown handler itself (as PHP would on the way down), then the test checks.
+// The request dies inside the hook: the hook calls the shutdown handler itself (as PHP would on the way down), then the
+// test reads the rows. error_get_last decides fatal (a fatal error) or exited (exit / die).
+function died( $last_error ) {
+	site();
+	$GLOBALS['d5b_wsite_seams']['error_get_last'] = function () use ( $last_error ) { return $last_error; };
+	$GLOBALS['T_fatal_seen'] = null;
+	$GLOBALS['T_cron_hooks']['fatal_hook'][] = function () {
+		$GLOBALS['T_clock'] += 2;
+		call_user_func( $GLOBALS['T_shutdowns'][0] );
+		$GLOBALS['T_fatal_seen'] = array( 'audit' => alast()['status'], 'history' => hlast()['after'], 'lock' => lock() );
+		throw new RuntimeException( 'stand-in for the request ending here' );
+	};
+	t_cron_add( 1700000100, 'fatal_hook', 'daily' );
+	call( 'cron-run', array( 'hook' => 'fatal_hook', 'timestamp' => 1700000100 ) );
+	unset( $GLOBALS['d5b_wsite_seams']['error_get_last'] );
+	return $GLOBALS['T_fatal_seen'];
+}
+$seen = died( array( 'type' => E_ERROR, 'message' => 'Allowed memory size exhausted', 'file' => 'x.php', 'line' => 1 ) );
+check( 'a fatal error inside the hook: the shutdown handler marks the audit row fatal', 'fatal' === ( $seen['audit'] ?? null ), $seen );
+check( '... and merges fatal into the history row\'s after, keeping rescheduled / unscheduled', array( 'fatal' => true, 'ran' => true, 'duration_ms' => 2000, 'rescheduled' => true, 'unscheduled' => true ) === ( $seen['history'] ?? null ), $seen );
+check( '... and releases the lock, still ours', false === ( $seen['lock'] ?? 'x' ), $seen );
+$seen = died( null );
+check( 'an exit inside the hook (no fatal error): the rows say exited', 'exited' === ( $seen['audit'] ?? null ) && true === ( $seen['history']['exited'] ?? null ) && ! isset( $seen['history']['fatal'] ), $seen );
+$seen = died( array( 'type' => E_WARNING, 'message' => 'an earlier warning', 'file' => 'x.php', 'line' => 1 ) );
+check( 'a last error that is only a warning is not a fatal: exited', 'exited' === ( $seen['audit'] ?? null ), $seen );
 site();
-$GLOBALS['T_fatal_seen'] = null;
-$GLOBALS['T_cron_hooks']['fatal_hook'][] = function () {
-	$GLOBALS['T_clock'] += 2;
-	call_user_func( $GLOBALS['T_shutdowns'][0] );
-	$GLOBALS['T_fatal_seen'] = array( 'audit' => alast()['status'], 'history' => hlast()['after'] );
-	throw new RuntimeException( 'stand-in for the request ending here' );
-};
+$GLOBALS['d5b_wsite_seams']['error_get_last'] = function () { return array( 'type' => E_ERROR, 'message' => 'm', 'file' => 'f', 'line' => 1 ); };
+$GLOBALS['T_cron_hooks']['fatal_hook'][] = function () { $GLOBALS['T_db_transients']['doing_cron'] = '1700000099.5000000000000000000000'; call_user_func( $GLOBALS['T_shutdowns'][0] ); throw new RuntimeException( 'x' ); };
 t_cron_add( 1700000100, 'fatal_hook', 'daily' );
 call( 'cron-run', array( 'hook' => 'fatal_hook', 'timestamp' => 1700000100 ) );
-check( 'the shutdown handler marks the audit row fatal when the request dies inside the hook', 'fatal' === ( $GLOBALS['T_fatal_seen']['audit'] ?? null ), $GLOBALS['T_fatal_seen'] );
-check( 'and the history row\'s after { fatal: true }', array( 'fatal' => true ) === ( $GLOBALS['T_fatal_seen']['history'] ?? null ), $GLOBALS['T_fatal_seen'] );
+unset( $GLOBALS['d5b_wsite_seams']['error_get_last'] );
+check( 'the shutdown handler leaves a lock another process took over', array() === array_filter( $GLOBALS['T_transient_deletes'], function ( $d ) { return 'doing_cron' === $d[0]; } ) );
 
 // ---- cron-run: switches and capabilities
 echo "cron-run: switches and capabilities\n";

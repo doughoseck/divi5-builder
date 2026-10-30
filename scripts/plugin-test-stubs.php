@@ -211,7 +211,7 @@ function wp_slash( $v ) { if ( is_array( $v ) ) { return array_map( 'wp_slash', 
 //   T_user_id          what get_current_user_id returns
 if ( ! defined( 'ARRAY_A' ) ) { define( 'ARRAY_A', 'ARRAY_A' ); }
 class T_Wpdb {
-	public $posts = 'wp_posts'; public $postmeta = 'wp_postmeta';
+	public $posts = 'wp_posts'; public $postmeta = 'wp_postmeta'; public $options = 'wp_options';
 	public $prefix = 'wp_'; public $tables = array(); public $queries = array(); public $unprepared = array(); public $fail_insert = false; public $fail_update = false; public $insert_id = 0; public $suppress_now = false; public $suppress_log = array();
 	private $prepared = array(); private $next_id = 1;
 	function get_blog_prefix( $id = null ) { return 'wp_' . ( ( null === $id || 1 === (int) $id ) ? '' : (int) $id . '_' ); }
@@ -311,6 +311,10 @@ class T_Wpdb {
 	}
 	function get_row( $sql, $output = 'OBJECT' ) {
 		$this->note( $sql );
+		if ( preg_match( "/^SELECT option_value FROM wp_options WHERE option_name = '_transient_([^']+)' LIMIT 1$/", $sql, $m ) && function_exists( 't_db_transient' ) ) {
+			$v = t_db_transient( stripslashes( $m[1] ) );
+			return null === $v ? null : (object) array( 'option_value' => $v );
+		}
 		if ( ! preg_match( '/^SELECT \* FROM (\S+) WHERE id = (\d+)$/', $sql, $m ) || ! isset( $this->tables[ $m[1] ] ) ) { return null; }
 		foreach ( $this->tables[ $m[1] ] as $r ) { if ( (int) $r['id'] === (int) $m[2] ) { return $r; } }
 		return null;
@@ -1656,7 +1660,19 @@ t_widgets_reset();
 // do_action_ref_array runs with the event's args. T_cron_fail: 'reschedule' / 'unschedule' => true makes that call fail
 // (WP_Error when $wp_error, as core).
 if ( ! defined( 'WP_CRON_LOCK_TIMEOUT' ) ) { define( 'WP_CRON_LOCK_TIMEOUT', 60 ); }
-function t_cron_reset() { $GLOBALS['T_cron_array'] = array(); $GLOBALS['T_cron_ops'] = array(); $GLOBALS['T_cron_hooks'] = array(); $GLOBALS['T_cron_fail'] = array(); }
+function t_cron_reset() { $GLOBALS['T_cron_array'] = array(); $GLOBALS['T_cron_ops'] = array(); $GLOBALS['T_cron_hooks'] = array(); $GLOBALS['T_cron_fail'] = array(); $GLOBALS['T_do_actions'] = array(); $GLOBALS['T_ext_cache'] = false; $GLOBALS['T_object_cache'] = array(); $GLOBALS['T_cache_forced'] = array(); $GLOBALS['T_db_transients'] = array(); }
+// do_action records (T_do_actions: hook, args). The doing_cron lock as _get_cron_lock reads it, past the request's caches:
+// with T_ext_cache on, wp_cache_get( ..., force ) reads T_object_cache[ group ][ key ] (T_cache_forced records the force
+// flag); without it, $wpdb->get_row on the options table reads T_db_transients[ name ] when set (another process wrote the
+// database), else the request's own T_transients.
+function do_action( $hook, ...$args ) { $GLOBALS['T_do_actions'][] = array( $hook, $args ); }
+if ( ! function_exists( '__return_true' ) ) { function __return_true() { return true; } }
+function wp_using_ext_object_cache( $using = null ) { return ! empty( $GLOBALS['T_ext_cache'] ); }
+function wp_cache_get( $key, $group = '', $force = false, &$found = null ) { $GLOBALS['T_cache_forced'][] = $force; $found = isset( $GLOBALS['T_object_cache'][ $group ][ $key ] ); return $found ? $GLOBALS['T_object_cache'][ $group ][ $key ] : false; }
+function t_db_transient( string $name ) {
+	if ( array_key_exists( $name, $GLOBALS['T_db_transients'] ?? array() ) ) { return $GLOBALS['T_db_transients'][ $name ]; }
+	return isset( $GLOBALS['T_transients'][ $name ] ) ? $GLOBALS['T_transients'][ $name ][0] : null;
+}
 t_cron_reset();
 function _get_cron_array() { return $GLOBALS['T_cron_array'] ?? array(); }
 function _set_cron_array( $cron, $wp_error = false ) { $GLOBALS['T_cron_array'] = $cron; return true; }
