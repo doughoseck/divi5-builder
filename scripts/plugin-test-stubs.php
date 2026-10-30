@@ -316,6 +316,13 @@ class T_Wpdb {
 			$v = t_db_transient( stripslashes( $m[1] ) );
 			return null === $v ? null : (object) array( 'option_value' => $v );
 		}
+		// The cron option as the database holds it (T_cron_array, serialized with its version), read past the request's
+		// own copy (T_cron_request_copy, when a test models one, is what _get_cron_array() answers in this request).
+		if ( "SELECT option_value FROM wp_options WHERE option_name = 'cron' LIMIT 1" === $sql ) {
+			$GLOBALS['T_cron_fresh_reads'] = ( $GLOBALS['T_cron_fresh_reads'] ?? 0 ) + 1;
+			$c = $GLOBALS['T_cron_array'] ?? null;
+			return is_array( $c ) ? (object) array( 'option_value' => serialize( $c + array( 'version' => 2 ) ) ) : null;
+		}
 		if ( ! preg_match( '/^SELECT \* FROM (\S+) WHERE id = (\d+)$/', $sql, $m ) || ! isset( $this->tables[ $m[1] ] ) ) { return null; }
 		foreach ( $this->tables[ $m[1] ] as $r ) { if ( (int) $r['id'] === (int) $m[2] ) { return $r; } }
 		return null;
@@ -356,10 +363,20 @@ function get_attached_file( $id ) { $f = get_post_meta( $id, "_wp_attached_file"
 function wp_check_invalid_utf8( $s, $strip = false ) { $s = (string) $s; if ( '' === $s || 1 === @preg_match( '/^./us', $s ) ) { return $s; } return $strip && function_exists( 'iconv' ) ? @iconv( 'utf-8', 'utf-8', $s ) : ''; }
 // T_transients: name => array( value, expires at, ttl ); a test expires one by lowering its expires-at.
 // As core, an expiration of 0 never expires (the doing_cron lock is set that way).
-function set_transient( $n, $v, $ttl = 0 ) { if ( ! empty( $GLOBALS['T_transient_fail'] ) ) { return false; } $GLOBALS['T_transients'][ $n ] = array( $v, (int) $ttl > 0 ? time() + (int) $ttl : PHP_INT_MAX, $ttl ); return true; }
+// As core, a write reaches the database (T_db_transients, when a test models it) and, with a persistent object cache
+// (T_ext_cache), the shared cache (T_object_cache['transient']). T_on_set: name => callable run once right after that
+// transient is written (another process acting between our write and our read-back).
+function set_transient( $n, $v, $ttl = 0 ) {
+	if ( ! empty( $GLOBALS['T_transient_fail'] ) ) { return false; }
+	$GLOBALS['T_transients'][ $n ] = array( $v, (int) $ttl > 0 ? time() + (int) $ttl : PHP_INT_MAX, $ttl );
+	unset( $GLOBALS['T_db_transients'][ $n ] );
+	if ( ! empty( $GLOBALS['T_ext_cache'] ) ) { $GLOBALS['T_object_cache']['transient'][ $n ] = $v; }
+	if ( isset( $GLOBALS['T_on_set'][ $n ] ) ) { $cb = $GLOBALS['T_on_set'][ $n ]; unset( $GLOBALS['T_on_set'][ $n ] ); $cb(); }
+	return true;
+}
 // T_on_get: name => callable run once right after that transient is read (a concurrent request acting between a read and a write).
 function get_transient( $n ) { $t = $GLOBALS['T_transients'][ $n ] ?? null; $v = ( null === $t || $t[1] < time() ) ? false : $t[0]; if ( isset( $GLOBALS['T_on_get'][ $n ] ) ) { $cb = $GLOBALS['T_on_get'][ $n ]; unset( $GLOBALS['T_on_get'][ $n ] ); $cb(); } return $v; }
-function delete_transient( $n ) { $GLOBALS['T_transient_deletes'][] = array( $n, $GLOBALS['T_blog_id'] ?? 1 ); $had = false !== get_transient( $n ); unset( $GLOBALS['T_transients'][ $n ] ); return $had; }
+function delete_transient( $n ) { $GLOBALS['T_transient_deletes'][] = array( $n, $GLOBALS['T_blog_id'] ?? 1 ); $had = false !== get_transient( $n ); unset( $GLOBALS['T_transients'][ $n ], $GLOBALS['T_db_transients'][ $n ], $GLOBALS['T_object_cache']['transient'][ $n ] ); return $had; }
 function absint( $n ) { return abs( (int) $n ); }
 function switch_to_blog( $id ) { $GLOBALS['T_blog_stack'][] = $GLOBALS['T_blog_id']; $GLOBALS['T_blog_id'] = (int) $id; return true; }
 function restore_current_blog() { $GLOBALS['T_blog_id'] = array_pop( $GLOBALS['T_blog_stack'] ); return true; }
@@ -1668,7 +1685,7 @@ t_widgets_reset();
 // do_action_ref_array runs with the event's args. T_cron_fail: 'reschedule' / 'unschedule' => true makes that call fail
 // (WP_Error when $wp_error, as core).
 if ( ! defined( 'WP_CRON_LOCK_TIMEOUT' ) ) { define( 'WP_CRON_LOCK_TIMEOUT', 60 ); }
-function t_cron_reset() { $GLOBALS['T_cron_array'] = array(); $GLOBALS['T_cron_ops'] = array(); $GLOBALS['T_cron_hooks'] = array(); $GLOBALS['T_cron_fail'] = array(); $GLOBALS['T_do_actions'] = array(); $GLOBALS['T_ext_cache'] = false; $GLOBALS['T_object_cache'] = array(); $GLOBALS['T_cache_forced'] = array(); $GLOBALS['T_db_transients'] = array(); }
+function t_cron_reset() { $GLOBALS['T_cron_array'] = array(); $GLOBALS['T_cron_ops'] = array(); $GLOBALS['T_cron_hooks'] = array(); $GLOBALS['T_cron_fail'] = array(); $GLOBALS['T_do_actions'] = array(); $GLOBALS['T_ext_cache'] = false; $GLOBALS['T_object_cache'] = array(); $GLOBALS['T_cache_forced'] = array(); $GLOBALS['T_db_transients'] = array(); $GLOBALS['T_on_set'] = array(); unset( $GLOBALS['T_cron_request_copy'] ); $GLOBALS['T_cron_fresh_reads'] = 0; }
 // do_action records (T_do_actions: hook, args). The doing_cron lock as _get_cron_lock reads it, past the request's caches:
 // with T_ext_cache on, wp_cache_get( ..., force ) reads T_object_cache[ group ][ key ] (T_cache_forced records the force
 // flag); without it, $wpdb->get_row on the options table reads T_db_transients[ name ] when set (another process wrote the
@@ -1682,7 +1699,9 @@ function t_db_transient( string $name ) {
 	return isset( $GLOBALS['T_transients'][ $name ] ) ? $GLOBALS['T_transients'][ $name ][0] : null;
 }
 t_cron_reset();
-function _get_cron_array() { return $GLOBALS['T_cron_array'] ?? array(); }
+// T_cron_request_copy: when set, this request's cached copy of the cron option (alloptions), which another process may
+// have changed since: _get_cron_array() answers it, the direct option read (wpdb) answers T_cron_array.
+function _get_cron_array() { $c = array_key_exists( 'T_cron_request_copy', $GLOBALS ) ? $GLOBALS['T_cron_request_copy'] : ( $GLOBALS['T_cron_array'] ?? array() ); if ( ! is_array( $c ) ) { return array(); } unset( $c['version'] ); return $c; }
 function _set_cron_array( $cron, $wp_error = false ) { $GLOBALS['T_cron_array'] = $cron; return true; }
 function t_cron_intervals() { return array( 'hourly' => 3600, 'twicedaily' => 43200, 'daily' => 86400, 'weekly' => 604800 ); }
 /** As core: the next run is the first one after now, counted from $timestamp in steps of the interval. */

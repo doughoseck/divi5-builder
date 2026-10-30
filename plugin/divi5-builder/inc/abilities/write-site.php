@@ -16,7 +16,11 @@
  *    one of core's lifecycle hooks (init, wp_loaded, shutdown ...). The history row is written before anything changes.
  *  - While the hook runs: wp_doing_cron is true, the user may abort, and its output is buffered and counted
  *    (output_bytes), never sent: printed text would break the JSON answer. The lock is read fresh, past this request's
- *    caches, as wp-cron.php's _get_cron_lock() does, before it is released.
+ *    caches, as wp-cron.php's _get_cron_lock() does: before it is taken, right after (it must read back as ours, else
+ *    unavailable and nothing released) and before it is released. Under the lock the event is looked up again in the cron
+ *    option read directly (d5b_wsite_cron_array_fresh), not in this request's cached copy.
+ *  - A task may call cron-run itself (after deleting the lock): the runs in progress are a stack, and each run removes
+ *    only its own entry, so the outer run's fatal or exit is still recorded.
  *  - The run mirrors wp-cron.php for one event: take core's doing_cron lock (refused while WP-Cron holds a fresh one),
  *    reschedule a recurring event and unschedule this run FIRST, then do_action_ref_array( $hook, $args ), then release
  *    the lock (in finally, and only while it is still ours). A failed reschedule or unschedule does not stop the run, as
@@ -101,40 +105,93 @@ if ( ! function_exists( 'd5b_wsite_find_event' ) ) {
 	}
 
 	/**
-	 * The run in progress: array( audit_id, history_id, start, lock, state ) while a hook runs, else null. $set starts one;
-	 * $clear ends it (and returns it).
+	 * The cron array read past this request's caches (2.3.0 fix wave, I2): WP-Cron in another process may have run (and
+	 * moved) the event since this request first read it. A direct read of the cron option, as _get_cron_lock() reads the
+	 * lock: with a persistent object cache the shared copy (alloptions, then the option's own key) read with force, else
+	 * (or when the cache has neither) the options table. Shaped as _get_cron_array() shapes it. Without $wpdb (never on a
+	 * real site), _get_cron_array().
 	 */
-	function d5b_wsite_running( ?array $set = null, bool $clear = false ): ?array {
-		static $cur = null;
-		if ( $clear ) { $prev = $cur; $cur = null; return $prev; }
-		if ( null !== $set ) { $cur = $set; }
-		return $cur;
+	function d5b_wsite_cron_array_fresh(): array {
+		global $wpdb;
+		$raw = null;
+		if ( function_exists( 'wp_using_ext_object_cache' ) && wp_using_ext_object_cache() && function_exists( 'wp_cache_get' ) ) {
+			$all = wp_cache_get( 'alloptions', 'options', true );
+			if ( is_array( $all ) && array_key_exists( 'cron', $all ) ) {
+				$raw = $all['cron'];
+			} else {
+				$one = wp_cache_get( 'cron', 'options', true );
+				if ( false !== $one ) { $raw = $one; }
+			}
+		}
+		if ( null === $raw ) {
+			if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return function_exists( '_get_cron_array' ) ? (array) _get_cron_array() : array(); }
+			$row = $wpdb->get_row( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", 'cron' ) );
+			$raw = is_object( $row ) ? $row->option_value : false;
+		}
+		$cron = is_string( $raw ) && function_exists( 'maybe_unserialize' ) ? maybe_unserialize( $raw ) : ( is_string( $raw ) ? @unserialize( $raw ) : $raw ); // phpcs:ignore
+		if ( ! is_array( $cron ) ) { return array(); }
+		if ( ! isset( $cron['version'] ) && function_exists( '_upgrade_cron_array' ) ) { $cron = _upgrade_cron_array( $cron ); }
+		unset( $cron['version'] );
+		return $cron;
+	}
+
+	/**
+	 * The runs in progress in this request, innermost last: each array( token, audit_id, history_id, start, lock, state ).
+	 * A task can itself call cron-run (after deleting the lock), so this is a stack (fix wave, M5): a run removes only its
+	 * own entry, by its token, never the outer run's.
+	 *   'push', $run   adds one          'pop', $token  removes that one and returns it (null when it is not there)
+	 *   'top'          the innermost     'take_all'     removes every one and returns them, innermost first
+	 */
+	function d5b_wsite_runs( string $op, $arg = null ) {
+		static $stack = array();
+		switch ( $op ) {
+			case 'push':
+				$stack[] = (array) $arg;
+				return null;
+			case 'pop':
+				foreach ( $stack as $i => $r ) {
+					if ( ( $r['token'] ?? null ) === $arg ) { array_splice( $stack, $i, 1 ); return $r; }
+				}
+				return null;
+			case 'take_all':
+				$all = array_reverse( $stack ); $stack = array();
+				return $all;
+			default:
+				return $stack ? $stack[ count( $stack ) - 1 ] : null;
+		}
+	}
+
+	/** The innermost run in progress, or null. */
+	function d5b_wsite_running(): ?array {
+		return d5b_wsite_runs( 'top' );
 	}
 
 	/**
 	 * The shutdown handler: the request is ending while a hook still runs. A fatal error (error_get_last says so) marks
-	 * the rows fatal, anything else (an exit inside the hook) exited. The schedule is already right; the lock is released
-	 * when it is still ours.
+	 * the rows fatal, anything else (an exit inside the hook) exited; every run still in progress (a nested one too) is
+	 * marked, innermost first. The schedule is already right; each lock is released when it is still ours.
 	 */
 	function d5b_wsite_on_shutdown(): void {
-		$r = d5b_wsite_running( null, true );
-		if ( null === $r ) { return; }
-		$ms    = max( 0, (int) round( ( d5b_wsite_now() - (float) $r['start'] ) * 1000 ) );
+		$all = (array) d5b_wsite_runs( 'take_all' );
+		if ( array() === $all ) { return; }
 		$err   = d5b_wsite_last_error();
 		$fatal = null !== $err && 0 !== ( (int) ( $err['type'] ?? 0 ) & ( E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR | E_RECOVERABLE_ERROR ) );
 		$label = $fatal ? 'fatal' : 'exited';
-		try {
-			if ( (int) $r['audit_id'] > 0 && function_exists( 'd5b_audit_update' ) ) { d5b_audit_update( (int) $r['audit_id'], $label, $ms, null ); }
-			if ( (int) $r['history_id'] > 0 && function_exists( 'd5b_history_set_after' ) ) {
-				d5b_history_set_after( (int) $r['history_id'], array( $label => true, 'ran' => true, 'duration_ms' => $ms ) + (array) ( $r['state'] ?? array() ) );
+		foreach ( $all as $r ) {
+			$ms = max( 0, (int) round( ( d5b_wsite_now() - (float) $r['start'] ) * 1000 ) );
+			try {
+				if ( (int) $r['audit_id'] > 0 && function_exists( 'd5b_audit_update' ) ) { d5b_audit_update( (int) $r['audit_id'], $label, $ms, null ); }
+				if ( (int) $r['history_id'] > 0 && function_exists( 'd5b_history_set_after' ) ) {
+					d5b_history_set_after( (int) $r['history_id'], array( $label => true, 'ran' => true, 'duration_ms' => $ms ) + (array) ( $r['state'] ?? array() ) );
+				}
+			} catch ( Throwable $e ) {
+				unset( $e ); // the request is ending; go on to the lock
 			}
-		} catch ( Throwable $e ) {
-			unset( $e ); // the request is ending; go on to the lock
-		}
-		try {
-			if ( isset( $r['lock'] ) ) { d5b_wsite_release_lock( (string) $r['lock'] ); }
-		} catch ( Throwable $e ) {
-			unset( $e );
+			try {
+				if ( isset( $r['lock'] ) ) { d5b_wsite_release_lock( (string) $r['lock'] ); }
+			} catch ( Throwable $e ) {
+				unset( $e );
+			}
 		}
 	}
 
@@ -168,7 +225,7 @@ if ( ! function_exists( 'd5b_wsite_find_event' ) ) {
 	/**
 	 * The one scheduled event cron-run may run. @return array|WP_Error array( 'key' => args key, 'event' => core's event )
 	 */
-	function d5b_wsite_find_event( string $hook, int $timestamp, ?string $schedule, ?string $key ) {
+	function d5b_wsite_find_event( string $hook, int $timestamp, ?string $schedule, ?string $key, bool $fresh = false ) {
 		// Any name core could store; the exact lookup in the cron array below is the guard.
 		if ( '' === $hook || strlen( $hook ) > 191 || 1 === preg_match( '/[\x00-\x1F\x7F]/', $hook ) ) {
 			return new WP_Error( 'invalid_input', 'hook must be the hook name as cron-list returns it: at most 191 bytes, no control characters.' );
@@ -182,7 +239,7 @@ if ( ! function_exists( 'd5b_wsite_find_event' ) ) {
 		if ( null !== $key && 1 !== preg_match( '/^[A-Za-z0-9_\-]{1,64}$/D', $key ) ) {
 			return new WP_Error( 'invalid_input', 'args_key must be the args_key of the event as cron-list returns it.' );
 		}
-		$cron   = function_exists( '_get_cron_array' ) ? _get_cron_array() : array();
+		$cron   = $fresh ? d5b_wsite_cron_array_fresh() : ( function_exists( '_get_cron_array' ) ? _get_cron_array() : array() );
 		$events = is_array( $cron ) && is_array( $cron[ $timestamp ] ?? null ) ? ( $cron[ $timestamp ][ $hook ] ?? null ) : null;
 		if ( ! is_array( $events ) || array() === $events ) {
 			return new WP_Error( 'not_found', 'No event "' . $hook . '" is scheduled at ' . $timestamp . '. Only a scheduled event can be run: list them with cron-list.' );
@@ -219,17 +276,23 @@ if ( ! function_exists( 'd5b_wsite_find_event' ) ) {
 		$found = d5b_wsite_find_event( $hook, $ts, $sched, $key );
 		if ( is_wp_error( $found ) ) { return $found; }
 
-		// Core's lock, as wp-cron.php takes it.
+		// Core's lock, as wp-cron.php takes it, read fresh (past this request's caches) both before taking it and after:
+		// another process may hold a fresh one this request's cache does not show, or take it in the same instant. When
+		// the lock read back is not ours, nothing is released and nothing runs.
 		$now  = d5b_wsite_now();
-		$lock = get_transient( 'doing_cron' );
+		$lock = d5b_wsite_cron_lock_fresh();
 		if ( $lock && (float) $lock + WP_CRON_LOCK_TIMEOUT > $now ) {
 			return new WP_Error( 'unavailable', 'WP-Cron is running; try again in a minute.' );
 		}
 		$mine = sprintf( '%.22F', $now );
 		set_transient( 'doing_cron', $mine );
+		if ( (string) d5b_wsite_cron_lock_fresh() !== $mine ) {
+			return new WP_Error( 'unavailable', 'WP-Cron started at the same moment; try again in a minute.' );
+		}
 		try {
-			// Again under the lock: WP-Cron may have run (and moved) the event since it was found.
-			$found = d5b_wsite_find_event( $hook, $ts, $sched, $key );
+			// Again under the lock, from the cron option itself (not this request's copy): WP-Cron may have run (and moved)
+			// the event since it was found.
+			$found = d5b_wsite_find_event( $hook, $ts, $sched, $key, true );
 			if ( is_wp_error( $found ) ) { return $found; }
 			$ev       = $found['event'];
 			$args     = is_array( $ev['args'] ?? null ) ? $ev['args'] : array();
@@ -264,7 +327,9 @@ if ( ! function_exists( 'd5b_wsite_find_event' ) ) {
 			$audit = function_exists( 'd5b_ability_audit_current_id' ) ? d5b_ability_audit_current_id() : 0;
 			$t0    = d5b_wsite_now();
 			$error = null; $bytes = 0;
-			d5b_wsite_running( array( 'audit_id' => $audit, 'history_id' => $hid, 'start' => $t0, 'lock' => $mine, 'state' => $state ) );
+			static $runs = 0;
+			$token = $mine . '#' . ( ++$runs );
+			d5b_wsite_runs( 'push', array( 'token' => $token, 'audit_id' => $audit, 'history_id' => $hid, 'start' => $t0, 'lock' => $mine, 'state' => $state ) );
 			add_filter( 'wp_doing_cron', '__return_true' );
 			$level = ob_get_level();
 			ob_start(); // a task that prints would break the JSON answer: its output is counted, never sent
@@ -275,15 +340,15 @@ if ( ! function_exists( 'd5b_wsite_find_event' ) ) {
 			} finally {
 				while ( ob_get_level() > $level ) { $bytes += strlen( (string) ob_get_clean() ); }
 				remove_filter( 'wp_doing_cron', '__return_true' );
-				d5b_wsite_running( null, true );
+				d5b_wsite_runs( 'pop', $token ); // this run's own entry only: an outer run's stays
 			}
 			$ms   = max( 0, (int) round( ( d5b_wsite_now() - $t0 ) * 1000 ) );
 			$over = $ms > d5b_wsite_budget_ms();
 
 			if ( null !== $error ) {
-				d5b_history_set_after( $hid, array( 'ran' => true, 'failed' => true, 'error' => get_class( $error ), 'schedule_adjusted' => true, 'duration_ms' => $ms, 'output_bytes' => $bytes ) + $state );
+				d5b_history_set_after( $hid, array( 'ran' => true, 'failed' => true, 'error' => get_class( $error ), 'schedule_adjusted' => true, 'duration_ms' => $ms, 'over_budget' => $over, 'output_bytes' => $bytes ) + $state );
 				return new WP_Error( 'internal_error', 'The scheduled task "' . $hook . '" stopped with an error. Its schedule was already adjusted as WP-Cron does, so this run is off the schedule' . ( $rescheduled ? ' and the next one is booked' : '' ) . '. The site\'s error log may say more.',
-					array( 'schedule_adjusted' => true ) );
+					array( 'schedule_adjusted' => true, 'duration_ms' => $ms, 'over_budget' => $over ) );
 			}
 			$out = array( 'ran' => true, 'hook' => $hook, 'duration_ms' => $ms ) + $state + array( 'over_budget' => $over, 'output_bytes' => $bytes );
 			if ( $over ) { $warn[] = 'The task took ' . round( $ms / 1000, 1 ) . ' s, longer than the ' . ( d5b_wsite_budget_ms() / 1000 ) . ' s budget.'; }
@@ -305,7 +370,7 @@ if ( ! function_exists( 'd5b_wsite_find_event' ) ) {
 		array( 'idempotent' => true ) );
 
 	d5b_wc_def( 'cron-run', 'health', 'Run a scheduled task now',
-		'Runs one scheduled WP-Cron event now, as WP-Cron would: hook and timestamp as cron-list returns them, schedule (optional, checked against the event; "single" or "" for a one-off event) and args_key (needed when several events share hook and timestamp; cron-list returns it). A risky action: needs the Site health risky switch; tasks belong to plugins and may do real work (send emails, process orders, run migrations). Needs manage_options, and on a network manage_network. Only a scheduled event runs (not_found otherwise; ambiguous with the keys when args_key is needed); this plugin\'s own d5b_ tasks and core\'s lifecycle hooks (init, wp_loaded, shutdown and the like) are refused with not_allowed. A recurring event is booked for its next time and this run taken off the schedule BEFORE the task runs, as WP-Cron does. Refused with unavailable while WP-Cron is running. A task cannot be stopped once started: the time is measured and over_budget is true past 20 seconds. Returns ran, hook, duration_ms, rescheduled, unscheduled, over_budget and output_bytes (how much the task printed; the text itself is never returned). A task that fails answers internal_error with schedule_adjusted true. One change-history row records the event (never its argument values), written before anything changes: when it cannot be written the answer is history_unavailable and nothing ran.',
+		'Runs one scheduled WP-Cron event now, as WP-Cron would: hook and timestamp as cron-list returns them, schedule (optional, checked against the event; "single" or "" for a one-off event) and args_key (needed when several events share hook and timestamp; cron-list returns it). A risky action: needs the Site health risky switch; tasks belong to plugins and may do real work (send emails, process orders, run migrations). Needs manage_options, and on a network manage_network. Only a scheduled event runs (not_found otherwise; ambiguous with the keys when args_key is needed); this plugin\'s own d5b_ tasks and core\'s lifecycle hooks (init, wp_loaded, shutdown and the like) are refused with not_allowed. A recurring event is booked for its next time and this run taken off the schedule BEFORE the task runs, as WP-Cron does. Refused with unavailable while WP-Cron is running. A task cannot be stopped once started: the time is measured and over_budget is true past 20 seconds. Returns ran, hook, duration_ms, rescheduled, unscheduled, over_budget and output_bytes (how much the task printed; the text itself is never returned). A task that fails answers internal_error with schedule_adjusted true, duration_ms and over_budget. One change-history row records the event (never its argument values), written before anything changes: when it cannot be written the answer is history_unavailable and nothing ran.',
 		array(
 			'hook'      => array( 'type' => 'string', 'minLength' => 1, 'maxLength' => 191, 'description' => 'The hook name as cron-list returns it.' ),
 			'timestamp' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The event\'s timestamp as cron-list returns it.' ),

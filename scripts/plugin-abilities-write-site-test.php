@@ -252,14 +252,17 @@ site();
 $GLOBALS['T_ran'] = array();
 $GLOBALS['T_cron_hooks']['real_hook'][] = function () { $GLOBALS['T_ran'][] = 'real_hook'; };
 t_cron_add( 1700000100, 'real_hook', 'hourly' );
-$GLOBALS['T_on_get']['doing_cron'] = function () { $GLOBALS['T_cron_array'] = array(); };
+// This request's cached copy of the cron option still shows the event; the database no longer does (fix wave I2: the
+// look-up under the lock reads the option itself).
+$GLOBALS['T_cron_request_copy'] = $GLOBALS['T_cron_array'];
+$GLOBALS['T_on_set']['doing_cron'] = function () { $GLOBALS['T_cron_array'] = array(); };
 $r = call( 'cron-run', array( 'hook' => 'real_hook', 'timestamp' => 1700000100 ) );
-check( 'the event is found again under the lock: gone -> not_found, nothing changed or run, lock released', 'not_found' === code( $r ) && array() === ops() && array() === $GLOBALS['T_ran'] && false === lock(), array( code( $r ), ops() ) );
+check( 'the event is found again under the lock, in the cron option past this request\'s copy: gone -> not_found, nothing changed or run, lock released', 'not_found' === code( $r ) && array() === ops() && array() === $GLOBALS['T_ran'] && false === lock() && $GLOBALS['T_cron_fresh_reads'] >= 1, array( code( $r ), ops() ) );
 
 // The history row comes first: when it cannot be written nothing changes.
 site();
 t_cron_add( 1700000100, 'real_hook', 'hourly' );
-$GLOBALS['T_on_get']['doing_cron'] = function () { $GLOBALS['wpdb']->fail_insert = true; };
+$GLOBALS['T_on_set']['doing_cron'] = function () { $GLOBALS['wpdb']->fail_insert = true; };
 $r = call( 'cron-run', array( 'hook' => 'real_hook', 'timestamp' => 1700000100 ) );
 $GLOBALS['wpdb']->fail_insert = false;
 check( 'a history row that cannot be written: history_unavailable before any schedule change; lock released', 'history_unavailable' === code( $r ) && array() === ops() && isset( $GLOBALS['T_cron_array'][1700000100]['real_hook'] ) && false === lock(), array( code( $r ), ops() ) );
@@ -274,6 +277,97 @@ check( 'the schedule was adjusted before the hook threw', array( 'reschedule', '
 $h = hlast();
 check( 'the history row after says it failed and the schedule was adjusted', is_array( $h['after'] ) && true === ( $h['after']['schedule_adjusted'] ?? null ) && true === ( $h['after']['failed'] ?? null ), $h['after'] ?? null );
 check( 'the running marker is cleared after a throw', null === d5b_wsite_running() );
+
+// ---- fix wave I2: the lock is taken on a fresh read, and must read back as ours
+echo "cron-run: lock taken on a fresh read\n";
+site();
+$GLOBALS['T_ran'] = array();
+$GLOBALS['T_cron_hooks']['real_hook'][] = function () { $GLOBALS['T_ran'][] = 'real_hook'; };
+t_cron_add( 1700000100, 'real_hook', 'hourly' );
+$other = sprintf( '%.22F', $GLOBALS['T_clock'] - 5 );
+$GLOBALS['T_db_transients']['doing_cron'] = $other; // WP-Cron in another process took it 5 s ago; this request's cache has none
+$r = call( 'cron-run', array( 'hook' => 'real_hook', 'timestamp' => 1700000100 ) );
+check( 'another process holds a fresh lock this request\'s cache does not show: unavailable, nothing run or rescheduled', 'unavailable' === code( $r ) && array() === ops() && array() === $GLOBALS['T_ran'], array( code( $r ), ops() ) );
+check( '... and its lock is left alone (nothing written, nothing deleted)', $other === t_db_transient( 'doing_cron' ) && ! isset( $GLOBALS['T_transients']['doing_cron'] ) && array() === array_filter( $GLOBALS['T_transient_deletes'], function ( $d ) { return 'doing_cron' === $d[0]; } ) );
+site();
+$GLOBALS['T_ext_cache'] = true;
+$GLOBALS['T_ran'] = array();
+$GLOBALS['T_cron_hooks']['real_hook'][] = function () { $GLOBALS['T_ran'][] = 'real_hook'; };
+t_cron_add( 1700000100, 'real_hook', 'hourly' );
+$GLOBALS['T_object_cache']['transient']['doing_cron'] = $other;
+$r = call( 'cron-run', array( 'hook' => 'real_hook', 'timestamp' => 1700000100 ) );
+check( 'with a persistent object cache: the shared lock (read with force) refuses too', 'unavailable' === code( $r ) && array() === $GLOBALS['T_ran'] && in_array( true, $GLOBALS['T_cache_forced'], true ), code( $r ) );
+site();
+$GLOBALS['T_ran'] = array();
+$GLOBALS['T_cron_hooks']['real_hook'][] = function () { $GLOBALS['T_ran'][] = 'real_hook'; };
+t_cron_add( 1700000100, 'real_hook', 'hourly' );
+$GLOBALS['T_on_set']['doing_cron'] = function () use ( $other ) { $GLOBALS['T_db_transients']['doing_cron'] = $other; }; // WP-Cron wrote in the same instant
+$r = call( 'cron-run', array( 'hook' => 'real_hook', 'timestamp' => 1700000100 ) );
+check( 'the lock read back after taking it is another process\'s: unavailable, nothing run, no history row', 'unavailable' === code( $r ) && array() === ops() && array() === $GLOBALS['T_ran'] && 0 === count( hrows() ), array( code( $r ), ops() ) );
+check( '... and that process\'s lock is not released', $other === t_db_transient( 'doing_cron' ) && array() === array_filter( $GLOBALS['T_transient_deletes'], function ( $d ) { return 'doing_cron' === $d[0]; } ) );
+site();
+t_cron_add( 1700000100, 'real_hook', 'hourly' );
+$GLOBALS['T_cron_request_copy'] = array(); // this request read the cron option before the event was added by another process
+$r = call( 'cron-run', array( 'hook' => 'real_hook', 'timestamp' => 1700000100 ) );
+check( 'the first look-up uses this request\'s copy (as cron-list shows it): not scheduled there -> not_found', 'not_found' === code( $r ) );
+
+// ---- fix wave M5: a nested run removes only its own marker
+echo "cron-run: nested\n";
+site();
+t_cron_add( 1700000100, 'outer_hook', false ); t_cron_add( 1700000101, 'inner_hook', false );
+$GLOBALS['T_ran'] = array(); $GLOBALS['T_inner'] = null;
+$GLOBALS['T_cron_hooks']['inner_hook'][] = function () { $GLOBALS['T_ran'][] = 'inner'; };
+$GLOBALS['T_cron_hooks']['outer_hook'][] = function () { $GLOBALS['T_ran'][] = 'outer'; $GLOBALS['T_inner'] = d5b_ability_run( 'divi5-builder/cron-run', array( 'hook' => 'inner_hook', 'timestamp' => 1700000101 ) ); };
+$r = call( 'cron-run', array( 'hook' => 'outer_hook', 'timestamp' => 1700000100 ) );
+check( 'a task that calls cron-run while holding the lock: the inner call is unavailable, the outer runs', is_array( $r ) && 'unavailable' === code( $GLOBALS['T_inner'] ) && array( 'outer' ) === $GLOBALS['T_ran'] && false === lock(), array( $r, code( $GLOBALS['T_inner'] ) ) );
+site();
+t_cron_add( 1700000100, 'outer_hook', false ); t_cron_add( 1700000101, 'inner_hook', false );
+$GLOBALS['T_ran'] = array(); $GLOBALS['T_after_inner'] = 'unset';
+$GLOBALS['d5b_wsite_seams']['error_get_last'] = function () { return array( 'type' => E_ERROR, 'message' => 'boom', 'file' => 'f', 'line' => 1 ); };
+$GLOBALS['T_cron_hooks']['inner_hook'][] = function () { $GLOBALS['T_ran'][] = 'inner'; };
+$GLOBALS['T_cron_hooks']['outer_hook'][] = function () {
+	$GLOBALS['T_ran'][] = 'outer';
+	delete_transient( 'doing_cron' );
+	$GLOBALS['T_inner'] = d5b_ability_run( 'divi5-builder/cron-run', array( 'hook' => 'inner_hook', 'timestamp' => 1700000101 ) );
+	$GLOBALS['T_after_inner'] = d5b_wsite_running();
+	call_user_func( $GLOBALS['T_shutdowns'][0] ); // the outer task dies here
+	$GLOBALS['T_fatal_rows'] = array_map( function ( $row ) { $g = d5b_history_get( (int) $row['id'] ); return array( $g['summary'], $g['after'] ); }, hrows() );
+	throw new RuntimeException( 'stand-in for the request ending here' );
+};
+call( 'cron-run', array( 'hook' => 'outer_hook', 'timestamp' => 1700000100 ) );
+unset( $GLOBALS['d5b_wsite_seams']['error_get_last'] );
+check( 'the task deleted the lock and ran another event: the inner run works', is_array( $GLOBALS['T_inner'] ) && true === $GLOBALS['T_inner']['ran'] && array( 'outer', 'inner' ) === $GLOBALS['T_ran'], $GLOBALS['T_inner'] );
+check( '... and the outer run\'s marker is still there after the inner one ends', is_array( $GLOBALS['T_after_inner'] ) && 0 === strpos( (string) ( $GLOBALS['T_after_inner']['token'] ?? '' ), '1700000000.' ), $GLOBALS['T_after_inner'] );
+$fr = $GLOBALS['T_fatal_rows'] ?? array();
+check( '... so the outer task\'s fatal is recorded on the outer row; the inner row keeps its own ending', 2 === count( $fr ) && true === ( $fr[0][1]['fatal'] ?? null ) && 'Ran cron event outer_hook' === $fr[0][0] && ! isset( $fr[1][1]['fatal'] ) && true === ( $fr[1][1]['ran'] ?? null ), $fr );
+check( '... and no marker is left', null === d5b_wsite_running() );
+site();
+t_cron_add( 1700000100, 'outer_hook', false ); t_cron_add( 1700000101, 'inner_hook', false );
+$GLOBALS['T_fatal_rows'] = array();
+$GLOBALS['d5b_wsite_seams']['error_get_last'] = function () { return array( 'type' => E_ERROR, 'message' => 'boom', 'file' => 'f', 'line' => 1 ); };
+$GLOBALS['T_cron_hooks']['inner_hook'][] = function () {
+	call_user_func( $GLOBALS['T_shutdowns'][0] ); // the INNER task dies, with both runs in progress
+	$GLOBALS['T_fatal_rows'] = array_map( function ( $row ) { $g = d5b_history_get( (int) $row['id'] ); return $g['after']; }, hrows() );
+	throw new RuntimeException( 'stand-in for the request ending here' );
+};
+$GLOBALS['T_cron_hooks']['outer_hook'][] = function () { delete_transient( 'doing_cron' ); d5b_ability_run( 'divi5-builder/cron-run', array( 'hook' => 'inner_hook', 'timestamp' => 1700000101 ) ); };
+call( 'cron-run', array( 'hook' => 'outer_hook', 'timestamp' => 1700000100 ) );
+unset( $GLOBALS['d5b_wsite_seams']['error_get_last'] );
+$fr = $GLOBALS['T_fatal_rows'];
+check( 'the request dies inside a nested run: BOTH runs\' rows are marked fatal', 2 === count( $fr ) && true === ( $fr[0]['fatal'] ?? null ) && true === ( $fr[1]['fatal'] ?? null ), $fr );
+
+// ---- fix wave M6: a failing task records over_budget too
+site();
+$GLOBALS['T_cron_hooks']['slowboom'][] = function () { $GLOBALS['T_clock'] += 25; throw new RuntimeException( 'x' ); };
+t_cron_add( 1700000100, 'slowboom', 'hourly' );
+$r = call( 'cron-run', array( 'hook' => 'slowboom', 'timestamp' => 1700000100 ) );
+$h = hlast();
+check( 'a task that fails after 25 s: the history row and the error data say over_budget true', 'internal_error' === code( $r ) && true === ( $h['after']['over_budget'] ?? null ) && 25000 === ( $h['after']['duration_ms'] ?? null ) && true === ( edata( $r )['over_budget'] ?? null ), array( $h['after'] ?? null, edata( $r ) ) );
+site();
+$GLOBALS['T_cron_hooks']['quickboom'][] = function () { throw new RuntimeException( 'x' ); };
+t_cron_add( 1700000100, 'quickboom', 'hourly' );
+call( 'cron-run', array( 'hook' => 'quickboom', 'timestamp' => 1700000100 ) );
+check( 'a task that fails at once: over_budget false', false === ( hlast()['after']['over_budget'] ?? null ) );
 
 // ---- cron-run: time budget and the shutdown handler
 echo "cron-run: budget and fatal\n";
