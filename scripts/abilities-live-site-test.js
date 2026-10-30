@@ -87,6 +87,9 @@ check('... moved to wp_inactive_widgets', /widgets-move  ok  HTTP 200  id=text-\
 fresh({ siteBad: { 'widgets-move': 'invalid_input' } });
 r = go(['widget']);
 check('a move that fails -> exit 1, but the widget is still removed', r.code === 1 && /widgets-move  refused:invalid_input/.test(r.out) && posts(r).includes('widgets-remove') && Object.keys(site(r).widgets).length === 0, [r.code, r.out]);
+fresh({ strayWidget: true });
+r = go(['widget']);
+check('the layout after the step differs from before (a widget left in footer-1) -> exit 1, the layout check names it', r.code === 1 && /the widget layout \(sidebars_widgets\) is NOT back to what it was before the step/.test(r.out) && !/RESULT: every step passed/.test(r.out), [r.code, r.out]);
 
 console.log('--- cache');
 fresh();

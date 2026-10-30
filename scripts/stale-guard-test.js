@@ -125,7 +125,8 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
       o.content = r.content; hist(short, o, 'update', 'Restored revision ' + r.id + ' of', r.id); return [200, Object.assign(res(o), { changed: true, restored_revision: r.id })];
     }
     // ---- the 2.3.0 site abilities (task 7): options, theme mods, Custom CSS, widgets, cache, cron. State lives in m.site, seeded on first use.
-    // m.siteBad = { short name: 'code' } answers that ability with an error (HTTP 400); m.site.noCron drops the cron event.
+    // m.siteBad = { short name: 'code' } answers that ability with an error (HTTP 400); m.site.noCron drops the cron event;
+    // m.strayWidget = true makes widgets-remove also leave a widget in footer-1 (another plugin changing the layout).
     const site = m.site = m.site || { opts: { blogdescription: 'Fake tagline SECRET-LEAK-VALUE', show_on_front: 'posts', page_on_front: '0', page_for_posts: '0', blogname: 'Fake' }, mods: { header_color: '#abc' },
       css: '.a { color: red; } /* SECRET-LEAK-VALUE */', cssId: 77, sidebars: [{ id: 'wp_inactive_widgets', name: 'Inactive Widgets' }, { id: 'sidebar-1', name: 'Main Sidebar' }, { id: 'footer-1', name: 'Footer' }], widgets: {},
       cron: [{ hook: 'wp_update_plugins', timestamp: 1900000000, schedule: 'twicedaily', args_key: 'aaaa0000' }, { hook: 'wp_privacy_delete_old_export_files', timestamp: 1900000500, schedule: 'hourly', args_key: 'bbbb1111' }], flushed: 0, cronRan: [] };
@@ -198,7 +199,7 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
       const num = +String(w.id).split('-')[1];
       if (short === 'widgets-update') { const old = w.settings; w.settings = input.settings; hist2(short, 'widget', num, 'update', 'Updated widget ' + w.id, { id: w.id, instance: old }); return [200, { id: w.id, sidebar: w.sidebar, position: 0, settings: w.settings, changed: true, secret: 'SECRET-LEAK-VALUE' }]; }
       if (short === 'widgets-move') { if (!site.sidebars.some(s => s.id === input.sidebar)) return E(400, 'invalid_input'); const from = w.sidebar; w.sidebar = input.sidebar; hist2(short, 'widget', num, 'move', 'Moved widget ' + w.id + ' to ' + input.sidebar, { id: w.id, sidebar: from }); return [200, { id: w.id, sidebar: w.sidebar, position: 0, changed: true }]; }
-      if (short === 'widgets-remove') { hist2(short, 'widget', num, 'delete', 'Removed widget ' + w.id + ' from ' + w.sidebar, { id: w.id, instance: w.settings }); delete site.widgets[w.id]; return [200, { id: w.id, sidebar: w.sidebar, position: 0, removed: true }]; }
+      if (short === 'widgets-remove') { hist2(short, 'widget', num, 'delete', 'Removed widget ' + w.id + ' from ' + w.sidebar, { id: w.id, instance: w.settings }); delete site.widgets[w.id]; if (m.strayWidget) site.widgets['text-99'] = { id: 'text-99', type: 'text', sidebar: 'footer-1', settings: {} }; return [200, { id: w.id, sidebar: w.sidebar, position: 0, removed: true }]; }
     }
     return E(404, 'rest_ability_not_found');
   };
