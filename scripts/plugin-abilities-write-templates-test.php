@@ -172,9 +172,9 @@ $r = call( 'global-styles-set', array( 'styles' => $styles, 'expect_hash' => $g[
 $u = user_json();
 check( 'written: created, one wp_global_styles post with the theme term, flag and version', is_array( $r ) && true === $r['created'] && true === $r['changed'] && 1 === count( posts_of( 'wp_global_styles' ) ) && array( 'teststyle' ) === term_names( user_post()->ID, 'wp_theme' )
 	&& true === $u['isGlobalStylesUserThemeJSON'] && 2 === $u['version'] && md5( user_post()->post_content ) === $r['user_hash'], array( $r, $u ) );
-check( 'insecure properties removed (javascript: and expression( values), the safe ones kept; removed_insecure true with a warning',
-	'#111111' === $u['styles']['color']['text'] && '#eee' === $u['styles']['elements']['link']['color']['background'] && ! isset( $u['styles']['elements']['link']['color']['text'] ) && ! isset( $u['styles']['typography'] )
-	&& true === $r['removed_insecure'] && ! empty( $r['warnings'] ), array( $u, $r ) );
+check( 'an administrator (unfiltered_html): stored as given, not sanitised, as core (kses runs only without unfiltered_html); no warning',
+	'#111111' === $u['styles']['color']['text'] && '#eee' === $u['styles']['elements']['link']['color']['background'] && 'javascript:alert(1)' === $u['styles']['elements']['link']['color']['text'] && 'expression(alert(1))' === $u['styles']['typography']['fontSize']
+	&& ! isset( $r['warnings'] ) && ! isset( $r['removed_insecure'] ), array( $u, $r ) );
 check( 'the user layer only: the theme\'s palette and background are NOT copied into the user post', ! isset( $u['settings'] ) && ! isset( $u['styles']['color']['background'] ), $u );
 $g = call( 'global-styles-get' );
 $m = json_decode( $g['content'], true );
@@ -190,7 +190,7 @@ $round = $g['user']; $round['styles']['color']['text'] = '#222222';
 $r = call( 'global-styles-set', array( 'styles' => json_encode( $round ), 'expect_hash' => $g['user_hash'] ) );
 $row = hlast();
 check( 'a round trip of user (with version and the flag), as JSON text: replaced in the same post; before = the previous user JSON', is_array( $r ) && false === $r['created'] && $pid === $r['id'] && 1 === count( posts_of( 'wp_global_styles' ) ) && '#222222' === user_json()['styles']['color']['text']
-	&& array( 'json' => $prev ) === $row['before'] && false === $r['removed_insecure'] && ! isset( $r['warnings'] ), array( $r, $row ) );
+	&& array( 'json' => $prev ) === $row['before'] && ! isset( $r['warnings'] ), array( $r, $row ) );
 $h = md5( user_post()->post_content );
 $r = call( 'global-styles-set', array( 'styles' => array( 'settings' => array( 'layout' => array( 'contentSize' => '640px' ) ) ), 'expect_hash' => $h ) );
 check( 'MERGED as core does: settings given replaces settings, styles left out keeps its stored value', is_array( $r ) && '#222222' === ( user_json()['styles']['color']['text'] ?? null ) && '640px' === user_json()['settings']['layout']['contentSize'], user_json() );
@@ -223,10 +223,37 @@ check( 'styles over 1 MB refused', 'invalid_input' === code( call( 'global-style
 check( 'markup in styles.css refused (core\'s validate_custom_css)', 'invalid_input' === code( call( 'global-styles-set', array( 'styles' => array( 'styles' => array( 'css' => 'p{} </style><script>' ) ), 'expect_hash' => $h ) ) ) );
 check( 'text holding [redacted] is masked_read', 'masked_read' === code( call( 'global-styles-set', array( 'styles' => array( 'styles' => array( 'color' => array( 'text' => '[redacted]' ) ) ), 'expect_hash' => $h ) ) ) );
 $r = call( 'global-styles-set', array( 'styles' => array( 'styles' => array( 'css' => 'p{color:red}' ) ), 'expect_hash' => $h ) );
-check( 'custom CSS is kept for a caller with edit_css', is_array( $r ) && 'p{color:red}' === user_json()['styles']['css'] && false === $r['removed_insecure'], $r );
-site( true, true, array( 'read', 'manage_options', 'edit_theme_options', 'edit_posts' ) );
+check( 'custom CSS is kept for a caller with edit_css', is_array( $r ) && 'p{color:red}' === user_json()['styles']['css'], $r );
+
+echo "global-styles-set: sanitised only without unfiltered_html, refused instead of dropped\n";
+const NOUF = array( 'read', 'manage_options', 'edit_theme_options', 'edit_posts' );
+site( true, true, NOUF );
 $r = call( 'global-styles-set', array( 'styles' => array( 'styles' => array( 'css' => 'p{color:red}', 'color' => array( 'text' => '#333' ) ) ), 'expect_hash' => md5( '' ) ) );
-check( 'without edit_css the custom CSS is removed by the sanitising, the rest kept', is_array( $r ) && ! isset( user_json()['styles']['css'] ) && '#333' === user_json()['styles']['color']['text'] && true === $r['removed_insecure'], array( $r, user_json() ) );
+check( 'without unfiltered_html (so without edit_css) custom CSS would be removed: refused invalid_input naming styles.css; nothing written', 'invalid_input' === code( $r ) && array( 'styles.css' ) === ( edata( $r )['removed'] ?? null ) && false !== strpos( msg( $r ), 'styles.css' ) && 0 === writes() && 0 === count( hrows() ), array( code( $r ), edata( $r ) ) );
+$r = call( 'global-styles-set', array( 'styles' => $styles, 'expect_hash' => md5( '' ) ) );
+check( '... unsafe values are refused naming each path, not dropped', 'invalid_input' === code( $r ) && array( 'styles.elements.link.color.text', 'styles.typography.fontSize' ) === ( edata( $r )['removed'] ?? null ) && false !== strpos( msg( $r ), 'styles.typography.fontSize' ) && 0 === writes(), edata( $r ) );
+$r = call( 'global-styles-set', array( 'styles' => array( 'settings' => array( 'custom' => array( 'brand' => '#123' ), 'appearanceTools' => true, 'layout' => array( 'contentSize' => '640px' ) ) ), 'expect_hash' => md5( '' ) ) );
+check( '... settings.custom and appearanceTools (core keeps only presets and sizes for such a user): refused naming them', 'invalid_input' === code( $r ) && array( 'settings.custom.brand', 'settings.appearanceTools' ) === ( edata( $r )['removed'] ?? null ) && false !== strpos( msg( $r ), 'settings.custom.brand' ) && 0 === writes(), edata( $r ) );
+$safe = array( 'settings' => array( 'color' => array( 'palette' => array( 'custom' => array( array( 'slug' => 'brand', 'name' => 'Brand', 'color' => '#123456' ) ) ) ), 'layout' => array( 'contentSize' => '640px', 'wideSize' => '1100px' ), 'spacing' => array( 'blockGap' => '1rem' ) ), 'styles' => array( 'color' => array( 'text' => '#333' ) ) );
+$r = call( 'global-styles-set', array( 'styles' => $safe, 'expect_hash' => md5( '' ) ) );
+check( '... a layer the sanitiser keeps whole (presets, layout sizes, blockGap, safe styles) is written as given', is_array( $r ) && true === $r['changed'] && json_encode( d5b_wtpl_canon( $safe['settings'] ) ) === json_encode( d5b_wtpl_canon( user_json()['settings'] ) ) && '#333' === user_json()['styles']['color']['text'], array( $r, user_json() ) );
+
+// An administrator made settings the sanitiser would remove (settings.custom, color.custom, typography.fluid, spacing.units).
+site();
+$adminset = array( 'custom' => array( 'brand' => '#123', 'radius' => array( 'small' => '4px' ) ), 'color' => array( 'custom' => false ), 'typography' => array( 'fluid' => true ), 'spacing' => array( 'units' => array( 'px', 'rem' ) ), 'appearanceTools' => true );
+$r = call( 'global-styles-set', array( 'styles' => array( 'settings' => $adminset, 'styles' => array( 'color' => array( 'text' => '#101010' ) ) ), 'expect_hash' => md5( '' ) ) );
+check( 'an administrator\'s settings (custom, color.custom, typography.fluid, spacing.units, appearanceTools) are stored as given', is_array( $r ) && $adminset === user_json()['settings'], user_json() );
+$stored_settings = json_encode( user_json()['settings'] );
+$h = md5( user_post()->post_content );
+$r = call( 'global-styles-set', array( 'styles' => array( 'styles' => array( 'color' => array( 'text' => '#202020' ) ) ), 'expect_hash' => $h ) );
+check( 'an administrator\'s styles-only write keeps the stored settings byte-identical', is_array( $r ) && true === $r['changed'] && $stored_settings === json_encode( user_json()['settings'] ) && '#202020' === user_json()['styles']['color']['text'], user_json() );
+$h = md5( user_post()->post_content ); $c = count( hrows() ); $w = writes();
+$r = call( 'global-styles-set', array( 'styles' => array( 'styles' => array( 'color' => array( 'text' => '#202020' ) ) ), 'expect_hash' => $h ) );
+check( '... and the same call again answers changed false: no write, no row', is_array( $r ) && false === $r['changed'] && $c === count( hrows() ) && $w === writes(), $r );
+t_set_caps( NOUF );
+$h = md5( user_post()->post_content ); $before = user_post()->post_content;
+$r = call( 'global-styles-set', array( 'styles' => array( 'styles' => array( 'color' => array( 'text' => '#303030' ) ) ), 'expect_hash' => $h ) );
+check( 'a user without unfiltered_html sending styles only, over those stored settings: refused naming the stored paths the sanitiser would lose; nothing written', 'invalid_input' === code( $r ) && in_array( 'settings.custom.brand', edata( $r )['removed'] ?? array(), true ) && in_array( 'settings.custom.radius.small', edata( $r )['removed'] ?? array(), true ) && in_array( 'settings.spacing.units', edata( $r )['removed'] ?? array(), true ) && in_array( 'settings.typography.fluid', edata( $r )['removed'] ?? array(), true ) && $before === user_post()->post_content, edata( $r ) );
 site( true, true, array( 'read', 'manage_options', 'edit_posts', 'unfiltered_html' ) );
 check( 'without edit_theme_options (manage_options is not enough): refused', 'FORBIDDEN' === call( 'global-styles-set', array( 'styles' => array(), 'expect_hash' => md5( '' ) ) ) && 0 === writes() );
 // (edit_posts too: WordPress assigns the wp_theme term of a new post only for a user who may assign terms, edit_posts.)

@@ -114,7 +114,7 @@ echo "the settings boxes\n";
 fresh(); t_set_caps( array( 'manage_options' ) ); $GLOBALS['T_user_login'] = 'doug';
 $h = html( 'd5b_settings_render' );
 $notes = array(
-	'settings'   => 'Can change the homepage, permalinks, time zone and whether search engines index the site. A wrong value is easy to put back from the change history, but visitors see it in the meantime.',
+	'settings'   => 'Can change the homepage, permalinks, time zone, site language and whether search engines index the site. A wrong value is easy to put back from the change history, but visitors see it in the meantime.',
 	'templates'  => 'Changes the theme\'s templates and global styles on block themes. A broken template can blank a page until it is put back.',
 	'appearance' => 'Can change Custom CSS and theme settings. A wrong CSS rule can hide the whole page until it is put back.',
 	'health'     => 'Can run a scheduled task now. Tasks belong to plugins and may do real work (send emails, process orders, run migrations).',

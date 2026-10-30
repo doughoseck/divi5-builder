@@ -23,9 +23,11 @@
  *    isGlobalStylesUserThemeJSON keys a read returns are accepted and set by the plugin. MERGED as core merges it (fix
  *    wave I4): a part left out keeps its stored value; an explicit null removes it (core keeps it: the one difference).
  *    Built as core's global styles controller builds it (prepare_item_for_database: styles, settings, the flag, version
- *    LATEST_SCHEMA; markup in styles.css refused, here in every css key at any depth), then sanitised as core's kses
- *    filter wp_filter_global_styles_post does (the flag taken out, WP_Theme_JSON::remove_insecure_properties, the flag
- *    put back), always, whoever the caller is. A stored layer holding a value under a secret-named key (hidden on
+ *    LATEST_SCHEMA; markup in styles.css refused, here in every css key at any depth). Sanitised as core's kses filter
+ *    wp_filter_global_styles_post does (WP_Theme_JSON::remove_insecure_properties) ONLY for a caller without
+ *    unfiltered_html, as core (kses_init adds that filter only then); when the sanitiser would remove anything (in the
+ *    part given or in a stored part merged in) the write is refused invalid_input naming the paths, never dropped
+ *    silently. An administrator's styles are stored as given, as core stores them. A stored layer holding a value under a secret-named key (hidden on
  *    reading: global-styles-get says masked) is not written over (not_allowed), and an input holding one is refused, so
  *    the history never keeps one. No change (the same data, key order aside) writes nothing. expect_hash is user_hash
  *    from global-styles-get (md5 of the stored JSON, md5 of '' when there is none yet). History: object_type
@@ -197,6 +199,29 @@ if ( ! function_exists( 'd5b_wtpl_h_update' ) ) {
 		return null;
 	}
 
+	/**
+	 * The dotted paths of what $clean lost against $before: a key gone (an object gone whole is named by its leaves), or a
+	 * value changed (a list counts whole). @return string[]
+	 */
+	function d5b_wtpl_lost_paths( $before, $clean, string $path = '', int $depth = 0 ): array {
+		if ( ! is_array( $before ) ) { return array(); }
+		$out  = array();
+		$list = array() !== $before && array_keys( $before ) === range( 0, count( $before ) - 1 );
+		if ( $list || $depth > 32 ) { return d5b_wtpl_json( d5b_wtpl_canon( $before ) ) === d5b_wtpl_json( d5b_wtpl_canon( $clean ) ) ? array() : array( '' === $path ? '(all)' : $path ); }
+		foreach ( $before as $k => $v ) {
+			$p = '' === $path ? (string) $k : $path . '.' . $k;
+			if ( ! is_array( $clean ) || ! array_key_exists( $k, $clean ) ) {
+				// gone whole: name its leaves (an object), or the key itself (a value or a list)
+				$leaves = is_array( $v ) && array() !== $v && array_keys( $v ) !== range( 0, count( $v ) - 1 ) ? d5b_wtpl_lost_paths( $v, array(), $p, $depth + 1 ) : array();
+				$out    = array_merge( $out, $leaves ? $leaves : array( $p ) );
+				continue;
+			}
+			if ( is_array( $v ) ) { $out = array_merge( $out, d5b_wtpl_lost_paths( $v, $clean[ $k ], $p, $depth + 1 ) ); }
+			elseif ( $v !== $clean[ $k ] ) { $out[] = $p; }
+		}
+		return $out;
+	}
+
 	/** The styles input as an array (the new user layer). @return array|WP_Error */
 	function d5b_wtpl_styles_input( $v ) {
 		if ( is_string( $v ) ) {
@@ -247,8 +272,9 @@ if ( ! function_exists( 'd5b_wtpl_h_update' ) ) {
 		$ok = d5b_wtpl_check_hash( $in['expect_hash'] ?? null, $cur, 'global-styles-get user_hash' ); if ( true !== $ok ) { return $ok; }
 
 		// As core's controller builds it (prepare_item_for_database: a part left out keeps the stored one, from a layer
-		// that carries the isGlobalStylesUserThemeJSON flag), then as core's kses filter cleans it: the flag out,
-		// remove_insecure_properties, the flag back. Unlike core, an explicit null removes a part (core keeps it).
+		// that carries the isGlobalStylesUserThemeJSON flag). Unlike core, an explicit null removes a part (core keeps it).
+		// Then, for a caller WITHOUT unfiltered_html only (core's kses_init adds wp_filter_global_styles_post only then),
+		// as that filter cleans it: remove_insecure_properties. Whatever it would remove is refused, never dropped.
 		if ( empty( $existing['isGlobalStylesUserThemeJSON'] ) ) { $existing = array(); }
 		$config = array();
 		foreach ( array( 'styles', 'settings' ) as $part ) {
@@ -259,16 +285,23 @@ if ( ! function_exists( 'd5b_wtpl_h_update' ) ) {
 			}
 		}
 		$config['version'] = WP_Theme_JSON::LATEST_SCHEMA;
-		$clean = WP_Theme_JSON::remove_insecure_properties( $config );
-		if ( ! is_array( $clean ) ) { return new WP_Error( 'write_failed', 'WordPress could not sanitise the styles.' ); }
-		if ( ! isset( $clean['version'] ) ) { $clean['version'] = WP_Theme_JSON::LATEST_SCHEMA; }
+		$clean = $config;
+		if ( ! current_user_can( 'unfiltered_html' ) ) {
+			$clean = WP_Theme_JSON::remove_insecure_properties( $config );
+			if ( ! is_array( $clean ) ) { return new WP_Error( 'write_failed', 'WordPress could not sanitise the styles.' ); }
+			if ( ! isset( $clean['version'] ) ) { $clean['version'] = WP_Theme_JSON::LATEST_SCHEMA; }
+			$lost = d5b_wtpl_lost_paths( $config, $clean );
+			if ( $lost ) {
+				$more = count( $lost ) > 20 ? ' (and ' . ( count( $lost ) - 20 ) . ' more)' : '';
+				return new WP_Error( 'invalid_input', 'Without unfiltered_html WordPress sanitises global styles and would remove: ' . implode( ', ', array_slice( $lost, 0, 20 ) ) . $more . '. Nothing was written. Leave these out (a stored part you did not send counts too: send it without them), or ask an administrator.', array( 'removed' => array_slice( $lost, 0, 100 ) ) );
+			}
+		}
 		$clean['isGlobalStylesUserThemeJSON'] = true;
-		$removed = d5b_wtpl_json( d5b_wtpl_canon( array_diff_key( $clean, array( 'isGlobalStylesUserThemeJSON' => 1 ) ) ) ) !== d5b_wtpl_json( d5b_wtpl_canon( $config ) );
-		$json    = d5b_wtpl_json( $clean );
+		$json = d5b_wtpl_json( $clean );
 		if ( '' === $json ) { return new WP_Error( 'invalid_input', 'styles could not be encoded as JSON.' ); }
 		// No change: the stored layer holds the same data (key order and JSON spelling aside).
 		if ( '' !== $cur && is_array( $existing ) && array() !== $existing && d5b_wtpl_json( d5b_wtpl_canon( $clean ) ) === d5b_wtpl_json( d5b_wtpl_canon( json_decode( $cur, true ) ) ) ) {
-			return array( 'id' => $found, 'user_hash' => md5( $cur ), 'created' => false, 'changed' => false, 'removed_insecure' => $removed );
+			return array( 'id' => $found, 'user_hash' => md5( $cur ), 'created' => false, 'changed' => false );
 		}
 		$big = d5b_wc_check_content_size( $cur ); if ( true !== $big ) { return $big; }
 
@@ -283,9 +316,8 @@ if ( ! function_exists( 'd5b_wtpl_h_update' ) ) {
 		if ( ! $r ) { return new WP_Error( 'write_failed', 'WordPress did not save the global styles.' ); }
 
 		list( , $after ) = d5b_rs_user_styles();
-		$out  = array( 'id' => $pid, 'user_hash' => md5( $after ), 'created' => 0 === $found, 'changed' => true, 'removed_insecure' => $removed );
+		$out  = array( 'id' => $pid, 'user_hash' => md5( $after ), 'created' => 0 === $found, 'changed' => true );
 		$warn = array();
-		if ( $removed ) { $warn[] = 'WordPress\'s sanitising removed parts of the styles it does not allow (unsafe values, or custom CSS without edit_css); read them again to see what was stored.'; }
 		if ( $after !== $json ) { $warn[] = 'WordPress stored the global styles differently from what was sent (another plugin may change them); read them again.'; }
 		if ( $warn ) { $out['warnings'] = $warn; }
 		$ok = d5b_wc_history( 'divi5-builder/global-styles-set', get_post( $pid ) ?: $p, 'update', array( 'json' => $cur ), array( 'json_hash' => md5( $after ), 'created' => 0 === $found ), $rev, 'Updated global styles' );
@@ -306,7 +338,7 @@ if ( ! function_exists( 'd5b_wtpl_h_update' ) ) {
 		array( 'idempotent' => true ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'global-styles-set', 'templates', 'Set the global styles',
-		'Changes the site owner\'s layer of the global styles of the active block theme (the user layer only, never the theme\'s own theme.json, so theme updates still show through). styles is an object (or JSON text of one, at most 1 MB) with styles and/or settings, as global-styles-get returns user (its version and isGlobalStylesUserThemeJSON are accepted and set by the plugin). As in WordPress, each of styles and settings that is given replaces that part whole, and a part left out keeps its stored value; null removes a part. It is sanitised as WordPress sanitises global styles (unsafe values removed; custom CSS kept only with edit_css; markup in any css value refused): removed_insecure says whether anything was removed. expect_hash is user_hash from global-styles-get; if the layer changed since, the answer is stale with the current hash. A risky action: needs the Templates risky switch and edit_theme_options. Refuses text holding [redacted] (masked_read), styles holding a secret-named key (invalid_input), and a stored layer holding a value under a secret-named key (not_allowed: global-styles-get shows it masked; edit it in the Site Editor). On a classic theme it answers is_block_theme false with a note and changes nothing. Returns id, user_hash (pass it as the next expect_hash), created, changed and removed_insecure. One change-history row keeps the previous layer in full.',
+		'Changes the site owner\'s layer of the global styles of the active block theme (the user layer only, never the theme\'s own theme.json, so theme updates still show through). styles is an object (or JSON text of one, at most 1 MB) with styles and/or settings, as global-styles-get returns user (its version and isGlobalStylesUserThemeJSON are accepted and set by the plugin). As in WordPress, each of styles and settings that is given replaces that part whole, and a part left out keeps its stored value; null removes a part. Markup in any css value is refused. For a caller without unfiltered_html the layer is sanitised as WordPress sanitises global styles for such users (settings keep only presets, blockGap and layout sizes; unsafe values and custom CSS go); a write that would lose anything that way is refused (invalid_input, data.removed lists the paths) and nothing is written. An administrator\'s styles are stored as given, as WordPress does. expect_hash is user_hash from global-styles-get; if the layer changed since, the answer is stale with the current hash. A risky action: needs the Templates risky switch and edit_theme_options. Refuses text holding [redacted] (masked_read), styles holding a secret-named key (invalid_input), and a stored layer holding a value under a secret-named key (not_allowed: global-styles-get shows it masked; edit it in the Site Editor). On a classic theme it answers is_block_theme false with a note and changes nothing. Returns id, user_hash (pass it as the next expect_hash), created and changed. One change-history row keeps the previous layer in full.',
 		array(
 			'styles'      => array( 'type' => array( 'object', 'string' ), 'description' => 'The new user layer: { "styles": {...}, "settings": {...} }, or that as JSON text.' ),
 			'expect_hash' => array( 'type' => 'string', 'description' => 'user_hash from global-styles-get (md5 of the stored user layer).' ),

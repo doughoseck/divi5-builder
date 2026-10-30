@@ -33,6 +33,7 @@ Use at your own risk. With the AI abilities switched on, this plugin lets connec
 * Updating from 2.2.x: if the AI abilities master switch was on, the update turns it off and the settings page says so, because 2.3.0 abilities can change settings, widgets and caches. Review the switches and turn it on again when you are ready.
 * Change history: every one of these changes keeps the full previous value for 30 days (the old option values, the whole previous stylesheet, the widget layout and the widget's settings, the previous template). Flushing the caches and running a task leave a row saying what ran; there is nothing to put back.
 * Safe by construction: the site address (siteurl, home) and the admin email are never changed, only the listed settings can be, a task runs only if it is scheduled (never this plugin's own, never core's lifecycle hooks), and a value that was hidden in a read can never be written back. Theme settings, templates and global styles need the capability WordPress itself asks for (edit_theme_options), and the Custom CSS needs edit_theme_options and edit_css, as in the Customizer.
+* Global styles: changed as WordPress changes them. For a user without unfiltered_html they are sanitised as WordPress does, and a change that would lose something that way is refused with what it would lose, never dropped silently; an administrator's styles are stored as given.
 * Settings page: a page loaded before the switches changed (another admin, or this update) cannot be saved over them; it asks you to reload.
 
 = 2.2.0 =

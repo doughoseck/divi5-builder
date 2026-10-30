@@ -1753,10 +1753,12 @@ function t_cron_add( int $ts, string $hook, $schedule = false, array $args = arr
 //   T_theme_json       the theme layer of the global styles (theme.json); get_merged_data() lays the user layer (the
 //                      wp_global_styles post of the active stylesheet) over it with array_replace_recursive.
 // WP_Theme_JSON::remove_insecure_properties is a MODEL, not core's code: core keeps only known styles and settings and
-// cleans each value through safecss_filter_attr. The model keeps the structure and drops (1) any string value, at any depth
-// under styles or settings, holding expression( or javascript: (case-insensitive), (2) styles "css" keys unless the user
-// has edit_css (core keeps custom CSS only for edit_css), then (3) an empty styles or settings, as core does. Other
-// top-level keys (version) pass through, as in core.
+// cleans each value through safecss_filter_attr. For styles the model keeps the structure and drops (1) any string value,
+// at any depth, holding expression( or javascript: (case-insensitive), (2) "css" keys unless the user has edit_css (core
+// keeps custom CSS only for edit_css). For settings it keeps what core's remove_insecure_settings keeps: the presets and
+// blockGap / layout sizes only (see t_settings). Then an empty styles or settings is removed, as core does. Other
+// top-level keys (version) pass through, as in core. Core runs it (through wp_filter_global_styles_post) only for users
+// without unfiltered_html.
 function t_templates_reset() {
 	$GLOBALS['T_block_theme'] = false; $GLOBALS['T_block_templates'] = array();
 	$GLOBALS['T_theme_json'] = array( 'version' => 2, 'settings' => array( 'color' => array( 'palette' => array( array( 'slug' => 'base', 'color' => '#ffffff' ) ) ) ), 'styles' => array( 'color' => array( 'text' => '#000000', 'background' => '#ffffff' ) ) );
@@ -1810,10 +1812,44 @@ if ( ! class_exists( 'WP_Theme_JSON', false ) ) {
 		public static function remove_insecure_properties( $theme_json ) {
 			foreach ( array( 'styles', 'settings' ) as $k ) {
 				if ( ! isset( $theme_json[ $k ] ) ) { continue; }
-				$clean = is_array( $theme_json[ $k ] ) ? self::t_clean( $theme_json[ $k ], 'styles' === $k ) : array();
+				$clean = ! is_array( $theme_json[ $k ] ) ? array() : ( 'styles' === $k ? self::t_clean( $theme_json[ $k ], true ) : self::t_settings( $theme_json[ $k ] ) );
 				if ( empty( $clean ) ) { unset( $theme_json[ $k ] ); } else { $theme_json[ $k ] = $clean; }
 			}
 			return $theme_json;
+		}
+		/**
+		 * Settings as core 6.4.1's remove_insecure_settings keeps them, per settings node (the root and each
+		 * settings.blocks.<name>): only the presets (PRESETS_METADATA paths, under an origin key default / blocks / theme /
+		 * custom, entries with an unsafe value dropped) and the indirect properties spacing.blockGap (and its left / top)
+		 * and layout.contentSize / wideSize, as strings. Everything else (custom, appearanceTools, color.custom,
+		 * typography.fluid, spacing.units ...) is removed.
+		 */
+		private static function t_settings( array $s ): array {
+			$out = self::t_settings_node( $s );
+			foreach ( (array) ( $s['blocks'] ?? array() ) as $name => $node ) {
+				if ( ! is_array( $node ) ) { continue; }
+				$n = self::t_settings_node( $node );
+				if ( ! empty( $n ) ) { $out['blocks'][ $name ] = $n; }
+			}
+			return $out;
+		}
+		private static function t_settings_node( array $s ): array {
+			$out = array();
+			foreach ( array( array( 'color', 'palette' ), array( 'color', 'gradients' ), array( 'color', 'duotone' ), array( 'typography', 'fontSizes' ), array( 'typography', 'fontFamilies' ), array( 'spacing', 'spacingSizes' ), array( 'shadow', 'presets' ) ) as $p ) {
+				foreach ( array( 'default', 'blocks', 'theme', 'custom' ) as $origin ) {
+					$list = $s[ $p[0] ][ $p[1] ][ $origin ] ?? null;
+					if ( ! is_array( $list ) ) { continue; }
+					$keep = array();
+					foreach ( $list as $preset ) { if ( is_array( $preset ) && ! preg_match( '/expression\s*\(|javascript\s*:/i', (string) json_encode( $preset ) ) ) { $keep[] = $preset; } }
+					if ( $keep ) { $out[ $p[0] ][ $p[1] ][ $origin ] = $keep; }
+				}
+			}
+			foreach ( array( array( 'spacing', 'blockGap' ), array( 'spacing', 'blockGap', 'left' ), array( 'spacing', 'blockGap', 'top' ), array( 'layout', 'contentSize' ), array( 'layout', 'wideSize' ) ) as $p ) {
+				$v = $s; foreach ( $p as $seg ) { $v = is_array( $v ) && array_key_exists( $seg, $v ) ? $v[ $seg ] : null; }
+				if ( ! is_string( $v ) || preg_match( '/expression\s*\(|javascript\s*:/i', $v ) ) { continue; }
+				if ( 3 === count( $p ) ) { $out[ $p[0] ][ $p[1] ][ $p[2] ] = $v; } else { $out[ $p[0] ][ $p[1] ] = $v; }
+			}
+			return $out;
 		}
 		private static function t_clean( array $a, bool $styles ): array {
 			$out = array();

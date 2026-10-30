@@ -150,7 +150,7 @@ if ( ! function_exists( 'd5b_risky_note' ) ) {
 	/** The plain risk note shown under a category's "Also allow risky actions" box. */
 	function d5b_risky_note( string $slug ): string {
 		$notes = array(
-			'settings'   => 'Can change the homepage, permalinks, time zone and whether search engines index the site. A wrong value is easy to put back from the change history, but visitors see it in the meantime.',
+			'settings'   => 'Can change the homepage, permalinks, time zone, site language and whether search engines index the site. A wrong value is easy to put back from the change history, but visitors see it in the meantime.',
 			'templates'  => 'Changes the theme\'s templates and global styles on block themes. A broken template can blank a page until it is put back.',
 			'appearance' => 'Can change Custom CSS and theme settings. A wrong CSS rule can hide the whole page until it is put back.',
 			'health'     => 'Can run a scheduled task now. Tasks belong to plugins and may do real work (send emails, process orders, run migrations).',
