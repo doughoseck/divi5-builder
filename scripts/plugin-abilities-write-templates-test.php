@@ -26,7 +26,7 @@ foreach ( array( 'parts', 'switches', 'abilities/categories', 'abilities/registe
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . substr( is_string( $detail ) ? $detail : json_encode( $detail ), 0, 900 ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
 
-const ADMIN = array( 'read', 'manage_options', 'edit_posts', 'unfiltered_html' );
+const ADMIN = array( 'read', 'manage_options', 'edit_theme_options', 'edit_posts', 'unfiltered_html' );
 const HOME  = '<!-- wp:paragraph --><p>Home</p><!-- /wp:paragraph -->';
 const HEAD  = '<!-- wp:site-title /-->';
 
@@ -109,14 +109,14 @@ foreach ( array( 'teststyle//nope' => 'not_found', 'otherstyle//home' => 'not_fo
 	$r = call( 'templates-update', array( 'id' => $bid, 'content' => HOME, 'expect_hash' => md5( HOME ) ) );
 	check( "id $bid: $want", $want === code( $r ) && 0 === writes(), code( $r ) );
 }
-check( 'unknown input refused', 'invalid_input' === code( call( 'templates-update', array( 'id' => 'teststyle//home', 'content' => $new, 'expect_hash' => md5( HOME ), 'type' => 'wp_template' ) ) ) );
+check( 'unknown input refused', 'invalid_input' === code( call( 'templates-update', array( 'id' => 'teststyle//home', 'content' => $new, 'expect_hash' => md5( HOME ), 'stylesheet' => 'x' ) ) ) );
 
-site( true, true, array( 'read', 'manage_options', 'edit_posts' ) );
+site( true, true, array( 'read', 'manage_options', 'edit_theme_options', 'edit_posts' ) );
 $r = call( 'templates-update', array( 'id' => 'teststyle//home', 'content' => $new, 'expect_hash' => md5( HOME ) ) );
 $h = handler( 'templates-update', array( 'id' => 'teststyle//home', 'content' => $new, 'expect_hash' => md5( HOME ) ) );
 check( 'without unfiltered_html: the permission refuses, and the handler answers needs_unfiltered_html; nothing written', 'FORBIDDEN' === $r && 'needs_unfiltered_html' === code( $h ) && 0 === writes() && 0 === count( hrows() ), array( $r, code( $h ) ) );
-site( true, true, array( 'read', 'edit_posts', 'unfiltered_html' ) );
-check( 'without manage_options: refused', 'FORBIDDEN' === call( 'templates-update', array( 'id' => 'teststyle//home', 'content' => $new, 'expect_hash' => md5( HOME ) ) ) && 'forbidden' === code( handler( 'templates-update', array( 'id' => 'teststyle//home', 'content' => $new, 'expect_hash' => md5( HOME ) ) ) ) && 0 === writes() );
+site( true, true, array( 'read', 'manage_options', 'edit_posts', 'unfiltered_html' ) );
+check( 'without edit_theme_options (manage_options is not enough): refused', 'FORBIDDEN' === call( 'templates-update', array( 'id' => 'teststyle//home', 'content' => $new, 'expect_hash' => md5( HOME ) ) ) && 'forbidden' === code( handler( 'templates-update', array( 'id' => 'teststyle//home', 'content' => $new, 'expect_hash' => md5( HOME ) ) ) ) && 0 === writes() );
 
 site();
 $list = call( 'templates-list' );
@@ -157,7 +157,7 @@ $part = '<!-- wp:site-title {"level":2} /-->';
 $r = call( 'templates-update', array( 'id' => 'teststyle//header', 'content' => $part, 'expect_hash' => md5( HEAD ) ) );
 $pp = posts_of( 'wp_template_part' );
 check( 'a template part becomes a wp_template_part post with its area and theme terms', is_array( $r ) && 'wp_template_part' === $r['type'] && 1 === count( $pp ) && array( 'header' ) === term_names( $pp[0]->ID, 'wp_template_part_area' ) && array( 'teststyle' ) === term_names( $pp[0]->ID, 'wp_theme' ) && 'wp_template_part' === hlast()['object_type'], array( $r, $pp ) );
-site( true, true, array( 'read', 'manage_options', 'unfiltered_html' ) );
+site( true, true, array( 'read', 'manage_options', 'edit_theme_options', 'unfiltered_html' ) );
 $r = call( 'templates-update', array( 'id' => 'teststyle//home', 'content' => $new, 'expect_hash' => md5( HOME ) ) );
 check( 'when WordPress drops the theme term (no assign_terms), the read-back finds no customised template: write_failed with the post id', 'write_failed' === code( $r ) && isset( edata( $r )['post_id'] ) && 0 === count( hrows() ), array( code( $r ), msg( $r ) ) );
 
@@ -193,7 +193,24 @@ check( 'a round trip of user (with version and the flag), as JSON text: replaced
 	&& array( 'json' => $prev ) === $row['before'] && false === $r['removed_insecure'] && ! isset( $r['warnings'] ), array( $r, $row ) );
 $h = md5( user_post()->post_content );
 $r = call( 'global-styles-set', array( 'styles' => array( 'settings' => array( 'layout' => array( 'contentSize' => '640px' ) ) ), 'expect_hash' => $h ) );
-check( 'the layer is replaced whole: styles left out are no longer in it', is_array( $r ) && ! isset( user_json()['styles'] ) && '640px' === user_json()['settings']['layout']['contentSize'] );
+check( 'MERGED as core does: settings given replaces settings, styles left out keeps its stored value', is_array( $r ) && '#222222' === ( user_json()['styles']['color']['text'] ?? null ) && '640px' === user_json()['settings']['layout']['contentSize'], user_json() );
+$h = md5( user_post()->post_content );
+$r = call( 'global-styles-set', array( 'styles' => array( 'settings' => array( 'layout' => array( 'wideSize' => '1200px' ) ) ), 'expect_hash' => $h ) );
+check( '... a part given replaces that part whole (no deep merge inside settings), as core', is_array( $r ) && '1200px' === user_json()['settings']['layout']['wideSize'] && ! isset( user_json()['settings']['layout']['contentSize'] ) && '#222222' === user_json()['styles']['color']['text'], user_json() );
+$h = md5( user_post()->post_content );
+$r = call( 'global-styles-set', array( 'styles' => array( 'styles' => null ), 'expect_hash' => $h ) );
+check( 'an explicit null removes that part; the other part is kept', is_array( $r ) && ! isset( user_json()['styles'] ) && '1200px' === user_json()['settings']['layout']['wideSize'] && true === user_json()['isGlobalStylesUserThemeJSON'], user_json() );
+$h = md5( user_post()->post_content );
+$c = count( hrows() );
+foreach ( array( array(), array( 'version' => 2, 'isGlobalStylesUserThemeJSON' => true ) ) as $bad ) {
+	$r = call( 'global-styles-set', array( 'styles' => $bad, 'expect_hash' => $h ) );
+	check( 'neither styles nor settings given: invalid_input, nothing written: ' . json_encode( $bad ), 'invalid_input' === code( $r ) && $h === md5( user_post()->post_content ) && $c === count( hrows() ), code( $r ) );
+}
+// The stored text spelled differently (key order, spacing) from what the write would store: the same data is no change.
+$p = user_post(); $p->post_content = '{ "settings": {"layout":{"wideSize":"1200px"}}, "isGlobalStylesUserThemeJSON": true, "version": 2 }';
+$h = md5( $p->post_content ); $c = count( hrows() ); $w = writes();
+$r = call( 'global-styles-set', array( 'styles' => array( 'settings' => array( 'layout' => array( 'wideSize' => '1200px' ) ) ), 'expect_hash' => $h ) );
+check( 'the same data in another key order and spelling: changed false, no write, no row (canonical compare)', is_array( $r ) && false === $r['changed'] && $c === count( hrows() ) && $w === writes() && $h === $r['user_hash'], $r );
 $h = md5( user_post()->post_content );
 foreach ( array( array( 'colors' => array() ), array( 'styles' => 'red' ), array( 'styles' => array( 1, 2 ) ), array( 1, 2 ) ) as $bad ) {
 	$r = call( 'global-styles-set', array( 'styles' => $bad, 'expect_hash' => $h ) );
@@ -207,11 +224,60 @@ check( 'markup in styles.css refused (core\'s validate_custom_css)', 'invalid_in
 check( 'text holding [redacted] is masked_read', 'masked_read' === code( call( 'global-styles-set', array( 'styles' => array( 'styles' => array( 'color' => array( 'text' => '[redacted]' ) ) ), 'expect_hash' => $h ) ) ) );
 $r = call( 'global-styles-set', array( 'styles' => array( 'styles' => array( 'css' => 'p{color:red}' ) ), 'expect_hash' => $h ) );
 check( 'custom CSS is kept for a caller with edit_css', is_array( $r ) && 'p{color:red}' === user_json()['styles']['css'] && false === $r['removed_insecure'], $r );
-site( true, true, array( 'read', 'manage_options', 'edit_posts' ) );
+site( true, true, array( 'read', 'manage_options', 'edit_theme_options', 'edit_posts' ) );
 $r = call( 'global-styles-set', array( 'styles' => array( 'styles' => array( 'css' => 'p{color:red}', 'color' => array( 'text' => '#333' ) ) ), 'expect_hash' => md5( '' ) ) );
 check( 'without edit_css the custom CSS is removed by the sanitising, the rest kept', is_array( $r ) && ! isset( user_json()['styles']['css'] ) && '#333' === user_json()['styles']['color']['text'] && true === $r['removed_insecure'], array( $r, user_json() ) );
-site( true, true, array( 'read', 'edit_posts', 'unfiltered_html' ) );
-check( 'without manage_options: refused', 'FORBIDDEN' === call( 'global-styles-set', array( 'styles' => array(), 'expect_hash' => md5( '' ) ) ) && 0 === writes() );
+site( true, true, array( 'read', 'manage_options', 'edit_posts', 'unfiltered_html' ) );
+check( 'without edit_theme_options (manage_options is not enough): refused', 'FORBIDDEN' === call( 'global-styles-set', array( 'styles' => array(), 'expect_hash' => md5( '' ) ) ) && 0 === writes() );
+// (edit_posts too: WordPress assigns the wp_theme term of a new post only for a user who may assign terms, edit_posts.)
+site( true, true, array( 'read', 'edit_posts', 'edit_theme_options', 'unfiltered_html' ) );
+$r = call( 'global-styles-set', array( 'styles' => array( 'styles' => array( 'color' => array( 'text' => '#444' ) ) ), 'expect_hash' => md5( '' ) ) );
+check( 'edit_theme_options alone (no manage_options): the reads and both writes are allowed, as core\'s controllers (fix wave M8)', is_array( $r ) && true === $r['changed'] && is_array( call( 'global-styles-get' ) ) && is_array( call( 'templates-list' ) )
+	&& is_array( call( 'templates-update', array( 'id' => 'teststyle//home', 'content' => HEAD, 'expect_hash' => md5( HOME ) ) ) ), $r );
+
+echo "global-styles-set: css at any depth (fix wave M3)\n";
+site();
+foreach ( array( array( 'styles' => array( 'blocks' => array( 'core/paragraph' => array( 'css' => 'p{}</style><script>x</script>' ) ) ) ), array( 'styles' => array( 'elements' => array( 'link' => array( 'css' => '<b>' ) ) ) ), array( 'settings' => array( 'custom' => array( 'css' => '</STYLE >' ) ) ) ) as $bad ) {
+	$r = call( 'global-styles-set', array( 'styles' => $bad, 'expect_hash' => md5( '' ) ) );
+	check( 'markup in a nested css refused: ' . substr( json_encode( $bad ), 0, 60 ), 'invalid_input' === code( $r ) && false !== strpos( msg( $r ), '.css' ) && 0 === writes(), array( code( $r ), msg( $r ) ) );
+}
+$r = call( 'global-styles-set', array( 'styles' => array( 'styles' => array( 'blocks' => array( 'core/paragraph' => array( 'css' => 'color:red; & a{color:blue}' ) ) ) ), 'expect_hash' => md5( '' ) ) );
+check( 'per-block css without markup is accepted', is_array( $r ) && 'color:red; & a{color:blue}' === user_json()['styles']['blocks']['core/paragraph']['css'], $r );
+
+echo "global-styles-set: hidden keys (fix wave I4, break-it a9 / a10)\n";
+site();
+// The site owner's layer, made in the Site Editor or by a design-token plugin, holds a key the scrubber treats as secret.
+$tokens = '{"settings":{"custom":{"tokens":{"radius":"4px","gap":"1rem"},"brand":"#123"}},"isGlobalStylesUserThemeJSON":true,"version":2}';
+wp_insert_post( array( 'post_type' => 'wp_global_styles', 'post_status' => 'publish', 'post_title' => 'Custom Styles', 'post_name' => 'wp-global-styles-teststyle', 'post_content' => $tokens, 'tax_input' => array( 'wp_theme' => array( 'teststyle' ) ) ) );
+$w0 = writes();
+$g = call( 'global-styles-get' );
+check( 'global-styles-get: user without the secret-named key, and masked true', is_array( $g ) && ! isset( $g['user']['settings']['custom']['tokens'] ) && '#123' === $g['user']['settings']['custom']['brand'] && true === ( $g['masked'] ?? null ) && md5( $tokens ) === $g['user_hash'], $g );
+check( '... and the merged content does not carry it either', false === strpos( (string) $g['content'], 'radius' ), $g['content'] );
+$u = $g['user']; $u['settings']['custom']['brand'] = '#456';
+$r = call( 'global-styles-set', array( 'styles' => $u, 'expect_hash' => $g['user_hash'] ) );
+check( 'writing back what was read: not_allowed (the stored layer holds a value under a secret-named key); the tokens survive, nothing written, no row', 'not_allowed' === code( $r ) && false !== strpos( msg( $r ), 'Site Editor' ) && $tokens === user_post()->post_content && $w0 === writes() && 0 === count( hrows() ), array( code( $r ), msg( $r ) ) );
+$r = call( 'global-styles-set', array( 'styles' => array( 'styles' => array( 'color' => array( 'text' => '#000' ) ) ), 'expect_hash' => $g['user_hash'] ) );
+check( '... a write of the other part only is refused too (the history would keep the hidden value)', 'not_allowed' === code( $r ) && $tokens === user_post()->post_content );
+site();
+$r = call( 'global-styles-set', array( 'styles' => array( 'settings' => array( 'custom' => array( 'api_key' => 'OLDSECRETVALUE-1234-xyz', 'brand' => '#123' ) ) ), 'expect_hash' => md5( '' ) ) );
+check( 'a new layer holding a secret-named key is refused; nothing written, no row', 'invalid_input' === code( $r ) && 0 === writes() && 0 === count( hrows() ), array( code( $r ), msg( $r ) ) );
+$g = call( 'global-styles-get' );
+check( 'a layer with nothing hidden reads without masked', is_array( $g ) && ! isset( $g['masked'] ), $g );
+global $wpdb;
+check( 'no history row anywhere holds a secret-named value', false === strpos( json_encode( $wpdb->tables[ d5b_history_table() ] ?? array() ), 'OLDSECRETVALUE-1234-xyz' ) && false === strpos( json_encode( $wpdb->tables[ d5b_history_table() ] ?? array() ), 'radius' ) );
+
+echo "templates-update: type (fix wave M2)\n";
+site();
+// A template and a template part with the same slug: core keeps them apart by post type.
+$GLOBALS['T_block_templates'][] = (object) array( 'id' => 'teststyle//header', 'slug' => 'header', 'theme' => 'teststyle', 'type' => 'wp_template', 'title' => 'Header page', 'description' => '', 'source' => 'theme', 'status' => 'publish', 'has_theme_file' => true, 'is_custom' => false, 'wp_id' => null, 'content' => HOME );
+$r = call( 'templates-update', array( 'id' => 'teststyle//header', 'content' => '<!-- wp:site-tagline /-->', 'expect_hash' => md5( HEAD ) ) );
+check( 'without type, an id that is both a template and a part: ambiguous, naming both; nothing written', 'ambiguous' === code( $r ) && array( 'wp_template', 'wp_template_part' ) === ( edata( $r )['types'] ?? null ) && 0 === writes(), array( code( $r ), edata( $r ) ) );
+$r = call( 'templates-update', array( 'id' => 'teststyle//header', 'content' => '<!-- wp:site-tagline /-->', 'expect_hash' => md5( HEAD ), 'type' => 'wp_template_part' ) );
+check( 'type wp_template_part: the part is updated, the template is untouched', is_array( $r ) && 'wp_template_part' === $r['type'] && 1 === count( posts_of( 'wp_template_part' ) ) && 0 === count( posts_of( 'wp_template' ) ), $r );
+$r = call( 'templates-update', array( 'id' => 'teststyle//header', 'content' => '<!-- wp:site-tagline /-->', 'expect_hash' => md5( HOME ), 'type' => 'wp_template' ) );
+check( 'type wp_template: the template of that slug is updated (its own hash)', is_array( $r ) && 'wp_template' === $r['type'] && 1 === count( posts_of( 'wp_template' ) ), $r );
+check( 'a type outside the two is invalid_input', 'invalid_input' === code( handler( 'templates-update', array( 'id' => 'teststyle//header', 'content' => HEAD, 'expect_hash' => md5( HEAD ), 'type' => 'page' ) ) ) );
+check( 'type wp_template_part for an id that is only a template: not_found', 'not_found' === code( call( 'templates-update', array( 'id' => 'teststyle//home', 'content' => HEAD, 'expect_hash' => md5( HOME ), 'type' => 'wp_template_part' ) ) ) );
 
 echo "\n" . ( $n - $failed ) . " of $n passed\n";
 exit( $failed ? 1 : 0 );

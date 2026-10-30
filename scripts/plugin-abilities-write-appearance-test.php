@@ -21,7 +21,7 @@ foreach ( array( 'parts', 'switches', 'abilities/categories', 'abilities/registe
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . ( is_string( $detail ) ? $detail : json_encode( $detail ) ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
 
-const ADMIN = array( 'read', 'manage_options', 'edit_posts', 'unfiltered_html' );
+const ADMIN = array( 'read', 'manage_options', 'edit_theme_options', 'edit_posts', 'unfiltered_html' );
 
 class T_Th { function get_stylesheet() { return 'child'; } function get_template() { return 'parent'; } function get( $k ) { return 'Child'; } function parent() { return false; } function is_block_theme() { return false; } }
 function wp_get_theme() { return $GLOBALS['T_theme']; }
@@ -85,11 +85,11 @@ check( 'nothing was written by any refusal above', 0 === count( hrows() ) );
 site( true );
 $r = call( 'appearance-theme-mod-set', array( 'name' => 'accent', 'value' => '#00ff00' ) );
 $row = hlast();
-check( 'a new mod is set; the row: theme_mod, id 0, update, before absent, after the value, summary', is_array( $r ) && '#00ff00' === mods()['accent'] && true === $r['changed'] && 1 === count( hrows() )
-	&& 'theme_mod' === $row['object_type'] && 0 === (int) $row['object_id'] && 'update' === $row['action'] && 'divi5-builder/appearance-theme-mod-set' === $row['ability'] && array( 'absent' => true ) === $row['before'] && array( 'value' => '#00ff00' ) === $row['after'] && 'Set theme mod accent' === $row['summary'], array( $r, $row ) );
+check( 'a new mod is set; the row: theme_mod, id 0, update, before name + theme + absent, after name + theme + the value, summary', is_array( $r ) && '#00ff00' === mods()['accent'] && true === $r['changed'] && 1 === count( hrows() )
+	&& 'theme_mod' === $row['object_type'] && 0 === (int) $row['object_id'] && 'update' === $row['action'] && 'divi5-builder/appearance-theme-mod-set' === $row['ability'] && array( 'name' => 'accent', 'theme' => 'child', 'absent' => true ) === $row['before'] && array( 'name' => 'accent', 'theme' => 'child', 'value' => '#00ff00' ) === $row['after'] && 'Set theme mod accent' === $row['summary'], array( $r, $row ) );
 $r = call( 'appearance-theme-mod-set', array( 'name' => 'accent', 'value' => '#0000ff' ) );
 $row = hlast();
-check( 'changing it: before holds the old value', '#0000ff' === mods()['accent'] && array( 'value' => '#00ff00' ) === $row['before'] && 2 === count( hrows() ), $row );
+check( 'changing it: before holds the name, the theme (stylesheet) and the old value', '#0000ff' === mods()['accent'] && array( 'name' => 'accent', 'theme' => 'child', 'value' => '#00ff00' ) === $row['before'] && 2 === count( hrows() ), $row );
 $r = call( 'appearance-theme-mod-set', array( 'name' => 'accent', 'value' => '#0000ff' ) );
 check( 'the same value again: changed false, no write, no new row', is_array( $r ) && false === $r['changed'] && 2 === count( hrows() ) );
 foreach ( array( 42, 3.5, true, false, 'text', array( 'a' => 1, 'b' => array( 1, 2, 'x' ) ), array( 1, 2, 3 ) ) as $i => $val ) {
@@ -122,7 +122,7 @@ echo "theme mod delete\n";
 site( true );
 $r = call( 'appearance-theme-mod-delete', array( 'name' => 'layout' ) );
 $row = hlast();
-check( 'delete removes the mod; the row keeps the full old value; action delete; after absent', is_array( $r ) && true === $r['deleted'] && ! array_key_exists( 'layout', mods() ) && array( 'value' => array( 'cols' => 3, 'wide' => true ) ) === $row['before'] && array( 'absent' => true ) === $row['after']
+check( 'delete removes the mod; the row keeps the name, theme and full old value; action delete; after name + theme + absent', is_array( $r ) && true === $r['deleted'] && ! array_key_exists( 'layout', mods() ) && array( 'name' => 'layout', 'theme' => 'child', 'value' => array( 'cols' => 3, 'wide' => true ) ) === $row['before'] && array( 'name' => 'layout', 'theme' => 'child', 'absent' => true ) === $row['after']
 	&& 'delete' === $row['action'] && 'theme_mod' === $row['object_type'] && 'Deleted theme mod layout' === $row['summary'], array( $r, $row ) );
 $n0 = count( hrows() );
 $r = call( 'appearance-theme-mod-delete', array( 'name' => 'layout' ) );
@@ -144,13 +144,42 @@ $d = call( 'appearance-theme-mod-delete', array( 'name' => 'holder2' ) );
 check( 'set and delete are refused not_allowed; the value stays; no row', 'not_allowed' === code( $a ) && 'not_allowed' === code( $b ) && 'not_allowed' === code( $c ) && 'not_allowed' === code( $d ) && 'sk-live-xyz' === mods()['holder']['api_key'] && $n0 === count( hrows() ), array( code( $a ), code( $b ), code( $c ), code( $d ) ) );
 
 echo "permissions\n";
-site( true, array( 'read', 'edit_posts' ) );
-check( 'without manage_options the theme mod abilities are not allowed', 'FORBIDDEN' === call( 'appearance-theme-mod-set', array( 'name' => 'x', 'value' => 1 ) ) && 'FORBIDDEN' === call( 'appearance-theme-mod-delete', array( 'name' => 'header_color' ) ) && 'forbidden' === code( handler( 'appearance-theme-mod-set', array( 'name' => 'x', 'value' => 1 ) ) ) );
-site( true, array( 'read', 'manage_options', 'edit_posts' ) );
+site( true, array( 'read', 'edit_posts', 'manage_options' ) );
+check( 'without edit_theme_options the theme mod abilities are not allowed (manage_options is not enough)', 'FORBIDDEN' === call( 'appearance-theme-mod-set', array( 'name' => 'x', 'value' => 1 ) ) && 'FORBIDDEN' === call( 'appearance-theme-mod-delete', array( 'name' => 'header_color' ) ) && 'forbidden' === code( handler( 'appearance-theme-mod-set', array( 'name' => 'x', 'value' => 1 ) ) ) && 'forbidden' === code( handler( 'appearance-theme-mod-delete', array( 'name' => 'header_color' ) ) ) && ! isset( mods()['x'] ) );
+site( true, array( 'read', 'edit_theme_options' ) );
+check( 'edit_theme_options alone allows the theme mod abilities, as core\'s Customizer (fix wave M8)', is_array( call( 'appearance-theme-mod-set', array( 'name' => 'x', 'value' => 1 ) ) ) && 1 === mods()['x'] && is_array( call( 'appearance-theme-mod-delete', array( 'name' => 'x' ) ) ) );
+site( true, array( 'read', 'manage_options', 'edit_theme_options', 'edit_posts' ) );
 css_is( 'a{}' );
 check( 'without edit_css (unfiltered_html) the CSS ability is not allowed, in the permission callback and in the handler; theme mods still work', 'FORBIDDEN' === call( 'appearance-custom-css-set', array( 'css' => 'b{}', 'expect_hash' => md5( 'a{}' ) ) ) && 'forbidden' === code( handler( 'appearance-custom-css-set', array( 'css' => 'b{}', 'expect_hash' => md5( 'a{}' ) ) ) ) && 'a{}' === wp_get_custom_css() && is_array( call( 'appearance-theme-mod-set', array( 'name' => 'x', 'value' => 1 ) ) ) );
 site( true, array( 'read', 'edit_css' ) );
-check( 'edit_css alone allows the CSS ability (theme mods need manage_options)', true === d5b_ability_permit( 'divi5-builder/appearance-custom-css-set', array() ) && 'FORBIDDEN' === call( 'appearance-theme-mod-set', array( 'name' => 'x', 'value' => 1 ) ) );
+css_is( 'a{}' );
+check( 'edit_css alone is not enough for the CSS ability (core\'s Customizer needs edit_theme_options too), in the permission callback and the handler', 'FORBIDDEN' === call( 'appearance-custom-css-set', array( 'css' => 'b{}', 'expect_hash' => md5( 'a{}' ) ) ) && 'forbidden' === code( handler( 'appearance-custom-css-set', array( 'css' => 'b{}', 'expect_hash' => md5( 'a{}' ) ) ) ) && 'a{}' === wp_get_custom_css() );
+site( true, array( 'read', 'edit_theme_options', 'edit_css' ) );
+check( 'edit_theme_options and edit_css allow the CSS ability', true === d5b_ability_permit( 'divi5-builder/appearance-custom-css-set', array() ) );
+
+echo "an editor (break-it a8)\n";
+// core gives editors unfiltered_html, and edit_css maps to unfiltered_html: an editor has edit_css but not edit_theme_options.
+$editor = array( 'read', 'edit_posts', 'publish_posts', 'edit_others_posts', 'edit_pages', 'edit_others_pages', 'publish_pages', 'unfiltered_html', 'moderate_comments', 'manage_categories' );
+site( true, $editor );
+css_is( '.site{color:#222}' );
+$r1 = handler( 'appearance-custom-css-set', array( 'css' => 'body{display:none}', 'expect_hash' => 'guess' ) );
+check( 'an editor cannot replace the Custom CSS: refused before any hash is checked (no hash handed back)', 'FORBIDDEN' === call( 'appearance-custom-css-set', array( 'css' => 'body{display:none}', 'expect_hash' => 'guess' ) ) && 'forbidden' === code( $r1 ) && null === ( is_wp_error( $r1 ) ? $r1->get_error_data() : 'x' ) && '.site{color:#222}' === wp_get_custom_css() && array() === $GLOBALS['T_css_calls'] );
+site( true, array( 'read', 'edit_theme_options', 'edit_css' ) ); // may write the CSS, may not read it (appearance-get: manage_options)
+css_is( '.site{color:#222}' );
+$r = call( 'appearance-custom-css-set', array( 'css' => 'body{display:none}', 'expect_hash' => 'guess' ) );
+check( 'a caller who cannot read the stylesheet gets stale WITHOUT the current hash', 'stale' === code( $r ) && ! isset( ( is_wp_error( $r ) ? (array) $r->get_error_data() : array() )['hash'] ) && false === strpos( json_encode( is_wp_error( $r ) ? array( $r->get_error_message(), $r->get_error_data() ) : $r ), md5( '.site{color:#222}' ) ) && '.site{color:#222}' === wp_get_custom_css(), is_wp_error( $r ) ? $r->get_error_data() : $r );
+check( '... and appearance-get is refused to that caller', 'FORBIDDEN' === call( 'appearance-get' ) );
+
+echo "the stored stylesheet, unfiltered\n";
+site( true );
+css_is( 'a{}' );
+$GLOBALS['T_custom_css_filter'] = function ( $css ) { return $css . '/* added by a plugin on output */'; };
+$a = call( 'appearance-get' );
+check( 'appearance-get hashes the stored content, not what the wp_get_custom_css filter prints', is_array( $a ) && md5( 'a{}' ) === $a['custom_css_hash'] && 'a{}' === $a['custom_css'], $a );
+$r = call( 'appearance-custom-css-set', array( 'css' => 'b{}', 'expect_hash' => $a['custom_css_hash'] ) );
+$row = hlast();
+check( '... the write accepts that hash, and the row\'s before is the stored stylesheet (no filter output)', is_array( $r ) && array( 'css' => 'a{}' ) === $row['before'] && array( 'css' => 'b{}' ) === $row['after'] && md5( 'b{}' ) === $r['hash'], array( $r, $row ) );
+unset( $GLOBALS['T_custom_css_filter'] );
 
 echo "custom css\n";
 site( true );

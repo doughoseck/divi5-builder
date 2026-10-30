@@ -1562,9 +1562,11 @@ function remove_theme_mod( $name ) {
 	unset( $GLOBALS['T_theme_mods'][ $name ] );
 }
 function wp_get_custom_css_post( $stylesheet = '' ) { $p = $GLOBALS['T_custom_css'] ?? null; return is_object( $p ) ? $p : null; }
+// As core: the post's content through the wp_get_custom_css filter (T_custom_css_filter, a callable, stands for it).
 function wp_get_custom_css( $stylesheet = '' ) {
-	$p = wp_get_custom_css_post( $stylesheet );
-	return is_object( $p ) ? (string) ( $p->post_content ?? '' ) : '';
+	$p   = wp_get_custom_css_post( $stylesheet );
+	$css = is_object( $p ) ? (string) ( $p->post_content ?? '' ) : '';
+	return is_callable( $GLOBALS['T_custom_css_filter'] ?? null ) ? (string) call_user_func( $GLOBALS['T_custom_css_filter'], $css ) : $css;
 }
 function wp_update_custom_css_post( $css, $args = array() ) {
 	$GLOBALS['T_css_calls'][] = $css;

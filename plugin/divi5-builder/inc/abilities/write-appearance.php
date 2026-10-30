@@ -7,15 +7,19 @@
  * collects them); nothing is registered with WordPress from here.
  *
  * Rules (design 2026-10-30, "Appearance" and "Guardrails"):
- *  - All three are risky (the Appearance risky switch) and need their capability: manage_options for theme mods, edit_css
- *    for Custom CSS (checked by the permission callback and again by the handler).
+ *  - All three are risky (the Appearance risky switch) and need their capability, as core's Customizer does:
+ *    edit_theme_options for theme mods, edit_theme_options AND edit_css for Custom CSS (checked by the permission callback
+ *    and again by the handler). A stale Custom CSS answer carries the current hash only for a caller who may read the
+ *    stylesheet (appearance-get: manage_options).
  *  - Theme mod names: plain ASCII only, never nav_menu_locations, custom_css_post_id or sidebars_widgets (other features
  *    own those), never a secret-named name, and never a name that differs from an existing one only by case. A mod whose
  *    current value holds a secret-named key cannot be set or deleted (the history could not keep it in full).
  *  - A theme mod value is a scalar or a JSON-safe array of at most 64 KB encoded. Set through set_theme_mod, deleted
- *    through remove_theme_mod. The history row (object_type theme_mod, id 0) keeps the old value, or absent.
- *  - Custom CSS carries expect_hash (md5 of the current stylesheet; stale otherwise), at most 256 KB, no </style, no
- *    [redacted] (a masked read is never written back). Written through wp_update_custom_css_post; the row (object_type
+ *    through remove_theme_mod. The history row (object_type theme_mod, id 0) keeps the mod's name and theme (the active
+ *    stylesheet) on both sides, with the old value, or absent.
+ *  - Custom CSS carries expect_hash (md5 of the stored stylesheet, the custom_css post's content as stored, unfiltered;
+ *    stale otherwise), at most 256 KB, no </style, no [redacted] (a masked read is never written back). @import and
+ *    expression() are stored as given, as core stores them. Written through wp_update_custom_css_post; the row (object_type
  *    custom_css, id of the custom_css post) keeps the whole previous stylesheet within the history's 8 MB.
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
@@ -82,9 +86,20 @@ if ( ! function_exists( 'd5b_wa_mod_name_ok' ) ) {
 		return is_string( $j ) ? $j : '';
 	}
 
+	/** Theme mods need edit_theme_options, as core's Customizer settings do. */
+	function d5b_wa_can_mods( array $in = array() ): bool {
+		return current_user_can( 'edit_theme_options' );
+	}
+
+	/** The history side of a theme mod: its name and theme, then the value or absent. */
+	function d5b_wa_mod_side( string $name, bool $has, $value = null ): array {
+		$side = array( 'name' => $name, 'theme' => (string) get_stylesheet() );
+		return $side + ( $has ? array( 'value' => $value ) : array( 'absent' => true ) );
+	}
+
 	/** The mod name from the input, checked, with the stored mods. @return array|WP_Error array( name, mods ) */
 	function d5b_wa_mod_start( array $in, array $allowed ) {
-		$e = d5b_rs_guard( 'appearance' ); if ( $e ) { return $e; }
+		if ( ! d5b_wa_can_mods() ) { return new WP_Error( 'forbidden', 'You do not have permission to change the theme settings (edit_theme_options).' ); }
 		$e = d5b_wa_gate(); if ( $e ) { return $e; }
 		$e = d5b_wa_unknown( $in, $allowed ); if ( $e ) { return $e; }
 		$name = $in['name'] ?? null;
@@ -111,7 +126,7 @@ if ( ! function_exists( 'd5b_wa_mod_name_ok' ) ) {
 		$masked = d5b_wc_check_masked( $enc, $has ? d5b_wa_json( $old ) : '' );
 		if ( true !== $masked ) { return $masked; }
 		if ( $has && d5b_wc_unobject( $old ) === $value ) { return array( 'name' => $name, 'value' => $value, 'changed' => false ); }
-		$before = $has ? array( 'value' => d5b_wc_meta_value( $old ) ) : array( 'absent' => true );
+		$before = d5b_wa_mod_side( $name, $has, $has ? d5b_wc_meta_value( $old ) : null );
 		$big = d5b_wc_check_content_size( d5b_wa_json( $before ) ); if ( true !== $big ) { return $big; }
 		set_theme_mod( $name, $value );
 		$now   = get_theme_mods();
@@ -122,7 +137,7 @@ if ( ! function_exists( 'd5b_wa_mod_name_ok' ) ) {
 		}
 		$out = array( 'name' => $name, 'value' => $after, 'changed' => true );
 		if ( d5b_wa_json( $after ) !== $enc ) { $out['warnings'] = array( 'WordPress stored the theme mod differently from what was given (another plugin may change it); the stored value is in value.' ); }
-		$hid = d5b_wc_history_row( 'divi5-builder/appearance-theme-mod-set', 'theme_mod', 0, 'update', $before, array( 'value' => $after ), 'Set theme mod ' . $name );
+		$hid = d5b_wc_history_row( 'divi5-builder/appearance-theme-mod-set', 'theme_mod', 0, 'update', $before, d5b_wa_mod_side( $name, true, $after ), 'Set theme mod ' . $name );
 		if ( $hid < 1 ) { $out['_history_failed'] = true; }
 		return $out;
 	}
@@ -134,30 +149,35 @@ if ( ! function_exists( 'd5b_wa_mod_name_ok' ) ) {
 		if ( ! array_key_exists( $name, $mods ) ) { return new WP_Error( 'not_found', 'There is no theme mod named "' . $name . '".' ); }
 		$old = $mods[ $name ];
 		if ( ! d5b_wc_secret_free( $old ) ) { return d5b_wc_secret_error( 'theme mod' ); }
-		$before = array( 'value' => d5b_wc_meta_value( $old ) );
+		$before = d5b_wa_mod_side( $name, true, d5b_wc_meta_value( $old ) );
 		$big = d5b_wc_check_content_size( d5b_wa_json( $before ) ); if ( true !== $big ) { return $big; }
 		remove_theme_mod( $name );
 		$now = get_theme_mods();
 		if ( is_array( $now ) && array_key_exists( $name, $now ) ) { return new WP_Error( 'write_failed', 'WordPress did not remove the theme mod (another plugin may block it).' ); }
 		$out = array( 'name' => $name, 'deleted' => true );
-		$hid = d5b_wc_history_row( 'divi5-builder/appearance-theme-mod-delete', 'theme_mod', 0, 'delete', $before, array( 'absent' => true ), 'Deleted theme mod ' . $name );
+		$hid = d5b_wc_history_row( 'divi5-builder/appearance-theme-mod-delete', 'theme_mod', 0, 'delete', $before, d5b_wa_mod_side( $name, false ), 'Deleted theme mod ' . $name );
 		if ( $hid < 1 ) { $out['_history_failed'] = true; }
 		return $out;
 	}
 
 	// ---- Custom CSS
 
-	/** The Custom CSS of the active theme as appearance-get reads it. */
+	/**
+	 * The Custom CSS of the active theme as stored: the custom_css post's content, unfiltered (wp_get_custom_css runs the
+	 * wp_get_custom_css filter, which another plugin may use to add rules that are not stored). appearance-get hashes the same.
+	 */
 	function d5b_wa_current_css(): string {
-		return function_exists( 'wp_get_custom_css' ) ? (string) wp_get_custom_css( get_stylesheet() ) : '';
+		$p = function_exists( 'wp_get_custom_css_post' ) ? wp_get_custom_css_post( get_stylesheet() ) : null;
+		return is_object( $p ) ? (string) ( $p->post_content ?? '' ) : '';
 	}
 
-	function d5b_wa_can_css(): bool {
-		return current_user_can( 'edit_css' );
+	/** Custom CSS needs edit_theme_options AND edit_css, as core's Customizer does (custom_css setting). */
+	function d5b_wa_can_css( array $in = array() ): bool {
+		return current_user_can( 'edit_theme_options' ) && current_user_can( 'edit_css' );
 	}
 
 	function d5b_wa_h_css_set( array $in ) {
-		if ( ! d5b_wa_can_css() ) { return new WP_Error( 'forbidden', 'You do not have permission to change the Custom CSS.' ); }
+		if ( ! d5b_wa_can_css() ) { return new WP_Error( 'forbidden', 'You do not have permission to change the Custom CSS (edit_theme_options and edit_css).' ); }
 		$e = d5b_wa_gate(); if ( $e ) { return $e; }
 		$e = d5b_wa_unknown( $in, array( 'css', 'expect_hash' ) ); if ( $e ) { return $e; }
 		if ( ! isset( $in['css'] ) || ! is_string( $in['css'] ) ) { return new WP_Error( 'invalid_input', 'css is required: the whole new stylesheet as text ("" empties it).' ); }
@@ -169,7 +189,10 @@ if ( ! function_exists( 'd5b_wa_mod_name_ok' ) ) {
 		if ( true !== $ok ) { return $ok; }
 		$now = md5( $cur );
 		if ( ! hash_equals( $now, strtolower( $expect ) ) ) {
-			return new WP_Error( 'stale', 'The Custom CSS changed since it was read (the hash does not match). Read it again, apply the change to the new stylesheet and pass the new hash.', array( 'hash' => $now ) );
+			// The current hash only for a caller who may read the stylesheet: anyone else could otherwise skip the read.
+			$can_read = d5b_rs_ok( 'appearance' );
+			$msg      = 'The Custom CSS changed since it was read (the hash does not match). Read it again' . ( $can_read ? '' : ' (appearance-get, which needs manage_options)' ) . ', apply the change to the new stylesheet and pass the new hash.';
+			return $can_read ? new WP_Error( 'stale', $msg, array( 'hash' => $now ) ) : new WP_Error( 'stale', $msg );
 		}
 		$post = function_exists( 'wp_get_custom_css_post' ) ? wp_get_custom_css_post( get_stylesheet() ) : null;
 		if ( $cur === $css ) { return array( 'id' => is_object( $post ) ? (int) $post->ID : 0, 'hash' => $now, 'bytes' => strlen( $css ), 'changed' => false ); }
@@ -190,20 +213,20 @@ if ( ! function_exists( 'd5b_wa_mod_name_ok' ) ) {
 	$d5b_wa_name = array( 'type' => 'string', 'minLength' => 1, 'maxLength' => 255, 'description' => 'The theme mod name: plain ASCII letters, digits, _ - . : only.' );
 
 	d5b_wc_def( 'appearance-theme-mod-set', 'appearance', 'Set a theme setting',
-		'Sets one theme mod (a theme setting such as a colour or a layout choice) of the active theme. value is text, a number, true/false, or a list/object of those, at most 64 KB once encoded. A risky action: needs the Appearance risky switch. Refuses names that are not plain ASCII, nav_menu_locations, custom_css_post_id and sidebars_widgets (other features own them), secret-looking names, a name that differs from an existing theme mod only by case, a value or current value that holds a secret-named key, and text holding [redacted] (masked_read). Returns the stored value and whether it changed. One change-history row keeps the old value (or that there was none).',
+		'Sets one theme mod (a theme setting such as a colour or a layout choice) of the active theme. value is text, a number, true/false, or a list/object of those, at most 64 KB once encoded. A risky action: needs the Appearance risky switch and edit_theme_options (as the Customizer). Refuses names that are not plain ASCII, nav_menu_locations, custom_css_post_id and sidebars_widgets (other features own them), secret-looking names, a name that differs from an existing theme mod only by case, a value or current value that holds a secret-named key, and text holding [redacted] (masked_read). Returns the stored value and whether it changed. One change-history row keeps the name, the theme and the old value (or that there was none).',
 		array(
 			'name'  => $d5b_wa_name,
 			'value' => array( 'type' => array( 'string', 'integer', 'number', 'boolean', 'array', 'object' ), 'description' => 'The new value: text, a number, true/false, or a list/object of those.' ),
-		), array( 'name', 'value' ), 'd5b_wa_h_mod_set', d5b_rs_perm( 'appearance' ),
+		), array( 'name', 'value' ), 'd5b_wa_h_mod_set', 'd5b_wa_can_mods',
 		array( 'idempotent' => true ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'appearance-theme-mod-delete', 'appearance', 'Delete a theme setting',
-		'Removes one theme mod of the active theme, so the theme uses its default again. A risky action: needs the Appearance risky switch. The change-history row keeps the whole old value, so it can be put back. Returns the name and deleted true. Refuses a theme mod that does not exist (not_found), the same names as appearance-theme-mod-set and a theme mod whose value holds a secret-named key.',
-		array( 'name' => $d5b_wa_name ), array( 'name' ), 'd5b_wa_h_mod_delete', d5b_rs_perm( 'appearance' ),
+		'Removes one theme mod of the active theme, so the theme uses its default again. A risky action: needs the Appearance risky switch and edit_theme_options. The change-history row keeps the name, the theme and the whole old value, so it can be put back. Returns the name and deleted true. Refuses a theme mod that does not exist (not_found), the same names as appearance-theme-mod-set and a theme mod whose value holds a secret-named key.',
+		array( 'name' => $d5b_wa_name ), array( 'name' ), 'd5b_wa_h_mod_delete', 'd5b_wa_can_mods',
 		array( 'idempotent' => true ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'appearance-custom-css-set', 'appearance', 'Set the Custom CSS',
-		'Replaces the Custom CSS of the active theme (Appearance > Customize > Additional CSS) with css, the whole new stylesheet; "" empties it. Needs the edit_css capability and the Appearance risky switch. A wrong rule can hide the whole site until it is put back: the change-history row keeps the whole previous stylesheet. expect_hash is required: the custom_css_hash that appearance-get returned for the stylesheet you started from; if the stylesheet changed since, the answer is stale (with the current hash). Refuses css over 256 KB, css holding </style, and css holding [redacted] (masked_read). Returns id, hash (pass it as the next expect_hash), bytes and changed.',
+		'Replaces the Custom CSS of the active theme (Appearance > Customize > Additional CSS) with css, the whole new stylesheet; "" empties it. Needs edit_theme_options and edit_css (as the Customizer) and the Appearance risky switch. A wrong rule can hide the whole site until it is put back: the change-history row keeps the whole previous stylesheet. expect_hash is required: the custom_css_hash that appearance-get returned for the stylesheet you started from (md5 of the stored stylesheet); if the stylesheet changed since, the answer is stale (with the current hash when you may read it with appearance-get). Refuses css over 256 KB, css holding </style, and css holding [redacted] (masked_read); anything else, @import and expression() included, is stored as given, as WordPress stores it. Returns id, hash (pass it as the next expect_hash), bytes and changed.',
 		array(
 			'css'         => array( 'type' => 'string', 'maxLength' => 262144, 'description' => 'The whole new stylesheet, at most 256 KB. "" empties it.' ),
 			'expect_hash' => array( 'type' => 'string', 'description' => 'custom_css_hash from appearance-get (md5 of the current stylesheet).' ),

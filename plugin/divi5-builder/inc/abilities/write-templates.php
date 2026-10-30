@@ -6,11 +6,12 @@
  * collects them); nothing is registered with WordPress from here.
  *
  * Rules (design 2026-10-30, "Templates and global styles (block themes only)"):
- *  - Both are risky (the Templates risky switch) and need manage_options; templates-update also needs unfiltered_html
- *    (block markup), checked by the permission callback and again by the handler (needs_unfiltered_html).
+ *  - Both are risky (the Templates risky switch) and need edit_theme_options, as core's templates and global styles
+ *    controllers (fix wave M8); templates-update also needs unfiltered_html (block markup), checked by the permission
+ *    callback and again by the handler (needs_unfiltered_html).
  *  - On a classic theme (every Divi site) both answer { is_block_theme: false, note } and write nothing: no history row.
- *  - templates-update: id is theme//slug as templates-list returns it, of the active theme; it is looked up as a template,
- *    then as a template part. content (at most 1 MB) must parse as block markup (d5b_blocks_parse), must not bring back a
+ *  - templates-update: id is theme//slug as templates-list returns it, of the active theme; it is looked up as the given
+ *    type (wp_template or wp_template_part), or without one as both: an id that is both is ambiguous. content (at most 1 MB) must parse as block markup (d5b_blocks_parse), must not bring back a
  *    masked read ([redacted]), and expect_hash is md5 of the content templates-get returns (for a template the theme ships,
  *    the file's content). A customised template (source custom) is updated in place; a theme-file one becomes a customised
  *    post the way core's templates controller does it (prepare_item_for_database, the theme-file case): same slug, type,
@@ -18,13 +19,17 @@
  *    read-back must find WordPress using that post for the id. History: object_type the post type, object_id the post,
  *    before = the previous content in full + its source, revision_id when a revision holds the previous content.
  *  - global-styles-set: writes the USER layer only (the active theme's wp_global_styles post), never the merged data.
- *    styles is the new user layer: an object (or JSON text of one, at most 1 MB) with styles and/or settings; the version
- *    and isGlobalStylesUserThemeJSON keys a read returns are accepted and set by the plugin. It replaces the layer whole.
+ *    styles is an object (or JSON text of one, at most 1 MB) with styles and/or settings; the version and
+ *    isGlobalStylesUserThemeJSON keys a read returns are accepted and set by the plugin. MERGED as core merges it (fix
+ *    wave I4): a part left out keeps its stored value; an explicit null removes it (core keeps it: the one difference).
  *    Built as core's global styles controller builds it (prepare_item_for_database: styles, settings, the flag, version
- *    LATEST_SCHEMA; markup in styles.css refused), then sanitised as core's kses filter wp_filter_global_styles_post does
- *    (the flag taken out, WP_Theme_JSON::remove_insecure_properties, the flag put back), always, whoever the caller is.
- *    expect_hash is user_hash from global-styles-get (md5 of the stored JSON, md5 of '' when there is none yet). History:
- *    object_type wp_global_styles, before = the previous JSON text.
+ *    LATEST_SCHEMA; markup in styles.css refused, here in every css key at any depth), then sanitised as core's kses
+ *    filter wp_filter_global_styles_post does (the flag taken out, WP_Theme_JSON::remove_insecure_properties, the flag
+ *    put back), always, whoever the caller is. A stored layer holding a value under a secret-named key (hidden on
+ *    reading: global-styles-get says masked) is not written over (not_allowed), and an input holding one is refused, so
+ *    the history never keeps one. No change (the same data, key order aside) writes nothing. expect_hash is user_hash
+ *    from global-styles-get (md5 of the stored JSON, md5 of '' when there is none yet). History: object_type
+ *    wp_global_styles, before = the previous JSON text.
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
@@ -68,16 +73,24 @@ if ( ! function_exists( 'd5b_wtpl_h_update' ) ) {
 
 	// ---- templates-update
 
-	/** The template of the active theme with this id: as a template, else as a template part; null when there is none. */
-	function d5b_wtpl_find( string $id ) {
+	/**
+	 * The template of the active theme with this id, of $type when given, else of either type; null when there is none.
+	 * A template and a template part may share a slug (core keeps them apart by post type): without a type, an id that is
+	 * both is ambiguous (fix wave M2). @return object|WP_Error|null
+	 */
+	function d5b_wtpl_find( string $id, ?string $type = null ) {
 		if ( ! function_exists( 'get_block_template' ) ) { return null; }
 		$theme = substr( $id, 0, (int) strpos( $id, '//' ) );
 		if ( $theme !== get_stylesheet() ) { return null; }
-		foreach ( array( 'wp_template', 'wp_template_part' ) as $type ) {
-			$t = get_block_template( $id, $type );
-			if ( is_object( $t ) && (string) ( $t->id ?? '' ) === $id ) { return $t; }
+		$hits = array();
+		foreach ( null === $type ? array( 'wp_template', 'wp_template_part' ) : array( $type ) as $ty ) {
+			$t = get_block_template( $id, $ty );
+			if ( is_object( $t ) && (string) ( $t->id ?? '' ) === $id ) { $hits[ $ty ] = $t; }
 		}
-		return null;
+		if ( count( $hits ) > 1 ) {
+			return new WP_Error( 'ambiguous', 'The active theme has both a template and a template part with the id "' . $id . '". Pass type: wp_template or wp_template_part.', array( 'types' => array_keys( $hits ) ) );
+		}
+		return $hits ? reset( $hits ) : null;
 	}
 
 	/** The post core's templates controller inserts for a theme-file template (prepare_item_for_database, update_item). */
@@ -99,7 +112,9 @@ if ( ! function_exists( 'd5b_wtpl_h_update' ) ) {
 	function d5b_wtpl_h_update( array $in ) {
 		$e = d5b_rs_guard( 'templates' ); if ( $e ) { return $e; }
 		$e = d5b_wtpl_gate(); if ( $e ) { return $e; }
-		$e = d5b_wtpl_unknown( $in, array( 'id', 'content', 'expect_hash' ) ); if ( $e ) { return $e; }
+		$e = d5b_wtpl_unknown( $in, array( 'id', 'content', 'expect_hash', 'type' ) ); if ( $e ) { return $e; }
+		$want = $in['type'] ?? null;
+		if ( null !== $want && ! in_array( $want, array( 'wp_template', 'wp_template_part' ), true ) ) { return new WP_Error( 'invalid_input', 'type must be wp_template or wp_template_part.' ); }
 		if ( ! d5b_rs_block_theme() ) { return d5b_rs_classic_note(); }
 		if ( ! current_user_can( 'unfiltered_html' ) ) {
 			return new WP_Error( 'needs_unfiltered_html', 'Templates are block markup, and saving them needs the unfiltered_html capability (an administrator on a single site). Without it WordPress would strip parts of the markup.' );
@@ -110,8 +125,9 @@ if ( ! function_exists( 'd5b_wtpl_h_update' ) ) {
 		if ( ! is_string( $content ) ) { return new WP_Error( 'invalid_input', 'content is required: the whole new block markup of the template.' ); }
 		if ( strlen( $content ) > d5b_wtpl_max_bytes() ) { return new WP_Error( 'invalid_input', 'content is too long: at most 1 MB.' ); }
 		if ( 1 !== preg_match( '//u', $content ) ) { return new WP_Error( 'invalid_input', 'content must be text (UTF-8).' ); }
-		$t = d5b_wtpl_find( $id );
-		if ( null === $t ) { return new WP_Error( 'not_found', 'The active theme has no template or template part with the id "' . $id . '". List them with templates-list.' ); }
+		$t = d5b_wtpl_find( $id, $want );
+		if ( is_wp_error( $t ) ) { return $t; }
+		if ( null === $t ) { return new WP_Error( 'not_found', 'The active theme has no ' . ( null === $want ? 'template or template part' : $want ) . ' with the id "' . $id . '". List them with templates-list.' ); }
 		$cur    = (string) ( $t->content ?? '' );
 		$custom = 'custom' === (string) ( $t->source ?? '' );
 		$source = $custom ? 'custom' : (string) ( $t->source ?? 'theme' );
@@ -165,6 +181,22 @@ if ( ! function_exists( 'd5b_wtpl_h_update' ) ) {
 		return $v;
 	}
 
+	/**
+	 * The first css value holding markup, at any depth (styles.css, styles.blocks.<block>.css, any other css key), as a
+	 * dotted path; null when there is none. Core's controller checks styles.css only (validate_custom_css: #</?\w+#); a
+	 * per-block css is printed in a style element too, so it gets the same check.
+	 */
+	function d5b_wtpl_css_markup( $v, string $path = '', int $depth = 0 ): ?string {
+		if ( ! is_array( $v ) || $depth > 32 ) { return null; }
+		foreach ( $v as $k => $x ) {
+			$p = '' === $path ? (string) $k : $path . '.' . $k;
+			if ( 'css' === $k && is_string( $x ) && 1 === preg_match( '#</?\w+#', $x ) ) { return $p; }
+			$found = d5b_wtpl_css_markup( $x, $p, $depth + 1 );
+			if ( null !== $found ) { return $found; }
+		}
+		return null;
+	}
+
 	/** The styles input as an array (the new user layer). @return array|WP_Error */
 	function d5b_wtpl_styles_input( $v ) {
 		if ( is_string( $v ) ) {
@@ -191,23 +223,41 @@ if ( ! function_exists( 'd5b_wtpl_h_update' ) ) {
 		if ( ! array_key_exists( 'styles', $in ) || null === $in['styles'] ) { return new WP_Error( 'invalid_input', 'styles is required: the new user layer, an object with styles and/or settings.' ); }
 		$layer = d5b_wtpl_styles_input( $in['styles'] );
 		if ( is_wp_error( $layer ) ) { return $layer; }
+		$given = false;
 		foreach ( $layer as $k => $v ) {
 			if ( in_array( $k, array( 'version', 'isGlobalStylesUserThemeJSON' ), true ) ) { continue; } // what a read returns; the plugin sets both
 			if ( ! in_array( $k, array( 'styles', 'settings' ), true ) ) { return new WP_Error( 'invalid_input', 'styles may hold only the keys styles and settings (and version and isGlobalStylesUserThemeJSON, which are set by the plugin), not "' . substr( preg_replace( '/[^A-Za-z0-9_\-]/', '', (string) $k ), 0, 100 ) . '".' ); }
-			if ( ! is_array( $v ) || ( array() !== $v && array_keys( $v ) === range( 0, count( $v ) - 1 ) ) ) { return new WP_Error( 'invalid_input', $k . ' must be an object.' ); }
+			$given = true;
+			if ( null === $v ) { continue; } // an explicit null removes that part of the layer
+			if ( ! is_array( $v ) || ( array() !== $v && array_keys( $v ) === range( 0, count( $v ) - 1 ) ) ) { return new WP_Error( 'invalid_input', $k . ' must be an object (or null to remove it).' ); }
 		}
-		// core's controller: markup in the custom CSS is refused (validate_custom_css).
-		if ( isset( $layer['styles']['css'] ) && is_string( $layer['styles']['css'] ) && 1 === preg_match( '#</?\w+#', $layer['styles']['css'] ) ) {
-			return new WP_Error( 'invalid_input', 'Markup is not allowed in CSS (styles.css).' );
-		}
+		if ( ! $given ) { return new WP_Error( 'invalid_input', 'styles must hold styles and/or settings: a part left out keeps its stored value, null removes it.' ); }
+		// core's controller: markup in the custom CSS is refused (validate_custom_css); here for every css key at any depth
+		// (per-block css too, fix wave M3).
+		$bad = d5b_wtpl_css_markup( $layer );
+		if ( null !== $bad ) { return new WP_Error( 'invalid_input', 'Markup is not allowed in CSS (' . $bad . ').' ); }
+		if ( ! d5b_wc_secret_free( $layer ) ) { return new WP_Error( 'invalid_input', 'styles holds a secret-named key; secrets are not written by an ability. Change it in the Site Editor.' ); }
 		list( $found, $cur ) = d5b_rs_user_styles();
+		// The stored layer: a value under a secret-named key is hidden on reading, would be lost or kept in the history in
+		// full, so such a layer is not written over (as theme mods and widgets).
+		$existing = '' === $cur ? array() : json_decode( $cur, true );
+		if ( '' !== $cur && ! is_array( $existing ) ) { return new WP_Error( 'not_allowed', 'The stored global styles are not valid JSON; edit them in the Site Editor.' ); }
+		if ( ! d5b_wc_secret_free( $existing ) ) { return new WP_Error( 'not_allowed', 'The stored global styles hold a value under a secret-named key; edit them in the Site Editor.' ); }
 		$ok = d5b_wc_check_masked( d5b_wtpl_json( $layer ), $cur ); if ( true !== $ok ) { return $ok; }
 		$ok = d5b_wtpl_check_hash( $in['expect_hash'] ?? null, $cur, 'global-styles-get user_hash' ); if ( true !== $ok ) { return $ok; }
 
-		// As core's controller builds it, then as core's kses filter cleans it: the flag out, remove_insecure_properties, the flag back.
+		// As core's controller builds it (prepare_item_for_database: a part left out keeps the stored one, from a layer
+		// that carries the isGlobalStylesUserThemeJSON flag), then as core's kses filter cleans it: the flag out,
+		// remove_insecure_properties, the flag back. Unlike core, an explicit null removes a part (core keeps it).
+		if ( empty( $existing['isGlobalStylesUserThemeJSON'] ) ) { $existing = array(); }
 		$config = array();
-		if ( isset( $layer['styles'] ) ) { $config['styles'] = $layer['styles']; }
-		if ( isset( $layer['settings'] ) ) { $config['settings'] = $layer['settings']; }
+		foreach ( array( 'styles', 'settings' ) as $part ) {
+			if ( array_key_exists( $part, $layer ) ) {
+				if ( null !== $layer[ $part ] ) { $config[ $part ] = $layer[ $part ]; }
+			} elseif ( isset( $existing[ $part ] ) ) {
+				$config[ $part ] = $existing[ $part ];
+			}
+		}
 		$config['version'] = WP_Theme_JSON::LATEST_SCHEMA;
 		$clean = WP_Theme_JSON::remove_insecure_properties( $config );
 		if ( ! is_array( $clean ) ) { return new WP_Error( 'write_failed', 'WordPress could not sanitise the styles.' ); }
@@ -216,7 +266,10 @@ if ( ! function_exists( 'd5b_wtpl_h_update' ) ) {
 		$removed = d5b_wtpl_json( d5b_wtpl_canon( array_diff_key( $clean, array( 'isGlobalStylesUserThemeJSON' => 1 ) ) ) ) !== d5b_wtpl_json( d5b_wtpl_canon( $config ) );
 		$json    = d5b_wtpl_json( $clean );
 		if ( '' === $json ) { return new WP_Error( 'invalid_input', 'styles could not be encoded as JSON.' ); }
-		if ( $json === $cur ) { return array( 'id' => $found, 'user_hash' => md5( $cur ), 'created' => false, 'changed' => false, 'removed_insecure' => $removed ); }
+		// No change: the stored layer holds the same data (key order and JSON spelling aside).
+		if ( '' !== $cur && is_array( $existing ) && array() !== $existing && d5b_wtpl_json( d5b_wtpl_canon( $clean ) ) === d5b_wtpl_json( d5b_wtpl_canon( json_decode( $cur, true ) ) ) ) {
+			return array( 'id' => $found, 'user_hash' => md5( $cur ), 'created' => false, 'changed' => false, 'removed_insecure' => $removed );
+		}
 		$big = d5b_wc_check_content_size( $cur ); if ( true !== $big ) { return $big; }
 
 		$pid = (int) WP_Theme_JSON_Resolver::get_user_global_styles_post_id();
@@ -243,16 +296,17 @@ if ( ! function_exists( 'd5b_wtpl_h_update' ) ) {
 	// ---- the definitions
 
 	d5b_wc_def( 'templates-update', 'templates', 'Update a block template',
-		'Replaces the block markup of one template or template part of the active block theme. id is theme//slug as templates-list returns it; content is the whole new markup (at most 1 MB) and must parse as blocks; expect_hash is the hash templates-get or templates-list returned (for a template the theme ships, the hash of the file\'s content); if it changed since, the answer is stale with the current hash. A risky action: needs the Templates risky switch, manage_options and unfiltered_html (needs_unfiltered_html otherwise); a broken template can blank a page until it is put back. A template the theme ships becomes a customised template (a wp_template or wp_template_part post), as the Site Editor does. Refuses text holding [redacted] (masked_read). On a classic theme it answers is_block_theme false with a note and changes nothing. Returns id, type, source, wp_id, hash (pass it as the next expect_hash), created and changed. One change-history row keeps the previous content in full and where it came from.',
+		'Replaces the block markup of one template or template part of the active block theme. id is theme//slug as templates-list returns it; type (optional) is wp_template or wp_template_part, needed when a template and a template part share the id (ambiguous otherwise); content is the whole new markup (at most 1 MB) and must parse as blocks; expect_hash is the hash templates-get or templates-list returned (for a template the theme ships, the hash of the file\'s content); if it changed since, the answer is stale with the current hash. A risky action: needs the Templates risky switch, edit_theme_options and unfiltered_html (needs_unfiltered_html otherwise); a broken template can blank a page until it is put back. A template the theme ships becomes a customised template (a wp_template or wp_template_part post), as the Site Editor does. Refuses text holding [redacted] (masked_read). On a classic theme it answers is_block_theme false with a note and changes nothing. Returns id, type, source, wp_id, hash (pass it as the next expect_hash), created and changed. One change-history row keeps the previous content in full and where it came from.',
 		array(
 			'id'          => array( 'type' => 'string', 'minLength' => 3, 'maxLength' => 255, 'description' => 'The template id as templates-list returns it, like twentytwentyfive//home.' ),
 			'content'     => array( 'type' => 'string', 'maxLength' => 1048576, 'description' => 'The whole new block markup, at most 1 MB.' ),
 			'expect_hash' => array( 'type' => 'string', 'description' => 'hash from templates-get or templates-list (md5 of the current content).' ),
+			'type'        => array( 'type' => 'string', 'enum' => array( 'wp_template', 'wp_template_part' ), 'description' => 'Optional: wp_template or wp_template_part; needed when a template and a template part share the id.' ),
 		), array( 'id', 'content', 'expect_hash' ), 'd5b_wtpl_h_update', 'd5b_wtpl_can_update',
 		array( 'idempotent' => true ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'global-styles-set', 'templates', 'Set the global styles',
-		'Replaces the site owner\'s layer of the global styles of the active block theme (the user layer only, never the theme\'s own theme.json, so theme updates still show through). styles is the whole new layer: an object (or JSON text of one, at most 1 MB) with styles and/or settings, as global-styles-get returns user (its version and isGlobalStylesUserThemeJSON are accepted and set by the plugin); a key left out is no longer in the layer. It is sanitised as WordPress sanitises global styles (unsafe values removed; custom CSS kept only with edit_css; markup in styles.css refused): removed_insecure says whether anything was removed. expect_hash is user_hash from global-styles-get; if the layer changed since, the answer is stale with the current hash. A risky action: needs the Templates risky switch and manage_options. Refuses text holding [redacted] (masked_read). On a classic theme it answers is_block_theme false with a note and changes nothing. Returns id, user_hash (pass it as the next expect_hash), created, changed and removed_insecure. One change-history row keeps the previous layer in full.',
+		'Changes the site owner\'s layer of the global styles of the active block theme (the user layer only, never the theme\'s own theme.json, so theme updates still show through). styles is an object (or JSON text of one, at most 1 MB) with styles and/or settings, as global-styles-get returns user (its version and isGlobalStylesUserThemeJSON are accepted and set by the plugin). As in WordPress, each of styles and settings that is given replaces that part whole, and a part left out keeps its stored value; null removes a part. It is sanitised as WordPress sanitises global styles (unsafe values removed; custom CSS kept only with edit_css; markup in any css value refused): removed_insecure says whether anything was removed. expect_hash is user_hash from global-styles-get; if the layer changed since, the answer is stale with the current hash. A risky action: needs the Templates risky switch and edit_theme_options. Refuses text holding [redacted] (masked_read), styles holding a secret-named key (invalid_input), and a stored layer holding a value under a secret-named key (not_allowed: global-styles-get shows it masked; edit it in the Site Editor). On a classic theme it answers is_block_theme false with a note and changes nothing. Returns id, user_hash (pass it as the next expect_hash), created, changed and removed_insecure. One change-history row keeps the previous layer in full.',
 		array(
 			'styles'      => array( 'type' => array( 'object', 'string' ), 'description' => 'The new user layer: { "styles": {...}, "settings": {...} }, or that as JSON text.' ),
 			'expect_hash' => array( 'type' => 'string', 'description' => 'user_hash from global-styles-get (md5 of the stored user layer).' ),
