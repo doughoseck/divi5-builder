@@ -18,6 +18,13 @@ must use Divi 5 [will not work with Divi 4 sites].
 > the block format was reverse-engineered from real sites and verified live, but it
 > can change between releases. Use on staging first. No warranty.
 
+> **Use at your own risk.** With the AI abilities switched on, this plugin lets connected
+> AI clients create, change, trash and (after a preview and a confirmation code) permanently
+> delete content on your site. Its change history is a 30-day safety net for mistakes, not a
+> backup. Keep your normal backups, test on a staging site first, and switch on only the
+> categories you need. The software is provided as is, without warranty of any kind (see
+> LICENSE).
+
 ## Why
 
 Divi 5 stores pages as **WordPress block markup** (`<!-- wp:divi/* -->` with a

@@ -12,6 +12,8 @@ Build and edit Divi 5 pages over the REST API, plus optional media audit, media 
 
 One plugin for the divi5-builder skill.
 
+Use at your own risk. With the AI abilities switched on, this plugin lets connected AI clients create, change, trash and (after a preview and a confirmation code) permanently delete content on your site. Its change history is a 30-day safety net for mistakes, not a backup. Keep your normal backups, test on a staging site first, and switch on only the categories you need. The software is provided as is, without warranty of any kind (MIT licence).
+
 * Page building is always on: REST routes to build and edit Divi 5 pages, popups, Theme Builder, Custom CSS and the design system. Only signed-in editors and administrators can use them.
 * Media audit, media clean-up and updates are off until an administrator turns them on in Settings > Divi 5 Builder (on a multisite network: Network Admin > Settings). While a part is off its routes do not exist.
 * On a multisite network, network-activate the plugin (or activate it on the main site): Network Admin only loads those, so a plugin activated on one subsite alone cannot show its switches.
