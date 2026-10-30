@@ -95,9 +95,19 @@ if ( ! function_exists( 'd5b_ability_risky' ) ) {
 }
 
 if ( ! function_exists( 'd5b_ability_risky_allowed' ) ) {
-	/** True for a definition that is not risky, or whose category's risky switch is on (the master and the category on too). */
+	/**
+	 * True for a definition that is not risky, or whose category's risky switch is on (the master and the category on too).
+	 * Strictest switch wins here too: a risky definition with an extra category that has a risky switch of its own
+	 * (d5b_category_has_risky) needs that risky switch on as well.
+	 */
 	function d5b_ability_risky_allowed( array $def ): bool {
-		return ! d5b_ability_risky( $def ) || d5b_abilities_risky_on( (string) ( $def['category'] ?? '' ) );
+		if ( ! d5b_ability_risky( $def ) ) { return true; }
+		if ( ! d5b_abilities_risky_on( (string) ( $def['category'] ?? '' ) ) ) { return false; }
+		foreach ( (array) ( $def['extra_categories'] ?? array() ) as $c ) {
+			// Fail closed when the category list is not loaded: then every extra category's risky switch is asked.
+			if ( ( ! function_exists( 'd5b_category_has_risky' ) || d5b_category_has_risky( (string) $c ) ) &&! d5b_abilities_risky_on( (string) $c ) ) { return false; }
+		}
+		return true;
 	}
 }
 

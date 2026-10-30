@@ -34,6 +34,7 @@ function t_reset() {
 	if ( function_exists( 't_wpdb_reset' ) ) { t_wpdb_reset(); }
 	if ( function_exists( 't_content_reset' ) ) { t_content_reset(); }
 	if ( function_exists( 't_media_reset' ) ) { t_media_reset(); }
+	if ( function_exists( 't_settings_reset' ) ) { t_settings_reset(); }
 }
 // A new request: WordPress starts a request with the gate not yet run.
 function t_new_request() { unset( $GLOBALS['d5b_gate_ran'] ); }
@@ -1423,4 +1424,87 @@ function wp_delete_nav_menu( $menu ) {
 	foreach ( $locations as $loc => $id ) { if ( (int) $id === (int) $menu->term_id ) { $locations[ $loc ] = 0; } }
 	set_theme_mod( 'nav_menu_locations', $locations );
 	return $result;
+}
+
+// ---- site settings (2.3.0, write-settings.php)
+// core 6.4.1: sanitize_option (wp-includes/formatting.php) for the options the plugin writes or names, add_settings_error /
+// get_settings_errors (wp-admin/includes/template.php), get_available_languages, the rewrite object (set_permalink_structure,
+// flush_rules) and the server checks of wp-admin/includes/misc.php and file.php.
+//   T_languages     the installed languages (get_available_languages)
+//   T_mod_rewrite   got_mod_rewrite() (default true); T_iis7: iis7_supports_permalinks() (default false)
+//   T_home_path     get_home_path() (default ABSPATH); T_subdomain: is_subdomain_install() (default false)
+//   $wp_rewrite     a T_Rewrite: ->flushes lists every flush_rules call with the structure it saw
+class T_Rewrite {
+	public $permalink_structure = '';
+	public $flushes = array();
+	public $inits = 0;
+	public function set_permalink_structure( $s ) {
+		if ( $this->permalink_structure !== $s ) {
+			update_option( 'permalink_structure', $s );
+			$this->permalink_structure = (string) get_option( 'permalink_structure', '' );
+			$this->inits++;
+		}
+	}
+	public function flush_rules( $hard = true ) { $this->flushes[] = array( 'hard' => $hard, 'structure' => $this->permalink_structure ); }
+}
+function t_settings_reset() {
+	$GLOBALS['wp_settings_errors'] = array(); $GLOBALS['T_languages'] = array();
+	unset( $GLOBALS['T_mod_rewrite'], $GLOBALS['T_iis7'], $GLOBALS['T_home_path'], $GLOBALS['T_subdomain'] );
+	$GLOBALS['wp_rewrite'] = new T_Rewrite();
+}
+t_settings_reset();
+function add_settings_error( $setting, $code, $message, $type = 'error' ) {
+	$GLOBALS['wp_settings_errors'][] = array( 'setting' => $setting, 'code' => $code, 'message' => $message, 'type' => $type );
+}
+function get_settings_errors( $setting = '', $sanitize = false ) {
+	$all = (array) ( $GLOBALS['wp_settings_errors'] ?? array() );
+	if ( '' === $setting ) { return $all; }
+	return array_values( array_filter( $all, function ( $e ) use ( $setting ) { return $setting === $e['setting']; } ) );
+}
+function get_available_languages( $dir = null ) { return $GLOBALS['T_languages'] ?? array(); }
+function got_mod_rewrite() { return $GLOBALS['T_mod_rewrite'] ?? true; }
+function iis7_supports_permalinks() { return $GLOBALS['T_iis7'] ?? false; }
+function got_url_rewrite() { return got_mod_rewrite() || iis7_supports_permalinks(); }
+function get_home_path() { return $GLOBALS['T_home_path'] ?? ABSPATH; }
+function is_subdomain_install() { return $GLOBALS['T_subdomain'] ?? false; }
+function flush_rewrite_rules( $hard = true ) { global $wp_rewrite; if ( is_callable( array( $wp_rewrite, 'flush_rules' ) ) ) { $wp_rewrite->flush_rules( $hard ); } }
+// core's esc_url character filter (the part sanitize_url applies to a path).
+function t_sanitize_url( $s ) { return preg_replace( '|[^a-z0-9-~+_.?#=!&;,/:%@$\|*\'()\[\]\x80-\xff]|i', '', (string) $s ); }
+function sanitize_option( $option, $value ) {
+	$original = $value; $error = null;
+	// strip_invalid_text_for_column: invalid UTF-8 is dropped from text options.
+	$utf8 = function ( $s ) { return is_string( $s ) && 1 !== preg_match( '//u', $s ) ? (string) iconv( 'UTF-8', 'UTF-8//IGNORE', $s ) : $s; };
+	switch ( $option ) {
+		case 'page_on_front': case 'page_for_posts': case 'start_of_week': case 'users_can_register':
+			$value = absint( $value ); break;
+		case 'posts_per_page':
+			$value = (int) $value; if ( empty( $value ) ) { $value = 1; } if ( $value < -1 ) { $value = abs( $value ); } break;
+		case 'default_comment_status':
+			if ( '0' === (string) $value || '' === $value ) { $value = 'closed'; } break;
+		case 'blogname': case 'blogdescription':
+			$value = esc_html( $utf8( $value ) ); break;
+		case 'blog_public':
+			$value = null === $value ? 1 : (int) $value; break;
+		case 'date_format': case 'time_format':
+			$value = strip_tags( (string) $utf8( $value ) ); break;
+		case 'gmt_offset':
+			$value = is_numeric( $value ) ? preg_replace( '/[^0-9:.-]/', '', $value ) : ''; break;
+		case 'siteurl': case 'home':
+			if ( ! preg_match( '#http(s?)://(.+)#i', (string) $value ) ) { $error = 'The address you entered did not appear to be a valid URL. Please enter a valid URL.'; } break;
+		case 'WPLANG':
+			if ( ! in_array( $value, get_available_languages(), true ) && ! empty( $value ) ) { $value = get_option( $option ); } break;
+		case 'timezone_string':
+			if ( ! in_array( $value, timezone_identifiers_list( DateTimeZone::ALL_WITH_BC ), true ) && ! empty( $value ) ) { $error = 'The timezone you have entered is not valid. Please select a valid timezone.'; } break;
+		case 'permalink_structure':
+			$value = str_replace( 'http://', '', t_sanitize_url( $utf8( $value ) ) );
+			if ( '' !== $value && ! preg_match( '/%[^\/%]+%/', $value ) ) { $error = 'A structure tag is required when using custom permalinks. <a href="https://wordpress.org/documentation/article/customize-permalinks/#choosing-your-permalink-structure">Learn more</a>'; }
+			break;
+	}
+	if ( null !== $error ) {
+		$value = get_option( $option );
+		add_settings_error( $option, "invalid_{$option}", $error );
+	}
+	// apply_filters( "sanitize_option_{$option}", ... ): the callbacks added with add_filter run, as core's.
+	foreach ( $GLOBALS['T_filters'][ "sanitize_option_{$option}" ] ?? array() as $cb ) { $value = call_user_func( $cb, $value, $option, $original ); }
+	return $value;
 }

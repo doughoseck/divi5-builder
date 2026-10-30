@@ -463,19 +463,34 @@ if ( ! function_exists( 'd5b_wc_check_hash' ) ) {
 		) );
 	}
 
+	/**
+	 * One history row for something that is not a post (an option: object_type 'option', object_id 0); its id, 0 when it
+	 * was not stored (the handler then sets _history_failed, as for d5b_wc_history).
+	 */
+	function d5b_wc_history_row( string $ability, string $object_type, int $object_id, string $action, ?array $before, array $after, string $summary ): int {
+		if ( ! function_exists( 'd5b_history_write' ) ) { return 0; }
+		return d5b_history_write( array(
+			'ability' => $ability, 'object_type' => $object_type, 'object_id' => $object_id, 'action' => $action,
+			'before' => $before, 'after' => $after, 'revision_id' => 0, 'summary' => $summary,
+		) );
+	}
+
 	/** "Updated page 42 'Contact us'". */
 	function d5b_wc_summary( string $verb, string $what, $p ): string {
 		$title = d5b_rc_cut( preg_replace( '/\s+/', ' ', (string) $p->post_title ), 80 );
 		return $verb . ' ' . $what . ' ' . (int) $p->ID . ( '' === $title ? '' : " '" . $title . "'" );
 	}
 
-	/** Adds one write definition with its annotations (readonly false; destructive only for a trash or a delete). */
-	function d5b_wc_def( string $name, string $category, string $label, string $description, array $props, array $required, $handler, $permission, array $annotations ): void {
+	/**
+	 * Adds one write definition with its annotations (readonly false; destructive only for a trash or a delete). $extra adds
+	 * keys to the definition (risky => true); it cannot replace the ones built here.
+	 */
+	function d5b_wc_def( string $name, string $category, string $label, string $description, array $props, array $required, $handler, $permission, array $annotations, array $extra = array() ): void {
 		d5b_ability_add( array(
 			'name' => 'divi5-builder/' . $name, 'category' => $category, 'label' => $label, 'description' => $description,
 			'input_schema' => d5b_rc_schema( $props, $required ), 'output_schema' => array( 'type' => 'object' ),
 			'handler' => $handler, 'permission' => $permission,
 			'annotations' => array_merge( array( 'readonly' => false, 'destructive' => false, 'idempotent' => false ), $annotations ),
-		) );
+		) + $extra );
 	}
 }

@@ -17,7 +17,7 @@ define( 'D5B_VERSION', '2.2.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 foreach ( array( 'parts', 'switches', 'blocks-text-fields', 'blocks', 'abilities/categories', 'abilities/register', 'abilities/secrets', 'abilities/audit', 'abilities/scrub', 'abilities/history', 'abilities/confirm',
 	'abilities/read-content', 'abilities/read-structure', 'abilities/read-site', 'abilities/read-divi', 'abilities/read-history',
-	'abilities/write-common', 'abilities/write-posts', 'abilities/write-comments', 'abilities/write-media', 'abilities/write-terms', 'abilities/write-menus', 'abilities/write-divi' ) as $f ) {
+	'abilities/write-common', 'abilities/write-posts', 'abilities/write-comments', 'abilities/write-media', 'abilities/write-terms', 'abilities/write-menus', 'abilities/write-divi', 'abilities/write-settings' ) as $f ) {
 	require_once $dir . '/inc/' . $f . '.php';
 }
 
