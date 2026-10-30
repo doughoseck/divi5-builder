@@ -33,7 +33,7 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
     const short = name.replace(/^divi5-builder\//, '');
     m.calls.push(method + ' ' + short);
     const E = (s, code, data) => [s, { code, message: 'ERR-MSG-' + code, data: Object.assign({ status: s }, data || {}) }];
-    const READ = ['pages-get', 'posts-list', 'revisions-list', 'revisions-get', 'history-changes-list', 'history-change-get', 'media-delete-preview', 'taxonomy-delete-preview', 'menus-delete-preview'];
+    const READ = ['pages-get', 'posts-list', 'revisions-list', 'revisions-get', 'history-changes-list', 'history-change-get', 'media-delete-preview', 'taxonomy-delete-preview', 'menus-delete-preview', 'settings-get', 'appearance-get', 'widgets-list', 'cron-list'];
     if (READ.includes(short) !== (method === 'GET')) return [405, { code: 'rest_ability_invalid_method' }];
     if ((m.badWrite || []).includes(short)) return E(500, 'internal_error');
     const input = {};
@@ -123,6 +123,82 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
       const o = get(input.post_id, ['page', 'post']); if (!o) return E(404, 'not_found'); const s = needHash(o); if (s) return s;
       const r = (m.revs[o.id] || []).find(x => x.id === input.revision_id); if (!r) return E(404, 'not_found');
       o.content = r.content; hist(short, o, 'update', 'Restored revision ' + r.id + ' of', r.id); return [200, Object.assign(res(o), { changed: true, restored_revision: r.id })];
+    }
+    // ---- the 2.3.0 site abilities (task 7): options, theme mods, Custom CSS, widgets, cache, cron. State lives in m.site, seeded on first use.
+    // m.siteBad = { short name: 'code' } answers that ability with an error (HTTP 400); m.site.noCron drops the cron event.
+    const site = m.site = m.site || { opts: { blogdescription: 'Fake tagline SECRET-LEAK-VALUE', show_on_front: 'posts', page_on_front: '0', page_for_posts: '0', blogname: 'Fake' }, mods: { header_color: '#abc' },
+      css: '.a { color: red; } /* SECRET-LEAK-VALUE */', cssId: 77, sidebars: [{ id: 'wp_inactive_widgets', name: 'Inactive Widgets' }, { id: 'sidebar-1', name: 'Main Sidebar' }, { id: 'footer-1', name: 'Footer' }], widgets: {},
+      cron: [{ hook: 'wp_update_plugins', timestamp: 1900000000, schedule: 'twicedaily', args_key: 'aaaa0000' }, { hook: 'wp_privacy_delete_old_export_files', timestamp: 1900000500, schedule: 'hourly', args_key: 'bbbb1111' }], flushed: 0, cronRan: [] };
+    const hist2 = (ability, kind, oid, action, summary, before) => {
+      if ((m.noHistory || []).includes(ability)) return;
+      let b = before;
+      const spoil = (m.badBefore || {})[ability];
+      if (spoil === 'missing') b = {}; else if (spoil === 'too_large') b = { too_large: true, bytes: 9000000 };
+      m.hist.unshift({ id: m.hist.length + 1, time_utc: new Date().toISOString().slice(0, 19).replace('T', ' '), user_id: 1, ability: 'divi5-builder/' + ability, audit_id: 1, object_type: kind, object_id: oid, action, revision_id: null, summary, before: b, after: { secret: 'SECRET-LEAK-VALUE' } });
+    };
+    if ((m.siteBad || {})[short]) return E(400, m.siteBad[short]);
+    const SITE_SHORT = ['settings-get', 'settings-set', 'settings-set-homepage', 'appearance-get', 'appearance-theme-mod-set', 'appearance-theme-mod-delete', 'appearance-custom-css-set', 'widgets-list', 'widgets-add', 'widgets-update', 'widgets-move', 'widgets-remove', 'cache-flush', 'cron-list', 'cron-run'];
+    if (SITE_SHORT.includes(short)) {
+      if (short === 'settings-get') return [200, { settings: Object.assign({}, site.opts), secret: 'SECRET-LEAK-VALUE' }];
+      if (short === 'settings-set') {
+        const keys = Object.keys(input.settings || {}); const before = {}; const changed = [];
+        if (!keys.length || keys.some(k => !['blogname', 'blogdescription', 'posts_per_page'].includes(k))) return E(400, 'invalid_input');
+        keys.forEach(k => { before[k] = site.opts[k]; if (String(site.opts[k]) !== String(input.settings[k])) changed.push(k); site.opts[k] = String(input.settings[k]); });
+        if (changed.length) hist2(short, 'option', 0, 'update', 'Changed settings: ' + changed.join(', '), before);
+        return [200, { settings: Object.assign({}, site.opts), changed, secret: 'SECRET-LEAK-VALUE' }];
+      }
+      if (short === 'settings-set-homepage') {
+        const fp = input.show_on_front === 'page' ? get(input.page_on_front, ['page']) : null;
+        if (input.show_on_front === 'page' && (!fp || fp.status !== 'publish')) return E(400, 'invalid_input');
+        const before = { show_on_front: site.opts.show_on_front, page_on_front: site.opts.page_on_front, page_for_posts: site.opts.page_for_posts };
+        site.opts.show_on_front = input.show_on_front; site.opts.page_on_front = String(input.page_on_front || 0); site.opts.page_for_posts = String(input.page_for_posts || 0);
+        hist2(short, 'option', 0, 'update', 'Set the homepage to page ' + (fp ? fp.id : 0), before);
+        return [200, { show_on_front: input.show_on_front, page_on_front: +site.opts.page_on_front, page_for_posts: +site.opts.page_for_posts, changed: ['show_on_front'], secret: 'SECRET-LEAK-VALUE' }];
+      }
+      if (short === 'appearance-get') return [200, { theme: { name: 'Fake', secret: 'SECRET-LEAK-VALUE' }, theme_mods: Object.assign({}, site.mods), theme_mods_truncated: false, custom_css: site.css, custom_css_truncated: false, custom_css_bytes: site.css.length, custom_css_hash: md5(site.css) }];
+      if (short === 'appearance-theme-mod-set') {
+        if (typeof input.name !== 'string' || !input.name || !('value' in input)) return E(400, 'invalid_input');
+        const had = input.name in site.mods; const before = had ? { value: site.mods[input.name] } : { absent: true };
+        if (had && site.mods[input.name] === input.value) return [200, { name: input.name, value: input.value, changed: false }];
+        site.mods[input.name] = input.value; hist2(short, 'theme_mod', 0, 'update', 'Set theme mod ' + input.name, before);
+        return [200, { name: input.name, value: input.value, changed: true, secret: 'SECRET-LEAK-VALUE' }];
+      }
+      if (short === 'appearance-theme-mod-delete') {
+        if (!(input.name in site.mods)) return E(404, 'not_found');
+        hist2(short, 'theme_mod', 0, 'delete', 'Deleted theme mod ' + input.name, { value: site.mods[input.name] }); delete site.mods[input.name];
+        return [200, { name: input.name, deleted: true }];
+      }
+      if (short === 'appearance-custom-css-set') {
+        if (typeof input.css !== 'string' || !input.expect_hash) return E(400, 'invalid_input');
+        if (input.expect_hash !== md5(site.css)) return E(409, 'stale', { hash: md5(site.css) });
+        if (input.css === site.css) return [200, { id: site.cssId, hash: md5(site.css), bytes: site.css.length, changed: false }];
+        const old = site.css; site.css = input.css; hist2(short, 'custom_css', site.cssId, 'update', 'Updated Custom CSS (' + input.css.length + ' bytes)', { css: old });
+        return [200, { id: site.cssId, hash: md5(site.css), bytes: site.css.length, changed: true, secret: 'SECRET-LEAK-VALUE' }];
+      }
+      if (short === 'widgets-list') {
+        return [200, { sidebars: site.sidebars.map(s => ({ id: s.id, name: s.name, widgets: Object.values(site.widgets).filter(w => w.sidebar === s.id).map(w => ({ id: w.id, type: w.type, settings: w.settings })) })), widget_count: Object.keys(site.widgets).length, truncated: false }];
+      }
+      if (short === 'widgets-add') {
+        if (!site.sidebars.some(s => s.id === input.sidebar) || input.type !== 'text' || typeof input.settings !== 'object') return E(400, 'invalid_input');
+        const num = site.widgetNext = (site.widgetNext || 1) + 1; const id = 'text-' + num;
+        site.widgets[id] = { id, type: 'text', sidebar: input.sidebar, settings: input.settings };
+        hist2(short, 'widget', num, 'create', 'Added widget ' + id + ' to ' + input.sidebar, { absent: true, sidebars_widgets: [] });
+        return [200, { id, sidebar: input.sidebar, position: 0, settings: input.settings, secret: 'SECRET-LEAK-VALUE' }];
+      }
+      if (short === 'cache-flush') { site.flushed++; hist2(short, 'cache', 0, 'flush', 'Flushed caches: object', { found: ['object'] }); return [200, { flushed: ['object', 'fake-page-cache'], secret: 'SECRET-LEAK-VALUE' }]; }
+      if (short === 'cron-list') return [200, { events: site.cron.filter(e => !site.noCron || e.hook !== 'wp_privacy_delete_old_export_files').map(e => ({ hook: e.hook, schedule: e.schedule, next_run: '2030-03-17T17:46:40Z', arg_count: 0, timestamp: e.timestamp, args_key: e.args_key })), total: site.cron.length, truncated: false }];
+      if (short === 'cron-run') {
+        const ev = site.cron.find(e => e.hook === input.hook && e.timestamp === input.timestamp && (!input.args_key || e.args_key === input.args_key));
+        if (!ev) return E(404, 'not_found');
+        site.cronRan.push(ev.hook); ev.timestamp += 3600; hist2(short, 'cron_event', 0, 'run', 'Ran cron event ' + ev.hook, { hook: ev.hook, schedule: ev.schedule });
+        return [200, { ran: true, hook: ev.hook, duration_ms: 12, rescheduled: true, unscheduled: true, over_budget: false, output_bytes: 0, secret: 'SECRET-LEAK-VALUE' }];
+      }
+
+      const w = site.widgets[input.id]; if (!w) return E(404, 'not_found');
+      const num = +String(w.id).split('-')[1];
+      if (short === 'widgets-update') { const old = w.settings; w.settings = input.settings; hist2(short, 'widget', num, 'update', 'Updated widget ' + w.id, { id: w.id, instance: old }); return [200, { id: w.id, sidebar: w.sidebar, position: 0, settings: w.settings, changed: true, secret: 'SECRET-LEAK-VALUE' }]; }
+      if (short === 'widgets-move') { if (!site.sidebars.some(s => s.id === input.sidebar)) return E(400, 'invalid_input'); const from = w.sidebar; w.sidebar = input.sidebar; hist2(short, 'widget', num, 'move', 'Moved widget ' + w.id + ' to ' + input.sidebar, { id: w.id, sidebar: from }); return [200, { id: w.id, sidebar: w.sidebar, position: 0, changed: true }]; }
+      if (short === 'widgets-remove') { hist2(short, 'widget', num, 'delete', 'Removed widget ' + w.id + ' from ' + w.sidebar, { id: w.id, instance: w.settings }); delete site.widgets[w.id]; return [200, { id: w.id, sidebar: w.sidebar, position: 0, removed: true }]; }
     }
     return E(404, 'rest_ability_not_found');
   };

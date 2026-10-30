@@ -473,4 +473,5 @@ if (require.main === module) {
   console.log(r.lines.join('\n'));
   process.exit(r.code);
 }
-module.exports = { run, parseArgs, firstHeading, firstSection };
+// The talking-to-the-site helpers are shared with abilities-live-site.js (2.3.0).
+module.exports = { run, parseArgs, firstHeading, firstSection, tok, getAbility, postAbility, stampOf, dayOf, Fail, Usage, MARK };
