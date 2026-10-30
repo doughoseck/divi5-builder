@@ -571,7 +571,7 @@ check( 'an anonymous refusal stores at most 1 KB of arguments', ( function () { 
 
 echo "the audit table notice\n";
 $notice = 'The audit log table could not be created, so every AI call is refused. Ask your host to allow CREATE TABLE for the WordPress database user.';
-function abilities_html() { ob_start(); d5b_settings_render_abilities(); return ob_get_clean(); }
+function abilities_html() { ob_start(); d5b_settings_render_notices( 'https://x.example/a', 'settings' ); return ob_get_clean(); }
 installed(); t_set_caps( array( 'manage_options' ) ); d5b_abilities_set_master( true, 'tester' );
 check( 'table present, master on: no notice', false === strpos( abilities_html(), esc_html( $notice ) ) );
 set_transient( 'd5b_audit_install_failed', 1, 3600 );
@@ -671,7 +671,45 @@ t_set_caps( array( 'manage_network_options' ) );
 check( 'multisite: the network capability sees it', false !== strpos( html( 'd5b_settings_render_history' ), 'Change history' ) );
 t_set_multisite( false );
 t_set_caps( array( 'manage_options' ) );
-check( 'the full settings page shows the section, below the audit log', ( function () { $o = html( 'd5b_settings_render' ); $a = strpos( $o, 'Audit log' ); $h = strpos( $o, 'Change history' ); return false !== $a && false !== $h && $h > $a; } )() );
+echo "the three tabs\n";
+$tabhtml = function ( $tab ) { $_GET = null === $tab ? array() : array( 'tab' => $tab ); $o = html( 'd5b_settings_render' ); $_GET = array(); return $o; };
+$has = function ( $o ) { return array( 'settings' => false !== strpos( $o, 'name="d5b_on[' ), 'audit' => false !== strpos( $o, 'name="d5b_audit_ability"' ), 'history' => false !== strpos( $o, 'name="d5b_hist_ability"' ) ); };
+check( 'tab=settings: the switches only', array( 'settings' => true, 'audit' => false, 'history' => false ) === $has( $tabhtml( 'settings' ) ) );
+check( 'tab=audit: the audit log only', array( 'settings' => false, 'audit' => true, 'history' => false ) === $has( $tabhtml( 'audit' ) ) );
+check( 'tab=history: the change history only', array( 'settings' => false, 'audit' => false, 'history' => true ) === $has( $tabhtml( 'history' ) ) );
+check( 'no tab: the Settings tab', array( 'settings' => true, 'audit' => false, 'history' => false ) === $has( $tabhtml( null ) ) );
+foreach ( array( 'nope', '', 'AUDIT ', '../x', '<script>' ) as $bad ) {
+	check( 'an invalid tab (' . $bad . ') falls back to Settings', array( 'settings' => true, 'audit' => false, 'history' => false ) === $has( $tabhtml( $bad ) ) );
+}
+$_GET = array( 'tab' => array( 'audit' ) );
+check( 'an array-valued tab falls back to Settings', array( 'settings' => true, 'audit' => false, 'history' => false ) === $has( html( 'd5b_settings_render' ) ) );
+$_GET = array();
+$o = $tabhtml( 'audit' );
+check( 'the nav is the standard markup, three links, the active one marked', 1 === substr_count( $o, '<nav class="nav-tab-wrapper">' ) && 3 === substr_count( $o, 'class="nav-tab' ) - substr_count( $o, 'nav-tab-wrapper' ) && 1 === substr_count( $o, 'nav-tab nav-tab-active' ) && false !== strpos( $o, '<a href="https://x.example/wp-admin/options-general.php?page=divi5-builder&amp;tab=audit" class="nav-tab nav-tab-active" aria-current="page">Audit log</a>' ) && false !== strpos( $o, 'tab=settings' ) && false !== strpos( $o, 'tab=history' ), $o );
+t_set_multisite( true ); t_set_caps( array( 'manage_network_options' ) );
+check( 'multisite: the nav links go to Network Admin', false !== strpos( $tabhtml( 'history' ), 'https://x.example/wp-admin/network/settings.php?page=divi5-builder&amp;tab=settings' ) );
+t_set_multisite( false ); t_set_caps( array( 'manage_options' ) );
+check( 'the audit filter form keeps its tab', false !== strpos( $tabhtml( 'audit' ), '<input type="hidden" name="page" value="divi5-builder" />' . '<input type="hidden" name="tab" value="audit" />' ) );
+check( 'the history filter form keeps its tab', false !== strpos( $tabhtml( 'history' ), '<input type="hidden" name="page" value="divi5-builder" />' . '<input type="hidden" name="tab" value="history" />' ) );
+foreach ( array( 'audit', 'history' ) as $t ) { $o = $tabhtml( $t ); check( "tab $t is read-only: no POST form, no admin-post action, one submit (Filter), no delete or clear control", false === stripos( $o, 'method="post"' ) && false === strpos( $o, 'd5b_save_switches' ) && 1 === substr_count( $o, 'type="submit"' ) && 0 === preg_match( '/<(button|input|a)\b[^>]*(delete|clear|purge|truncate)/i', $o ), $t ); }
+// Only the active tab queries its list.
+$lq = function () { return count( array_filter( $GLOBALS['wpdb']->queries, function ( $q ) { return false !== strpos( $q, 'ORDER BY id DESC LIMIT 50' ); } ) ); }; $q0 = $lq();
+$tabhtml( 'settings' );
+check( 'the Settings tab runs no list query; Audit log runs one, Change history runs one', 0 === $lq() - $q0 && ( $tabhtml( 'audit' ) || true ) && 1 === $lq() - $q0 && ( $tabhtml( 'history' ) || true ) && 2 === $lq() - $q0, $lq() - $q0 );
+
+echo "the notices show on every tab\n";
+$msg2 = 'A change was made in the last 24 hours that could not be recorded in the change history. Check the audit log rows marked ok_no_history.';
+stored_row_at( 3600, 'divi5-builder/posts-update' ); $r = $GLOBALS['wpdb']->tables[ d5b_audit_table() ]; $GLOBALS['wpdb']->tables[ d5b_audit_table() ][ count( $r ) - 1 ]['status'] = 'ok_no_history';
+update_option( 'd5b_abilities_upgrade_notice', 1 );
+set_transient( 'd5b_audit_install_failed', 1, 3600 );
+d5b_abilities_set_master( true, 'tester' );
+foreach ( array( 'settings', 'audit', 'history' ) as $t ) {
+	$o = $tabhtml( $t );
+	check( "tab $t: the ok_no_history notice", 1 === substr_count( $o, '<div class="notice notice-warning"><p>' . esc_html( $msg2 ) . '</p></div>' ), $t );
+	check( "tab $t: the upgrade-consent notice with its Dismiss form, carrying the tab", false !== strpos( $o, esc_html( d5b_abilities_upgrade_notice_text() ) ) && false !== strpos( $o, 'name="d5b_dismiss_upgrade_notice"' ) && false !== strpos( $o, 'name="d5b_tab" value="' . $t . '"' ), $t );
+	check( "tab $t: the audit-table-broken notice", 1 === substr_count( $o, '<div class="notice notice-error inline"><p>' . esc_html( $notice ) . '</p></div>' ), $t );
+}
+delete_option( 'd5b_abilities_upgrade_notice' ); delete_transient( 'd5b_audit_install_failed' );
 
 echo "the ok_no_history notice\n";
 installed(); t_set_caps( array( 'manage_options' ) );

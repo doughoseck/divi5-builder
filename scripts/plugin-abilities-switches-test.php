@@ -300,5 +300,13 @@ post_abilities( array( 'd5b_dismiss_upgrade_notice' => '1' ) );
 run_save();
 check( 'Dismiss without the settings capability changes nothing', true === d5b_abilities_upgrade_notice_on() );
 
+echo "dismiss returns to the tab it was pressed on\n";
+foreach ( array( 'audit' => '&tab=audit', 'history' => '&tab=history', 'settings' => '', 'bogus' => '', '' => '' ) as $t => $suffix ) {
+	fresh(); t_set_caps( array( 'manage_options' ) );
+	update_option( 'd5b_abilities_upgrade_notice', 1 );
+	post_abilities( array( 'd5b_dismiss_upgrade_notice' => '1', 'd5b_tab' => $t ) );
+	run_save();
+	check( "dismiss from tab '$t' redirects to the page" . ( '' === $suffix ? ' (Settings tab)' : $suffix ), array( 'https://x.example/wp-admin/options-general.php?page=divi5-builder' . $suffix ) === $GLOBALS['T_redirects'], $GLOBALS['T_redirects'] );
+}
 echo "\n$n checks, $failed failed\n";
 exit( $failed ? 1 : 0 );
