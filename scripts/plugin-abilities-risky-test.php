@@ -44,7 +44,8 @@ function d5b_audit_update( int $id, string $status, int $duration_ms, ?array $ar
 
 function fresh() { t_reset(); t_admin_reset(); t_set_caps( array() ); t_set_multisite( false ); $_POST = array(); $_GET = array(); $GLOBALS['T_exits'] = 0; $GLOBALS['T_audit'] = array(); $GLOBALS['T_user_id'] = 1; d5b_ability_registry( array() ); }
 function stored() { return is_multisite() ? get_site_option( 'd5b_switches', null ) : get_option( 'd5b_switches', null ); }
-function run_save() { try { d5b_settings_save(); return null; } catch ( Throwable $e ) { return $e; } }
+// A post without d5b_switch_rev is the form of a page loaded just now: it carries the current revision.
+function run_save() { if ( ! array_key_exists( 'd5b_switch_rev', $_POST ) ) { $_POST['d5b_switch_rev'] = d5b_abilities_switch_rev(); } try { d5b_settings_save(); return null; } catch ( Throwable $e ) { return $e; } }
 function html( $fn ) { ob_start(); $fn(); return ob_get_clean(); }
 function post_abilities( array $extra ) { $_POST = array_merge( array( 'action' => 'd5b_save_switches', '_wpnonce' => 'x' ), $extra ); }
 function mk( $name, $cat, array $over = array() ) {

@@ -126,6 +126,9 @@ if ( ! function_exists( 'd5b_settings_render_notices' ) ) {
 	/** The notices that show on every tab: saved, the change-history warning, the upgrade consent, the broken audit table. */
 	function d5b_settings_render_notices( string $action, string $tab ): void {
 		if ( isset( $_GET['updated'] ) ) { echo '<div class="notice notice-success"><p>Settings saved.</p></div>'; }
+		if ( isset( $_GET['d5b_stale'] ) ) {
+			echo '<div class="notice notice-error"><p>' . esc_html( 'The switches changed since this page was loaded (by another admin or an update). Reload and try again.' ) . '</p></div>';
+		}
 		if ( function_exists( 'd5b_history_notice_needed' ) && d5b_history_notice_needed() ) {
 			echo '<div class="notice notice-warning"><p>' . esc_html( 'A change was made in the last 24 hours that could not be recorded in the change history. Check the audit log rows marked ok_no_history.' ) . '</p></div>';
 		}
@@ -168,6 +171,8 @@ if ( ! function_exists( 'd5b_settings_render_abilities' ) ) {
 		$master = $a['master'];
 		$cats   = function_exists( 'd5b_ability_categories' ) ? d5b_ability_categories() : array();
 		echo '<h2>AI abilities</h2>';
+		// The state this page shows: a save from a page showing an older state is refused (d5b_settings_save).
+		echo '<input type="hidden" name="d5b_switch_rev" value="' . esc_attr( d5b_abilities_switch_rev() ) . '" />';
 		echo '<table class="form-table" role="presentation"><tr><th scope="row"><label for="d5b-abilities-master">AI abilities</label></th><td>';
 		echo '<label><input type="checkbox" id="d5b-abilities-master" name="d5b_abilities_master" value="1"' . ( $master['on'] ? ' checked="checked"' : '' ) . ' /> Switched on</label>';
 		echo '<p class="description">' . esc_html( 'Lets AI clients connected to this site (over the REST API) read site content and settings through this plugin. Nothing is shared until you switch this on. Every call is logged for 30 days. Secrets are filtered out by name and shape; the filter is careful but not perfect, so switch on only what you need. With this on, connected AI clients can also create and change content in the categories you tick. Every change is kept in the change history for 30 days.' ) . '</p>';
@@ -389,6 +394,14 @@ if ( ! function_exists( 'd5b_settings_save' ) ) {
 			if ( is_multisite() ) { delete_site_option( 'd5b_abilities_upgrade_notice' ); } else { delete_option( 'd5b_abilities_upgrade_notice' ); }
 			$back = isset( $_POST['d5b_tab'] ) && is_string( $_POST['d5b_tab'] ) ? sanitize_text_field( wp_unslash( $_POST['d5b_tab'] ) ) : 'settings';
 			wp_safe_redirect( $base . '?page=divi5-builder' . ( 'settings' !== $back && array_key_exists( $back, d5b_settings_tabs() ) ? '&tab=' . $back : '' ) );
+			d5b_settings_exit();
+			return;
+		}
+		// The page must show the abilities switches as they are stored now: another admin, or the update's consent step,
+		// may have changed them since it was loaded, and saving it would quietly undo that. Refused whole: nothing changes.
+		$rev = isset( $_POST['d5b_switch_rev'] ) && is_string( $_POST['d5b_switch_rev'] ) ? (string) wp_unslash( $_POST['d5b_switch_rev'] ) : '';
+		if ( ! hash_equals( d5b_abilities_switch_rev(), $rev ) ) {
+			wp_safe_redirect( $base . '?page=divi5-builder&d5b_stale=1' );
 			d5b_settings_exit();
 			return;
 		}

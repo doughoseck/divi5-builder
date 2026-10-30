@@ -120,6 +120,17 @@ if ( ! function_exists( 'd5b_abilities_switches' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_abilities_switch_rev' ) ) {
+	/**
+	 * The revision of the stored abilities switches (master, categories, risky boxes, who and when): the settings form
+	 * carries it as d5b_switch_rev, and a save whose page showed another state is refused (2.3.0 fix wave, I1), so a page
+	 * opened before another admin's change or the update's consent step cannot quietly undo it.
+	 */
+	function d5b_abilities_switch_rev(): string {
+		return md5( serialize( d5b_abilities_switches() ) );
+	}
+}
+
 if ( ! function_exists( 'd5b_abilities_master_on' ) ) {
 	function d5b_abilities_master_on(): bool {
 		return true === d5b_abilities_switches()['master']['on'];
