@@ -4,7 +4,7 @@
  * hooks (the loader wires wp_abilities_api_categories_init and wp_abilities_api_init).
  *
  * Nothing is registered unless the Abilities API exists (WordPress 6.9+), the master switch is on and the ability's
- * category switch is on. A switched-off category registers neither its abilities nor the category itself.
+ * category switch is on; a risky one also needs its category's risky switch. A switched-off category registers neither its abilities nor the category itself.
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
@@ -24,7 +24,7 @@ if ( ! function_exists( 'd5b_ability_registry' ) ) {
 
 if ( ! function_exists( 'd5b_ability_add' ) ) {
 	/**
-	 * Adds one definition: { name, category, label, description, input_schema, output_schema, handler, permission }.
+	 * Adds one definition: { name, category, label, description, input_schema, output_schema, handler, permission } and optionally risky => true (needs the category's risky switch too).
 	 * Throws on a duplicate name, a bad name or an unknown category, so a mistake shows in the tests, not on a site.
 	 */
 	function d5b_ability_add( array $def ): void {
@@ -87,6 +87,20 @@ if ( ! function_exists( 'd5b_ability_categories_on' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_ability_risky' ) ) {
+	/** True when the definition is marked risky (risky => true, exactly): it also needs its category's risky switch. */
+	function d5b_ability_risky( array $def ): bool {
+		return isset( $def['risky'] ) && true === $def['risky'];
+	}
+}
+
+if ( ! function_exists( 'd5b_ability_risky_allowed' ) ) {
+	/** True for a definition that is not risky, or whose category's risky switch is on (the master and the category on too). */
+	function d5b_ability_risky_allowed( array $def ): bool {
+		return ! d5b_ability_risky( $def ) || d5b_abilities_risky_on( (string) ( $def['category'] ?? '' ) );
+	}
+}
+
 if ( ! function_exists( 'd5b_abilities_register_categories' ) ) {
 	/** Runs on wp_abilities_api_categories_init. Only categories that are on and hold at least one definition. */
 	function d5b_abilities_register_categories(): void {
@@ -109,7 +123,7 @@ if ( ! function_exists( 'd5b_abilities_register' ) ) {
 		if ( function_exists( 'd5b_audit_maybe_install' ) ) { d5b_audit_maybe_install(); }
 		$cats = d5b_ability_categories();
 		foreach ( d5b_ability_defs() as $name => $def ) {
-			if ( ! d5b_ability_categories_on( $def ) ) { continue; }
+			if ( ! d5b_ability_categories_on( $def ) || ! d5b_ability_risky_allowed( $def ) ) { continue; }
 			if ( function_exists( 'wp_has_ability' ) && wp_has_ability( $name ) ) { continue; }
 			$annotations = array( 'readonly' => true, 'destructive' => false, 'idempotent' => true );
 			if ( isset( $def['annotations'] ) && is_array( $def['annotations'] ) ) { $annotations = array_merge( $annotations, $def['annotations'] ); }
@@ -177,7 +191,7 @@ if ( ! function_exists( 'd5b_ability_ms_since' ) ) {
 
 if ( ! function_exists( 'd5b_ability_check' ) ) {
 	/**
-	 * The one gate: the master switch, the ability's category switch and its permission callback. Writes no audit row
+	 * The one gate: the master switch, the ability's category switch, its risky switch (a risky definition only) and its permission callback. Writes no audit row
 	 * and never throws. Both the permission callback core calls and the run wrapper ask it, so a direct PHP call to the
 	 * wrapper meets the same switches and capabilities as a call through core.
 	 *
@@ -185,7 +199,7 @@ if ( ! function_exists( 'd5b_ability_check' ) ) {
 	 */
 	function d5b_ability_check( string $name, array $args ) {
 		$defs = d5b_ability_defs();
-		if ( ! isset( $defs[ $name ] ) || ! d5b_abilities_master_on() || ! d5b_ability_categories_on( $defs[ $name ] ) ) { return false; }
+		if ( ! isset( $defs[ $name ] ) || ! d5b_abilities_master_on() || ! d5b_ability_categories_on( $defs[ $name ] ) || ! d5b_ability_risky_allowed( $defs[ $name ] ) ) { return false; }
 		if ( ! is_callable( $defs[ $name ]['permission'] ?? null ) ) { return false; }
 		try {
 			$out = call_user_func( $defs[ $name ]['permission'], $args );

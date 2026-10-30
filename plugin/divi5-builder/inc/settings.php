@@ -143,6 +143,19 @@ if ( ! function_exists( 'd5b_settings_render_notices' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_risky_note' ) ) {
+	/** The plain risk note shown under a category's "Also allow risky actions" box. */
+	function d5b_risky_note( string $slug ): string {
+		$notes = array(
+			'settings'   => 'Can change the homepage, permalinks, time zone and whether search engines index the site. A wrong value is easy to put back from the change history, but visitors see it in the meantime.',
+			'templates'  => 'Changes the theme\'s templates and global styles on block themes. A broken template can blank a page until it is put back.',
+			'appearance' => 'Can change Custom CSS and theme settings. A wrong CSS rule can hide the whole page until it is put back.',
+			'health'     => 'Can run a scheduled task now. Tasks belong to plugins and may do real work (send emails, process orders, run migrations).',
+		);
+		return $notes[ $slug ] ?? '';
+	}
+}
+
 if ( ! function_exists( 'd5b_settings_render_abilities' ) ) {
 	/**
 	 * The "AI abilities" section, inside the page's form: the master box, and one box per category.
@@ -171,7 +184,14 @@ if ( ! function_exists( 'd5b_settings_render_abilities' ) ) {
 				$id = 'd5b-abilities-cat-' . $slug;
 				echo '<p><label for="' . esc_attr( $id ) . '"><input type="checkbox" id="' . esc_attr( $id ) . '" name="d5b_abilities_cat[' . esc_attr( $slug ) . ']" value="1"'
 					. ( $a['categories'][ $slug ]['on'] ? ' checked="checked"' : '' ) . ' /> ' . esc_html( $cat['label'] ) . '</label>'
-					. ' <span class="description">' . esc_html( $cat['description'] ) . '</span></p>';
+					. ' <span class="description">' . esc_html( $cat['description'] ) . '</span>';
+				if ( function_exists( 'd5b_category_has_risky' ) && d5b_category_has_risky( $slug ) ) {
+					$rid = 'd5b-abilities-risky-' . $slug;
+					echo '<br /><label for="' . esc_attr( $rid ) . '" style="margin-left:2em"><input type="checkbox" id="' . esc_attr( $rid ) . '" name="d5b_risky[' . esc_attr( $slug ) . ']" value="1"'
+						. ( $a['categories'][ $slug ]['risky_on'] ? ' checked="checked"' : '' ) . ' /> Also allow risky actions</label>'
+						. '<br /><span class="description" style="margin-left:2em">' . esc_html( d5b_risky_note( $slug ) ) . '</span>';
+				}
+				echo '</p>';
 			}
 			echo '</td></tr>';
 		}
@@ -292,9 +312,11 @@ if ( ! function_exists( 'd5b_settings_save_abilities' ) ) {
 		if ( $want !== $now['master']['on'] ) { d5b_abilities_set_master( $want, $login ); }
 		if ( ! isset( $_POST['d5b_abilities_cat_form'] ) ) { return; }
 		$posted = isset( $_POST['d5b_abilities_cat'] ) && is_array( $_POST['d5b_abilities_cat'] ) ? wp_unslash( $_POST['d5b_abilities_cat'] ) : array();
+		$risky = isset( $_POST['d5b_risky'] ) && is_array( $_POST['d5b_risky'] ) ? wp_unslash( $_POST['d5b_risky'] ) : array();
 		foreach ( $now['categories'] as $slug => $row ) {
-			$want = isset( $posted[ $slug ] );
-			if ( $want !== $row['on'] ) { d5b_abilities_set_category( $slug, $want, $row['risky_on'], $login ); }
+			$want       = isset( $posted[ $slug ] );
+			$want_risky = function_exists( 'd5b_category_has_risky' ) && d5b_category_has_risky( $slug ) ? isset( $risky[ $slug ] ) : $row['risky_on'];
+			if ( $want !== $row['on'] || $want_risky !== $row['risky_on'] ) { d5b_abilities_set_category( $slug, $want, $want_risky, $login ); }
 		}
 	}
 }

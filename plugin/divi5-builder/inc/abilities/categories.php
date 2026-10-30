@@ -7,6 +7,13 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
+if ( ! function_exists( 'd5b_category_has_risky' ) ) {
+	/** True for the categories that have a risky switch in the settings page (those with risky actions in this release). */
+	function d5b_category_has_risky( string $slug ): bool {
+		return in_array( $slug, array( 'settings', 'templates', 'appearance', 'health' ), true );
+	}
+}
+
 if ( ! function_exists( 'd5b_ability_categories' ) ) {
 	/** @return array<string, array{label:string, description:string, wp_slug:string}> keyed by the short slug */
 	function d5b_ability_categories(): array {
