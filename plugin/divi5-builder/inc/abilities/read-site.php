@@ -113,7 +113,22 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 			'id' => (string) ( $t->id ?? '' ), 'slug' => (string) ( $t->slug ?? '' ), 'theme' => (string) ( $t->theme ?? '' ), 'type' => (string) ( $t->type ?? '' ),
 			'title' => is_string( $t->title ?? null ) ? $t->title : '', 'source' => (string) ( $t->source ?? '' ), 'status' => (string) ( $t->status ?? '' ),
 			'has_theme_file' => ! empty( $t->has_theme_file ), 'is_custom' => ! empty( $t->is_custom ),
+			// md5 of the content as WordPress returns it (for a theme-file template, the file's content): templates-update's expect_hash.
+			'hash' => md5( (string) ( $t->content ?? '' ) ),
 		);
+	}
+
+	/**
+	 * The user layer of the global styles: the active theme's wp_global_styles post, read without creating it (a read
+	 * changes nothing). @return array array( post id or 0, the stored JSON text or '', the decoded layer or array() )
+	 */
+	function d5b_rs_user_styles(): array {
+		if ( ! class_exists( 'WP_Theme_JSON_Resolver' ) || ! method_exists( 'WP_Theme_JSON_Resolver', 'get_user_data_from_wp_global_styles' ) ) { return array( 0, '', array() ); }
+		$cpt  = WP_Theme_JSON_Resolver::get_user_data_from_wp_global_styles( function_exists( 'wp_get_theme' ) ? wp_get_theme() : null );
+		$id   = is_array( $cpt ) ? (int) ( $cpt['ID'] ?? 0 ) : 0;
+		$json = is_array( $cpt ) ? (string) ( $cpt['post_content'] ?? '' ) : '';
+		$dec  = '' === $json ? null : json_decode( $json, true );
+		return array( $id, $json, is_array( $dec ) ? $dec : array() );
 	}
 
 	function d5b_rs_h_templates_list( array $in ) {
@@ -135,7 +150,7 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$t = get_block_template( $a['id'], $a['type'] ?? 'wp_template' );
 		if ( ! is_object( $t ) ) { return new WP_Error( 'not_found', 'No template with that id.' ); }
 		list( $content, $trunc, $bytes ) = d5b_rs_cap_text( $t->content ?? '' );
-		return d5b_rs_template_row( $t ) + array( 'content' => $content, 'truncated' => $trunc, 'content_bytes' => $bytes, 'hash' => md5( (string) ( $t->content ?? '' ) ) );
+		return d5b_rs_template_row( $t ) + array( 'content' => $content, 'truncated' => $trunc, 'content_bytes' => $bytes );
 	}
 
 	function d5b_rs_h_global_styles_get( array $in ) {
@@ -146,7 +161,10 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		if ( class_exists( 'WP_Theme_JSON_Resolver' ) ) { $data = WP_Theme_JSON_Resolver::get_merged_data()->get_raw_data(); }
 		elseif ( function_exists( 'wp_get_global_styles' ) ) { $data = wp_get_global_styles(); }
 		list( $content, $trunc, $bytes ) = d5b_rs_cap_text( d5b_rs_json( $data ) );
-		return array( 'is_block_theme' => true, 'content' => $content, 'truncated' => $trunc, 'content_bytes' => $bytes );
+		list( , $json, $user ) = d5b_rs_user_styles();
+		// user: the user layer alone, as stored (global-styles-set writes only it); user_hash: md5 of the stored JSON text
+		// (md5 of '' when the theme has no user layer yet), global-styles-set's expect_hash.
+		return array( 'is_block_theme' => true, 'content' => $content, 'truncated' => $trunc, 'content_bytes' => $bytes, 'user' => $user, 'user_hash' => md5( $json ) );
 	}
 
 	// ---- appearance
@@ -403,16 +421,16 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$d5b_rs_none, array(), 'd5b_rs_h_settings_get', d5b_rs_perm( 'settings' ) );
 
 	d5b_rc_def( 'templates-list', 'templates', 'List block templates',
-		'Returns one page of the block templates or template parts of the active theme: id, slug, title, source and status, with total and total_pages. Refuses callers without manage_options. A classic theme returns an empty list with a note.',
+		'Returns one page of the block templates or template parts of the active theme: id, slug, title, source, status and hash (md5 of the content, the theme file\'s for a template not yet customised; the expect_hash of templates-update), with total and total_pages. Refuses callers without manage_options. A classic theme returns an empty list with a note.',
 		array( 'type' => array( 'type' => 'string', 'enum' => array( 'wp_template', 'wp_template_part' ), 'default' => 'wp_template', 'description' => 'Templates (wp_template) or template parts (wp_template_part).' ) ) + d5b_rc_paging_props(),
 		array(), 'd5b_rs_h_templates_list', d5b_rs_perm( 'templates' ) );
 	d5b_rc_def( 'templates-get', 'templates', 'Get a block template',
-		'Returns one block template or template part with its raw block markup (at most 256 KB, with a truncated flag) and a hash. Refuses callers without manage_options, a bad id, and an id that does not exist.',
+		'Returns one block template or template part with its raw block markup (at most 256 KB, with a truncated flag) and a hash (md5 of the whole content; the expect_hash of templates-update). Refuses callers without manage_options, a bad id, and an id that does not exist.',
 		array( 'id' => array( 'type' => 'string', 'description' => 'The template id as templates-list shows it, like twentytwentyfive//home.' ),
 			'type' => array( 'type' => 'string', 'enum' => array( 'wp_template', 'wp_template_part' ), 'default' => 'wp_template', 'description' => 'Whether the id is a template or a template part.' ) ),
 		array( 'id' ), 'd5b_rs_h_templates_get', d5b_rs_perm( 'templates' ) );
 	d5b_rc_def( 'global-styles-get', 'templates', 'Get global styles',
-		'Returns the merged global styles (theme.json plus the site owner\'s changes) of a block theme as JSON text, at most 256 KB with a truncated flag. Refuses callers without manage_options. A classic theme returns a note.',
+		'Returns the merged global styles (theme.json plus the site owner\'s changes) of a block theme as JSON text, at most 256 KB with a truncated flag, plus user (the site owner\'s layer alone, as stored; empty when there is none) and user_hash (md5 of the stored user layer; the expect_hash of global-styles-set). Refuses callers without manage_options. A classic theme returns a note.',
 		$d5b_rs_none, array(), 'd5b_rs_h_global_styles_get', d5b_rs_perm( 'templates' ) );
 
 	d5b_rc_def( 'appearance-get', 'appearance', 'Get theme appearance',
@@ -463,6 +481,7 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 	d5b_ability_set_content_keys( array( 'templates-list', 'templates-get', 'global-styles-get', 'appearance-get' ) );
 
 	// Raw third-party data: theme mods, widget settings and option values are keyed and labelled by other plugins and themes.
-	// (Templates and global styles come back as one text field, already content.)
-	d5b_ability_set_raw_paths( array( 'appearance-get' => array( 'theme_mods' ), 'widgets-list' => array( 'sidebars.*.widgets.*.settings' ), 'settings-get' => array( 'settings' ) ) );
+	// (Templates and the merged global styles come back as one text field, already content; the user layer of the global
+	// styles comes back as the stored object, so it is raw third-party data like the theme mods.)
+	d5b_ability_set_raw_paths( array( 'appearance-get' => array( 'theme_mods' ), 'global-styles-get' => array( 'user' ), 'widgets-list' => array( 'sidebars.*.widgets.*.settings' ), 'settings-get' => array( 'settings' ) ) );
 }

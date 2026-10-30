@@ -37,6 +37,7 @@ function t_reset() {
 	if ( function_exists( 't_settings_reset' ) ) { t_settings_reset(); }
 	if ( function_exists( 't_widgets_reset' ) && class_exists( 'WP_Widget_Factory', false ) ) { t_widgets_reset(); }
 	if ( function_exists( 't_cron_reset' ) ) { t_cron_reset(); }
+	if ( function_exists( 't_templates_reset' ) ) { t_templates_reset(); }
 }
 // A new request: WordPress starts a request with the gate not yet run.
 function t_new_request() { unset( $GLOBALS['d5b_gate_ran'] ); }
@@ -727,6 +728,13 @@ function wp_insert_post( $arr, $wp_error = false, $fire_after_hooks = true ) {
 	$id = t_add_post( $fields );
 	$dc = (int) get_option( 'default_category', 0 );
 	if ( 'post' === $type && isset( $GLOBALS['T_terms'][ $dc ] ) ) { $GLOBALS['T_object_terms'][ $id ]['category'] = array( $dc ); }
+	// core: tax_input is set only for a registered taxonomy and only when the user holds its assign_terms capability
+	// (silently skipped otherwise); terms of a flat taxonomy are names, created when missing (wp_set_post_terms).
+	foreach ( (array) ( $f['tax_input'] ?? array() ) as $tax => $terms ) {
+		$tobj = get_taxonomy( $tax );
+		if ( ! $tobj || ! current_user_can( $tobj->cap->assign_terms ) ) { continue; }
+		wp_set_object_terms( $id, is_array( $terms ) ? array_values( array_filter( $terms ) ) : $terms, $tax );
+	}
 	foreach ( (array) ( $arr['meta_input'] ?? array() ) as $k => $v ) { update_post_meta( $id, $k, $v ); }
 	return $id;
 }
@@ -1711,4 +1719,123 @@ function t_cron_add( int $ts, string $hook, $schedule = false, array $args = arr
 	$GLOBALS['T_cron_array'][ $ts ][ $hook ][ $key ] = $schedule ? array( 'schedule' => $schedule, 'args' => $args, 'interval' => t_cron_intervals()[ $schedule ] ?? 3600 ) : array( 'schedule' => false, 'args' => $args );
 	ksort( $GLOBALS['T_cron_array'] );
 	return $key;
+}
+
+// ---- block themes (2.3.0 Task 6): templates and global styles, as core 6.4.1 has them.
+//   T_block_theme      wp_is_block_theme()
+//   T_block_templates  the theme's FILE templates and parts: objects as core's _build_block_template_result_from_file
+//                      builds them (id theme//slug, slug, theme, type, title, description, area, source 'theme', content ...)
+//   A customised template is a post of type wp_template / wp_template_part named after the slug, with the wp_theme term
+//   (by name) of its theme, as core's templates controller writes it; get_block_template(s) then answers source 'custom'
+//   with wp_id and the post's content (core's _build_block_template_result_from_post) and the file one is hidden. A post
+//   WITHOUT the wp_theme term is invisible, as in core.
+//   T_theme_json       the theme layer of the global styles (theme.json); get_merged_data() lays the user layer (the
+//                      wp_global_styles post of the active stylesheet) over it with array_replace_recursive.
+// WP_Theme_JSON::remove_insecure_properties is a MODEL, not core's code: core keeps only known styles and settings and
+// cleans each value through safecss_filter_attr. The model keeps the structure and drops (1) any string value, at any depth
+// under styles or settings, holding expression( or javascript: (case-insensitive), (2) styles "css" keys unless the user
+// has edit_css (core keeps custom CSS only for edit_css), then (3) an empty styles or settings, as core does. Other
+// top-level keys (version) pass through, as in core.
+function t_templates_reset() {
+	$GLOBALS['T_block_theme'] = false; $GLOBALS['T_block_templates'] = array();
+	$GLOBALS['T_theme_json'] = array( 'version' => 2, 'settings' => array( 'color' => array( 'palette' => array( array( 'slug' => 'base', 'color' => '#ffffff' ) ) ) ), 'styles' => array( 'color' => array( 'text' => '#000000', 'background' => '#ffffff' ) ) );
+	if ( class_exists( 'WP_Theme_JSON_Resolver', false ) ) { WP_Theme_JSON_Resolver::$user_custom_post_type_id = null; }
+}
+if ( ! function_exists( 'wp_is_block_theme' ) ) { function wp_is_block_theme() { return ! empty( $GLOBALS['T_block_theme'] ); } }
+if ( ! defined( 'WP_TEMPLATE_PART_AREA_UNCATEGORIZED' ) ) { define( 'WP_TEMPLATE_PART_AREA_UNCATEGORIZED', 'uncategorized' ); }
+/** The theme names (wp_theme terms) of a post. */
+function t_post_themes( int $id ): array {
+	$out = array();
+	foreach ( (array) ( $GLOBALS['T_object_terms'][ $id ]['wp_theme'] ?? array() ) as $tid ) { $t = $GLOBALS['T_terms'][ (int) $tid ] ?? null; if ( $t ) { $out[] = (string) $t->name; } }
+	return $out;
+}
+/** The customised template post of theme + slug + type, or null. */
+function t_template_post( string $theme, string $slug, string $type ) {
+	foreach ( $GLOBALS['T_posts'] ?? array() as $p ) {
+		if ( $p->post_type === $type && (string) $p->post_name === $slug && 'trash' !== $p->post_status && in_array( $theme, t_post_themes( (int) $p->ID ), true ) ) { return $p; }
+	}
+	return null;
+}
+function t_template_from_post( $p, string $theme, $file ) {
+	return (object) array( 'id' => $theme . '//' . $p->post_name, 'slug' => (string) $p->post_name, 'theme' => $theme, 'type' => (string) $p->post_type, 'title' => (string) $p->post_title,
+		'description' => (string) $p->post_excerpt, 'source' => 'custom', 'origin' => (string) get_post_meta( (int) $p->ID, 'origin', true ), 'status' => (string) $p->post_status,
+		'wp_id' => (int) $p->ID, 'content' => (string) $p->post_content, 'has_theme_file' => null !== $file, 'is_custom' => null === $file, 'area' => is_object( $file ) ? ( $file->area ?? null ) : null );
+}
+if ( ! function_exists( 'get_block_templates' ) ) {
+	function get_block_templates( $q = array(), $type = 'wp_template' ) {
+		$out = array(); $seen = array();
+		foreach ( $GLOBALS['T_block_templates'] ?? array() as $t ) {
+			if ( $t->type !== $type ) { continue; }
+			$p = t_template_post( (string) $t->theme, (string) $t->slug, $type );
+			$out[] = null !== $p ? t_template_from_post( $p, (string) $t->theme, $t ) : $t;
+			if ( null !== $p ) { $seen[ (int) $p->ID ] = true; }
+		}
+		foreach ( $GLOBALS['T_posts'] ?? array() as $p ) {
+			if ( $p->post_type !== $type || isset( $seen[ (int) $p->ID ] ) || 'trash' === $p->post_status ) { continue; }
+			foreach ( t_post_themes( (int) $p->ID ) as $th ) { if ( $th === get_stylesheet() ) { $out[] = t_template_from_post( $p, $th, null ); } }
+		}
+		return $out;
+	}
+}
+if ( ! function_exists( 'get_block_template' ) ) {
+	function get_block_template( $id, $type = 'wp_template' ) {
+		foreach ( get_block_templates( array(), $type ) as $t ) { if ( $t->id === $id ) { return $t; } }
+		return null;
+	}
+}
+if ( ! class_exists( 'WP_Theme_JSON', false ) ) {
+	class WP_Theme_JSON {
+		const LATEST_SCHEMA = 2;
+		public static function remove_insecure_properties( $theme_json ) {
+			foreach ( array( 'styles', 'settings' ) as $k ) {
+				if ( ! isset( $theme_json[ $k ] ) ) { continue; }
+				$clean = is_array( $theme_json[ $k ] ) ? self::t_clean( $theme_json[ $k ], 'styles' === $k ) : array();
+				if ( empty( $clean ) ) { unset( $theme_json[ $k ] ); } else { $theme_json[ $k ] = $clean; }
+			}
+			return $theme_json;
+		}
+		private static function t_clean( array $a, bool $styles ): array {
+			$out = array();
+			foreach ( $a as $k => $v ) {
+				if ( $styles && 'css' === $k && ! current_user_can( 'edit_css' ) ) { continue; }
+				if ( is_array( $v ) ) { $v = self::t_clean( $v, $styles ); if ( empty( $v ) ) { continue; } }
+				elseif ( is_string( $v ) && 1 === preg_match( '/expression\s*\(|javascript\s*:/i', $v ) ) { continue; }
+				$out[ $k ] = $v;
+			}
+			return $out;
+		}
+	}
+}
+if ( ! class_exists( 'WP_Theme_JSON_Resolver', false ) ) {
+	class T_Merged_Theme_JSON { private $d; function __construct( array $d ) { $this->d = $d; } function get_raw_data() { return $this->d; } }
+	class WP_Theme_JSON_Resolver {
+		public static $user_custom_post_type_id = null;
+		/** The newest published wp_global_styles post of the active stylesheet as an array (get_object_vars); created when asked and absent. */
+		public static function get_user_data_from_wp_global_styles( $theme, $create_post = false, $post_status_filter = array( 'publish' ) ) {
+			$sheet = get_stylesheet();
+			$rows  = $GLOBALS['T_posts'] ?? array();
+			krsort( $rows );
+			foreach ( $rows as $p ) {
+				if ( 'wp_global_styles' === $p->post_type && in_array( $p->post_status, (array) $post_status_filter, true ) && in_array( $sheet, t_post_themes( (int) $p->ID ), true ) ) { return get_object_vars( $p ); }
+			}
+			if ( ! $create_post ) { return array(); }
+			$GLOBALS['T_global_styles_created'] = ( $GLOBALS['T_global_styles_created'] ?? 0 ) + 1;
+			$id = wp_insert_post( array( 'post_content' => '{"version": ' . WP_Theme_JSON::LATEST_SCHEMA . ', "isGlobalStylesUserThemeJSON": true }', 'post_status' => 'publish', 'post_title' => 'Custom Styles',
+				'post_type' => 'wp_global_styles', 'post_name' => 'wp-global-styles-' . urlencode( $sheet ), 'tax_input' => array( 'wp_theme' => array( $sheet ) ) ), true );
+			return is_wp_error( $id ) || ! $id ? array() : get_object_vars( get_post( $id ) );
+		}
+		public static function get_user_global_styles_post_id() {
+			if ( null !== static::$user_custom_post_type_id ) { return static::$user_custom_post_type_id; }
+			$cpt = static::get_user_data_from_wp_global_styles( null, true );
+			if ( array_key_exists( 'ID', $cpt ) ) { static::$user_custom_post_type_id = $cpt['ID']; }
+			return static::$user_custom_post_type_id;
+		}
+		public static function get_merged_data( $origin = 'custom' ) {
+			$data = $GLOBALS['T_theme_json'] ?? array();
+			$cpt  = static::get_user_data_from_wp_global_styles( null );
+			$user = isset( $cpt['post_content'] ) ? json_decode( (string) $cpt['post_content'], true ) : null;
+			if ( is_array( $user ) && ! empty( $user['isGlobalStylesUserThemeJSON'] ) ) { unset( $user['isGlobalStylesUserThemeJSON'] ); $data = array_replace_recursive( $data, $user ); }
+			return new T_Merged_Theme_JSON( $data );
+		}
+	}
 }
