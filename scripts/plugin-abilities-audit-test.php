@@ -15,7 +15,7 @@
  * the admin list needs the settings capability and escapes every field. (Uninstall is in plugin-uninstall-test.php.)
  */
 $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
-define( 'D5B_VERSION', '2.1.0' );
+define( 'D5B_VERSION', '2.2.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 require $dir . '/inc/parts.php';
 require $dir . '/inc/switches.php';
@@ -23,6 +23,10 @@ require $dir . '/inc/abilities/categories.php';
 require $dir . '/inc/abilities/register.php';
 require $dir . '/inc/abilities/secrets.php';
 require $dir . '/inc/abilities/audit.php';
+require $dir . '/inc/abilities/scrub.php';
+require $dir . '/inc/abilities/history.php';
+require $dir . '/inc/gate.php';
+require $dir . '/inc/takeover.php';
 require $dir . '/inc/settings.php';
 
 // ---- child: a handler that dies for real (memory exhausted, or exit). The shutdown function prints what the table holds.
@@ -52,9 +56,9 @@ function html( $fn ) { ob_start(); $fn(); return ob_get_clean(); }
 
 echo "install\n";
 fresh();
-check( 'before install there is no table and no version', array() === $wpdb->tables && false === get_option( 'd5b_db_version' ) && '1' === D5B_DB_VERSION );
+check( 'before install there is no table and no version', array() === $wpdb->tables && false === get_option( 'd5b_db_version' ) && '2' === D5B_DB_VERSION );
 d5b_audit_maybe_install();
-check( 'install creates the table once and sets d5b_db_version', array_key_exists( 'wp_d5b_audit', $wpdb->tables ) && '1' === get_option( 'd5b_db_version' ) && 1 === count( $GLOBALS['T_dbdelta'] ), array( array_keys( $wpdb->tables ), $GLOBALS['T_dbdelta'] ) );
+check( 'install creates the table once and sets d5b_db_version', array_key_exists( 'wp_d5b_audit', $wpdb->tables ) && '2' === get_option( 'd5b_db_version' ) && 1 === count( $GLOBALS['T_dbdelta'] ), array( array_keys( $wpdb->tables ), $GLOBALS['T_dbdelta'] ) );
 d5b_audit_maybe_install();
 check( 'a second call does nothing (dbDelta not run again)', 1 === count( $GLOBALS['T_dbdelta'] ) );
 $sql = $GLOBALS['T_dbdelta'][0];
@@ -63,7 +67,7 @@ check( 'the daily prune event is scheduled', isset( $GLOBALS['T_cron']['d5b_audi
 d5b_audit_deactivate();
 check( 'deactivation clears the event (the table and the log stay)', ! isset( $GLOBALS['T_cron']['d5b_audit_prune'] ) && isset( $wpdb->tables['wp_d5b_audit'] ) );
 fresh(); update_option( 'd5b_db_version', '0' ); d5b_audit_maybe_install();
-check( 'an older stored version installs again', 1 === count( $GLOBALS['T_dbdelta'] ) && '1' === get_option( 'd5b_db_version' ) );
+check( 'an older stored version installs again', 1 === count( $GLOBALS['T_dbdelta'] ) && '2' === get_option( 'd5b_db_version' ) );
 
 echo "write\n";
 installed();
@@ -117,7 +121,18 @@ foreach ( array(
 	check( "_exception masks $label", false === strpos( $out, $c[1] ) && false !== strpos( $out, $c[2] ), $out );
 }
 check( '_exception keeps the rest of the message readable', false !== strpos( $cap( 'RuntimeException: Table x is missing; password=abc' ), 'RuntimeException: Table x is missing;' ) );
-check( 'a secret-looking pattern in another string is NOT rewritten (only _exception is masked, other keys keep the 1024 rule)', 'see password=abc' === ( function () { d5b_audit_write( 'a/b', array( 'note' => 'see password=abc' ), 'ok', 1 ); return last_args()['note']; } )() );
+// Task 11 M3: free-text args get the STRICT masker (key=value and the value shapes), not the full one: "password abc" prose stays.
+check( 'a key=value secret in another string arg is masked by the STRICT masker (Task 11 M3)', 'see password=[redacted]' === ( function () { d5b_audit_write( 'a/b', array( 'note' => 'see password=abc' ), 'ok', 1 ); return last_args()['note']; } )() );
+check( '... prose without key=value stays as written (strict, not the full masker)', 'my password is long' === ( function () { d5b_audit_write( 'a/b', array( 'note' => 'my password is long' ), 'ok', 1 ); return last_args()['note']; } )() );
+check( '... a Google API key and a Stripe webhook secret in free text are masked, in both profiles', ( function () {
+	$g = 'AIza' . 'SyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY'; $w = 'whsec_' . 'MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw';
+	d5b_audit_write( 'a/b', array( 'note' => "maps $g hook $w" ), 'ok', 1 );
+	return 'maps [redacted] hook [redacted]' === last_args()['note'] && false === strpos( d5b_audit_mask_secrets( "$g $w" ), 'AIza' ) && false === strpos( d5b_audit_mask_strict( "$g $w" ), 'whsec_' );
+} )() );
+check( '... a secret across the 1024 cut is masked before the cut, never half kept', ( function () {
+	d5b_audit_write( 'a/b', array( 'note' => str_repeat( 'x ', 505 ) . 'sk_' . 'live_51HxYzAbCdEfGhIjKlMnOpQr' ), 'ok', 1 );
+	return false === strpos( last_args()['note'], 'sk_live' );
+} )() );
 d5b_audit_write( 'a/b', array( 'n' => array( '_exception' => 'E: password=zzz9 ' . str_repeat( 'q', 2000 ) ) ), 'x', 1 ); $ne = last_args()['n']['_exception'];
 check( '_exception inside a nested array gets the same mask and cap', mb_strlen( $ne, 'UTF-8' ) <= 300 && false === strpos( $ne, 'zzz9' ), $ne );
 
@@ -171,14 +186,14 @@ $wpdb->fail_insert = true;
 check( 'a database that throws on insert: write returns 0, never throws', 0 === d5b_audit_write( 'a/b', array(), 'ok', 1 ) );
 $wpdb->fail_insert = false; $GLOBALS['T_dbdelta_fail'] = false;
 delete_transient( 'd5b_audit_install_failed' ); d5b_audit_install_state( 'reset' ); // the back-off has passed, a later request
-check( 'write with no table: the table is made on the spot and the row stored', d5b_audit_write( 'a/b', array(), 'ok', 1 ) > 0 && 1 === count( rows() ) && '1' === get_option( 'd5b_db_version' ) );
+check( 'write with no table: the table is made on the spot and the row stored', d5b_audit_write( 'a/b', array(), 'ok', 1 ) > 0 && 1 === count( rows() ) && '2' === get_option( 'd5b_db_version' ) );
 echo "self-repair: table dropped, version still says installed\n";
 installed();
 unset( $wpdb->tables['wp_d5b_audit'] ); d5b_audit_install_state( 'reset' ); // a later request
 d5b_audit_maybe_install();
-check( 'maybe_install alone does not notice (version matches), as designed', array() === $wpdb->tables );
+check( 'maybe_install alone does not notice (version matches), as designed', ! isset( $wpdb->tables['wp_d5b_audit'] ) );
 $ok = d5b_audit_write( 'a/b', array( 'x' => 1 ), 'ok', 1 );
-check( 'the next write repairs the table and stores the row', $ok > 0 && 1 === count( rows() ) && '1' === get_option( 'd5b_db_version' ), array( $ok, $wpdb->tables ) );
+check( 'the next write repairs the table and stores the row', $ok > 0 && 1 === count( rows() ) && '2' === get_option( 'd5b_db_version' ), array( $ok, $wpdb->tables ) );
 check( 'the repair retried the insert only once (no loop) and used prepared SHOW TABLES with an escaped name', array() === $wpdb->unprepared && false !== strpos( implode( "\n", $wpdb->queries ), 'wp' . str_repeat( chr( 92 ), 2 ) . '_d5b' ), $wpdb->queries );
 echo "subsite: switches are network-wide, no admin_init ever ran there\n";
 installed(); t_set_multisite( true );
@@ -187,7 +202,7 @@ d5b_abilities_set_master( true, 'net' );
 d5b_ability_add( array( 'name' => 'divi5-builder/posts-a', 'category' => 'posts', 'label' => 'a', 'description' => 'x', 'handler' => function ( array $i ) { return array( 'v' => 1 ); }, 'permission' => function ( array $i ) { return true; } ) );
 add_action( 'wp_abilities_api_categories_init', 'd5b_abilities_register_categories' ); add_action( 'wp_abilities_api_init', 'd5b_abilities_register' );
 t_fire( 'wp_abilities_api_categories_init' ); t_fire( 'wp_abilities_api_init' );
-check( 'registering abilities on a subsite creates that site\'s audit table', isset( $wpdb->tables['wp_2_d5b_audit'] ) && '1' === get_option( 'd5b_db_version' ), array_keys( $wpdb->tables ) );
+check( 'registering abilities on a subsite creates that site\'s audit table', isset( $wpdb->tables['wp_2_d5b_audit'] ) && '2' === get_option( 'd5b_db_version' ), array_keys( $wpdb->tables ) );
 $res = d5b_ability_run( 'divi5-builder/posts-a', array( 'id' => 1 ) );
 check( 'one ability run on the subsite makes exactly one row in that subsite\'s table, none on the main site', array( 'v' => 1 ) === $res && 1 === count( $wpdb->tables['wp_2_d5b_audit'] ) && 0 === count( $wpdb->tables['wp_d5b_audit'] ), array_map( 'count', $wpdb->tables ) );
 t_set_multisite( false );
@@ -211,7 +226,7 @@ d5b_audit_maybe_install();
 check( 'once the transient has expired the next attempt runs dbDelta again', 2 === count( $GLOBALS['T_dbdelta'] ) );
 $GLOBALS['T_dbdelta_fail'] = false; $GLOBALS['T_transients']['d5b_audit_install_failed'][1] = time() - 1; d5b_audit_install_state( 'reset' );
 d5b_audit_maybe_install();
-check( 'a successful install clears the transient and stores the version', isset( $wpdb->tables['wp_d5b_audit'] ) && ! isset( $GLOBALS['T_transients']['d5b_audit_install_failed'] ) && '1' === get_option( 'd5b_db_version' ) );
+check( 'a successful install clears the transient and stores the version', isset( $wpdb->tables['wp_d5b_audit'] ) && ! isset( $GLOBALS['T_transients']['d5b_audit_install_failed'] ) && '2' === get_option( 'd5b_db_version' ) );
 fresh(); $GLOBALS['T_dbdelta_fail'] = true; d5b_audit_write( 'a/b', array(), 'ok', 1 );
 $GLOBALS['T_dbdelta_fail'] = false; delete_transient( 'd5b_audit_install_failed' );
 $wpdb->prefix = 'wp_3_'; delete_option( 'd5b_db_version' ); d5b_audit_maybe_install();
@@ -235,7 +250,7 @@ fresh(); unset( $GLOBALS['wpdb'] );
 check( 'no $wpdb at all: write 0, list empty, prune 0, install quiet', 0 === d5b_audit_write( 'a/b', array(), 'ok', 1 ) && array() === d5b_audit_list( array() ) && 0 === d5b_audit_prune() && null === d5b_audit_maybe_install() );
 t_wpdb_reset();
 fresh(); $wpdb = $GLOBALS['wpdb'];
-$wpdb->tables = array(); update_option( 'd5b_db_version', '1' ); // version says installed, table is gone (dropped by hand)
+$wpdb->tables = array(); update_option( 'd5b_db_version', '2' ); // version says installed, table is gone (dropped by hand)
 check( 'run through the wrapper still returns when the table is missing', ( function () {
 	d5b_abilities_set_master( true, 't' );
 	d5b_ability_add( array( 'name' => 'divi5-builder/posts-a', 'category' => 'posts', 'label' => 'a', 'description' => 'x', 'handler' => function ( array $i ) { return array( 'v' => 1 ); }, 'permission' => function ( array $i ) { return true; } ) );
@@ -322,7 +337,7 @@ check( 'stored quotes in args are escaped', false === strpos( $out, '"quoted"' )
 // The login column names a missing user "deleted user": that text is not a control, so it is left out of the scan.
 check( 'read-only: no delete, clear or purge control, and no POST form', 1 !== preg_match( '/delete|clear|purge|remove/i', str_replace( '<td>deleted user</td>', '', $out ) ) && false === stripos( $out, 'method="post"' ), $out );
 check( 'the login column: user 4 does not exist, so "deleted user"', false !== strpos( $out, '<th>Login</th>' ) && false !== strpos( $out, '<td>4</td><td>deleted user</td>' ), $out );
-check( 'the legend under the list, word for word', false !== strpos( $out, esc_html( 'started = the call began and did not finish (or is the current one); forbidden = refused; error:<code> = the ability answered with an error' ) ), $out );
+check( 'the legend under the list, word for word', false !== strpos( $out, esc_html( 'started = the call began and did not finish (or is the current one); forbidden = refused; ok_no_history = it worked but its change history could not be saved; error:<code> = the ability answered with an error' ) ), $out );
 $GLOBALS['T_users'][4] = (object) array( 'ID' => 4, 'user_login' => 'ed<i>' );
 $GLOBALS['T_user_id'] = 0; d5b_audit_write( 'anon/x', array(), 'forbidden_anonymous', 1 ); $GLOBALS['T_user_id'] = 4;
 $out = html( 'd5b_settings_render_audit' );
@@ -556,7 +571,7 @@ check( 'an anonymous refusal stores at most 1 KB of arguments', ( function () { 
 
 echo "the audit table notice\n";
 $notice = 'The audit log table could not be created, so every AI call is refused. Ask your host to allow CREATE TABLE for the WordPress database user.';
-function abilities_html() { ob_start(); d5b_settings_render_abilities(); return ob_get_clean(); }
+function abilities_html() { ob_start(); d5b_settings_render_notices( 'https://x.example/a', 'settings' ); return ob_get_clean(); }
 installed(); t_set_caps( array( 'manage_options' ) ); d5b_abilities_set_master( true, 'tester' );
 check( 'table present, master on: no notice', false === strpos( abilities_html(), esc_html( $notice ) ) );
 set_transient( 'd5b_audit_install_failed', 1, 3600 );
@@ -589,8 +604,125 @@ t_set_multisite( false );
 echo "source checks\n";
 $src = file_get_contents( $dir . '/inc/abilities/audit.php' );
 check( 'audit.php defines functions only: no add_action / add_filter / register_* / wp_schedule_event at load time', 0 === preg_match( '/^(?!\s*(\/\/|\*|\/\*)).*\b(add_action|add_filter|register_[a-z_]+_hook)\s*\(/m', $src ) );
-check( 'D5B_DB_VERSION is defined guarded', 1 === preg_match( '/if \( ! defined\( \'D5B_DB_VERSION\' \) \) \{ define\( \'D5B_DB_VERSION\', \'1\' \); \}/', $src ) );
+check( 'D5B_DB_VERSION is defined guarded', 1 === preg_match( '/if \( ! defined\( \'D5B_DB_VERSION\' \) \) \{ define\( \'D5B_DB_VERSION\', \'2\' \); \}/', $src ) );
 check( 'no direct use of $_GET / $_POST / $_REQUEST in audit.php (the table name comes from $wpdb->prefix)', 0 === preg_match( '/\$_(GET|POST|REQUEST)\b/', $src ) && false !== strpos( $src, "\$wpdb->prefix . 'd5b_audit'" ) );
+
+echo "the change history list on the settings page (2.2.0)\n";
+function put_change( $ability, $user, $secs_ago, $extra = array() ) {
+	global $wpdb; $t = d5b_history_table();
+	$wpdb->tables[ $t ][] = array_merge( array( 'id' => 3000 + count( $wpdb->tables[ $t ] ?? array() ), 'created_at' => gmdate( 'Y-m-d H:i:s', time() - $secs_ago ), 'user_id' => $user, 'ability' => $ability, 'audit_id' => 0, 'object_type' => 'post', 'object_id' => 7, 'action' => 'update', 'before' => '{"title":"Old"}', 'after' => '{"title":"New"}', 'revision_id' => null, 'summary' => 'Changed the title' ), $extra );
+}
+installed(); t_set_caps( array() ); $GLOBALS['T_user_id'] = 1;
+put_change( '<script>alert(1)</script>', 4, 60, array( 'object_type' => '<b>post</b>', 'action' => '<i>x</i>', 'summary' => '"quoted" & <img src=x onerror=alert(2)>', 'revision_id' => 88, 'before' => '{"body":"api_key=SECRETVALUE99 end","note":"<script>alert(5)</script>"}', 'after' => '{"title":"</pre><script>alert(4)</script>"}' ) );
+put_change( 'divi5-builder/pages-update', 2, 20 * 86400, array( 'object_id' => 9, 'object_type' => 'page' ) );
+put_change( 'divi5-builder/posts-update', 2, 120 );
+check( 'the history list needs the settings capability: without it nothing is printed', '' === html( 'd5b_settings_render_history' ) );
+t_set_caps( array( 'manage_options' ) );
+$out = html( 'd5b_settings_render_history' );
+check( 'with the capability the section, its table and its three filters are shown', false !== strpos( $out, 'Change history' ) && false !== strpos( $out, '<table' ) && false !== strpos( $out, 'name="d5b_hist_ability"' ) && false !== strpos( $out, 'name="d5b_hist_user"' ) && false !== strpos( $out, 'name="d5b_hist_since"' ), $out );
+check( 'the columns are time, login, ability, action, summary, object, revision and the copies', false !== strpos( $out, '<th>Time (UTC)</th><th>Login</th><th>Ability</th><th>Action</th><th>Summary</th><th>Object</th><th>Revision</th>' ), $out );
+check( 'escapes every field: no raw tag from a stored value, including inside the copies', false === strpos( $out, '<script>' ) && false === strpos( $out, '<img' ) && false === strpos( $out, '<b>post' ) && false === strpos( $out, '<i>x' ) && false !== strpos( $out, '&lt;script&gt;alert(1)&lt;/script&gt;' ) && false !== strpos( $out, '&quot;quoted&quot;' ) && false === strpos( $out, '</pre><script>' ), $out );
+check( 'the object shows as type #id, escaped', false !== strpos( $out, '&lt;b&gt;post&lt;/b&gt; #7' ) && false !== strpos( $out, 'page #9' ), $out );
+check( 'a revision links to wp-admin revision.php?revision=<id>; a change without one has no link', 1 === substr_count( $out, 'revision.php?revision=88' ) && 1 === substr_count( $out, 'revision.php' ), $out );
+check( 'a row opens (details) to show before and after as JSON in pre blocks', 3 === substr_count( $out, '<details>' ) && 6 === substr_count( $out, '<pre' ) && false !== strpos( $out, '&quot;title&quot;: &quot;Old&quot;' ), $out );
+check( 'the copies are masked with the STRICT masker on display: a secret-shaped value in a stored copy does not show', false === strpos( $out, 'SECRETVALUE99' ) && false !== strpos( $out, 'api_key' ), $out );
+check( 'read-only: no delete, clear or purge control, and no POST form', 1 !== preg_match( '/delete|clear|purge|remove/i', str_replace( '<td>deleted user</td>', '', $out ) ) && false === stripos( $out, 'method="post"' ), $out );
+check( 'the login column: a missing user shows "deleted user"', false !== strpos( $out, '<td>deleted user</td>' ), $out );
+$_GET = array( 'd5b_hist_ability' => 'divi5-builder/posts-update' ); $out = html( 'd5b_settings_render_history' );
+check( 'filter by ability: only that ability, the input keeps the value', 1 === substr_count( $out, '<details>' ) && false !== strpos( $out, 'name="d5b_hist_ability" value="divi5-builder/posts-update"' ), $out );
+$_GET = array( 'd5b_hist_user' => '2abc' ); $out = html( 'd5b_settings_render_history' );
+check( 'filter by user is absint (2abc -> 2): the two rows of user 2', 2 === substr_count( $out, '<details>' ) && false !== strpos( $out, 'name="d5b_hist_user" value="2"' ), $out );
+$day = gmdate( 'Y-m-d', time() - 5 * 86400 );
+$_GET = array( 'd5b_hist_since' => $day ); $out = html( 'd5b_settings_render_history' );
+check( 'filter by day: the 20-day-old row is left out, the input keeps the value', 2 === substr_count( $out, '<details>' ) && false === strpos( $out, 'page #9' ) && false !== strpos( $out, 'name="d5b_hist_since" value="' . $day . '"' ), $out );
+foreach ( array( '2026-13-45', 'yesterday', '"><script>x</script>', '2026-02-30' ) as $bad ) {
+	$_GET = array( 'd5b_hist_since' => $bad ); $out = html( 'd5b_settings_render_history' );
+	check( "a bad day is ignored and never echoed: $bad", 3 === substr_count( $out, '<details>' ) && false === strpos( $out, '<script>' ) && false !== strpos( $out, 'name="d5b_hist_since" value=""' ), $out );
+}
+$_GET = array( 'd5b_hist_ability' => array( 'x' ), 'd5b_hist_user' => array( '1' ), 'd5b_hist_since' => array( '2026-01-01' ) );
+check( 'array-valued query parameters do not break the page', 3 === substr_count( html( 'd5b_settings_render_history' ), '<details>' ) );
+$_GET = array( 'd5b_hist_ability' => 'nothing/here' );
+check( 'no match shows the empty line', false !== strpos( html( 'd5b_settings_render_history' ), 'No changes recorded' ) );
+$_GET = array();
+for ( $i = 0; $i < 70; $i++ ) { put_change( 'bulk/' . $i, 1, 10 + $i ); }
+check( 'the screen shows the newest 50 changes only', 50 === substr_count( html( 'd5b_settings_render_history' ), '<details>' ) );
+// Final wave D1: at most 64 KB per side on the page, with how much more and where to get it.
+installed(); t_set_caps( array( 'manage_options' ) ); $_GET = array();
+$big = str_repeat( 'é', 60000 ) . 'TAIL-MARKER' . ' api_key=SECRETVALUE77 ';
+put_change( 'divi5-builder/pages-update', 1, 30, array( 'before' => json_encode( array( 'content' => $big ) ), 'after' => '{"title":"small"}' ) );
+$out = html( 'd5b_settings_render_history' );
+preg_match_all( '#<pre[^>]*>(.*?)</pre>#s', $out, $pres );
+$side = html_entity_decode( $pres[1][0] ?? '', ENT_QUOTES, 'UTF-8' );
+$json_len = strlen( json_encode( array( 'content' => $big ), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) );
+check( 'a side over 64 KB shows its first 64 KB (whole UTF-8 characters) then "…(N more bytes; use history-change-get)"', 1 === preg_match( '/\x{2026}\((\d+) more bytes; use history-change-get\)$/u', $side, $mm ) && strlen( $side ) - strlen( $mm[0] ) <= 65536 && strlen( $side ) - strlen( $mm[0] ) > 65000 && (int) $mm[1] > 50000 && (int) $mm[1] < $json_len && false === strpos( $side, 'TAIL-MARKER' ) && 1 === preg_match( '//u', $side ), array( strlen( $side ), $mm[0] ?? null ) );
+// A secret that straddles the 64 KB line: the masker sees it whole (the text is cut with 8 KB to spare before masking).
+installed(); t_set_caps( array( 'manage_options' ) ); $_GET = array();
+$KEY = 'sk_' . 'live_51HxYzAbCdEfGhIjKlMnOpQr';
+$probe = json_encode( array( 'content' => 'aaaa' ), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+$pad = 65536 - strpos( $probe, 'aaaa' ) - 15; // " sk_live_51HxYz" (15 bytes) ends exactly at the 64 KB line
+put_change( 'divi5-builder/pages-update', 1, 30, array( 'before' => json_encode( array( 'content' => str_repeat( 'a', $pad ) . ' ' . $KEY . ' ' . str_repeat( 'b', 20000 ) ) ) ) );
+preg_match_all( '#<pre[^>]*>(.*?)</pre>#s', html( 'd5b_settings_render_history' ), $p2 );
+$shown = html_entity_decode( $p2[1][0] ?? '', ENT_QUOTES, 'UTF-8' );
+check( 'a Stripe key across the 64 KB line is masked whole before the cut: not even its first 14 characters show', false === strpos( $shown, 'sk_live_51HxYz' ) && false !== strpos( $shown, 'more bytes' ), substr( $shown, 65400, 160 ) );
+check( '... the small side is shown whole, with no cut note',false !== strpos( $pres[1][1] ?? '', 'small' ) && false === strpos( $pres[1][1] ?? '', 'more bytes' ) );
+t_set_multisite( true ); t_set_caps( array( 'manage_options' ) );
+check( 'multisite: manage_options is not enough, network capability required', '' === html( 'd5b_settings_render_history' ) );
+t_set_caps( array( 'manage_network_options' ) );
+check( 'multisite: the network capability sees it', false !== strpos( html( 'd5b_settings_render_history' ), 'Change history' ) );
+t_set_multisite( false );
+t_set_caps( array( 'manage_options' ) );
+echo "the three tabs\n";
+$tabhtml = function ( $tab ) { $_GET = null === $tab ? array() : array( 'tab' => $tab ); $o = html( 'd5b_settings_render' ); $_GET = array(); return $o; };
+$has = function ( $o ) { return array( 'settings' => false !== strpos( $o, 'name="d5b_on[' ), 'audit' => false !== strpos( $o, 'name="d5b_audit_ability"' ), 'history' => false !== strpos( $o, 'name="d5b_hist_ability"' ) ); };
+check( 'tab=settings: the switches only', array( 'settings' => true, 'audit' => false, 'history' => false ) === $has( $tabhtml( 'settings' ) ) );
+check( 'tab=audit: the audit log only', array( 'settings' => false, 'audit' => true, 'history' => false ) === $has( $tabhtml( 'audit' ) ) );
+check( 'tab=history: the change history only', array( 'settings' => false, 'audit' => false, 'history' => true ) === $has( $tabhtml( 'history' ) ) );
+check( 'no tab: the Settings tab', array( 'settings' => true, 'audit' => false, 'history' => false ) === $has( $tabhtml( null ) ) );
+foreach ( array( 'nope', '', 'AUDIT ', '../x', '<script>' ) as $bad ) {
+	check( 'an invalid tab (' . $bad . ') falls back to Settings', array( 'settings' => true, 'audit' => false, 'history' => false ) === $has( $tabhtml( $bad ) ) );
+}
+$_GET = array( 'tab' => array( 'audit' ) );
+check( 'an array-valued tab falls back to Settings', array( 'settings' => true, 'audit' => false, 'history' => false ) === $has( html( 'd5b_settings_render' ) ) );
+$_GET = array();
+$o = $tabhtml( 'audit' );
+check( 'the nav is the standard markup, three links, the active one marked', 1 === substr_count( $o, '<nav class="nav-tab-wrapper">' ) && 3 === substr_count( $o, 'class="nav-tab' ) - substr_count( $o, 'nav-tab-wrapper' ) && 1 === substr_count( $o, 'nav-tab nav-tab-active' ) && false !== strpos( $o, '<a href="https://x.example/wp-admin/options-general.php?page=divi5-builder&amp;tab=audit" class="nav-tab nav-tab-active" aria-current="page">Audit log</a>' ) && false !== strpos( $o, 'tab=settings' ) && false !== strpos( $o, 'tab=history' ), $o );
+t_set_multisite( true ); t_set_caps( array( 'manage_network_options' ) );
+check( 'multisite: the nav links go to Network Admin', false !== strpos( $tabhtml( 'history' ), 'https://x.example/wp-admin/network/settings.php?page=divi5-builder&amp;tab=settings' ) );
+t_set_multisite( false ); t_set_caps( array( 'manage_options' ) );
+check( 'the audit filter form keeps its tab', false !== strpos( $tabhtml( 'audit' ), '<input type="hidden" name="page" value="divi5-builder" />' . '<input type="hidden" name="tab" value="audit" />' ) );
+check( 'the history filter form keeps its tab', false !== strpos( $tabhtml( 'history' ), '<input type="hidden" name="page" value="divi5-builder" />' . '<input type="hidden" name="tab" value="history" />' ) );
+foreach ( array( 'audit', 'history' ) as $t ) { $o = $tabhtml( $t ); check( "tab $t is read-only: no POST form, no admin-post action, one submit (Filter), no delete or clear control", false === stripos( $o, 'method="post"' ) && false === strpos( $o, 'd5b_save_switches' ) && 1 === substr_count( $o, 'type="submit"' ) && 0 === preg_match( '/<(button|input|a)\b[^>]*(delete|clear|purge|truncate)/i', $o ), $t ); }
+// Only the active tab queries its list.
+$lq = function () { return count( array_filter( $GLOBALS['wpdb']->queries, function ( $q ) { return false !== strpos( $q, 'ORDER BY id DESC LIMIT 50' ); } ) ); }; $q0 = $lq();
+$tabhtml( 'settings' );
+check( 'the Settings tab runs no list query; Audit log runs one, Change history runs one', 0 === $lq() - $q0 && ( $tabhtml( 'audit' ) || true ) && 1 === $lq() - $q0 && ( $tabhtml( 'history' ) || true ) && 2 === $lq() - $q0, $lq() - $q0 );
+
+echo "the notices show on every tab\n";
+$msg2 = 'A change was made in the last 24 hours that could not be recorded in the change history. Check the audit log rows marked ok_no_history.';
+stored_row_at( 3600, 'divi5-builder/posts-update' ); $r = $GLOBALS['wpdb']->tables[ d5b_audit_table() ]; $GLOBALS['wpdb']->tables[ d5b_audit_table() ][ count( $r ) - 1 ]['status'] = 'ok_no_history';
+update_option( 'd5b_abilities_upgrade_notice', 1 );
+set_transient( 'd5b_audit_install_failed', 1, 3600 );
+d5b_abilities_set_master( true, 'tester' );
+foreach ( array( 'settings', 'audit', 'history' ) as $t ) {
+	$o = $tabhtml( $t );
+	check( "tab $t: the ok_no_history notice", 1 === substr_count( $o, '<div class="notice notice-warning"><p>' . esc_html( $msg2 ) . '</p></div>' ), $t );
+	check( "tab $t: the upgrade-consent notice with its Dismiss form, carrying the tab", false !== strpos( $o, esc_html( d5b_abilities_upgrade_notice_text() ) ) && false !== strpos( $o, 'name="d5b_dismiss_upgrade_notice"' ) && false !== strpos( $o, 'name="d5b_tab" value="' . $t . '"' ), $t );
+	check( "tab $t: the audit-table-broken notice", 1 === substr_count( $o, '<div class="notice notice-error inline"><p>' . esc_html( $notice ) . '</p></div>' ), $t );
+}
+delete_option( 'd5b_abilities_upgrade_notice' ); delete_transient( 'd5b_audit_install_failed' );
+
+echo "the ok_no_history notice\n";
+installed(); t_set_caps( array( 'manage_options' ) );
+$msg = 'A change was made in the last 24 hours that could not be recorded in the change history. Check the audit log rows marked ok_no_history.';
+check( 'no ok_no_history row: no notice on the settings page', false === strpos( html( 'd5b_settings_render' ), $msg ) );
+stored_row_at( 3 * 86400, 'divi5-builder/posts-update' ); $r = $GLOBALS['wpdb']->tables[ d5b_audit_table() ]; $GLOBALS['wpdb']->tables[ d5b_audit_table() ][ count( $r ) - 1 ]['status'] = 'ok_no_history';
+check( 'an ok_no_history row older than 24 hours: no notice', false === strpos( html( 'd5b_settings_render' ), $msg ) );
+stored_row_at( 3600, 'divi5-builder/posts-update' ); $r = $GLOBALS['wpdb']->tables[ d5b_audit_table() ]; $GLOBALS['wpdb']->tables[ d5b_audit_table() ][ count( $r ) - 1 ]['status'] = 'ok_no_history';
+$out = html( 'd5b_settings_render' );
+check( 'an ok_no_history row from the last 24 hours: the notice shows, once, in a warning box, word for word', 1 === substr_count( $out, '<div class="notice notice-warning"><p>' . esc_html( $msg ) . '</p></div>' ), $out );
+t_set_caps( array() );
+check( 'a user without the capability sees no page and so no notice', '' === html( 'd5b_settings_render' ) );
+
 
 echo "\n$n checks, $failed failed\n";
 exit( $failed ? 1 : 0 );

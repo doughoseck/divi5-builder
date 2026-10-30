@@ -45,10 +45,11 @@ echo "single site\n";
 t_reset(); t_set_multisite( false );
 $GLOBALS['T_options'] = array( 'd5b_switches' => array( 'updates' => array( 'on' => true ) ), 'd5b_takeover' => array( 'deactivated' => array() ),
 	'd5b_legacy_seen' => array( 'updates' ), 'd5b_db_version' => '1', 'active_plugins' => array( 'akismet/akismet.php' ), 'd5b_other' => 'kept' );
-$GLOBALS['wpdb']->tables = array( 'wp_d5b_audit' => array( array( 'id' => 1 ) ), 'wp_posts' => array( 'row' ) );
+$GLOBALS['wpdb']->tables = array( 'wp_d5b_audit' => array( array( 'id' => 1 ) ), 'wp_d5b_history' => array( array( 'id' => 1 ) ), 'wp_posts' => array( 'row' ) );
 $GLOBALS['T_cron']['d5b_audit_prune'] = 123;
 uninstall();
 check( 'uninstall drops table and option: the audit table is dropped, other tables stay, the daily event is cleared', array( 'wp_posts' ) === array_keys( $GLOBALS['wpdb']->tables ) && ! isset( $GLOBALS['T_cron']['d5b_audit_prune'] ) && ! array_key_exists( 'd5b_db_version', $GLOBALS['T_options'] ), array_keys( $GLOBALS['wpdb']->tables ) );
+check( 'uninstall drops the history table on a single site (and only that one)', ! isset( $GLOBALS['wpdb']->tables['wp_d5b_history'] ) && isset( $GLOBALS['wpdb']->tables['wp_posts'] ), array_keys( $GLOBALS['wpdb']->tables ) );
 check( 'all four options are deleted (d5b_db_version too)', array() === array_intersect( $OURS, array_keys( $GLOBALS['T_options'] ) ), array_keys( $GLOBALS['T_options'] ) );
 check( 'nothing else is touched', array( 'active_plugins', 'd5b_other' ) === array_keys( $GLOBALS['T_options'] ) && array() === array_filter( $GLOBALS['T_writes'], function ( $w ) { return 'delete_option' !== $w[0]; } ), $GLOBALS['T_writes'] );
 check( 'no other site is read on a single site', array() === $GLOBALS['T_get_sites'] );
@@ -64,7 +65,7 @@ for ( $i = 1; $i <= 250; $i++ ) {
 }
 $GLOBALS['T_blogs'][7]['d5b_db_version'] = '1';
 $GLOBALS['wpdb']->tables = array( 'wp_posts' => array( 'row' ) );
-for ( $i = 1; $i <= 250; $i++ ) { $GLOBALS['wpdb']->tables[ $GLOBALS['wpdb']->get_blog_prefix( $i ) . 'd5b_audit' ] = array( array( 'id' => $i ) ); $GLOBALS['wpdb']->tables[ $GLOBALS['wpdb']->get_blog_prefix( $i ) . 'posts' ] = array( 'row' ); }
+for ( $i = 1; $i <= 250; $i++ ) { $GLOBALS['wpdb']->tables[ $GLOBALS['wpdb']->get_blog_prefix( $i ) . 'd5b_audit' ] = array( array( 'id' => $i ) ); $GLOBALS['wpdb']->tables[ $GLOBALS['wpdb']->get_blog_prefix( $i ) . 'd5b_history' ] = array( array( 'id' => $i ) ); $GLOBALS['wpdb']->tables[ $GLOBALS['wpdb']->get_blog_prefix( $i ) . 'posts' ] = array( 'row' ); }
 $GLOBALS['T_blogs'][7]['d5b_switches'] = array( 'updates' => array( 'on' => true ) ); // left from before the site joined a network
 uninstall();
 check( 'network options deleted, others kept', array( 'active_sitewide_plugins' ) === array_keys( $GLOBALS['T_site_options'] ), array_keys( $GLOBALS['T_site_options'] ) );
@@ -72,6 +73,8 @@ $left = array(); foreach ( $GLOBALS['T_blogs'] as $id => $o ) { foreach ( $OURS 
 check( 'every one of the 250 sites lost all four options (more than one batch)', array() === $left, array_slice( $left, 0, 10 ) );
 $tabs = array_keys( $GLOBALS['wpdb']->tables ); $audit_left = array_filter( $tabs, function ( $t ) { return false !== strpos( $t, 'd5b_audit' ); } );
 check( 'the audit table is dropped on every one of the 250 sites (site 1 has no number in its prefix)', array() === $audit_left, array_slice( array_values( $audit_left ), 0, 5 ) );
+$hist_left = array_filter( $tabs, function ( $t ) { return false !== strpos( $t, 'd5b_history' ); } );
+check( 'the history table is dropped on every one of the 250 sites (site 1 has no number in its prefix)', array() === $hist_left, array_slice( array_values( $hist_left ), 0, 5 ) );
 check( 'the sites\' other tables are kept (250 posts tables)', 250 === count( $tabs ) && in_array( 'wp_12_posts', $tabs, true ) && in_array( 'wp_posts', $tabs, true ), count( $tabs ) );
 check( 'their other options are kept', 'https://s250.example' === $GLOBALS['T_blogs'][250]['home'] );
 check( 'the current site too', array() === array_intersect( $OURS, array_keys( $GLOBALS['T_options'] ) ), array_keys( $GLOBALS['T_options'] ) );
@@ -81,6 +84,33 @@ check( 'the d5b_audit_install_failed transient is deleted on every one of the 25
 $adel = array_values( array_unique( array_map( function ( $d ) { return $d[1]; }, array_filter( $GLOBALS['T_transient_deletes'], function ( $d ) { return 'd5b_anon' === $d[0]; } ) ) ) );
 check( 'the d5b_anon transient is deleted on every one of the 250 sites', range( 1, 250 ) === $adel, count( $adel ) );
 check( 'only deletes, never a write', array() === array_filter( $GLOBALS['T_writes'], function ( $w ) { return 0 !== strpos( $w[0], 'delete_' ); } ), $GLOBALS['T_writes'] );
+
+echo "final wave A3/A5: the kept media files (uploads/d5b-history) and the upgrade notice option\n";
+$up = str_replace( '\\', '/', sys_get_temp_dir() ) . '/d5b-uninstall-test-' . getmypid();
+$rmr = function ( $d ) use ( &$rmr ) { if ( is_link( $d ) || is_file( $d ) ) { @unlink( $d ); return; } if ( ! is_dir( $d ) ) { return; } foreach ( array_diff( (array) scandir( $d ), array( '.', '..' ) ) as $f ) { $rmr( "$d/$f" ); } @rmdir( $d ); };
+$plant = function ( $base ) {
+	@mkdir( "$base/d5b-history/12-0123456789abcdef0123456789abcdef", 0755, true ); @mkdir( "$base/d5b-history/40", 0755, true ); @mkdir( "$base/2026/10", 0755, true );
+	file_put_contents( "$base/d5b-history/.htaccess", "Require all denied\n" ); file_put_contents( "$base/d5b-history/index.html", '' );
+	file_put_contents( "$base/d5b-history/12-0123456789abcdef0123456789abcdef/photo.jpg", 'a' ); file_put_contents( "$base/d5b-history/12-0123456789abcdef0123456789abcdef/photo-300x200.jpg", 'b' ); file_put_contents( "$base/d5b-history/40/doc.pdf", 'c' );
+	file_put_contents( "$base/2026/10/live.jpg", 'live' );
+};
+$rmr( $up );
+t_reset(); t_set_multisite( false ); $GLOBALS['T_upload_basedir'] = $up;
+$GLOBALS['T_options'] = array( 'd5b_abilities_upgrade_notice' => 1, 'd5b_other' => 'kept' );
+$plant( $up );
+uninstall();
+check( 'single site: uploads/d5b-history is gone with every kept file; the site\'s own uploads stay', ! file_exists( "$up/d5b-history" ) && 'live' === @file_get_contents( "$up/2026/10/live.jpg" ) );
+check( '... and the d5b_abilities_upgrade_notice option is deleted', ! array_key_exists( 'd5b_abilities_upgrade_notice', $GLOBALS['T_options'] ) && 'kept' === $GLOBALS['T_options']['d5b_other'] );
+$rmr( $up );
+t_reset(); t_set_multisite( true ); $GLOBALS['T_upload_basedir'] = $up;
+for ( $i = 1; $i <= 3; $i++ ) { $GLOBALS['T_blogs'][ $i ] = array( 'home' => 'https://s' . $i . '.example' ); }
+$plant( $up ); $plant( "$up/sites/3" );
+$GLOBALS['T_site_options']['d5b_abilities_consent_220'] = 1; $GLOBALS['T_site_options']['d5b_abilities_upgrade_notice'] = 1;
+uninstall();
+check( 'network: the d5b_abilities_consent_220 and d5b_abilities_upgrade_notice network options are deleted', ! isset( $GLOBALS['T_site_options']['d5b_abilities_consent_220'] ) && ! isset( $GLOBALS['T_site_options']['d5b_abilities_upgrade_notice'] ) );
+check( 'network: every site\'s d5b-history goes (site 1 in uploads, site 3 in uploads/sites/3); their own uploads stay', ! file_exists( "$up/d5b-history" ) && ! file_exists( "$up/sites/3/d5b-history" ) && is_file( "$up/2026/10/live.jpg" ) && is_file( "$up/sites/3/2026/10/live.jpg" ) && 1 === $GLOBALS['T_blog_id'] );
+unset( $GLOBALS['T_upload_basedir'] );
+$rmr( $up );
 
 echo "without a database object\n";
 t_reset(); t_set_multisite( false ); unset( $GLOBALS['wpdb'] ); $GLOBALS['T_options'] = array( 'd5b_switches' => 1, 'd5b_db_version' => '1' );

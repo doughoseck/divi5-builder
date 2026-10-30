@@ -1,6 +1,6 @@
 <?php
 /**
- * Read ability for this plugin's own activity log (#32, release 2.1.0, part 4): history-audit-list. Uses the helpers of
+ * Read abilities for this plugin's own logs (#32, 2.1.0 part 4 and 2.2.0): history-audit-list (the activity log), history-changes-list and history-change-get (the change history). Uses the helpers of
  * read-content.php (d5b_rc_*) and the audit reader d5b_audit_list() of audit.php. Only the administrator sees it
  * (manage_options). The rows were redacted when they were written; the run wrapper masks them again on the way out.
  *
@@ -55,4 +55,75 @@ if ( ! function_exists( 'd5b_hs_h_audit_list' ) ) {
 			'since'   => array( 'type' => 'string', 'pattern' => '^[0-9]{4}-[0-9]{2}-[0-9]{2}$', 'description' => 'Only rows from the start of this day on, written YYYY-MM-DD, in UTC.' ),
 		) + d5b_rc_paging_props(),
 		array(), 'd5b_hs_h_audit_list', function ( array $in ) { return current_user_can( 'manage_options' ); } );
+
+	/** One change-history row as the abilities return it (the list leaves before and after out). */
+	function d5b_hs_change_item( array $r, bool $full ): array {
+		$item = array(
+			'id'          => (int) $r['id'],
+			'time_utc'    => (string) $r['created_at'],
+			'user_id'     => (int) $r['user_id'],
+			'user_login'  => function_exists( 'd5b_audit_user_login' ) ? d5b_audit_user_login( (int) $r['user_id'] ) : '',
+			'ability'     => (string) $r['ability'],
+			'audit_id'    => (int) $r['audit_id'],
+			'object_type' => (string) $r['object_type'],
+			'object_id'   => (int) $r['object_id'],
+			'action'      => (string) $r['action'],
+			'revision_id' => isset( $r['revision_id'] ) && null !== $r['revision_id'] ? (int) $r['revision_id'] : null,
+			'summary'     => (string) $r['summary'],
+		);
+		if ( $full ) { $item['before'] = $r['before'] ?? array(); $item['after'] = $r['after'] ?? array(); }
+		return $item;
+	}
+
+	function d5b_hs_h_changes_list( array $in ) {
+		if ( ! current_user_can( 'manage_options' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to use this ability.' ); }
+		if ( isset( $in['ability'] ) && is_string( $in['ability'] ) && strlen( $in['ability'] ) > 191 ) { return new WP_Error( 'invalid_input', 'ability must be text of at most 191 characters.' ); }
+		if ( isset( $in['object_type'] ) && is_string( $in['object_type'] ) && strlen( $in['object_type'] ) > 64 ) { return new WP_Error( 'invalid_input', 'object_type must be text of at most 64 characters.' ); }
+		$a = d5b_rc_args( $in, array( 'ability' => 'str', 'user' => 'id', 'since' => 'str', 'object_type' => 'str', 'object_id' => 'id', 'per_page' => 'int', 'page' => 'int' ) );
+		if ( is_wp_error( $a ) ) { return $a; }
+		if ( isset( $a['since'] ) && ! d5b_hs_is_day( $a['since'] ) ) { return new WP_Error( 'invalid_input', 'since must be a day written YYYY-MM-DD (UTC).' ); }
+		if ( ! function_exists( 'd5b_history_list' ) ) { return new WP_Error( 'unavailable', 'The change history is not loaded on this site.' ); }
+		$deep = d5b_rc_page_too_deep( $a );
+		if ( null !== $deep ) { return $deep; }
+		list( $per, $page ) = d5b_rc_paging( $a );
+		$filters = array();
+		foreach ( array( 'ability', 'object_type', 'object_id' ) as $k ) { if ( isset( $a[ $k ] ) ) { $filters[ $k ] = $a[ $k ]; } }
+		if ( isset( $a['user'] ) ) { $filters['user_id'] = $a['user']; }
+		if ( isset( $a['since'] ) ) { $filters['since'] = $a['since'] . ' 00:00:00'; }
+		$rows  = d5b_history_list( $filters, $per + 1, ( $page - 1 ) * $per );
+		$more  = count( $rows ) > $per;
+		$items = array();
+		foreach ( array_slice( $rows, 0, $per ) as $r ) { $items[] = d5b_hs_change_item( $r, false ); }
+		return array( 'items' => $items, 'page' => $page, 'per_page' => $per, 'has_more' => $more );
+	}
+
+	function d5b_hs_h_change_get( array $in ) {
+		if ( ! current_user_can( 'manage_options' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to use this ability.' ); }
+		$a = d5b_rc_args( $in, array( 'id' => 'id' ), array( 'id' ) );
+		if ( is_wp_error( $a ) ) { return $a; }
+		if ( ! function_exists( 'd5b_history_get' ) ) { return new WP_Error( 'unavailable', 'The change history is not loaded on this site.' ); }
+		$r = d5b_history_get( (int) $a['id'] );
+		if ( null === $r ) { return new WP_Error( 'not_found', 'No change with that id.' ); }
+		return d5b_hs_change_item( $r, true );
+	}
+
+	$d5b_hs_admin = function ( array $in ) { return current_user_can( 'manage_options' ); };
+
+	d5b_rc_def( 'history-changes-list', 'history', 'List the change history',
+		'Returns one page of the change history of this site, newest first: one row for every change a write ability made in the last 30 days, with when, which user, which ability, the object (type and id), the action, the revision id when there is one (compare it in wp-admin at revision.php?revision=<id>) and a short summary. The before and after copies are left out: history-change-get returns them. There is no total: has_more says whether another page follows. It reads the current site\'s history table only, also on a network. Refuses a caller who is not an administrator (manage_options).',
+		array(
+			'ability'     => array( 'type' => 'string', 'maxLength' => 191, 'description' => 'Only changes made by this ability, by its full name, for example divi5-builder/posts-update.' ),
+			'user'        => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'Only changes made by this user id.' ),
+			'since'       => array( 'type' => 'string', 'pattern' => '^[0-9]{4}-[0-9]{2}-[0-9]{2}$', 'description' => 'Only changes from the start of this day on, written YYYY-MM-DD, in UTC.' ),
+			'object_type' => array( 'type' => 'string', 'maxLength' => 64, 'description' => 'Only changes to this kind of object, for example post.' ),
+			'object_id'   => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'Only changes to the object with this id.' ),
+		) + d5b_rc_paging_props(),
+		array(), 'd5b_hs_h_changes_list', $d5b_hs_admin );
+
+	d5b_rc_def( 'history-change-get', 'history', 'Get one change from the history',
+		'Returns one row of the change history of this site with its before and after copies decoded. Secret-named keys were never stored, and the copies are masked again on the way out. A side that was too large to keep comes back as a marker saying how big it was. It reads the current site\'s history table only. Refuses a caller who is not an administrator (manage_options).',
+		array( 'id' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The id of the change, from history-changes-list.' ) ),
+		array( 'id' ), 'd5b_hs_h_change_get', $d5b_hs_admin );
+
+	d5b_ability_set_raw_paths( array( 'history-change-get' => array( 'before', 'after' ) ) );
 }

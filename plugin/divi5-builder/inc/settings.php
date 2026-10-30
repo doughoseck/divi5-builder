@@ -42,8 +42,20 @@ if ( ! function_exists( 'd5b_settings_render' ) ) {
 		$parts    = d5b_parts();
 		$switches = d5b_switches();
 		$action   = is_multisite() ? network_admin_url( 'edit.php?action=d5b_save_switches' ) : admin_url( 'admin-post.php' );
+		$tab = d5b_settings_tab();
 		echo '<div class="wrap"><h1>Divi 5 Builder</h1>';
-		if ( isset( $_GET['updated'] ) ) { echo '<div class="notice notice-success"><p>Settings saved.</p></div>'; }
+		d5b_settings_render_notices( $action, $tab );
+		d5b_settings_render_tabs( $tab );
+		if ( 'audit' === $tab ) {
+			d5b_settings_render_audit();
+			echo '</div>';
+			return;
+		}
+		if ( 'history' === $tab ) {
+			d5b_settings_render_history();
+			echo '</div>';
+			return;
+		}
 		echo '<p>Version ' . esc_html( D5B_VERSION ) . '. ';
 		echo defined( 'ET_BUILDER_5_DIR' ) ? 'Divi 5 detected.' : 'Divi 5 not detected: routes that need Divi will answer with an error.';
 		echo '</p>';
@@ -72,8 +84,62 @@ if ( ! function_exists( 'd5b_settings_render' ) ) {
 		foreach ( $lines as $line ) {
 			echo '<p' . ( $line['red'] ? ' style="color:#b32d2e;font-weight:600"' : '' ) . '>' . esc_html( $line['text'] ) . '</p>';
 		}
-		d5b_settings_render_audit();
 		echo '</div>';
+	}
+}
+
+if ( ! function_exists( 'd5b_settings_tabs' ) ) {
+	/** The tabs of the page: slug => label. The first is the default. */
+	function d5b_settings_tabs(): array {
+		return array( 'settings' => 'Settings', 'audit' => 'Audit log', 'history' => 'Change history' );
+	}
+}
+
+if ( ! function_exists( 'd5b_settings_tab' ) ) {
+	/** The tab asked for in ?tab=, from the whitelist; anything else (missing, unknown, an array) is the Settings tab. */
+	function d5b_settings_tab(): string {
+		$t = isset( $_GET['tab'] ) && is_string( $_GET['tab'] ) ? sanitize_text_field( wp_unslash( $_GET['tab'] ) ) : '';
+		return array_key_exists( $t, d5b_settings_tabs() ) ? $t : 'settings';
+	}
+}
+
+if ( ! function_exists( 'd5b_settings_base_url' ) ) {
+	function d5b_settings_base_url(): string {
+		return is_multisite() ? network_admin_url( 'settings.php' ) : admin_url( 'options-general.php' );
+	}
+}
+
+if ( ! function_exists( 'd5b_settings_render_tabs' ) ) {
+	/** The standard WordPress tab strip. */
+	function d5b_settings_render_tabs( string $active ): void {
+		echo '<nav class="nav-tab-wrapper">';
+		foreach ( d5b_settings_tabs() as $slug => $label ) {
+			$url = d5b_settings_base_url() . '?page=divi5-builder&tab=' . $slug;
+			echo '<a href="' . esc_url( $url ) . '" class="nav-tab' . ( $slug === $active ? ' nav-tab-active' : '' ) . '"'
+				. ( $slug === $active ? ' aria-current="page"' : '' ) . '>' . esc_html( $label ) . '</a>';
+		}
+		echo '</nav>';
+	}
+}
+
+if ( ! function_exists( 'd5b_settings_render_notices' ) ) {
+	/** The notices that show on every tab: saved, the change-history warning, the upgrade consent, the broken audit table. */
+	function d5b_settings_render_notices( string $action, string $tab ): void {
+		if ( isset( $_GET['updated'] ) ) { echo '<div class="notice notice-success"><p>Settings saved.</p></div>'; }
+		if ( function_exists( 'd5b_history_notice_needed' ) && d5b_history_notice_needed() ) {
+			echo '<div class="notice notice-warning"><p>' . esc_html( 'A change was made in the last 24 hours that could not be recorded in the change history. Check the audit log rows marked ok_no_history.' ) . '</p></div>';
+		}
+		if ( function_exists( 'd5b_abilities_upgrade_notice_on' ) && d5b_abilities_upgrade_notice_on() ) {
+			// Shown until dismissed: its own small form (the same nonce and handler; the handler changes no switch for it).
+			echo '<div class="notice notice-warning"><p>' . esc_html( d5b_abilities_upgrade_notice_text() ) . '</p>';
+			echo '<form method="post" action="' . esc_url( $action ) . '">';
+			wp_nonce_field( 'd5b_switches' );
+			echo '<input type="hidden" name="action" value="d5b_save_switches" /><input type="hidden" name="d5b_dismiss_upgrade_notice" value="1" /><input type="hidden" name="d5b_tab" value="' . esc_attr( $tab ) . '" />';
+			echo '<p><input type="submit" class="button" value="Dismiss" /></p></form></div>';
+		}
+		if ( function_exists( 'd5b_audit_table_broken' ) && d5b_audit_table_broken() ) {
+			echo '<div class="notice notice-error inline"><p>' . esc_html( 'The audit log table could not be created, so every AI call is refused. Ask your host to allow CREATE TABLE for the WordPress database user.' ) . '</p></div>';
+		}
 	}
 }
 
@@ -89,14 +155,13 @@ if ( ! function_exists( 'd5b_settings_render_abilities' ) ) {
 		$master = $a['master'];
 		$cats   = function_exists( 'd5b_ability_categories' ) ? d5b_ability_categories() : array();
 		echo '<h2>AI abilities</h2>';
-		if ( function_exists( 'd5b_audit_table_broken' ) && d5b_audit_table_broken() ) {
-			echo '<div class="notice notice-error inline"><p>' . esc_html( 'The audit log table could not be created, so every AI call is refused. Ask your host to allow CREATE TABLE for the WordPress database user.' ) . '</p></div>';
-		}
 		echo '<table class="form-table" role="presentation"><tr><th scope="row"><label for="d5b-abilities-master">AI abilities</label></th><td>';
 		echo '<label><input type="checkbox" id="d5b-abilities-master" name="d5b_abilities_master" value="1"' . ( $master['on'] ? ' checked="checked"' : '' ) . ' /> Switched on</label>';
-		echo '<p class="description">' . esc_html( 'Lets AI clients connected to this site (over the REST API) read site content and settings through this plugin. Nothing is shared until you switch this on. Every call is logged for 30 days. Secrets are filtered out by name and shape; the filter is careful but not perfect, so switch on only what you need.' ) . '</p>';
+		echo '<p class="description">' . esc_html( 'Lets AI clients connected to this site (over the REST API) read site content and settings through this plugin. Nothing is shared until you switch this on. Every call is logged for 30 days. Secrets are filtered out by name and shape; the filter is careful but not perfect, so switch on only what you need. With this on, connected AI clients can also create and change content in the categories you tick. Every change is kept in the change history for 30 days.' ) . '</p>';
 		if ( '' !== $master['changed_at'] || '' !== $master['changed_by'] ) {
-			echo '<p class="description">Last switched ' . ( $master['on'] ? 'on' : 'off' ) . ' ' . esc_html( $master['changed_at'] ) . ' by ' . esc_html( $master['changed_by'] ) . '</p>';
+			// changed_by '0' is the plugin itself (the 2.2.0 update), with its reason.
+			$who = '0' === $master['changed_by'] ? 'the plugin (' . ( $master['reason'] ?? '' ) . ')' : $master['changed_by'];
+			echo '<p class="description">Last switched ' . ( $master['on'] ? 'on' : 'off' ) . ' ' . esc_html( $master['changed_at'] ) . ' by ' . esc_html( $who ) . '</p>';
 		}
 		echo '</td></tr>';
 		if ( array() !== $cats ) {
@@ -127,11 +192,12 @@ if ( ! function_exists( 'd5b_settings_render_audit' ) ) {
 		$day     = isset( $_GET['d5b_audit_since'] ) && is_string( $_GET['d5b_audit_since'] ) ? sanitize_text_field( wp_unslash( $_GET['d5b_audit_since'] ) ) : '';
 		if ( 1 !== preg_match( '/^(\d{4})-(\d{2})-(\d{2})$/', $day, $dm ) || ! checkdate( (int) $dm[2], (int) $dm[3], (int) $dm[1] ) ) { $day = ''; }
 		$rows    = d5b_audit_list( array( 'ability' => $ability, 'user_id' => $user, 'since' => '' === $day ? '' : $day . ' 00:00:00' ), 50, 0 );
-		$base    = is_multisite() ? network_admin_url( 'settings.php' ) : admin_url( 'options-general.php' );
+		$base    = d5b_settings_base_url();
 		echo '<h2>Audit log</h2>';
 		echo '<p class="description">' . esc_html( 'The newest 50 AI ability calls on this site, kept for 30 days. Times are UTC. Secrets are masked before they are stored.' ) . '</p>';
 		echo '<form method="get" action="' . esc_url( $base ) . '">';
 		echo '<input type="hidden" name="page" value="divi5-builder" />';
+		echo '<input type="hidden" name="tab" value="audit" />';
 		echo '<label>Ability <input type="text" name="d5b_audit_ability" value="' . esc_attr( $ability ) . '" /></label> ';
 		echo '<label>User ID <input type="number" min="0" name="d5b_audit_user" value="' . esc_attr( $user > 0 ? (string) $user : '' ) . '" /></label> ';
 		echo '<label>Since (UTC) <input type="date" name="d5b_audit_since" value="' . esc_attr( $day ) . '" /></label> ';
@@ -149,7 +215,67 @@ if ( ! function_exists( 'd5b_settings_render_audit' ) ) {
 				. '</td><td>' . esc_html( (string) $r['duration_ms'] ) . '</td><td>' . esc_html( $r['ip'] ) . '</td><td><code>' . esc_html( $args ) . '</code></td></tr>';
 		}
 		echo '</tbody></table>';
-		echo '<p class="description">' . esc_html( 'started = the call began and did not finish (or is the current one); forbidden = refused; error:<code> = the ability answered with an error' ) . '</p>';
+		echo '<p class="description">' . esc_html( 'started = the call began and did not finish (or is the current one); forbidden = refused; ok_no_history = it worked but its change history could not be saved; error:<code> = the ability answered with an error' ) . '</p>';
+	}
+}
+
+
+if ( ! function_exists( 'd5b_settings_render_history' ) ) {
+	/**
+	 * The "Change history" section: the newest 50 changes the write abilities made on this site, read-only, filtered by
+	 * ability, user and day through a GET form. Each row opens (details) to show the copies from before and after as JSON,
+	 * masked with the STRICT masker on display. Needs the settings capability itself. Every stored field is escaped.
+	 */
+	function d5b_settings_render_history(): void {
+		if ( ! current_user_can( d5b_settings_cap() ) || ! function_exists( 'd5b_history_list' ) ) { return; }
+		$ability = isset( $_GET['d5b_hist_ability'] ) && is_string( $_GET['d5b_hist_ability'] ) ? sanitize_text_field( wp_unslash( $_GET['d5b_hist_ability'] ) ) : '';
+		$user    = isset( $_GET['d5b_hist_user'] ) ? absint( is_scalar( $_GET['d5b_hist_user'] ) ? $_GET['d5b_hist_user'] : 0 ) : 0;
+		$day     = isset( $_GET['d5b_hist_since'] ) && is_string( $_GET['d5b_hist_since'] ) ? sanitize_text_field( wp_unslash( $_GET['d5b_hist_since'] ) ) : '';
+		if ( 1 !== preg_match( '/^(\d{4})-(\d{2})-(\d{2})$/', $day, $dm ) || ! checkdate( (int) $dm[2], (int) $dm[3], (int) $dm[1] ) ) { $day = ''; }
+		$rows = d5b_history_list( array( 'ability' => $ability, 'user_id' => $user, 'since' => '' === $day ? '' : $day . ' 00:00:00' ), 50, 0 );
+		$base = d5b_settings_base_url();
+		echo '<h2>Change history</h2>';
+		echo '<p class="description">' . esc_html( 'The newest 50 changes the AI abilities made on this site, kept for 30 days. Times are UTC. Open a row to see the content from before and after the change; secrets are masked.' ) . '</p>';
+		echo '<form method="get" action="' . esc_url( $base ) . '">';
+		echo '<input type="hidden" name="page" value="divi5-builder" />';
+		echo '<input type="hidden" name="tab" value="history" />';
+		echo '<label>Ability <input type="text" name="d5b_hist_ability" value="' . esc_attr( $ability ) . '" /></label> ';
+		echo '<label>User ID <input type="number" min="0" name="d5b_hist_user" value="' . esc_attr( $user > 0 ? (string) $user : '' ) . '" /></label> ';
+		echo '<label>Since (UTC) <input type="date" name="d5b_hist_since" value="' . esc_attr( $day ) . '" /></label> ';
+		echo '<input type="submit" class="button" value="Filter" />';
+		echo '</form>';
+		echo '<table class="widefat striped"><thead><tr><th>Time (UTC)</th><th>Login</th><th>Ability</th><th>Action</th><th>Summary</th><th>Object</th><th>Revision</th><th>Copies</th></tr></thead><tbody>';
+		if ( array() === $rows ) {
+			echo '<tr><td colspan="8">' . esc_html( 'No changes recorded.' ) . '</td></tr>';
+		}
+		foreach ( $rows as $r ) {
+			$login = function_exists( 'd5b_audit_user_login' ) ? d5b_audit_user_login( (int) $r['user_id'] ) : '';
+			$rev   = isset( $r['revision_id'] ) && (int) $r['revision_id'] > 0 ? '<a href="' . esc_url( admin_url( 'revision.php?revision=' . (int) $r['revision_id'] ) ) . '">' . esc_html( 'Compare #' . (int) $r['revision_id'] ) . '</a>' : '';
+			echo '<tr><td>' . esc_html( $r['created_at'] ) . '</td><td>' . esc_html( $login ) . '</td><td>' . esc_html( $r['ability'] ) . '</td><td>' . esc_html( $r['action'] )
+				. '</td><td>' . esc_html( $r['summary'] ) . '</td><td>' . esc_html( $r['object_type'] . ' #' . (int) $r['object_id'] ) . '</td><td>' . $rev . '</td><td>';
+			$full = function_exists( 'd5b_history_get' ) ? d5b_history_get( (int) $r['id'] ) : null;
+			if ( is_array( $full ) ) {
+				echo '<details><summary>' . esc_html( 'Before and after' ) . '</summary>';
+				foreach ( array( 'before' => 'Before', 'after' => 'After' ) as $side => $label ) {
+					$json = json_encode( $full[ $side ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR );
+					$json = is_string( $json ) ? $json : '{}';
+					// At most 64 KB per side on the page (a side can be MBs); the full copy is one history-change-get away. The text
+					// is cut with 8 KB to spare BEFORE the masker (a secret across the 64 KB line is still seen whole), then at 64 KB.
+					$all = strlen( $json );
+					$cap = 65536;
+					if ( $all > $cap ) { $json = function_exists( 'mb_strcut' ) ? mb_strcut( $json, 0, $cap + 8192, 'UTF-8' ) : substr( $json, 0, $cap + 8192 ); }
+					if ( function_exists( 'd5b_audit_mask_strict' ) ) { $json = d5b_audit_mask_strict( $json ); }
+					if ( $all > $cap ) {
+						$json  = function_exists( 'mb_strcut' ) ? mb_strcut( $json, 0, $cap, 'UTF-8' ) : substr( $json, 0, $cap );
+						$json .= "\u{2026}(" . max( 0, $all - strlen( $json ) ) . ' more bytes; use history-change-get)';
+					}
+					echo '<p><strong>' . esc_html( $label ) . '</strong></p><pre style="max-height:300px;overflow:auto;white-space:pre-wrap">' . esc_html( $json ) . '</pre>';
+				}
+				echo '</details>';
+			}
+			echo '</td></tr>';
+		}
+		echo '</tbody></table>';
 	}
 }
 
@@ -235,6 +361,15 @@ if ( ! function_exists( 'd5b_settings_save' ) ) {
 			wp_die( 'You are not allowed to change these settings.', '', array( 'response' => 403 ) );
 			return;
 		}
+		$base = d5b_settings_base_url();
+		if ( isset( $_POST['d5b_dismiss_upgrade_notice'] ) ) {
+			// The upgrade notice's own form: it carries no switch, so no switch is looked at.
+			if ( is_multisite() ) { delete_site_option( 'd5b_abilities_upgrade_notice' ); } else { delete_option( 'd5b_abilities_upgrade_notice' ); }
+			$back = isset( $_POST['d5b_tab'] ) && is_string( $_POST['d5b_tab'] ) ? sanitize_text_field( wp_unslash( $_POST['d5b_tab'] ) ) : 'settings';
+			wp_safe_redirect( $base . '?page=divi5-builder' . ( 'settings' !== $back && array_key_exists( $back, d5b_settings_tabs() ) ? '&tab=' . $back : '' ) );
+			d5b_settings_exit();
+			return;
+		}
 		$posted = isset( $_POST['d5b_on'] ) && is_array( $_POST['d5b_on'] ) ? wp_unslash( $_POST['d5b_on'] ) : array();
 		$login  = (string) wp_get_current_user()->user_login;
 		// Walk the switchable parts, not the posted keys: page_building and unknown keys can never get through.
@@ -243,7 +378,6 @@ if ( ! function_exists( 'd5b_settings_save' ) ) {
 			if ( $want !== $row['on'] ) { d5b_switch_set( $key, $want, $login ); }
 		}
 		d5b_settings_save_abilities( $login );
-		$base = is_multisite() ? network_admin_url( 'settings.php' ) : admin_url( 'options-general.php' );
 		wp_safe_redirect( $base . '?page=divi5-builder&updated=1' );
 		d5b_settings_exit();
 	}

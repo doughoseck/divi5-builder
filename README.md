@@ -18,6 +18,13 @@ must use Divi 5 [will not work with Divi 4 sites].
 > the block format was reverse-engineered from real sites and verified live, but it
 > can change between releases. Use on staging first. No warranty.
 
+> **Use at your own risk.** With the AI abilities switched on, this plugin lets connected
+> AI clients create, change, trash and (after a preview and a confirmation code) permanently
+> delete content on your site. Its change history is a 30-day safety net for mistakes, not a
+> backup. Keep your normal backups, test on a staging site first, and switch on only the
+> categories you need. The software is provided as is, without warranty of any kind (see
+> LICENSE).
+
 ## Why
 
 Divi 5 stores pages as **WordPress block markup** (`<!-- wp:divi/* -->` with a
@@ -295,9 +302,19 @@ php  scripts/plugin-abilities-audit-test.php      # the audit log: redaction, 30
 php  scripts/plugin-abilities-content-test.php    # the content abilities: per-object permission, paging, no secrets
 php  scripts/plugin-abilities-site-test.php       # the site abilities: settings allow-list, users without secrets, the debug log cap
 php  scripts/plugin-abilities-divi-test.php       # the Divi and history abilities
+php  scripts/plugin-abilities-history-test.php     # the change history store: 30-day prune, secret-named keys never stored, ok_no_history
+php  scripts/plugin-abilities-confirm-test.php     # two-step permanent deletes: preview, confirmation code, one use, the same user
+php  scripts/plugin-abilities-blocks-test.php      # block-level edits (Divi section and text) leave the rest byte for byte
+php  scripts/plugin-abilities-write-posts-test.php     # posts, pages, custom types, revisions, custom fields: create, update, trash, restore
+php  scripts/plugin-abilities-write-comments-test.php  # comments: moderate and reply
+php  scripts/plugin-abilities-write-media-test.php     # media: safe upload (http/https only, private ranges refused, no SVG), update, trash
+php  scripts/plugin-abilities-write-terms-test.php     # categories, tags and other terms
+php  scripts/plugin-abilities-write-menus-test.php     # menus, items, locations
+php  scripts/plugin-abilities-write-divi-test.php      # Divi section and text edits, design-system and Theme Builder restores
 node scripts/switch-advice-test.js    # what the scripts say when a switch is off
 node scripts/plugin-live-check-test.js  # the read-only live check (plugin-live-check.js <site>): GET only, exit 0/1/2
 node scripts/abilities-live-check-test.js  # the read-only abilities check (abilities-live-check.js <site>): GET only, exit 0/1/2
+node scripts/abilities-live-write-test.js  # the live write script (abilities-live-write.js <site> <step>) against the fake site: only d5b-live- items, previews then --confirm, exit 0/1/2/3
 node scripts/build-plugin-zips-test.js  # the zip build and the must-use loader next to it
 php  scripts/ds-write-test.php "<path to a Divi 5 theme folder>"   # the plugin's design-system writes, nested variables included: run it against a 5.18 AND a 5.15 copy
 node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts every store back (plugin >= 2.0.1; the "nested" part needs Divi 5.18)
@@ -306,7 +323,7 @@ node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts
 ## Security
 
 - **Found a vulnerability? Report it privately** - see [SECURITY.md](SECURITY.md).
-  Run the latest plugin (**divi5-builder 2.1.0**; the old single-file 1.8.3 and newer already fixed a Contributor-level option read).
+  Run the latest plugin (**divi5-builder 2.2.0**; the old single-file 1.8.3 and newer already fixed a Contributor-level option read).
 - Use the lowest role that works: page building needs an **Editor** Application Password.
 - Never commit `~/.web-creds.txt` or any Application Password.
 - The plugin exposes existing Divi meta keys, the global colour palette and (1.5+)

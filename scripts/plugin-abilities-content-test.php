@@ -13,7 +13,7 @@
  * keyed by name and protected keys need edit rights; every handler checks its own input.
  */
 $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
-define( 'D5B_VERSION', '2.1.0' );
+define( 'D5B_VERSION', '2.2.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 foreach ( array( 'parts', 'switches', 'abilities/categories', 'abilities/register', 'abilities/read-content', 'abilities/read-structure' ) as $f ) { require $dir . '/inc/' . $f . '.php'; }
 

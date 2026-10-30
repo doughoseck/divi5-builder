@@ -15,7 +15,7 @@
  * the plugin, theme and core abilities need the network capability too.
  */
 $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
-define( 'D5B_VERSION', '2.1.0' );
+define( 'D5B_VERSION', '2.2.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 $logdir = sys_get_temp_dir() . '/d5b-site-test-' . getmypid();
 @mkdir( $logdir, 0777, true );
@@ -50,7 +50,7 @@ class WP_Site_Health { function __construct() { $GLOBALS['T_traps'][] = 'site-he
 function wp_update_plugins() { $GLOBALS['T_traps'][] = 'wp_update_plugins'; }
 function wp_update_themes() { $GLOBALS['T_traps'][] = 'wp_update_themes'; }
 function wp_version_check() { $GLOBALS['T_traps'][] = 'wp_version_check'; }
-function wp_remote_get() { $GLOBALS['T_traps'][] = 'wp_remote_get'; return array(); }
+// wp_remote_get: the shared stand-in records itself in T_traps too (and answers nothing it was not scripted to).
 function wp_remote_post() { $GLOBALS['T_traps'][] = 'wp_remote_post'; return array(); }
 if ( ! function_exists( 'get_userdata' ) ) { function get_userdata( $id ) { return $GLOBALS['T_users'][ (int) $id ] ?? false; } }
 function get_plugins() { return $GLOBALS['T_plugins']; }
@@ -74,7 +74,7 @@ function d5b_audit_write( string $ability, array $args, string $status, int $dur
 function d5b_audit_update( int $id, string $status, int $duration_ms, ?array $args = null ): bool { if ( ! isset( $GLOBALS['T_audit'][ $id - 1 ] ) ) { return false; } $GLOBALS['T_audit'][ $id - 1 ]['status'] = $status; return true; }
 // --no-updates (a child run): parts/updates.php is not loaded, so wpsu_detect_caches does not exist.
 $no_updates = isset( $argv[1] ) && '--no-updates' === $argv[1];
-foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/read-content', 'inc/abilities/read-structure', 'inc/abilities/read-site', 'parts/updates' ) as $f ) {
+foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/history', 'inc/abilities/read-content', 'inc/abilities/read-structure', 'inc/abilities/read-site', 'parts/updates' ) as $f ) {
 	if ( $no_updates && 'parts/updates' === $f ) { continue; }
 	require $dir . '/' . $f . '.php';
 }
@@ -193,7 +193,7 @@ $flagged = array_values( array_filter( $plain, 'd5b_is_secret_key' ) );
 check( 'ordinary field names are not secrets (keep list and the "sk" word rule hold)', array() === $flagged, $flagged );
 check( 'normalisation: X-API-KEY, api-key and "Api Key " all read as one key', d5b_is_secret_key( 'X-API-KEY' ) && 'xapikey' === d5b_secret_key_norm( 'X-API-KEY' ) && 'apikey' === d5b_secret_key_norm( 'api-key' ) && 'apikey' === d5b_secret_key_norm( 'Api Key ' ) );
 $src = file_get_contents( $dir . '/inc/abilities/scrub.php' ) . file_get_contents( $dir . '/inc/abilities/audit.php' );
-check( 'the scrubber and the audit redactor have no key regex of their own any more (both call d5b_is_secret_key)', false === strpos( $src, "pass|secret|token|key|auth" ) && false === strpos( $src, 'pass(word)?$' ) && false === strpos( $src, 'function d5b_ability_scrub_key' ) );
+check( 'the scrubber and the audit redactor have no key regex of their own any more (both call d5b_is_secret_key)', false === strpos( $src, "pass|secret|token|key|auth" ) && false === strpos( $src, 'pass(word)?$' ) && false === strpos( $src, 'function d5b_ability_scrub_key(' ) );
 
 echo "name/value pairs\n";
 $r = d5b_ability_scrub_raw( array(

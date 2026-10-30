@@ -1,7 +1,8 @@
 <?php
 /**
  * Read abilities for Divi (#32, release 2.1.0, part 3): the design system, Theme Builder templates and layouts, canvases
- * (popups, off-canvas menus) and the builder status of a post. Uses the helpers of read-content.php (d5b_rc_*), which is
+ * (popups, off-canvas menus), Divi Library items (2.2.0: the hash divi-section-edit and divi-text-edit need) and the
+ * builder status of a post. Uses the helpers of read-content.php (d5b_rc_*), which is
  * loaded first, and the page-building reads in parts/page-building.php (d5b_ds_overview, d5b_tb_list_data,
  * d5b_tb_layout_data): the REST routes and these abilities call the same functions, so they return the same bytes.
  *
@@ -119,6 +120,37 @@ if ( ! function_exists( 'd5b_dv_h_design_system' ) ) {
 		return $out;
 	}
 
+	// ---- Divi Library items
+
+	/** A Divi Library item (et_pb_layout) the caller may edit, or null (missing, another kind, trashed, not editable). */
+	function d5b_dv_library_item( $id ) {
+		$id = d5b_rc_id_of( $id );
+		if ( $id < 1 ) { return null; }
+		$p = get_post( $id );
+		if ( ! is_object( $p ) || 'et_pb_layout' !== (string) $p->post_type || in_array( (string) $p->post_status, array( 'auto-draft', 'trash' ), true ) ) { return null; }
+		return current_user_can( 'edit_post', $p->ID ) ? $p : null;
+	}
+
+	/** The library item with its raw content and hash: what divi-section-edit and divi-text-edit need first. */
+	function d5b_dv_h_library_get( array $in ) {
+		$a = d5b_rc_args( $in, array( 'id' => 'id' ), array( 'id' ) );
+		if ( is_wp_error( $a ) ) { return $a; }
+		$p = d5b_dv_library_item( $a['id'] );
+		if ( null === $p ) { return new WP_Error( 'not_found', 'No Divi Library item with that id that you may read.' ); }
+		$need = d5b_dv_need( array( 'd5b_tb_format' ) );
+		if ( null !== $need ) { return $need; }
+		return array(
+			'id'       => (int) $p->ID,
+			'title'    => (string) $p->post_title,
+			'status'   => (string) $p->post_status,
+			'modified' => (string) $p->post_modified_gmt,
+			'format'   => d5b_tb_format( $p->post_content ),
+			'bytes'    => strlen( (string) $p->post_content ),
+			'hash'     => d5b_rc_hash( $p ),
+			'content'  => (string) $p->post_content,
+		);
+	}
+
 	function d5b_dv_h_canvas_get( array $in ) {
 		$a = d5b_rc_args( $in, array( 'id' => 'id' ), array( 'id' ) );
 		if ( is_wp_error( $a ) ) { return $a; }
@@ -200,6 +232,9 @@ if ( ! function_exists( 'd5b_dv_h_design_system' ) ) {
 	d5b_rc_def( 'divi-canvas-get', 'divi', 'Get a Divi canvas',
 		'Returns one Divi canvas with its raw, unrendered content and a hash of that content (md5 of the raw content, the stale check for writes). Refuses a canvas the caller may not edit, and an id that is not a canvas.',
 		$d5b_dv_id_prop( 'canvas' ), array( 'id' ), 'd5b_dv_h_canvas_get', function ( array $in ) { return current_user_can( 'edit_posts' ) && null !== d5b_dv_canvas( $in['id'] ?? 0 ); } );
+	d5b_rc_def( 'divi-library-get', 'divi', 'Get a Divi Library item',
+		'Returns one Divi Library item (a saved section, row, module or layout) with its raw, unrendered content and a hash of that content (md5 of the raw content: the expect_hash of divi-section-edit and divi-text-edit). Refuses an item the caller may not edit, and an id that is not a Divi Library item. Reads only, changes nothing.',
+		$d5b_dv_id_prop( 'Divi Library item' ), array( 'id' ), 'd5b_dv_h_library_get', function ( array $in ) { return current_user_can( 'edit_posts' ) && null !== d5b_dv_library_item( $in['id'] ?? 0 ); } );
 	d5b_rc_def( 'divi-builder-status', 'divi', 'Get the Divi builder status of a post',
 		'Returns how Divi treats one post or page: whether it uses the builder, Divi 5 or older Divi, the builder version, page layout and the format of its content. Refuses a post the caller may not edit, and a post whose own category (posts, pages or custom post types) is switched off.',
 		array( 'post_id' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The id of the post, page or other item to check.' ) ),
@@ -209,5 +244,5 @@ if ( ! function_exists( 'd5b_dv_h_design_system' ) ) {
 
 	// Theme Builder and canvas content is post content: value-shape masking only, so it stays editable and its hash still
 	// matches the raw content. The design system is Divi's own structured data: neither content nor raw, STRICT masking.
-	d5b_ability_set_content_keys( array( 'divi-tb-get', 'divi-canvas-get' ) );
+	d5b_ability_set_content_keys( array( 'divi-tb-get', 'divi-canvas-get', 'divi-library-get' ) );
 }

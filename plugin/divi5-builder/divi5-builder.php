@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Divi 5 Builder
  * Description: Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.
- * Version: 2.1.0
+ * Version: 2.2.0
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: divi5-builder skill
@@ -26,7 +26,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 // Loaded twice (a must-use copy and a normal copy, or two folders): the first copy wins, the second does nothing.
 if ( defined( 'D5B_VERSION' ) ) { return; }
 
-define( 'D5B_VERSION', '2.1.0' );
+define( 'D5B_VERSION', '2.2.0' );
 define( 'D5B_FILE', __FILE__ );
 
 // An explicit list, not a directory scan: a file left behind by an older copy (copying over the folder by FTP does not
@@ -36,16 +36,27 @@ foreach ( array(
 	'inc/switches.php',
 	'inc/gate.php',
 	'inc/takeover.php',
+	'inc/blocks-text-fields.php',
+	'inc/blocks.php',
 	'inc/abilities/categories.php',
 	'inc/abilities/register.php',
 	'inc/abilities/secrets.php',
 	'inc/abilities/audit.php',
 	'inc/abilities/scrub.php',
+	'inc/abilities/history.php',
+	'inc/abilities/confirm.php',
 	'inc/abilities/read-content.php',
 	'inc/abilities/read-structure.php',
 	'inc/abilities/read-site.php',
 	'inc/abilities/read-divi.php',
 	'inc/abilities/read-history.php',
+	'inc/abilities/write-common.php',
+	'inc/abilities/write-posts.php',
+	'inc/abilities/write-comments.php',
+	'inc/abilities/write-media.php',
+	'inc/abilities/write-terms.php',
+	'inc/abilities/write-menus.php',
+	'inc/abilities/write-divi.php',
 	'inc/settings.php',
 	'parts/page-building.php',
 	'parts/media-audit.php',

@@ -16,7 +16,7 @@ $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
 
 // ---- child: no audit writer and no scrubber exist (Tasks 3 and 5 come later)
 if ( isset( $argv[1] ) && '--bare' === $argv[1] ) {
-	define( 'D5B_VERSION', '2.1.0' );
+	define( 'D5B_VERSION', '2.2.0' );
 	require __DIR__ . '/plugin-test-stubs.php';
 	require $dir . '/inc/parts.php'; require $dir . '/inc/switches.php'; require $dir . '/inc/abilities/categories.php'; require $dir . '/inc/abilities/register.php';
 	if ( function_exists( 'd5b_audit_write' ) || function_exists( 'd5b_ability_scrub' ) ) { echo "BARE_NOT_BARE\n"; exit( 1 ); }
@@ -49,14 +49,15 @@ if ( isset( $argv[1] ) && '--child' === $argv[1] ) {
 	exit( 0 );
 }
 
-define( 'D5B_VERSION', '2.1.0' );
+define( 'D5B_VERSION', '2.2.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 require $dir . '/inc/parts.php';
 require $dir . '/inc/switches.php';
 require $dir . '/inc/abilities/categories.php';
 require $dir . '/inc/abilities/register.php';
 // Group files that later tasks add: loading them adds the real definitions to the registry. scrub.php is left out: this test has its own scrubber double.
-foreach ( glob( $dir . '/inc/abilities/*.php' ) as $f ) { if ( ! in_array( basename( $f ), array( 'categories.php', 'register.php', 'audit.php', 'scrub.php' ), true ) ) { require_once $f; } }
+$d5b_files = glob( $dir . '/inc/abilities/*.php' ); usort( $d5b_files, function ( $a, $b ) { $w = function ( $p ) { return 'write-common.php' === basename( $p ) ? 0 : 1; }; return $w( $a ) <=> $w( $b ) ?: strcmp( $a, $b ); } ); // write-common.php first, as the loader
+foreach ( $d5b_files as $f ) { if ( ! in_array( basename( $f ), array( 'categories.php', 'register.php', 'audit.php', 'scrub.php' ), true ) ) { require_once $f; } }
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . ( is_string( $detail ) ? $detail : json_encode( $detail ) ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
@@ -354,11 +355,12 @@ fresh( true ); $GLOBALS['T_user_id'] = 0;
 check( 'an anonymous caller: forbidden, HTTP 403 (run and permission paths)', 403 === status_of( $r = d5b_ability_run( 'divi5-builder/posts-list', array() ) ) && 'forbidden' === $r->get_error_code() && 403 === status_of( d5b_ability_permit( 'divi5-builder/posts-list', array() ) ) );
 check( 'forbidden_anonymous, should it ever be a code, maps to 403 too', 403 === d5b_ability_http_status( 'forbidden_anonymous' ) );
 // The codes the shipped handlers return: every one is in the table (not the 500 fallback), so no refusal answers 500.
+// internal_error and write_failed (WordPress itself did not make a write that passed every check) are real 500s.
 $codes = array();
 foreach ( new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $dir . '/inc/abilities', FilesystemIterator::SKIP_DOTS ) ) as $f ) {
 	if ( preg_match_all( "/new WP_Error\(\s*'([a-z_]+)'/", (string) file_get_contents( (string) $f ), $mm ) ) { foreach ( $mm[1] as $c ) { $codes[ $c ] = true; } }
 }
-$unmapped = array_values( array_filter( array_keys( $codes ), function ( $c ) { return 500 === d5b_ability_http_status( $c ) && 'internal_error' !== $c; } ) );
+$unmapped = array_values( array_filter( array_keys( $codes ), function ( $c ) { return 500 === d5b_ability_http_status( $c ) && 'internal_error' !== $c && 'write_failed' !== $c; } ) );
 check( 'every WP_Error code in inc/abilities has its own status (no odd codes left: invalid_type, invalid_taxonomy, forbidden_status are gone)', array() === $unmapped && ! isset( $codes['invalid_type'] ) && ! isset( $codes['invalid_taxonomy'] ) && ! isset( $codes['forbidden_status'] ) && ! isset( $codes['ability_not_found'] ), array( $unmapped, array_keys( $codes ) ) );
 
 fresh( true );

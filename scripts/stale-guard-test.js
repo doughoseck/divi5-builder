@@ -19,6 +19,114 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
   const https = require('https');
   const { EventEmitter } = require('events');
   const STATE = process.env.FAKE_WP_STATE;
+  // A stateful model of the write and read abilities the live write script uses (issue #32, task 11). st.mdl = {} switches it on
+  // (st.mdl.items, .revs, .hist, .codes, .calls are its state; .mediaTrash false = a site with no media trash, .transport overrides
+  // the upload's transport, .noHistory = ability short names that write no history row, .badWrite = short names answered 500,
+  // .badBefore = { ability short name: 'missing' | 'too_large' | 'withheld' } spoils the before copy of that ability's rows).
+  // As the plugin: an update needs expect_hash only when it changes the content; a wrong confirmation code is 409; a media
+  // summary names the file (input.filename, else the URL's); history-changes-list pages (page, per_page, has_more) and
+  // history-change-get returns one row with its before and after.
+  // Read abilities are readonly, so core takes only GET for them and only POST for the writes (405 otherwise), as the real site does.
+  // Every answer carries a planted secret (SECRET-LEAK-VALUE) that the script must never print.
+  const modelRun = (st, name, method, q, body) => {
+    const m = st.mdl; m.next = m.next || 1000; m.calls = m.calls || []; m.hist = m.hist || []; m.items = m.items || {}; m.revs = m.revs || {}; m.codes = m.codes || {};
+    const short = name.replace(/^divi5-builder\//, '');
+    m.calls.push(method + ' ' + short);
+    const E = (s, code, data) => [s, { code, message: 'ERR-MSG-' + code, data: Object.assign({ status: s }, data || {}) }];
+    const READ = ['pages-get', 'posts-list', 'revisions-list', 'revisions-get', 'history-changes-list', 'history-change-get', 'media-delete-preview', 'taxonomy-delete-preview', 'menus-delete-preview'];
+    if (READ.includes(short) !== (method === 'GET')) return [405, { code: 'rest_ability_invalid_method' }];
+    if ((m.badWrite || []).includes(short)) return E(500, 'internal_error');
+    const input = {};
+    if (method === 'GET') { for (const [k, v] of new URLSearchParams(q)) { const mm = k.match(/^input\[([a-z_]+)\]$/); if (mm) input[mm[1]] = v; } }
+    else Object.assign(input, JSON.parse(body || '{}').input || {});
+    const md5 = s => crypto.createHash('md5').update(String(s)).digest('hex');
+    const nid = () => ++m.next;
+    const get = (id, kinds) => { const o = m.items[String(id)]; return o && (!kinds || kinds.includes(o.kind)) ? o : null; };
+    const hash = o => md5(o.content || '');
+    const res = o => ({ id: o.id, type: o.kind, title: o.title, status: o.status, hash: hash(o), content: 'SECRET-LEAK-VALUE', secret: 'SECRET-LEAK-VALUE' });
+    const hist = (ability, o, action, what, rev) => {
+      if ((m.noHistory || []).includes(ability)) return;
+      // The before copy: the object's fields (no content) for every action but a create; .badBefore spoils it on purpose.
+      let before = action === 'create' ? null : { id: o.id, title: o.title || o.name || '', status: o.status || '' };
+      const spoil = (m.badBefore || {})[ability];
+      if (spoil === 'missing') before = {}; else if (spoil === 'too_large') before = { too_large: true, bytes: 9000000 }; else if (spoil === 'withheld') before.meta = { licence: [{ withheld: 'secret_named_key' }] };
+      m.hist.unshift({ id: m.hist.length + 1, time_utc: new Date().toISOString().slice(0, 19).replace('T', ' '), user_id: 1, ability: 'divi5-builder/' + ability, audit_id: 1, object_type: o.kind, object_id: o.id, action, revision_id: rev || null, summary: what + ' ' + o.kind + ' ' + o.id + " '" + (o.kind === 'media' ? o.file : (o.title || o.name || '')) + "'", before, after: { secret: 'SECRET-LEAK-VALUE' } });
+    };
+    const confirm = (ability, o) => { const c = 'CONFIRM-' + o.id + '-' + nid(); m.codes[ability + ':' + o.id] = c; return { confirmation: c, expires_at: '2026-10-29T12:10:00+00:00', secret: 'SECRET-LEAK-VALUE' }; };
+    const useCode = (ability, o) => { const k = ability + ':' + o.id; if (!input.confirmation || m.codes[k] !== input.confirmation) return E(409, 'confirmation_invalid', { reason: 'missing' }); delete m.codes[k]; return null; };
+    const needHash = o => (input.expect_hash === hash(o) ? null : E(409, 'stale', { hash: hash(o) }));
+    const addRev = o => { (m.revs[o.id] = m.revs[o.id] || []).unshift({ id: nid(), content: o.content || '' }); return m.revs[o.id][0].id; };
+    let mm2;
+    if ((mm2 = short.match(/^(posts|pages)-(create|update|trash|restore)$/))) {
+      const kind = mm2[1] === 'posts' ? 'post' : 'page', act = mm2[2];
+      if (act === 'create') { const o = { id: nid(), kind, title: String(input.title || ''), status: input.status || 'draft', content: input.content || '' }; m.items[o.id] = o; addRev(o); hist(short, o, 'create', 'Created'); return [200, res(o)]; }
+      const o = get(input.id, [kind]); if (!o) return E(404, 'not_found');
+      if (act === 'update') { const s = 'content' in input ? needHash(o) : null; if (s) return s; if ('title' in input) o.title = input.title; if ('content' in input) o.content = input.content; hist(short, o, 'update', 'Updated'); return [200, res(o)]; }
+      if (act === 'trash') { if (o.status === 'trash') return E(400, 'cannot_trash'); o.prev = o.status; o.status = 'trash'; hist(short, o, 'trash', 'Trashed'); return [200, Object.assign(res(o), { restore_with: 'divi5-builder/' + mm2[1] + '-restore' })]; }
+      if (o.status !== 'trash') return E(404, 'not_found'); o.status = o.prev || 'draft'; hist(short, o, 'restore', 'Restored'); return [200, res(o)];
+    }
+    if (short === 'media-upload') {
+      if (!input.url) return E(400, 'invalid_input');
+      m.uploadUrls = (m.uploadUrls || []).concat(input.url);
+      const file = input.filename ? String(input.filename).replace(/[^A-Za-z0-9._-]/g, '') : String(input.url).split('?')[0].split('/').pop();
+      const o = { id: nid(), kind: 'media', title: String(input.title || 'upload'), file, status: 'inherit', content: '', file_url: 'https://fake.test/wp-content/uploads/2026/10/' + file }; m.items[o.id] = o; hist(short, o, 'create', 'Uploaded');
+      return [200, Object.assign(res(o), { file_url: o.file_url, transport: m.transport || 'curl' })];
+    }
+    if (short === 'media-update') { const o = get(input.id, ['media']); if (!o) return E(404, 'not_found'); if ('alt' in input) o.alt = input.alt; hist(short, o, 'update', 'Updated'); return [200, res(o)]; }
+    if (short === 'media-trash') {
+      const o = get(input.id, ['media']); if (!o) return E(404, 'not_found');
+      if (m.mediaTrash === false) return E(400, 'cannot_trash', { use: 'divi5-builder/media-delete-preview' });
+      o.status = 'trash'; hist(short, o, 'trash', 'Trashed'); return [200, res(o)];
+    }
+    if (short === 'media-delete-preview') { const o = get(input.id, ['media']); if (!o) return E(404, 'not_found'); if (m.mediaTrash !== false) return E(403, 'not_allowed'); return [200, Object.assign({ item: { id: o.id, title: o.title, file_url: o.file_url, secret: 'SECRET-LEAK-VALUE' }, used_by: [{ id: 3, title: 'SECRET-LEAK-VALUE' }], used_by_hidden: 0 }, confirm('media-delete', o))]; }
+    if (short === 'media-delete') { const o = get(input.id, ['media']); if (!o) return E(404, 'not_found'); const bad = useCode('media-delete', o); if (bad) return bad; hist(short, o, 'delete', 'Deleted'); delete m.items[o.id]; return [200, { deleted: true, id: o.id, file_url: 'SECRET-LEAK-VALUE', history_id: m.hist.length }]; }
+    if (short === 'taxonomy-create') { const o = { id: nid(), kind: 'term', name: String(input.name || ''), taxonomy: input.taxonomy, title: String(input.name || ''), count: 0, posts: [] }; m.items[o.id] = o; hist(short, o, 'create', 'Created'); return [200, { id: o.id, name: o.name, slug: o.name, taxonomy: o.taxonomy, count: 0, secret: 'SECRET-LEAK-VALUE' }]; }
+    if (short === 'taxonomy-assign') {
+      const p = get(input.post_id, ['post', 'page']), t = get((input.terms || [])[0], ['term']); if (!p || !t) return E(400, 'invalid_input');
+      t.posts.push(p.id); t.count++; hist(short, p, 'assign', 'Assigned ' + t.name + ' to'); return [200, { terms: [t.id], secret: 'SECRET-LEAK-VALUE' }];
+    }
+    if (short === 'taxonomy-delete-preview') { const o = get(input.id, ['term']); if (!o) return E(404, 'not_found'); return [200, Object.assign({ term: { id: o.id, name: o.name }, count: o.count, children: [], children_total: 0, posts: o.posts, posts_total: o.posts.length, secret: 'SECRET-LEAK-VALUE' }, confirm('taxonomy-delete', o))]; }
+    if (short === 'taxonomy-delete') { const o = get(input.id, ['term']); if (!o) return E(404, 'not_found'); const bad = useCode('taxonomy-delete', o); if (bad) return bad; hist(short, o, 'delete', 'Deleted'); delete m.items[o.id]; return [200, { deleted: true, id: o.id, history_id: m.hist.length }]; }
+    if (short === 'menus-create') { const o = { id: nid(), kind: 'menu', name: String(input.name || ''), title: String(input.name || '') }; m.items[o.id] = o; hist(short, o, 'create', 'Created'); return [200, { id: o.id, name: o.name, slug: o.name, secret: 'SECRET-LEAK-VALUE' }]; }
+    if (short === 'menus-item-add') { const mn = get(input.menu, ['menu']); if (!mn) return E(404, 'not_found'); const o = { id: nid(), kind: 'menuitem', menu: mn.id, title: String(input.title || ''), position: 1 + Object.values(m.items).filter(x => x.menu === mn.id).length }; m.items[o.id] = o; hist(short, mn, 'update', 'Added item to'); return [200, { id: o.id, title: o.title, position: o.position, secret: 'SECRET-LEAK-VALUE' }]; }
+    if (short === 'menus-reorder') {
+      const mn = get(input.menu, ['menu']); if (!mn) return E(404, 'not_found');
+      const have = Object.values(m.items).filter(x => x.menu === mn.id).map(x => x.id).sort().join(), want = (input.items || []).map(x => x.id).sort().join();
+      if (have !== want) return E(400, 'invalid_input', { missing: [] });
+      (input.items || []).forEach((x, i) => { m.items[x.id].position = i + 1; }); hist(short, mn, 'update', 'Reordered'); return [200, { menu: { id: mn.id }, items: input.items, secret: 'SECRET-LEAK-VALUE' }];
+    }
+    if (short === 'menus-delete-preview') { const mn = get(input.menu, ['menu']); if (!mn) return E(404, 'not_found'); const its = Object.values(m.items).filter(x => x.menu === mn.id); return [200, Object.assign({ menu: { id: mn.id, name: mn.name }, items: its.map(x => ({ id: x.id, title: 'SECRET-LEAK-VALUE' })), items_total: its.length, locations: [] }, confirm('menus-delete', mn))]; }
+    if (short === 'menus-delete') { const mn = get(input.menu, ['menu']); if (!mn) return E(404, 'not_found'); const bad = useCode('menus-delete', mn); if (bad) return bad; hist(short, mn, 'delete', 'Deleted'); Object.keys(m.items).forEach(k => { if (m.items[k].menu === mn.id) delete m.items[k]; }); delete m.items[mn.id]; return [200, { deleted: true, id: mn.id, history_id: m.hist.length }]; }
+    if (short === 'pages-get') { const o = get(input.id, ['page']); if (!o) return E(404, 'not_found'); return [200, Object.assign(res(o), { content: o.content })]; }
+    if (short === 'posts-list') { const items = Object.values(m.items).filter(x => x.kind === 'post' && (!input.status || x.status === input.status) && (!input.search || x.title.includes(input.search))).map(x => ({ id: x.id, title: x.title, status: x.status })); return [200, { items, secret: 'SECRET-LEAK-VALUE' }]; }
+    if (short === 'revisions-list') { const o = get(input.post_id); if (!o) return E(404, 'not_found'); return [200, { post_id: o.id, items: (m.revs[o.id] || []).map(r => ({ id: r.id, title: 'SECRET-LEAK-VALUE' })), total: (m.revs[o.id] || []).length }]; }
+    if (short === 'revisions-get') { for (const k of Object.keys(m.revs)) { const r = m.revs[k].find(x => String(x.id) === String(input.id)); if (r) return [200, { id: r.id, parent: +k, content: r.content, hash: md5(r.content) }]; } return E(404, 'not_found'); }
+    if (short === 'history-changes-list') {
+      let rows = m.hist.slice(); if (input.since) rows = rows.filter(r => r.time_utc.slice(0, 10) >= input.since); if (input.ability) rows = rows.filter(r => r.ability === input.ability);
+      const per = +input.per_page || 20, page = +input.page || 1;
+      m.histPages = (m.histPages || []).concat(page);
+      return [200, { items: rows.slice((page - 1) * per, page * per).map(r => Object.assign({}, r, { before: undefined, after: undefined })), page, per_page: per, has_more: rows.length > page * per }];
+    }
+    if (short === 'history-change-get') { const r = m.hist.find(x => String(x.id) === String(input.id)); if (!r) return E(404, 'not_found'); return [200, Object.assign({}, r, { before: r.before || {} })]; }
+    if (short === 'divi-text-edit') {
+      const o = get(input.post_id, ['page', 'post']); if (!o) return E(404, 'not_found'); const s = needHash(o); if (s) return s;
+      if (!input.old || !o.content.includes(input.old)) return E(400, 'not_found', { near_matches: [] });
+      if (!m.noRev) addRev(o); o.content = o.content.replace(input.old, input.new); hist(short, o, 'update', 'Edited text on', m.revs[o.id][0].id); return [200, Object.assign(res(o), { changed: true })];
+    }
+    if (short === 'divi-section-edit') {
+      const o = get(input.post_id, ['page', 'post']); if (!o) return E(404, 'not_found'); const s = needHash(o); if (s) return s;
+      if (input.op !== 'replace' || input.at !== '1') return E(400, 'invalid_input');
+      if (o.content.includes(input.with)) return [200, Object.assign(res(o), { changed: false })];
+      addRev(o); hist(short, o, 'update', 'Edited block of'); return [200, Object.assign(res(o), { changed: true })];
+    }
+    if (short === 'revisions-restore') {
+      const o = get(input.post_id, ['page', 'post']); if (!o) return E(404, 'not_found'); const s = needHash(o); if (s) return s;
+      const r = (m.revs[o.id] || []).find(x => x.id === input.revision_id); if (!r) return E(404, 'not_found');
+      o.content = r.content; hist(short, o, 'update', 'Restored revision ' + r.id + ' of', r.id); return [200, Object.assign(res(o), { changed: true, restored_revision: r.id })];
+    }
+    return E(404, 'rest_ability_not_found');
+  };
+
   https.request = (opts, cb) => {
     const req = new EventEmitter(); let body = '';
     req.write = d => { body += d; }; req.end = () => setImmediate(() => {
@@ -66,10 +174,19 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
           if (st.pastEnd400 && pg > 1 && !out.length) { status = 400; out = { code: 'rest_invalid_page', message: 'The page number requested is larger than the number of pages available.' }; }
         }
       }
+      else if (st.mdl && /^\/wp-json\/wp-abilities\/v1\/abilities\/(.+)\/run$/.test(p)) {
+        const r = modelRun(st, p.match(/\/v1\/abilities\/(.+)\/run$/)[1], opts.method, q, body); status = r[0]; out = r[1]; fs.writeFileSync(STATE, JSON.stringify(st));
+      }
       else if (/^\/wp-json\/wp-abilities\/v1\/abilities\/(.+)\/run$/.test(p)) {
         const name = p.match(/\/v1\/abilities\/(.+)\/run$/)[1];
         const auth = !!(opts.headers && (opts.headers.Authorization || opts.headers.authorization || opts.headers.Cookie || opts.headers.cookie));
-        if (opts.method !== 'GET') { status = 405; out = { code: 'rest_ability_invalid_method' }; }
+        if (opts.method === 'POST' && name !== 'divi5-builder/history-audit-list') {
+          // A write ability takes a POST with {"input":{...}} (st.abilityPosts records every one); st.abilityReplies[name] = { status, body } answers.
+          st.abilityPosts = st.abilityPosts || []; st.abilityPosts.push({ name, body: JSON.parse(body || '{}'), auth, type: opts.headers['Content-Type'] });
+          const rep = (st.abilityReplies || {})[name]; if (rep) { status = rep.status; out = rep.body; } else out = { ok: true };
+          fs.writeFileSync(STATE, JSON.stringify(st));
+        }
+        else if (opts.method !== 'GET') { status = 405; out = { code: 'rest_ability_invalid_method' }; }
         else {
           st.abilityRuns = st.abilityRuns || []; st.abilityRuns.push({ name, query: q, auth });
           const rep = (st.abilityReplies || {})[name];
@@ -402,6 +519,27 @@ console.log('--- ds-live-test.js: which parts run on which plugin version (no si
   p = plan('all', '');
   check('all with no plugin found: STOP', !p.run.length && !!p.stop, p);
   check('2.10.0 counts as newer than 2.0.1 (numeric, not text, compare)', plan('nested', '2.10.0').run.length === 1 && plan('nested', '10.0.0').run.length === 1);
+}
+
+console.log('--- rest-post: the run route of a write ability');
+{
+  const body = file('ability-body.json', JSON.stringify({ input: { id: 12, title: 'New title', expect_hash: 'abc' } }));
+  let r = wp('rest-post', 'wp-abilities/v1/abilities/divi5-builder/posts-update/run', '--data-file', body);
+  const posts = (st().abilityPosts || []);
+  check('rest-post sends one POST to the ability run route with the {input} body as JSON, with credentials', r.code === 0 && posts.length === 1 && posts[0].name === 'divi5-builder/posts-update' && posts[0].body.input.id === 12 && posts[0].body.input.expect_hash === 'abc' && posts[0].auth === true && /json/.test(posts[0].type), r.out || r.err);
+  check('the answer is printed as the site gave it', r.json && r.json.ok === true, r.out);
+  const s0 = st(); s0.abilityReplies = { 'divi5-builder/posts-update': { status: 409, body: { code: 'stale', message: 'The content changed since you read it.' } } }; fs.writeFileSync(STATE, JSON.stringify(s0));
+  r = wp('rest-post', 'wp-abilities/v1/abilities/divi5-builder/posts-update/run', '--data-file', body);
+  check('a refusal from the site is shown and exits non-zero', r.code !== 0 && /409/.test(r.err) && /stale/.test(r.err), r.err);
+  const before = (st().abilityPosts || []).length;
+  // Final wave D2: only the divi5-builder/ namespace (another plugin's ability, a look-alike or upper-case namespace too).
+  for (const bad of ['wp-abilities/v1/abilities', 'wp-abilities/v1/abilities/divi5-builder/posts-update', 'wp-abilities/v1/abilities/divi5-builder/posts-update/run/extra', 'wp-abilities/v1/abilities/a/b/c/run', 'wp-abilities/v1/abilities/../x/y/run', 'wp/v1/abilities/a/b/run', 'wp-json/wp-abilities/v1/abilities/a/b/run',
+    'wp-abilities/v1/abilities/other-plugin/delete-everything/run', 'wp-abilities/v1/abilities/core/run-cron/run', 'wp-abilities/v1/abilities/divi5-builder-evil/posts-update/run', 'wp-abilities/v1/abilities/Divi5-Builder/posts-update/run']) {
+    r = wp('rest-post', bad, '--data-file', body);
+    check('rest-post refuses the path ' + bad, r.code !== 0 && /rest-post needs/.test(r.err) && (st().abilityPosts || []).length === before, r.err);
+  }
+  r = wp('rest-post', 'wp/v2/posts', '--data-file', file('p.json', '{"title":"T"}'));
+  check('a wp/v2 route still works', r.code === 0, r.err);
 }
 
 console.log('--- secrets');

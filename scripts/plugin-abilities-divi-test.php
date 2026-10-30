@@ -15,7 +15,7 @@
  * newest first, filterable, paged, administrator-only and masked.
  */
 $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
-define( 'D5B_VERSION', '2.1.0' );
+define( 'D5B_VERSION', '2.2.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 
 // ---- stand-ins the shared stubs do not have (page-building.php's Theme Builder reads)
@@ -28,7 +28,7 @@ function get_posts( $a ) {
 function metadata_exists( $t, $id, $k ) { return isset( $GLOBALS['T_meta'][ (int) $id ][ $k ] ); }
 function maybe_unserialize( $v ) { return $v; }
 
-foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/read-content', 'inc/abilities/read-divi', 'inc/abilities/read-history', 'parts/page-building' ) as $f ) { require $dir . '/' . $f . '.php'; }
+foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/history', 'inc/abilities/read-content', 'inc/abilities/read-divi', 'inc/abilities/read-history', 'parts/page-building' ) as $f ) { require $dir . '/' . $f . '.php'; }
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . substr( is_string( $detail ) ? $detail : json_encode( $detail ), 0, 700 ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
@@ -349,6 +349,47 @@ $GLOBALS['T_users'] = array();
 check( 'history-audit-list returns user_login: the login, "anonymous" (user 0) and "deleted user" (no such user)', is_array( $wl ) && array( 'deleted user', 'anonymous', 'site-admin' ) === array_column( $wl['items'], 'user_login' ), $wl );
 $hd = d5b_ability_defs()['divi5-builder/history-audit-list']['description'];
 check( 'the description says the caller\'s own call appears as started, and that has_more stands in for a total', false !== strpos( $hd, 'started' ) && false !== stripos( $hd, 'this call itself' ) && false !== strpos( $hd, 'has_more' ), $hd );
+
+
+// ---- the change history abilities (2.2.0)
+echo "history-changes-list and history-change-get\n";
+site( ADMIN, 1 );
+check( 'both change-history abilities are registered in the history category', array() === array_filter( array( 'history-changes-list', 'history-change-get' ), function ( $x ) { $d = d5b_ability_defs(); return ! isset( $d[ 'divi5-builder/' . $x ] ) || 'history' !== $d[ 'divi5-builder/' . $x ]['category']; } ) );
+function seed_change( $ability, $user, $secs_ago, $type = 'post', $oid = 7, $extra = array() ) {
+	global $wpdb; $t = d5b_history_table();
+	$wpdb->tables[ $t ][] = array_merge( array( 'id' => 2000 + count( $wpdb->tables[ $t ] ?? array() ), 'created_at' => gmdate( 'Y-m-d H:i:s', time() - $secs_ago ), 'user_id' => $user, 'ability' => $ability, 'audit_id' => 0, 'object_type' => $type, 'object_id' => $oid, 'action' => 'update', 'before' => '{"title":"Old"}', 'after' => '{"title":"New"}', 'revision_id' => null, 'summary' => 'Changed it' ), $extra );
+}
+seed_change( 'divi5-builder/posts-update', 2, 86400 * 3 ); seed_change( 'divi5-builder/posts-update', 2, 5000, 'post', 7, array( 'revision_id' => 55 ) ); seed_change( 'divi5-builder/pages-update', 1, 4000, 'page', 9 ); seed_change( 'divi5-builder/media-update', 1, 3000, 'attachment', 11 );
+$cl = call( 'history-changes-list', array() );
+check( 'history-changes-list returns the changes newest first with time, user, ability, object, action, revision and summary, and never before or after', is_array( $cl ) && array( 2003, 2002, 2001, 2000 ) === ids( $cl ) && isset( $cl['items'][1]['time_utc'], $cl['items'][1]['user_login'], $cl['items'][1]['object_type'], $cl['items'][1]['object_id'], $cl['items'][1]['action'], $cl['items'][1]['summary'] ) && 55 === $cl['items'][2]['revision_id'] && null === $cl['items'][0]['revision_id'] && ! isset( $cl['items'][0]['before'] ) && ! isset( $cl['items'][0]['after'] ), $cl );
+check( 'filter by ability: exactly that ability\'s rows', array( 2001, 2000 ) === ids( call( 'history-changes-list', array( 'ability' => 'divi5-builder/posts-update' ) ) ), ids( call( 'history-changes-list', array( 'ability' => 'divi5-builder/posts-update' ) ) ) );
+check( 'filter by user: only that user\'s rows (2003, 2002)', array( 2003, 2002 ) === ids( call( 'history-changes-list', array( 'user' => 1 ) ) ) );
+check( 'filter by object_type and object_id', array( 2002 ) === ids( call( 'history-changes-list', array( 'object_type' => 'page' ) ) ) && array( 2001, 2000 ) === ids( call( 'history-changes-list', array( 'object_type' => 'post', 'object_id' => 7 ) ) ) );
+check( 'filter by since drops the 3-day-old row', array( 2003, 2002, 2001 ) === ids( call( 'history-changes-list', array( 'since' => gmdate( 'Y-m-d', time() - 86400 ) ) ) ), ids( call( 'history-changes-list', array( 'since' => gmdate( 'Y-m-d', time() - 86400 ) ) ) ) );
+check( 'since must be a real day written YYYY-MM-DD; ability and user are validated as in the audit list', 'invalid_input' === code( handler( 'history-changes-list', array( 'since' => '2026-02-30' ) ) ) && 'invalid_input' === code( handler( 'history-changes-list', array( 'since' => '2026-10-28 10:00:00' ) ) ) && 'invalid_input' === code( handler( 'history-changes-list', array( 'ability' => str_repeat( 'a', 192 ) ) ) ) && 'invalid_input' === code( handler( 'history-changes-list', array( 'user' => 'x' ) ) ) && 'invalid_input' === code( handler( 'history-changes-list', array( 'bogus' => 1 ) ) ) );
+for ( $i = 129; $i >= 0; $i-- ) { seed_change( 'divi5-builder/bulk', 1, 100 + $i, 'post', 500 ); }
+$c1 = call( 'history-changes-list', array( 'ability' => 'divi5-builder/bulk', 'per_page' => 500 ) ); $c2 = call( 'history-changes-list', array( 'ability' => 'divi5-builder/bulk', 'per_page' => 100, 'page' => 2 ) );
+check( 'per_page is capped at 100 with has_more; page 2 has the other 30 and no more; no overlap', is_array( $c1 ) && 100 === count( $c1['items'] ) && true === $c1['has_more'] && 30 === count( $c2['items'] ) && false === $c2['has_more'] && array() === array_intersect( ids( $c1 ), ids( $c2 ) ) );
+check( 'page_too_deep past 10,000 rows in; bad paging is invalid_input', 'page_too_deep' === code( call( 'history-changes-list', array( 'per_page' => 100, 'page' => 102 ) ) ) && 'invalid_input' === code( call( 'history-changes-list', array( 'page' => 'x' ) ) ) );
+check( 'every history query went through prepare()', array() === $GLOBALS['wpdb']->unprepared, $GLOBALS['wpdb']->unprepared );
+seed_change( 'divi5-builder/meta-set', 1, 10, 'post', 3, array( 'before' => '{"title":"T","password":"hunter2"}', 'after' => '{"meta":{"note":"fine","smtp_password":"abc","Authorization":"Bearer abcdef123456"},"body":"api_key=SECRETVALUE99 ok"}' ) );
+$gid = $GLOBALS['wpdb']->tables[ d5b_history_table() ][ count( $GLOBALS['wpdb']->tables[ d5b_history_table() ] ) - 1 ]['id'];
+$g = call( 'history-change-get', array( 'id' => $gid ) );
+check( 'history-change-get returns the full row with before and after as decoded arrays', is_array( $g ) && $gid === $g['id'] && 'divi5-builder/meta-set' === $g['ability'] && is_array( $g['before'] ) && is_array( $g['after'] ) && 'T' === $g['before']['title'], $g );
+check( 'history-change-get sends before and after through the scrubber: secret-named keys and secret-shaped values are gone, the rest stays', is_array( $g ) && ! isset( $g['before']['password'] ) && false === strpos( json_encode( $g ), 'hunter2' ) && false === strpos( json_encode( $g ), 'SECRETVALUE99' ) && false === strpos( json_encode( $g ), 'abcdef123456' ) && 'fine' === ( $g['after']['meta']['note'] ?? null ), $g );
+check( 'history-change-get: an unknown id is not_found, a missing or bad id is invalid_input', 'not_found' === code( handler( 'history-change-get', array( 'id' => 999999 ) ) ) && 'invalid_input' === code( handler( 'history-change-get', array() ) ) && 'invalid_input' === code( handler( 'history-change-get', array( 'id' => 0 ) ) ) );
+check( 'history-change-get declares before and after as raw subtrees', array( 'before', 'after' ) === d5b_ability_defs()['divi5-builder/history-change-get']['raw_paths'] );
+$dsc = d5b_ability_defs()['divi5-builder/history-changes-list']['description'] . d5b_ability_defs()['divi5-builder/history-change-get']['description'];
+check( 'the descriptions say the current site\'s table only and administrator only', substr_count( $dsc, 'current site' ) >= 2 && false !== strpos( $dsc, 'manage_options' ) );
+check( 'the calls above are audited as ok', ( function () { $n = 0; foreach ( rows() as $x ) { if ( in_array( $x['ability'], array( 'divi5-builder/history-changes-list', 'divi5-builder/history-change-get' ), true ) && 'ok' === $x['status'] ) { $n++; } } return $n >= 4; } )() );
+foreach ( array( EDITOR, READER ) as $caps ) {
+	site( $caps, 3 );
+	check( 'a caller without manage_options is refused both change-history abilities (permission and handler)', 'FORBIDDEN' === call( 'history-changes-list' ) && 'FORBIDDEN' === call( 'history-change-get', array( 'id' => 1 ) ) && 'forbidden' === code( handler( 'history-changes-list' ) ) && 'forbidden' === code( handler( 'history-change-get', array( 'id' => 1 ) ) ) );
+}
+site( ADMIN, 1 ); d5b_abilities_set_master( false, 'tester' );
+check( 'with the master switch off both are refused', 'FORBIDDEN' === call( 'history-changes-list' ) && 'FORBIDDEN' === call( 'history-change-get', array( 'id' => 1 ) ) );
+site( ADMIN, 1 ); d5b_abilities_set_category( 'history', false, false, 'tester' );
+check( 'with the history category off both are refused', 'FORBIDDEN' === call( 'history-changes-list' ) && 'FORBIDDEN' === call( 'history-change-get', array( 'id' => 1 ) ) );
 
 echo "\n" . ( $failed ? "$failed of $n checks FAILED\n" : "all $n checks passed\n" );
 exit( $failed ? 1 : 0 );

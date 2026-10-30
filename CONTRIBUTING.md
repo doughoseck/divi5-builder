@@ -72,13 +72,14 @@ Before opening a PR:
    node scripts/switch-advice-test.js    # what the scripts say when a switch is off
    node scripts/plugin-live-check-test.js    # the read-only live check (plugin-live-check.js <site>): GET only, exit 0/1/2
    node scripts/abilities-live-check-test.js   # the read-only abilities check (abilities-live-check.js <site>): GET only, exit 0/1/2
+   node scripts/abilities-live-write-test.js   # the live write script (abilities-live-write.js <site> <step>) against the fake site: only d5b-live- items, previews then --confirm, exit 0/1/2/3
    node scripts/build-plugin-zips-test.js
    php scripts/permissions-test.php && php scripts/double-load-test.php && php scripts/media-quarantine-test.php && php scripts/media-audit-test.php
    php scripts/site-updates-test.php
    node scripts/site-care/hook-profiler.js gen <empty-dir> && php scripts/site-care/hook-profiler-test.php <empty-dir>   # generate the profiler, then check it
    php scripts/plugin-switches-test.php && php scripts/plugin-takeover-test.php && php scripts/plugin-settings-test.php && php scripts/plugin-anysite-test.php
    php scripts/plugin-uninstall-test.php   # deleting the plugin removes its options (every site of a network too)
-   php scripts/plugin-abilities-switches-test.php && php scripts/plugin-abilities-gate-test.php && php scripts/plugin-abilities-audit-test.php && php scripts/plugin-abilities-content-test.php && php scripts/plugin-abilities-site-test.php && php scripts/plugin-abilities-divi-test.php   # the AI abilities
+   php scripts/plugin-abilities-switches-test.php && php scripts/plugin-abilities-gate-test.php && php scripts/plugin-abilities-audit-test.php && php scripts/plugin-abilities-content-test.php && php scripts/plugin-abilities-site-test.php && php scripts/plugin-abilities-divi-test.php && php scripts/plugin-abilities-history-test.php && php scripts/plugin-abilities-confirm-test.php && php scripts/plugin-abilities-blocks-test.php && php scripts/plugin-abilities-write-posts-test.php && php scripts/plugin-abilities-write-comments-test.php && php scripts/plugin-abilities-write-media-test.php && php scripts/plugin-abilities-write-terms-test.php && php scripts/plugin-abilities-write-menus-test.php && php scripts/plugin-abilities-write-divi-test.php && php scripts/plugin-abilities-registry-test.php   # the AI abilities: reads, then the change history, confirmation codes, block edits and every write
    ```
    Two more need arguments (a WordPress `wp-includes` folder, a Divi 5 theme folder) and are optional:
    `php scripts/tree-guard-test.php <wp-includes> <sent.html> <stored.html>` and `php scripts/ds-write-test.php "<Divi theme folder>"`.

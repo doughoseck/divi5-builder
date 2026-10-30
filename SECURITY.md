@@ -22,7 +22,7 @@ plugin (the version is in its header and in `GET /wp-json/divi5-builder/v1/versi
 
 | Plugin | Latest | Notes |
 |---|---|---|
-| `divi5-builder` (`divi5-builder.zip`) | 2.1.0 | One plugin: page building (always on), plus Media audit, Media clean-up and Updates, each a switch in Settings > Divi 5 Builder, **off by default**. Only an administrator in wp-admin can flip a switch. 2.1.0 adds read-only AI abilities through the WordPress Abilities API, behind a master switch that is **off by default** (see "AI abilities" below). 2.0.1 checks nested design variables on the server (a missing, archived, other-type, self or cyclic reference is refused) and refuses to archive a variable that another active variable uses. |
+| `divi5-builder` (`divi5-builder.zip`) | 2.2.0 | One plugin: page building (always on), plus Media audit, Media clean-up and Updates, each a switch in Settings > Divi 5 Builder, **off by default**. Only an administrator in wp-admin can flip a switch. 2.2.0 adds abilities that change content, each category behind its switch, with a 30-day change history (see "Writes" below). 2.1.0 added read-only AI abilities through the WordPress Abilities API, behind a master switch that is **off by default** (see "AI abilities" below). 2.0.1 checks nested design variables on the server (a missing, archived, other-type, self or cyclic reference is refused) and refuses to archive a variable that another active variable uses. |
 | `divi5-builder-rest.php` | 1.8.5 | Replaced by `divi5-builder` 2.0.0. Security fixes only until 2027-01-31. In `assets/legacy/`. |
 | `wp-media-audit.php` | 1.1.2 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
 | `wp-media-quarantine.php` | 1.0.1 | Replaced. Security fixes only until 2027-01-31. In `assets/legacy/`. |
@@ -77,13 +77,18 @@ From 2.1.0 the plugin can offer abilities to AI tools through the WordPress Abil
   Rows are kept for 30 days. Deleting the plugin drops the table. Refusals of callers who are
   not logged in are logged at most once per 10 minutes for the whole site (whatever the
   address, so rotating addresses cannot flood the table either); the row keeps the address of
-  the first caller. A call that WordPress itself rejects before the plugin's code runs (input that
-  does not match the ability's schema, answered with HTTP 400 by core) leaves no row.
+  the first caller. A call that WordPress itself rejects before the plugin's code runs leaves no row:
+  core checks the input against the ability's schema first and answers HTTP 400 for a missing
+  required field, an unknown field (where the schema allows none) or a value of the wrong type, so
+  those refusals are not in the audit log (the web server's access log has the request). Free-text
+  arguments are stored with secrets masked (key=value pairs with a secret name, and the certain
+  value shapes) before they are cut to 1024 characters.
 - **Secrets are filtered, best effort.** Password hashes, activation keys, Application
   Passwords, session tokens and site settings outside a short list never leave the site.
   Theme mods, widget options and Divi design data are returned with secrets filtered: values
   are hidden by the name they are stored under, by the name beside them and by a few
-  certain shapes (private keys, payment keys, JSON Web Tokens, bearer tokens).
+  certain shapes (private keys, payment keys, Stripe webhook secrets, Google API keys, JSON Web
+  Tokens, bearer tokens).
 
 **What the secret filter cannot catch.** Names are a heuristic, built to hide when in doubt,
 so it also hides some harmless fields. It does not catch: a key written with look-alike
@@ -94,6 +99,23 @@ no word such as password, token or key before it and no known shape; serialized 
 which are not unpacked. Post content is checked for value shapes only, so that it stays
 editable. Do not rely on the filter alone: leave the master switch off on a site where you
 do not trust the account that will call the abilities, and use the lowest role that works.
+
+### Writes (2.2.0)
+
+From 2.2.0 an ability can change the site. They are behind the same master switch (off by default) and the same category switches as the reads, and each one is checked against the signed-in user's own capabilities, per object. Callers who are not logged in are refused before anything runs.
+
+- **The one rule: everything can be undone.** Content goes to the trash, never straight to deletion, and there is no empty-trash ability. A permanent delete exists only for things WordPress cannot trash (a term, a menu, a custom field, a media file) and always takes two steps: a preview that changes nothing and returns a confirmation code, then the delete with that code. A code works once, only for the same user, the same ability and the same object, and expires after 10 minutes.
+- **The change history keeps the full "before".** Every change writes a row to a table kept for 30 days, holding a full copy of the object as it was, so a person can put it back from WordPress's own revisions or from the copy. A value stored under a secret-named key (a password, a token, an API key) is not kept in the copy, so a write that would overwrite or delete such a value is refused instead (the history could not put it back). The copy is therefore never a place secrets pile up. The copies are masked again when shown. The size cap is per field: the content is always kept whole (up to 8 MB on its own; an item whose content is larger is not changed by an ability), and any other field that does not fit (a very large value another plugin keeps) is replaced by a marker that says how big it was, while the rest of the copy stays complete. Text that is not valid UTF-8 is stored with a replacement character and the copy says so. A permanent delete writes its row first: if the row cannot be written, or would not be an exact and complete copy (a field over the cap, text that is not valid UTF-8), nothing is deleted and the delete is left to wp-admin. For any other change, if the row cannot be written (the table is there but the insert failed), the change stands, the answer carries a warning that it cannot be undone from the history, the audit log marks the call `ok_no_history` and the settings page warns for 24 hours. A missing history table refuses every write before it runs (`history_unavailable`), after one attempt to create the table again. An item whose content is over 8 MB is refused with `too_large_to_record` (HTTP 413).
+- **A permanently deleted media file is kept for 30 days.** Before WordPress deletes a media item, the file and every size of it are moved into `wp-content/uploads/d5b-history/<history row id>-<32 random hex characters>/` (an `.htaccess` with `Require all denied` / `Deny from all` and an empty `index.html` are written into `d5b-history` once): the file is kept for 30 days in wp-content/uploads/d5b-history and can be put back by hand. If a move fails, what was moved is put back and nothing is deleted. The folder is denied on Apache and its name cannot be guessed on any server (nginx ignores `.htaccess`), and the history row records the full name. The original upload was public at its own URL anyway. The daily prune removes the folder with its history row (and any folder whose row is gone); deleting the plugin removes `d5b-history` on every site.
+- **The update to 2.2.0 asks again.** A site that had the AI abilities switched on with 2.1.x (read-only) gets the master switch turned off by the update and a notice on the settings page until it is dismissed: switching it back on is consent to abilities that change content.
+- **`expect_hash` on every content update.** The update names the hash of the content it was based on; if the content changed since, nothing is written (409). The hash comes from the matching get.
+- **A masked read is never written back.** If the read that produced the content had secrets hidden (`masked: true`), an update built on it is refused with `masked_read`, so a hidden value is never overwritten by the placeholder.
+- **Media upload.** Only http and https addresses, with the address resolved once and pinned for the request, so a name cannot be pointed at a private address after the check. If the pin cannot be set (a proxy, or a transport that is not curl) the upload is refused. Loopback, private, link-local and reserved ranges are refused, redirects are checked the same way, only ports 80 and 443 are used, SVG is refused, and size and type are capped. The real file type is read from the bytes, never from what the server says.
+- **Divi content needs `unfiltered_html`.** Content that contains Divi blocks is only written for a user who may post unfiltered HTML.
+- **Custom field names are plain ASCII.** A write accepts only names of letters, digits, `_ - . :`. MySQL's usual collations treat `pässword` as `password` and a full-width `＿` as `_`, so a look-alike name would reach the real protected or secret field past the name checks.
+- **Strictest switch wins.** An input that writes into another category (custom fields, the featured image, Divi's builder flag, terms) is refused when that category is off, and a menu reorder may not move an item that links to content whose category is off. A change that would publish (a scheduled post given a past date, or edited after its time) needs the right to publish even when no status was given; a scheduled post with a past date is refused.
+
+**What this does not cover.** The change history is a safety net for mistakes, not a backup: it is kept 30 days, per site, and a site where the table cannot be created refuses the calls. The address pinning narrows DNS tricks but a resolver that answers differently within one request is not something the plugin can see. Two writes in the same second can share a design-system backup time, so a restore by time may refuse. The secret filter has the limits listed under "What the secret filter cannot catch": it is a heuristic, so a secret it does not recognise can be stored in a copy. Custom field names a request gives are plain ASCII, but names already stored with non-ASCII letters (made by another plugin or by hand) can still fold together with an ASCII name under MySQL's collations. A history row near 16 MB can fail on MariaDB's default `max_allowed_packet`: a delete is then refused, any other change stands with the `ok_no_history` warning. As before, leave the master switch off on a site where you do not trust the account that calls the abilities, and tick only the categories you need.
 
 ## Hardening advice for users
 

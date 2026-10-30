@@ -60,6 +60,7 @@
  *   --- Any other REST route, read only ---
  *   node wp.js <site> rest-get <path> [--out f]    # GET /wp-json/<path>, e.g. wp-media-audit/v1/info (used by media-audit.js)
  *   node wp.js <site> rest-post wp/v2/<route> --data-file body.json [--out f]   # POST to a core content route (custom post types, ACF fields, terms)
+ *   node wp.js <site> rest-post wp-abilities/v1/abilities/divi5-builder/<name>/run --data-file body.json   # run a divi5-builder write ability (no other namespace): body is {"input":{...}}
  *   node wp.js <site> quarantine move|restore --data-file f.json   # used by media-quarantine.js; moves files, never deletes
  *
  * Output is compact JSON or plain lines on stdout; errors to stderr, exit 1.
@@ -705,7 +706,11 @@ function flags(argv) {
       // ({"acf":{...}}), taxonomy terms. POST only (create or update, never delete), core routes only.
       //   rest-post wp/v2/book/123 --data-file body.json
       const p = String(f._[0] || '').replace(/^\/+/, '');
-      if (!/^wp\/v2\/[a-z0-9_\-\/]+$/i.test(p)) die('rest-post needs a wp/v2/... path, e.g. wp/v2/book/123');
+      // Also the run route of one ability (issue #32, plugin 2.2.0): core takes a POST for an ability that changes things, with the
+      // body {"input":{...}}. Only that exact shape, and only the divi5-builder/ abilities: never another plugin's, never another
+      // wp-abilities route.
+      //   rest-post wp-abilities/v1/abilities/divi5-builder/posts-update/run --data-file body.json
+      if (!/^wp\/v2\/[a-z0-9_\-\/]+$/i.test(p) && !/^wp-abilities\/v1\/abilities\/divi5-builder\/[a-z0-9_\-]+\/run$/.test(p)) die('rest-post needs a wp/v2/... path, e.g. wp/v2/book/123, or wp-abilities/v1/abilities/divi5-builder/<name>/run');
       if (!f['data-file']) die('rest-post needs --data-file <json file>');
       const body = JSON.parse(fs.readFileSync(f['data-file'], 'utf8'));
       const r = await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/${p}`, c, body);

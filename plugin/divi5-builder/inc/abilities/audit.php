@@ -10,7 +10,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( ! defined( 'D5B_DB_VERSION' ) ) { define( 'D5B_DB_VERSION', '1' ); }
+if ( ! defined( 'D5B_DB_VERSION' ) ) { define( 'D5B_DB_VERSION', '2' ); }
 
 if ( ! function_exists( 'd5b_audit_table' ) ) {
 	function d5b_audit_table(): string {
@@ -73,6 +73,7 @@ if ( ! function_exists( 'd5b_audit_maybe_install' ) ) {
 		if ( ! function_exists( 'dbDelta' ) || ! d5b_audit_install_allowed() ) { return; }
 		d5b_audit_install_state( 'tried' );
 		$table   = d5b_audit_table();
+		$history = d5b_history_table();
 		$charset = method_exists( $wpdb, 'get_charset_collate' ) ? $wpdb->get_charset_collate() : '';
 		dbDelta( "CREATE TABLE {$table} (
   id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
@@ -86,14 +87,46 @@ if ( ! function_exists( 'd5b_audit_maybe_install' ) ) {
   PRIMARY KEY  (id),
   KEY created_at (created_at),
   KEY ability (ability)
+) {$charset};
+CREATE TABLE {$history} (
+  id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  created_at datetime NOT NULL,
+  user_id bigint(20) unsigned NOT NULL DEFAULT 0,
+  ability varchar(191) NOT NULL DEFAULT '',
+  audit_id bigint(20) unsigned NOT NULL DEFAULT 0,
+  object_type varchar(64) NOT NULL DEFAULT '',
+  object_id bigint(20) unsigned NOT NULL DEFAULT 0,
+  action varchar(16) NOT NULL DEFAULT '',
+  `before` longtext NOT NULL,
+  `after` longtext NOT NULL,
+  revision_id bigint(20) unsigned NULL DEFAULT NULL,
+  summary varchar(191) NOT NULL DEFAULT '',
+  PRIMARY KEY  (id),
+  KEY created_at (created_at),
+  KEY ability (ability),
+  KEY object (object_type,object_id)
 ) {$charset};" );
-		// Only remember the version when the table is really there, so a failed create is tried again.
-		if ( d5b_audit_table_exists() ) {
+		// Only remember the version when both tables are really there, so a failed create is tried again.
+		if ( d5b_audit_table_exists() && d5b_history_table_exists() ) {
+			$was = get_option( 'd5b_db_version' );
 			update_option( 'd5b_db_version', D5B_DB_VERSION, false );
+			// From 2.1.x (schema 1) to 2.2.0 (schema 2): a master switch given for reads only is turned off.
+			if ( '1' === $was && '2' === D5B_DB_VERSION && function_exists( 'd5b_abilities_upgrade_consent' ) ) { d5b_abilities_upgrade_consent(); }
 			if ( function_exists( 'delete_transient' ) ) { delete_transient( 'd5b_audit_install_failed' ); }
 		} elseif ( function_exists( 'set_transient' ) ) {
 			set_transient( 'd5b_audit_install_failed', 1, 3600 ); // CREATE denied: do not try again for an hour
 		}
+	}
+}
+
+if ( ! function_exists( 'd5b_audit_forget_version' ) ) {
+	/**
+	 * Before a repair (a table found missing): forget the stored schema version so the install runs again, but only when it
+	 * is the current one. An older version ('1' after a failed upgrade CREATE) is kept, so the install that finally works
+	 * still sees the upgrade and runs its consent step (d5b_abilities_upgrade_consent).
+	 */
+	function d5b_audit_forget_version(): void {
+		if ( D5B_DB_VERSION === get_option( 'd5b_db_version' ) ) { delete_option( 'd5b_db_version' ); }
 	}
 }
 
@@ -346,7 +379,9 @@ if ( ! function_exists( 'd5b_audit_redact' ) ) {
 			}
 			if ( is_array( $v ) ) { $out[ $k ] = $depth >= 12 ? '[too deep]' : d5b_audit_redact( $v, $depth + 1 ); continue; }
 			if ( is_string( $v ) ) {
-				if ( function_exists( 'd5b_secret_mask_values' ) ) { $v = d5b_secret_mask_values( $v ); }
+				// Free text (a title "password=hunter2", content holding an API key): the STRICT masker, which also applies the
+				// value shapes, before the cut, so a secret across the cut is never half kept.
+				$v = d5b_audit_mask_strict( $v );
 				$out[ $k ] = d5b_audit_str_len( $v ) > 1024 ? d5b_audit_str_cut( $v, 1024 ) . '…[truncated]' : $v;
 				continue;
 			}
@@ -431,7 +466,7 @@ if ( ! function_exists( 'd5b_audit_write' ) ) {
 				if ( ( false === $done || 0 === $done ) && d5b_audit_install_allowed() && ! d5b_audit_table_exists() ) {
 					// The table is gone (dropped by hand, or this site never ran admin_init): make it again and try once more.
 					// Bounded: once per request and site, and not at all for an hour after a failed attempt.
-					delete_option( 'd5b_db_version' );
+					d5b_audit_forget_version();
 					d5b_audit_maybe_install();
 					$done = $wpdb->insert( d5b_audit_table(), $row, $fmt );
 				}
@@ -447,7 +482,7 @@ if ( ! function_exists( 'd5b_audit_write' ) ) {
 }
 
 if ( ! function_exists( 'd5b_audit_prune' ) ) {
-	/** Deletes rows older than 30 days. @return int rows deleted */
+	/** Deletes rows older than 30 days from the audit log and the change history. @return int audit rows deleted */
 	function d5b_audit_prune(): int {
 		global $wpdb;
 		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return 0; }
@@ -455,6 +490,7 @@ if ( ! function_exists( 'd5b_audit_prune' ) ) {
 		$quiet  = method_exists( $wpdb, 'suppress_errors' ) ? $wpdb->suppress_errors( true ) : null;
 		$n      = $wpdb->query( $wpdb->prepare( 'DELETE FROM ' . d5b_audit_table() . ' WHERE created_at < %s', $cutoff ) );
 		if ( null !== $quiet ) { $wpdb->suppress_errors( $quiet ); }
+		if ( function_exists( 'd5b_history_prune' ) ) { d5b_history_prune(); }
 		return is_int( $n ) ? $n : 0;
 	}
 }
