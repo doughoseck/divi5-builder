@@ -58,6 +58,7 @@ foreach ( array(
 	'inc/abilities/write-menus.php',
 	'inc/abilities/write-divi.php',
 	'inc/abilities/write-settings.php',
+	'inc/abilities/write-appearance.php',
 	'inc/settings.php',
 	'parts/page-building.php',
 	'parts/media-audit.php',

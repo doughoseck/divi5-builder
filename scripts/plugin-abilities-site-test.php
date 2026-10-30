@@ -57,9 +57,6 @@ function get_plugins() { return $GLOBALS['T_plugins']; }
 function get_site_transient( $n ) { return $GLOBALS['T_site_transients'][ $n ] ?? false; }
 function wp_get_theme() { return $GLOBALS['T_theme']; }
 function wp_get_themes() { return $GLOBALS['T_themes']; }
-function get_stylesheet() { return $GLOBALS['T_theme']->get_stylesheet(); }
-function get_theme_mods() { return $GLOBALS['T_theme_mods']; }
-function wp_get_custom_css_post( $s = '' ) { return $GLOBALS['T_custom_css']; }
 function _get_cron_array() { return $GLOBALS['T_cron_array']; }
 function wp_get_sidebars_widgets() { return $GLOBALS['T_sidebars']; }
 function wp_is_block_theme() { return $GLOBALS['T_block_theme']; }

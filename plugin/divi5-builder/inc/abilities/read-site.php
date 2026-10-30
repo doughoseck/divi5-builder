@@ -177,6 +177,8 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$css = function_exists( 'wp_get_custom_css_post' ) ? wp_get_custom_css_post( $theme->get_stylesheet() ) : null;
 		list( $text, $trunc, $bytes ) = d5b_rs_cap_text( is_object( $css ) ? ( $css->post_content ?? '' ) : '' );
 		$out['custom_css'] = $text; $out['custom_css_truncated'] = $trunc; $out['custom_css_bytes'] = $bytes;
+		// md5 of the whole stylesheet (before the cut above): the expect_hash of appearance-custom-css-set.
+		$out['custom_css_hash'] = md5( function_exists( 'wp_get_custom_css' ) ? (string) wp_get_custom_css( $theme->get_stylesheet() ) : (string) ( is_object( $css ) ? ( $css->post_content ?? '' ) : '' ) );
 		return $out;
 	}
 
@@ -404,7 +406,7 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$d5b_rs_none, array(), 'd5b_rs_h_global_styles_get', d5b_rs_perm( 'templates' ) );
 
 	d5b_rc_def( 'appearance-get', 'appearance', 'Get theme appearance',
-		'Returns the active theme and its parent, the theme settings (theme mods, values under secret-named keys removed) and the Custom CSS of the active theme, at most 256 KB with a truncated flag. Refuses callers without manage_options.',
+		'Returns the active theme and its parent, the theme settings (theme mods, values under secret-named keys removed) and the Custom CSS of the active theme, at most 256 KB with a truncated flag, plus custom_css_hash (md5 of the whole stylesheet; the expect_hash of appearance-custom-css-set). Refuses callers without manage_options.',
 		$d5b_rs_none, array(), 'd5b_rs_h_appearance_get', d5b_rs_perm( 'appearance' ) );
 
 	d5b_rc_def( 'widgets-list', 'widgets', 'List widgets',

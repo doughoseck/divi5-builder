@@ -416,6 +416,7 @@ function t_content_reset() {
 	$GLOBALS['T_meta_auth_denied'] = array(); $GLOBALS['T_untrash_cascade'] = array(); $GLOBALS['T_insert_error'] = null; $GLOBALS['T_save_content'] = null;
 	$GLOBALS['T_meta_delete_blocked'] = false; $GLOBALS['T_on_set_terms'] = null; $GLOBALS['T_term_fail'] = false; $GLOBALS['T_term_delete_fail'] = false; $GLOBALS['T_menu_delete_fail'] = false; $GLOBALS['T_theme_mods'] = array(); $GLOBALS['T_term_meta'] = array();
 	$GLOBALS['T_cmeta'] = array(); $GLOBALS['T_comment_calls'] = array(); $GLOBALS['T_comment_blocked'] = false; $GLOBALS['T_comments_deleted'] = array(); $GLOBALS['T_new_comment_error'] = null;
+	$GLOBALS['T_custom_css'] = null; $GLOBALS['T_css_error'] = null; $GLOBALS['T_css_calls'] = array(); $GLOBALS['T_css_rewrite'] = null;
 	foreach ( array( 'post' => array( 1, 1, 0 ), 'page' => array( 1, 1, 1 ), 'attachment' => array( 1, 0, 0 ), 'revision' => array( 0, 0, 0 ), 'nav_menu_item' => array( 0, 0, 0 ), 'wp_block' => array( 0, 1, 0 ), 'wp_template' => array( 0, 1, 0 ), 'et_pb_layout' => array( 1, 1, 0 ) ) as $n => $f ) { t_add_type( $n, (bool) $f[0], (bool) $f[1], (bool) $f[2] ); }
 	foreach ( array( 'category' => array( 1, 1 ), 'post_tag' => array( 1, 1 ), 'nav_menu' => array( 0, 1 ), 'wp_theme' => array( 0, 0 ) ) as $n => $f ) { t_add_taxonomy( $n, (bool) $f[0], (bool) $f[1] ); }
 }
@@ -493,6 +494,8 @@ function t_post_cap( $cap, $id ) {
 // edit_post_meta( id, key ): as map_meta_cap, edit_post on the post, a key that is not protected, and the
 // auth_post_meta_{key} filter (here: the key is not in T_meta_auth_denied).
 function current_user_can( $cap, $id = null, $key = null ) {
+	// core maps edit_css to unfiltered_html (kept direct as well, so a test can grant it alone).
+	if ( 'edit_css' === $cap ) { return t_has_cap( 'edit_css' ) || t_has_cap( 'unfiltered_html' ); }
 	// core maps add_post_meta and delete_post_meta exactly as edit_post_meta.
 	if ( 'edit_post_meta' === $cap || 'delete_post_meta' === $cap || 'add_post_meta' === $cap ) { return null !== $id && t_post_cap( 'edit_post', (int) $id ) && ! is_protected_meta( (string) $key, 'post' ) && ! in_array( (string) $key, $GLOBALS['T_meta_auth_denied'] ?? array(), true ); }
 	if ( null !== $id && ( 'read_post' === $cap || 'edit_post' === $cap || 'delete_post' === $cap ) ) { return t_post_cap( $cap, (int) $id ); }
@@ -1507,4 +1510,38 @@ function sanitize_option( $option, $value ) {
 	// apply_filters( "sanitize_option_{$option}", ... ): the callbacks added with add_filter run, as core's.
 	foreach ( $GLOBALS['T_filters'][ "sanitize_option_{$option}" ] ?? array() as $cb ) { $value = call_user_func( $cb, $value, $option, $original ); }
 	return $value;
+}
+
+// ---- appearance (2.3.0, write-appearance.php)
+// core 6.4.1: theme mods (T_theme_mods, shared with the menu stand-ins above), the Custom CSS post and its helpers.
+//   T_custom_css       the custom_css post of the active stylesheet (object: ID, post_content, post_modified_gmt) or unset
+//   T_css_error        a WP_Error wp_update_custom_css_post returns instead of writing
+//   T_css_calls        every css given to wp_update_custom_css_post
+//   T_css_rewrite      a callable the css passes through before it is stored (the update_custom_css_data filter)
+// edit_css is mapped as core maps it (to unfiltered_html), in current_user_can above.
+if ( ! function_exists( 'get_stylesheet' ) ) {
+	function get_stylesheet() { return isset( $GLOBALS['T_theme'] ) && is_object( $GLOBALS['T_theme'] ) ? $GLOBALS['T_theme']->get_stylesheet() : 'teststyle'; }
+}
+function get_theme_mods() { return $GLOBALS['T_theme_mods'] ?? array(); }
+function remove_theme_mod( $name ) {
+	if ( ! empty( $GLOBALS['T_theme_mod_fail'] ) ) { return; }
+	unset( $GLOBALS['T_theme_mods'][ $name ] );
+}
+function wp_get_custom_css_post( $stylesheet = '' ) { $p = $GLOBALS['T_custom_css'] ?? null; return is_object( $p ) ? $p : null; }
+function wp_get_custom_css( $stylesheet = '' ) {
+	$p = wp_get_custom_css_post( $stylesheet );
+	return is_object( $p ) ? (string) ( $p->post_content ?? '' ) : '';
+}
+function wp_update_custom_css_post( $css, $args = array() ) {
+	$GLOBALS['T_css_calls'][] = $css;
+	if ( ( $GLOBALS['T_css_error'] ?? null ) instanceof WP_Error ) { return $GLOBALS['T_css_error']; }
+	if ( is_callable( $GLOBALS['T_css_rewrite'] ?? null ) ) { $css = call_user_func( $GLOBALS['T_css_rewrite'], $css ); }
+	$p = wp_get_custom_css_post();
+	if ( null === $p ) {
+		$p = (object) array( 'ID' => $GLOBALS['T_next_id']++, 'post_type' => 'custom_css', 'post_title' => get_stylesheet(), 'post_status' => 'publish' );
+		set_theme_mod( 'custom_css_post_id', $p->ID );
+	}
+	$p->post_content = (string) $css; $p->post_modified_gmt = gmdate( 'Y-m-d H:i:s' );
+	$GLOBALS['T_custom_css'] = $p;
+	return $p;
 }
