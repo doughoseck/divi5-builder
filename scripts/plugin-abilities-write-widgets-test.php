@@ -55,6 +55,10 @@ function msg( $r ) { return is_wp_error( $r ) ? $r->get_error_message() : ''; }
 function hrows() { global $wpdb; return $wpdb->tables[ d5b_history_table() ] ?? array(); }
 function hlast() { $r = hrows(); return $r ? d5b_history_get( (int) end( $r )['id'] ) : null; }
 function smap() { $m = $GLOBALS['T_options']['sidebars_widgets']; unset( $m['array_version'] ); return $m; }
+/** The map as the row keeps it (written here, not taken from the plugin): a list of { sidebar, widgets }. */
+function pairs( array $m ) { $o = array(); foreach ( $m as $k => $v ) { $o[] = array( 'sidebar' => (string) $k, 'widgets' => $v ); } return $o; }
+/** A map rebuilt from the row's pairs alone. */
+function unpair( array $p ) { $m = array(); foreach ( $p as $x ) { $m[ $x['sidebar'] ] = $x['widgets']; } return $m; }
 function opt( $t ) { return $GLOBALS['T_options'][ 'widget_' . $t ] ?? null; }
 /** Everything a refusal must leave as it was. */
 function snapshot() { return json_encode( array( $GLOBALS['T_options']['sidebars_widgets'] ?? null, opt( 'text' ), opt( 'block' ), opt( 'plain' ), count( hrows() ) ) ); }
@@ -79,11 +83,13 @@ $row = hlast();
 check( 'a text widget: the widget\'s own update() ran (script tag stripped, title as text), id text-5, placed at position 1',
 	is_array( $r ) && 'text-5' === $r['id'] && 'sidebar-1' === $r['sidebar'] && 1 === $r['position'] && 'aalert(1)b' === $r['settings']['text'] && 'Title' === $r['settings']['title'] && false === $r['settings']['filter']
 	&& array( 'text-2', 'text-5', 'block-3', 'calendar', 'legacy_thing-2' ) === smap()['sidebar-1'] && 'aalert(1)b' === opt( 'text' )[5]['text'] && 1 === opt( 'text' )['_multiwidget'] && 3 === $GLOBALS['T_options']['sidebars_widgets']['array_version'], $r );
-check( 'the row: widget, the number, create, before absent with the whole old map, after the place and instance, summary',
+check( 'markup the widget removed (no unfiltered_html) is named in warnings', is_array( $r ) && in_array( 'WordPress removed markup you may not save (no unfiltered_html); the stored settings are in settings.', $r['warnings'] ?? array(), true ), $r['warnings'] ?? null );
+check( 'the row: widget, the number, create, before absent with the whole old map as sidebar/widgets pairs, after the place and instance, summary',
 	1 === count( hrows() ) && 'widget' === $row['object_type'] && 5 === (int) $row['object_id'] && 'create' === $row['action'] && 'divi5-builder/widgets-add' === $row['ability']
-	&& array( 'absent' => true, 'sidebars_widgets' => map0() ) === $row['before'] && 'sidebar-1' === $row['after']['sidebar'] && 1 === $row['after']['position'] && opt( 'text' )[5] === $row['after']['instance'] && 'Added widget text-5 to sidebar-1' === $row['summary'], $row );
+	&& array( 'absent' => true, 'sidebars_widgets' => pairs( map0() ) ) === $row['before'] && map0() === unpair( $row['before']['sidebars_widgets'] ) && 'text-5' === $row['after']['id'] &&'sidebar-1' === $row['after']['sidebar'] && 1 === $row['after']['position'] && opt( 'text' )[5] === $row['after']['instance'] && 'Added widget text-5 to sidebar-1' === $row['summary'], $row );
 $r = call( 'widgets-add', array( 'sidebar' => 'footer-1', 'type' => 'text', 'settings' => array( 'title' => 'F' ) ) );
 check( 'no position: at the end; the number goes on (text-6)', is_array( $r ) && 'text-6' === $r['id'] && array( 'text-6' ) === smap()['footer-1'] && 0 === $r['position'] );
+check( '... a title core strips tags from and nothing else removed: no warning', is_array( $r ) && ! isset( $r['warnings'] ) );
 $r = call( 'widgets-add', array( 'sidebar' => 'footer-1', 'type' => 'text', 'settings' => array(), 'position' => 99 ) );
 check( 'a position past the end puts it last; {} settings take the defaults', is_array( $r ) && 'text-7' === $r['id'] && array( 'text-6', 'text-7' ) === smap()['footer-1'] && 1 === $r['position'] && '' === $r['settings']['title'] );
 $r = call( 'widgets-add', array( 'sidebar' => 'wp_inactive_widgets', 'type' => 'plain', 'settings' => array( 'a' => 1 ), 'position' => 0 ) );
@@ -124,14 +130,27 @@ check( 'just under 256 KB is accepted', is_array( $r ) && 260000 === strlen( opt
 echo "block widgets\n";
 site( NOUF );
 $s0 = snapshot();
-foreach ( array( BLOCK3, '<!--wp:html --><p>x</p><!-- /wp:html -->', '<!-- wp:divi/section {"a":1} /-->', '<p onclick="steal()">Hi</p>', '<p>a</p><script>x()</script>' ) as $c ) {
+foreach ( array( '<!-- wp:divi/section {"a":1} /-->', '<p onclick="steal()">Hi</p>', '<p>a</p><script>x()</script>', '<!-- wp:paragraph --><p>Tom & <iframe src="x"></iframe></p><!-- /wp:paragraph -->' ) as $c ) {
 	$r = call( 'widgets-add', array( 'sidebar' => 'sidebar-1', 'type' => 'block', 'settings' => array( 'content' => $c ) ) );
-	check( 'without unfiltered_html, content with blocks or HTML kses strips is refused: ' . json_encode( substr( $c, 0, 30 ) ), 'needs_unfiltered_html' === code( $r ) && $s0 === snapshot(), array( code( $r ), msg( $r ) ) );
+	check( 'without unfiltered_html, Divi blocks or HTML kses would change are refused: ' . json_encode( substr( $c, 0, 30 ) ), 'needs_unfiltered_html' === code( $r ) && $s0 === snapshot(), array( code( $r ), msg( $r ) ) );
 }
-$r = call( 'widgets-update', array( 'id' => 'block-3', 'settings' => array( 'content' => BLOCK3 . BLOCK3 ) ) );
+$r = call( 'widgets-update', array( 'id' => 'block-3', 'settings' => array( 'content' => BLOCK3 . '<p onclick="x">y</p>' ) ) );
 check( '... and the same for an update', 'needs_unfiltered_html' === code( $r ) && $s0 === snapshot() );
 $r = call( 'widgets-add', array( 'sidebar' => 'sidebar-1', 'type' => 'block', 'settings' => array( 'content' => '<p>Plain <b>HTML</b></p>' ) ) );
-check( 'without unfiltered_html, HTML kses keeps is fine', is_array( $r ) && 'block-4' === $r['id'] && '<p>Plain <b>HTML</b></p>' === opt( 'block' )[4]['content'] );
+check( 'without unfiltered_html, HTML kses keeps is fine', is_array( $r ) && 'block-4' === $r['id'] && '<p>Plain <b>HTML</b></p>' === opt( 'block' )[4]['content'] && ! isset( $r['warnings'] ) );
+$r = call( 'widgets-add', array( 'sidebar' => 'sidebar-1', 'type' => 'block', 'settings' => array( 'content' => BLOCK3 ) ) );
+check( 'without unfiltered_html, a simple paragraph block (it survives kses) is accepted as given', is_array( $r ) && 'block-5' === $r['id'] && BLOCK3 === opt( 'block' )[5]['content'], array( code( $r ), msg( $r ) ) );
+$tj = '<!-- wp:paragraph --><p>Tom & Jerry</p><!-- /wp:paragraph -->';
+$r = call( 'widgets-add', array( 'sidebar' => 'sidebar-1', 'type' => 'block', 'settings' => array( 'content' => $tj ) ) );
+check( 'without unfiltered_html, "Tom & Jerry" is accepted (kses only normalises the &, as core: &amp;), no warning', is_array( $r ) && 'block-6' === $r['id'] && str_replace( '&', '&amp;', $tj ) === opt( 'block' )[6]['content'] && ! isset( $r['warnings'] ), array( code( $r ), msg( $r ), $r ) );
+$r = call( 'widgets-add', array( 'sidebar' => 'footer-1', 'type' => 'text', 'settings' => array( 'title' => '<b>T</b>', 'text' => 'Tom & Jerry <b>ok</b>' ) ) );
+check( 'a text widget: a title core strips tags from and a bare & kses only normalises are no warning', is_array( $r ) && ! isset( $r['warnings'] ) && 'Tom &amp; Jerry <b>ok</b>' === $r['settings']['text'], $r );
+$r = call( 'widgets-update', array( 'id' => 'text-2', 'settings' => array( 'title' => 'Hi', 'text' => '<p onmouseover="x()">hover</p>' ) ) );
+check( 'an update whose markup the widget removed is named in warnings too', is_array( $r ) && '<p>hover</p>' === opt( 'text' )[2]['text'] && in_array( 'WordPress removed markup you may not save (no unfiltered_html); the stored settings are in settings.', $r['warnings'] ?? array(), true ), $r );
+site( ADMIN );
+$r = call( 'widgets-add', array( 'sidebar' => 'footer-1', 'type' => 'text', 'settings' => array( 'text' => 'a<script>x()</script>' ) ) );
+check( 'with unfiltered_html a text widget keeps its script, no warning', is_array( $r ) && 'a<script>x()</script>' === $r['settings']['text'] && ! isset( $r['warnings'] ), $r );
+site( NOUF );
 $r = call( 'widgets-add', array( 'sidebar' => 'sidebar-1', 'type' => 'block', 'settings' => array( 'title' => 'no content' ) ) );
 check( 'a block widget without settings.content text is invalid_input', 'invalid_input' === code( $r ) );
 site( ADMIN );
@@ -146,7 +165,7 @@ $row = hlast();
 check( 'update stores the widget\'s instance; the row keeps sidebar, position and the whole old instance',
 	is_array( $r ) && true === $r['changed'] && 'New' === opt( 'text' )[2]['title'] && 'body' === $r['settings']['text'] && 'sidebar-1' === $r['sidebar'] && 0 === $r['position']
 	&& 'update' === $row['action'] && 'widget' === $row['object_type'] && 2 === (int) $row['object_id'] && 'Updated widget text-2' === $row['summary']
-	&& array( 'sidebar' => 'sidebar-1', 'position' => 0, 'instance' => array( 'title' => 'Hi', 'text' => '<b>x</b>', 'filter' => false, 'visual' => false ) ) === $row['before'] && opt( 'text' )[2] === $row['after']['instance'], $row );
+	&& array( 'id' => 'text-2', 'sidebar' => 'sidebar-1', 'position' => 0, 'instance' => array( 'title' => 'Hi', 'text' => '<b>x</b>', 'filter' => false, 'visual' => false ) ) === $row['before'] && opt( 'text' )[2] === $row['after']['instance'], $row );
 $n0 = count( hrows() );
 $r = call( 'widgets-update', array( 'id' => 'text-2', 'settings' => array( 'title' => 'New', 'text' => 'body' ) ) );
 check( 'the same settings again: changed false, no row', is_array( $r ) && false === $r['changed'] && $n0 === count( hrows() ) );
@@ -169,7 +188,7 @@ $row = hlast();
 check( 'move to wp_inactive_widgets: placed last there, gone from sidebar-1; the row keeps the whole old map',
 	is_array( $r ) && true === $r['changed'] && 'wp_inactive_widgets' === $r['sidebar'] && 1 === $r['position'] && array( 'text-4', 'text-2' ) === smap()['wp_inactive_widgets'] && array( 'block-3', 'calendar', 'legacy_thing-2' ) === smap()['sidebar-1']
 	&& 'move' === $row['action'] && 2 === (int) $row['object_id'] && 'Moved widget text-2 to wp_inactive_widgets' === $row['summary']
-	&& array( 'sidebar' => 'sidebar-1', 'position' => 0, 'sidebars_widgets' => map0() ) === $row['before'] && array( 'sidebar' => 'wp_inactive_widgets', 'position' => 1 ) === $row['after']
+	&& array( 'id' => 'text-2', 'sidebar' => 'sidebar-1', 'position' => 0, 'sidebars_widgets' => pairs( map0() ) ) === $row['before'] && map0() === unpair( $row['before']['sidebars_widgets'] ) && array( 'sidebar' => 'wp_inactive_widgets', 'position' => 1 ) === $row['after']
 	&& isset( opt( 'text' )[2] ), array( $r, $row ) );
 $r = call( 'widgets-move', array( 'id' => 'text-2', 'sidebar' => 'sidebar-1', 'position' => 0 ) );
 check( '... and back to position 0: the map is the original again', is_array( $r ) && map0() === smap() && 'Moved widget text-2 to sidebar-1' === hlast()['summary'], smap() );
@@ -195,12 +214,12 @@ $r = call( 'widgets-remove', array( 'id' => 'block-3' ) );
 $row = hlast();
 check( 'remove takes it out of its sidebar and deletes its settings', is_array( $r ) && true === $r['removed'] && 'sidebar-1' === $r['sidebar'] && 1 === $r['position'] && array( 'text-2', 'calendar', 'legacy_thing-2' ) === smap()['sidebar-1'] && ! isset( opt( 'block' )[3] ) && 1 === opt( 'block' )['_multiwidget'] );
 check( 'the row keeps sidebar, position, the whole instance (100 KB block) and the whole map; delete, summary',
-	'delete' === $row['action'] && 3 === (int) $row['object_id'] && 'Removed widget block-3 from sidebar-1' === $row['summary'] && 'sidebar-1' === $row['before']['sidebar'] && 1 === $row['before']['position']
-	&& $inst_before === $row['before']['instance'] && strlen( $block100 ) > 102400 && $map_before === $row['before']['sidebars_widgets'] && array( 'absent' => true ) === $row['after'], array_keys( $row['before'] ?? array() ) );
-// Rebuild from the row alone.
+	'delete' === $row['action'] && 3 === (int) $row['object_id'] && 'Removed widget block-3 from sidebar-1' === $row['summary'] && 'block-3' === $row['before']['id'] && 'sidebar-1' === $row['before']['sidebar'] && 1 === $row['before']['position']
+	&& $inst_before === $row['before']['instance'] && strlen( $block100 ) > 102400 && pairs( $map_before ) === $row['before']['sidebars_widgets'] && array( 'absent' => true ) === $row['after'], array_keys( $row['before'] ?? array() ) );
+// Rebuild from the row alone: the map from its pairs, the instance into widget_block under the row's number.
 $o = opt( 'block' ); $o[ (int) $row['object_id'] ] = $row['before']['instance']; ksort( $o );
 $want = $opt_before; ksort( $want );
-check( 'rebuilt from the row: the same map and the same instance', $row['before']['sidebars_widgets'] === $map_before && $want === $o );
+check( 'rebuilt from the row: the same map and the same instance', unpair( $row['before']['sidebars_widgets'] ) === $map_before && $want === $o );
 site();
 $s0 = snapshot();
 foreach ( array( 'text-9', 'block-77' ) as $id ) {
@@ -232,10 +251,44 @@ foreach ( array( 'text-6', 'text-8' ) as $id ) {
 	check( "$id cannot be updated or removed (not_allowed); nothing changes", 'not_allowed' === code( $a ) && 'not_allowed' === code( $c ) && $s0 === snapshot() && 'sk-live-xyz' === opt( 'text' )[6]['api_key'], array( code( $a ), code( $c ) ) );
 }
 check( 'it can still be moved (the instance is not touched)', is_array( call( 'widgets-move', array( 'id' => 'text-6', 'sidebar' => 'wp_inactive_widgets', 'position' => 0 ) ) ) && 'sk-live-xyz' === opt( 'text' )[6]['api_key'] );
+
+echo "sidebar ids the history's key filter would drop as keys\n";
 site();
-$GLOBALS['T_options']['sidebars_widgets']['api_key_area'] = array();
+check( 'precondition: footer-token is a secret-looking name to the key filter', d5b_is_secret_key( 'footer-token' ) );
+$GLOBALS['wp_registered_sidebars']['footer-token'] = array( 'name' => 'Footer token' );
+$GLOBALS['T_options']['sidebars_widgets']['footer-token'] = array( 'text-4' );
+unset( $GLOBALS['T_options']['sidebars_widgets']['wp_inactive_widgets'] );
+$GLOBALS['T_options']['sidebars_widgets']['orphaned_widgets_1'] = array( 'text-8' );
+$GLOBALS['T_options']['widget_text'][8] = array( 'title' => 'orphan', 'text' => 'o', 'filter' => false, 'visual' => false );
+$keeps = function ( $row ) { $s = array_column( $row['before']['sidebars_widgets'] ?? array(), 'sidebar' ); return in_array( 'footer-token', $s, true ) && in_array( 'orphaned_widgets_1', $s, true ); };
+$m1 = smap();
+$a = call( 'widgets-add', array( 'sidebar' => 'footer-token', 'type' => 'text', 'settings' => array( 'title' => 'n' ) ) );
+check( 'add into footer-token works; the row keeps both sidebars and rebuilds the map', is_array( $a ) && 'footer-token' === $a['sidebar'] && $keeps( hlast() ) && $m1 === unpair( hlast()['before']['sidebars_widgets'] ), array( $a, hlast()['before'] ?? null ) );
+$m2 = smap();
+$b = call( 'widgets-move', array( 'id' => 'text-2', 'sidebar' => 'footer-token', 'position' => 0 ) );
+check( 'move into footer-token works; the row keeps both', is_array( $b ) && 'text-2' === smap()['footer-token'][0] && $keeps( hlast() ) && $m2 === unpair( hlast()['before']['sidebars_widgets'] ) );
+$c = call( 'widgets-update', array( 'id' => 'text-8', 'settings' => array( 'title' => 'still orphan' ) ) );
+check( 'update of a widget in orphaned_widgets_1 works', is_array( $c ) && 'orphaned_widgets_1' === $c['sidebar'] && 'still orphan' === opt( 'text' )[8]['title'] );
+$m3 = smap();
+$d = call( 'widgets-remove', array( 'id' => 'text-8' ) );
+check( 'remove from orphaned_widgets_1 works; the row keeps both and the instance', is_array( $d ) && array() === smap()['orphaned_widgets_1'] && $keeps( hlast() ) && $m3 === unpair( hlast()['before']['sidebars_widgets'] ) && 'still orphan' === hlast()['before']['instance']['title'] );
+$e = call( 'widgets-remove', array( 'id' => 'text-4' ) );
+check( 'remove from footer-token works', is_array( $e ) && 'footer-token' === $e['sidebar'] && ! in_array( 'text-4', smap()['footer-token'], true ) && $keeps( hlast() ) );
+
+echo "core's widget_update_callback filter\n";
+site();
+$seen = null;
+add_filter( 'widget_update_callback', function ( $inst, $new, $old, $w ) use ( &$seen ) { $seen = array( $new, $old, $w->id_base ); if ( is_array( $inst ) ) { $inst['visibility'] = 'logged-in'; } return $inst; } );
+$r = call( 'widgets-update', array( 'id' => 'text-2', 'settings' => array( 'title' => 'F', 'text' => 't' ) ) );
+check( 'the filter gets the instance, the new settings, the old instance and the widget, and what it returns is stored', is_array( $r ) && 'logged-in' === opt( 'text' )[2]['visibility'] && 'logged-in' === $r['settings']['visibility'] && array( 'title' => 'F', 'text' => 't' ) === $seen[0] && 'Hi' === $seen[1]['title'] && 'text' === $seen[2], array( $r, $seen ) );
+$r = call( 'widgets-add', array( 'sidebar' => 'footer-1', 'type' => 'plain', 'settings' => array( 'a' => 1 ) ) );
+check( '... on add too (old instance empty)', is_array( $r ) && 'logged-in' === $r['settings']['visibility'] && array() === $seen[1] );
+site();
+add_filter( 'widget_update_callback', function ( $inst ) { return false; } );
 $s0 = snapshot();
-check( 'a secret-looking sidebar id in the map: every write is refused (the row could not keep the map)', 'not_allowed' === code( call( 'widgets-move', array( 'id' => 'text-2', 'sidebar' => 'footer-1', 'position' => 0 ) ) ) && 'not_allowed' === code( call( 'widgets-add', array( 'sidebar' => 'footer-1', 'type' => 'text', 'settings' => array() ) ) ) && 'not_allowed' === code( call( 'widgets-remove', array( 'id' => 'text-2' ) ) ) && $s0 === snapshot() );
+$r = call( 'widgets-update', array( 'id' => 'text-2', 'settings' => array( 'title' => 'X' ) ) );
+$a = call( 'widgets-add', array( 'sidebar' => 'footer-1', 'type' => 'text', 'settings' => array( 'title' => 'X' ) ) );
+check( 'a filter returning false refuses (invalid_input, a plugin refused); nothing written', 'invalid_input' === code( $r ) && 'invalid_input' === code( $a ) && false !== stripos( msg( $r ), 'plugin refused' ) && $s0 === snapshot(), array( code( $r ), msg( $r ) ) );
 
 echo "write failures and read-back\n";
 site();

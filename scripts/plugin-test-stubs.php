@@ -521,6 +521,8 @@ function apply_filters( $tag, $value, ...$args ) {
 	if ( 'd5b_ds_class' === $tag ) { return $GLOBALS['T_ds_classes'][ $args[0] ] ?? $value; }
 	// wp_delete_file: the callbacks added with add_filter run, as core's (Polylang/WPML return '' to keep a shared file).
 	if ( 'wp_delete_file' === $tag ) { foreach ( $GLOBALS['T_filters']['wp_delete_file'] ?? array() as $cb ) { $value = call_user_func( $cb, $value ); } return $value; }
+	// widget_update_callback (core's WP_Widget::update_callback): the callbacks added with add_filter run, as core's.
+	if ( 'widget_update_callback' === $tag ) { foreach ( $GLOBALS['T_filters']['widget_update_callback'] ?? array() as $cb ) { $value = call_user_func( $cb, $value, ...$args ); } return $value; }
 	return 'the_content' === $tag ? '<div class="filtered">' . $value . '</div>' : $value;
 }
 function wp_strip_all_tags( $s ) { return trim( strip_tags( (string) $s ) ); }
@@ -1557,7 +1559,9 @@ function wp_update_custom_css_post( $css, $args = array() ) {
 //   T_frozen_options  option names update_option silently refuses (returns false, stores nothing), as a plugin's
 //                     pre_update_option filter can
 // Not core: wp_kses_post below removes only script/style/iframe tags (their text stays, as kses leaves it) and on*
-// attributes; core's allow-list removes much more. Enough to see that a widget's own update() ran.
+// attributes, and normalises a bare & to &amp; as core does; core's allow-list removes much more. Block comments such as
+// <!-- wp:paragraph --> survive it, as they survive core's kses. Enough to see that a widget's own update() ran.
+// widget_update_callback (apply_filters above) runs the callbacks added with add_filter, with all four arguments.
 // wp_get_sidebars_widgets: a test that defines its own (plugin-abilities-site-test.php, from T_sidebars) keeps it.
 if ( ! function_exists( 'wp_get_sidebars_widgets' ) ) {
 	function wp_get_sidebars_widgets( $deprecated = true ) {
@@ -1578,7 +1582,9 @@ function wp_parse_args( $args, $defaults = array() ) {
 if ( ! function_exists( 'wp_kses_post' ) ) {
 	function wp_kses_post( $s ) {
 		$s = preg_replace( '#</?(script|style|iframe)\b[^>]*>#i', '', (string) $s );
-		return preg_replace( '#\s+on[a-z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)#i', '', $s );
+		$s = preg_replace( '#\s+on[a-z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)#i', '', $s );
+		// As core's wp_kses_normalize_entities: an & that does not start a valid entity becomes &amp;.
+		return preg_replace( '/&(?![A-Za-z][A-Za-z0-9]{1,31};|#\d{1,7};|#[xX][0-9A-Fa-f]{1,6};)/', '&amp;', $s );
 	}
 }
 if ( ! class_exists( 'WP_Widget' ) ) {

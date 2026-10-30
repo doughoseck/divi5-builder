@@ -16,15 +16,18 @@
  *
  * Rules (design 2026-10-30, "Widgets" and "Guardrails"):
  *  - All four are normal writes in the widgets category; they need edit_theme_options.
- *  - Settings go through the widget's own update() sanitiser, as wp-admin saves them. A block widget whose content holds
- *    blocks (<!-- wp:) or HTML that core's kses would strip needs unfiltered_html: without it update() would strip it and
- *    corrupt the block markup.
+ *  - Settings go through the widget's own update() sanitiser and then core's widget_update_callback filter, as
+ *    WP_Widget::update_callback applies them (false from a plugin refuses). Core's REST-only hooks (rest_after_save_widget,
+ *    rest_delete_widget) do not run. A block widget whose content core's kses would change (beyond entity normalisation),
+ *    or that holds Divi blocks, needs unfiltered_html: without it update() would rewrite it and corrupt the block markup.
+ *    Markup a text widget's update() removed for a user without unfiltered_html is reported as a warning.
  *  - Settings are an object, JSON-safe, at most 256 KB encoded; text holding [redacted] (a masked read) is refused, and so
  *    is a secret-named key. A widget whose stored settings hold a secret-named key cannot be updated or removed: the
- *    history could not keep it in full (the 2.2.0 rule). So is any write while a sidebar id is secret-named.
+ *    history could not keep it in full (the 2.2.0 rule).
  *  - The one rule: every change writes one history row (object_type widget, object_id the number) whose before can rebuild
- *    the old state: the sidebar, the position, the whole instance and, for add, move and remove, the whole
- *    sidebars_widgets map. A remove is not a two-step delete: the row is the copy.
+ *    the old state: the widget id, the sidebar, the position, the whole instance and, for add, move and remove, the whole
+ *    sidebars_widgets map as a list of { sidebar, widgets } pairs (sidebar ids are values, never keys, so the history's
+ *    key filter cannot drop a sidebar such as footer-token). A remove is not a two-step delete: the row is the copy.
  *  - After each write the map and the instance are read again; a difference from what was written is a warning.
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
@@ -102,10 +105,20 @@ if ( ! function_exists( 'd5b_ww_sidebar_ok' ) ) {
 		return is_array( $m ) ? $m : array();
 	}
 
-	/** The map, refused when a sidebar id is secret-named (the history would drop it). @return array|WP_Error */
-	function d5b_ww_map_checked() {
-		$map = d5b_ww_map();
-		if ( ! d5b_wc_secret_free( $map ) ) { return new WP_Error( 'not_allowed', 'A sidebar of this site has a secret-looking id, so the change history could not keep the widget layout in full; change widgets in wp-admin.' ); }
+	/**
+	 * The map as the history keeps it: a list of { sidebar, widgets } in the map's order. Sidebar ids are values, so the
+	 * history's key filter never drops one (footer-token, orphaned_widgets_1 ...). d5b_ww_map_from_pairs turns it back.
+	 */
+	function d5b_ww_pairs( array $map ): array {
+		$out = array();
+		foreach ( $map as $sid => $ids ) { $out[] = array( 'sidebar' => (string) $sid, 'widgets' => is_array( $ids ) ? array_values( $ids ) : $ids ); }
+		return $out;
+	}
+
+	/** The map rebuilt from d5b_ww_pairs (a restore, and the tests). */
+	function d5b_ww_map_from_pairs( array $pairs ): array {
+		$map = array();
+		foreach ( $pairs as $p ) { if ( is_array( $p ) && isset( $p['sidebar'] ) ) { $map[ (string) $p['sidebar'] ] = $p['widgets'] ?? array(); } }
 		return $map;
 	}
 
@@ -191,25 +204,54 @@ if ( ! function_exists( 'd5b_ww_sidebar_ok' ) ) {
 		return $s;
 	}
 
+	/** Text with its entities decoded: kses normalises entities (a bare & becomes &amp;), which changes nothing that shows. */
+	function d5b_ww_decoded( string $s ): string {
+		return html_entity_decode( $s, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+	}
+
 	/**
-	 * The instance the widget's own update() makes of $settings ($old: the stored instance, or none for a new widget). A
-	 * block widget whose content holds blocks or HTML kses would strip needs unfiltered_html. @return array|WP_Error
+	 * The instance the widget's own update() makes of $settings ($old: the stored instance, or none for a new widget), then
+	 * core's widget_update_callback filter, as WP_Widget::update_callback runs them; false from either refuses. Without
+	 * unfiltered_html, a block widget whose content kses would change beyond entity normalisation, or that holds Divi
+	 * blocks, is refused needs_unfiltered_html. @return array|WP_Error
 	 */
 	function d5b_ww_instance_in( WP_Widget $w, array $settings, ?array $old ) {
 		if ( 'block' === (string) $w->id_base || ( class_exists( 'WP_Widget_Block' ) && $w instanceof WP_Widget_Block ) ) {
 			$content = $settings['content'] ?? null;
 			if ( ! is_string( $content ) ) { return new WP_Error( 'invalid_input', 'A block widget needs settings.content: the block markup as text.' ); }
-			if ( ! current_user_can( 'unfiltered_html' ) && ( 1 === preg_match( '#<!--\s*/?wp:#i', $content ) || wp_kses_post( $content ) !== $content ) ) {
-				return new WP_Error( 'needs_unfiltered_html', 'This block widget holds blocks or HTML that WordPress strips for users without the unfiltered_html capability (an administrator or editor on a single site); saving it would corrupt the block markup.' );
+			if ( ! current_user_can( 'unfiltered_html' ) && ( d5b_wc_has_divi( $content ) || d5b_ww_decoded( (string) wp_kses_post( $content ) ) !== d5b_ww_decoded( $content ) ) ) {
+				return new WP_Error( 'needs_unfiltered_html', 'This block widget holds Divi blocks or HTML that WordPress removes for users without the unfiltered_html capability (an administrator or editor on a single site); saving it would change the block markup.' );
 			}
 		}
+		$old = $old ?? array();
 		try {
-			$r = $w->update( $settings, $old ?? array() );
+			$r = $w->update( $settings, $old );
 		} catch ( Throwable $e ) {
 			return new WP_Error( 'invalid_input', 'The widget could not take these settings (' . d5b_rc_cut( $e->getMessage(), 200 ) . ').' );
 		}
-		if ( ! is_array( $r ) ) { return new WP_Error( 'invalid_input', 'The widget refused these settings (its own update() check said no).' ); }
+		if ( false === $r ) { return new WP_Error( 'invalid_input', 'The widget refused these settings (its own update() check said no).' ); }
+		// core's WP_Widget::update_callback: plugins (visibility rules and the like) change or refuse the instance here.
+		$r = apply_filters( 'widget_update_callback', $r, $settings, $old, $w );
+		if ( false === $r ) { return new WP_Error( 'invalid_input', 'A plugin refused this widget\'s settings (the widget_update_callback filter).' ); }
+		if ( ! is_array( $r ) ) { return new WP_Error( 'invalid_input', 'The widget refused these settings (its update() did not return settings).' ); }
 		return $r;
+	}
+
+	/**
+	 * For a caller without unfiltered_html: true when a text value given (the title left out: core strips tags from every
+	 * title) was stored differently, beyond entity normalisation, i.e. the widget's own update() removed markup.
+	 */
+	function d5b_ww_markup_removed( array $settings, $stored ): bool {
+		if ( current_user_can( 'unfiltered_html' ) || ! is_array( $stored ) ) { return false; }
+		foreach ( $settings as $k => $v ) {
+			if ( 'title' === $k || ! is_string( $v ) || ! array_key_exists( $k, $stored ) || ! is_string( $stored[ $k ] ) ) { continue; }
+			if ( d5b_ww_decoded( $stored[ $k ] ) !== d5b_ww_decoded( $v ) ) { return true; }
+		}
+		return false;
+	}
+
+	function d5b_ww_markup_warning(): string {
+		return 'WordPress removed markup you may not save (no unfiltered_html); the stored settings are in settings.';
 	}
 
 	/** True when two instances are the same once stored (stdClass as arrays). */
@@ -261,9 +303,9 @@ if ( ! function_exists( 'd5b_ww_sidebar_ok' ) ) {
 		$pos = d5b_ww_position( $in, false ); if ( is_wp_error( $pos ) ) { return $pos; }
 		if ( ! array_key_exists( 'settings', $in ) ) { return new WP_Error( 'invalid_input', 'settings is required: the widget\'s settings ({} for its defaults).' ); }
 		$s = d5b_ww_settings_in( $in['settings'], '' ); if ( is_wp_error( $s ) ) { return $s; }
-		$map = d5b_ww_map_checked(); if ( is_wp_error( $map ) ) { return $map; }
+		$map = d5b_ww_map();
 		$inst = d5b_ww_instance_in( $w, $s, null ); if ( is_wp_error( $inst ) ) { return $inst; }
-		$before = array( 'absent' => true, 'sidebars_widgets' => $map );
+		$before = array( 'absent' => true, 'sidebars_widgets' => d5b_ww_pairs( $map ) );
 		$big = d5b_wc_check_content_size( d5b_ww_json( $before ) ); if ( true !== $big ) { return $big; }
 		$number = d5b_ww_next_number( $type, $map );
 		$id     = $type . '-' . $number;
@@ -281,6 +323,7 @@ if ( ! function_exists( 'd5b_ww_sidebar_ok' ) ) {
 		$warn = array();
 		$at   = d5b_ww_placement_warn( $id, $want[0], $want[1], $warn );
 		if ( ! d5b_ww_same( $stored, $inst ) ) { $warn[] = 'WordPress stored the settings differently from what the widget made of them (another plugin may change them); the stored settings are in settings.'; }
+		if ( d5b_ww_markup_removed( $s, d5b_wc_unobject( $stored ) ) ) { $warn[] = d5b_ww_markup_warning(); }
 		$out = array( 'id' => $id, 'sidebar' => null === $at ? null : $at[0], 'position' => null === $at ? null : $at[1], 'settings' => d5b_wc_unobject( $stored ) );
 		if ( $warn ) { $out['warnings'] = $warn; }
 		$hid = d5b_wc_history_row( 'divi5-builder/widgets-add', 'widget', $number, 'create', $before,
@@ -293,7 +336,7 @@ if ( ! function_exists( 'd5b_ww_sidebar_ok' ) ) {
 	/** id, its type and where it is. @return array|WP_Error array( id, id_base, number, widget, map, sidebar, position ) */
 	function d5b_ww_existing( array $in ) {
 		$p = d5b_ww_parse( $in['id'] ?? null ); if ( is_wp_error( $p ) ) { return $p; }
-		$map = d5b_ww_map_checked(); if ( is_wp_error( $map ) ) { return $map; }
+		$map = d5b_ww_map();
 		$id  = (string) $in['id'];
 		$at  = d5b_ww_find( $id, $map );
 		if ( null === $at ) { return new WP_Error( 'not_found', 'The widget "' . d5b_rc_cut( $id, 100 ) . '" is not in any sidebar (nor in the inactive widgets). Read widgets-list for the ids.' ); }
@@ -313,13 +356,14 @@ if ( ! function_exists( 'd5b_ww_sidebar_ok' ) ) {
 		$old_arr = is_array( $old ) ? d5b_wc_unobject( $old ) : array();
 		$inst = d5b_ww_instance_in( $w, $s, $old_arr ); if ( is_wp_error( $inst ) ) { return $inst; }
 		if ( d5b_ww_same( $old, $inst ) ) { return array( 'id' => $id, 'sidebar' => $sidebar, 'position' => $position, 'settings' => d5b_wc_unobject( $old ), 'changed' => false ); }
-		$before = array( 'sidebar' => $sidebar, 'position' => $position, 'instance' => d5b_wc_meta_value( $old ) );
+		$before = array( 'id' => $id, 'sidebar' => $sidebar, 'position' => $position, 'instance' => d5b_wc_meta_value( $old ) );
 		$big = d5b_wc_check_content_size( d5b_ww_json( $before ) ); if ( true !== $big ) { return $big; }
 		d5b_ww_save( $base, $number, $inst );
 		$stored = d5b_ww_instance( $base, $number );
 		if ( null === $stored || d5b_ww_same( $stored, $old ) ) { return new WP_Error( 'write_failed', 'WordPress did not store the widget\'s settings (another plugin may block it).' ); }
 		$warn = array();
 		if ( ! d5b_ww_same( $stored, $inst ) ) { $warn[] = 'WordPress stored the settings differently from what the widget made of them (another plugin may change them); the stored settings are in settings.'; }
+		if ( d5b_ww_markup_removed( $s, d5b_wc_unobject( $stored ) ) ) { $warn[] = d5b_ww_markup_warning(); }
 		$out = array( 'id' => $id, 'sidebar' => $sidebar, 'position' => $position, 'settings' => d5b_wc_unobject( $stored ), 'changed' => true );
 		if ( $warn ) { $out['warnings'] = $warn; }
 		$hid = d5b_wc_history_row( 'divi5-builder/widgets-update', 'widget', $number, 'update', $before, array( 'instance' => d5b_wc_meta_value( $stored ) ), 'Updated widget ' . $id );
@@ -339,7 +383,7 @@ if ( ! function_exists( 'd5b_ww_sidebar_ok' ) ) {
 		if ( d5b_ww_json( $new ) === d5b_ww_json( $map ) ) {
 			return array( 'id' => $id, 'sidebar' => $from, 'position' => $from_pos, 'changed' => false );
 		}
-		$before = array( 'sidebar' => $from, 'position' => $from_pos, 'sidebars_widgets' => $map );
+		$before = array( 'id' => $id, 'sidebar' => $from, 'position' => $from_pos, 'sidebars_widgets' => d5b_ww_pairs( $map ) );
 		$big = d5b_wc_check_content_size( d5b_ww_json( $before ) ); if ( true !== $big ) { return $big; }
 		wp_set_sidebars_widgets( $new );
 		$now = d5b_ww_map();
@@ -360,7 +404,7 @@ if ( ! function_exists( 'd5b_ww_sidebar_ok' ) ) {
 		list( $id, $base, $number, $w, $map, $sidebar, $position ) = $x;
 		$old = d5b_ww_instance( $base, $number );
 		if ( null !== $old && ! d5b_wc_secret_free( $old ) ) { return d5b_wc_secret_error( 'widget' ); }
-		$before = array( 'sidebar' => $sidebar, 'position' => $position, 'instance' => null === $old ? array( 'absent' => true ) : d5b_wc_meta_value( $old ), 'sidebars_widgets' => $map );
+		$before = array( 'id' => $id, 'sidebar' => $sidebar, 'position' => $position, 'instance' => null === $old ? array( 'absent' => true ) : d5b_wc_meta_value( $old ), 'sidebars_widgets' => d5b_ww_pairs( $map ) );
 		$big = d5b_wc_check_content_size( d5b_ww_json( $before ) ); if ( true !== $big ) { return $big; }
 		wp_set_sidebars_widgets( d5b_ww_take( $map, $id, $sidebar ) );
 		if ( null !== d5b_ww_find( $id, d5b_ww_map() ) && d5b_ww_json( d5b_ww_map() ) === d5b_ww_json( $map ) ) {
@@ -385,7 +429,7 @@ if ( ! function_exists( 'd5b_ww_sidebar_ok' ) ) {
 	$d5b_ww_sidebar  = array( 'type' => 'string', 'minLength' => 1, 'maxLength' => 255, 'description' => 'A sidebar id as widgets-list returns it, or wp_inactive_widgets (the inactive widgets).' );
 	$d5b_ww_settings = array( 'type' => 'object', 'description' => 'The widget\'s settings (its instance). For a block widget {"content": "<!-- wp:paragraph --><p>Hi</p><!-- /wp:paragraph -->"}; for a text widget {"title": "...", "text": "..."}.' );
 	$d5b_ww_position = array( 'type' => 'integer', 'minimum' => 0, 'description' => 'The place in the sidebar, 0 for the top; a number past the end puts it last.' );
-	$d5b_ww_rules    = 'Settings go through the widget\'s own sanitiser, as wp-admin saves them; a block widget whose content holds blocks or HTML WordPress would strip needs unfiltered_html (needs_unfiltered_html). Refuses settings over 256 KB, a secret-named key and text holding [redacted] (masked_read). Only multi-instance widgets (type-number); legacy single-instance widgets are refused.';
+	$d5b_ww_rules    = 'Settings go through the widget\'s own sanitiser and core\'s widget_update_callback filter, as wp-admin saves them (a plugin that refuses them makes the answer invalid_input); core\'s REST-only widget hooks (rest_after_save_widget, rest_delete_widget) do not run. Without unfiltered_html, a block widget holding Divi blocks or HTML WordPress would remove is refused (needs_unfiltered_html), and markup a text widget removed is named in warnings. Refuses settings over 256 KB, a secret-named key and text holding [redacted] (masked_read). Only multi-instance widgets (type-number); legacy single-instance widgets are refused.';
 
 	d5b_wc_def( 'widgets-add', 'widgets', 'Add a widget',
 		'Adds a widget of type (a registered widget type such as block or text) to sidebar (a sidebar of the theme, or wp_inactive_widgets) at position (0 is the top; left out, the end). ' . $d5b_ww_rules . ' Returns the new widget id (type-number), where it was placed and the stored settings. One change-history row keeps the whole widget layout before the change.',
@@ -400,13 +444,13 @@ if ( ! function_exists( 'd5b_ww_sidebar_ok' ) ) {
 		array( 'idempotent' => true ) );
 
 	d5b_wc_def( 'widgets-move', 'widgets', 'Move a widget',
-		'Moves one widget to sidebar at position (0 is the top; past the end, last), within the same sidebar to reorder it, or to wp_inactive_widgets to take it off the site and keep its settings. Refuses a widget in no sidebar (not_found) and an unknown sidebar. Returns where it is now and whether it moved. One change-history row keeps the whole widget layout before the move.',
+		'Moves one widget to sidebar at position (0 is the top; past the end, last), within the same sidebar to reorder it, or to wp_inactive_widgets to take it off the site and keep its settings. Refuses a widget in no sidebar (not_found) and an unknown sidebar. Returns where it is now and whether it moved. One change-history row keeps the whole widget layout before the move. Core\'s REST-only widget hooks do not run.',
 		array( 'id' => $d5b_ww_id, 'sidebar' => $d5b_ww_sidebar, 'position' => $d5b_ww_position ),
 		array( 'id', 'sidebar', 'position' ), 'd5b_ww_h_move', d5b_rs_perm( 'widgets' ),
 		array( 'idempotent' => true ) );
 
 	d5b_wc_def( 'widgets-remove', 'widgets', 'Remove a widget',
-		'Removes one widget from its sidebar and deletes its settings. To take a widget off the site but keep it, move it to wp_inactive_widgets instead. The change-history row keeps the sidebar, the position, the whole settings and the whole widget layout, so it can be put back. Refuses a widget in no sidebar (not_found) and a widget whose settings hold a secret-named key. Returns the id, where it was and removed true.',
+		'Removes one widget from its sidebar and deletes its settings. To take a widget off the site but keep it, move it to wp_inactive_widgets instead. The change-history row keeps the sidebar, the position, the whole settings and the whole widget layout, so it can be put back. Refuses a widget in no sidebar (not_found) and a widget whose settings hold a secret-named key. Returns the id, where it was and removed true. Core\'s REST-only widget hooks (rest_delete_widget) do not run.',
 		array( 'id' => $d5b_ww_id ),
 		array( 'id' ), 'd5b_ww_h_remove', d5b_rs_perm( 'widgets' ),
 		array() );
