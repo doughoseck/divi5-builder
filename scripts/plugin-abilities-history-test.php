@@ -15,7 +15,7 @@
  * (Uninstall of the table is in plugin-uninstall-test.php.)
  */
 $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
-define( 'D5B_VERSION', '2.2.0' );
+define( 'D5B_VERSION', '2.3.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 require $dir . '/inc/parts.php';
 require $dir . '/inc/switches.php';

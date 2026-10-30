@@ -155,7 +155,7 @@ if (process.env.FAKE_WP_STATE && require.main !== module) {
         hist2(short, 'option', 0, 'update', 'Set the homepage to page ' + (fp ? fp.id : 0), before);
         return [200, { show_on_front: input.show_on_front, page_on_front: +site.opts.page_on_front, page_for_posts: +site.opts.page_for_posts, changed: ['show_on_front'], secret: 'SECRET-LEAK-VALUE' }];
       }
-      if (short === 'appearance-get') return [200, { theme: { name: 'Fake', secret: 'SECRET-LEAK-VALUE' }, theme_mods: Object.assign({}, site.mods), theme_mods_truncated: false, custom_css: site.css, custom_css_truncated: false, custom_css_bytes: site.css.length, custom_css_hash: md5(site.css) }];
+      if (short === 'appearance-get') return [200, { theme: { name: 'Fake', secret: 'SECRET-LEAK-VALUE' }, theme_mods: Object.assign({}, site.mods), theme_mods_truncated: false, custom_css: site.css, custom_css_truncated: !!site.cssTruncated, custom_css_bytes: site.css.length, custom_css_hash: md5(site.css) }];
       if (short === 'appearance-theme-mod-set') {
         if (typeof input.name !== 'string' || !input.name || !('value' in input)) return E(400, 'invalid_input');
         const had = input.name in site.mods; const before = had ? { value: site.mods[input.name] } : { absent: true };

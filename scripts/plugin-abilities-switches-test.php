@@ -11,7 +11,7 @@
  * never bypass the master, the 2.0.0 part switches and the abilities switches survive each other's writes, and
  * only a request with a valid nonce and the right capability changes anything.
  */
-define( 'D5B_VERSION', '2.2.0' );
+define( 'D5B_VERSION', '2.3.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 $GLOBALS['T_exits'] = 0;
 function d5b_settings_exit() { $GLOBALS['T_exits']++; }

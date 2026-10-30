@@ -24,7 +24,8 @@
  *   widget      widgets-list; a text widget titled d5b-live-widget in the first registered sidebar, updated, moved to
  *               wp_inactive_widgets, removed; widgets-list to check it is gone.
  *   cache       cache-flush (it needs no Updates switch).
- *   cron        cron-list; runs wp_privacy_delete_old_export_files (on every WordPress site) with cron-run and prints the duration,
+ *   cron        cron-list; runs wp_privacy_delete_old_export_files (on every WordPress site; it deletes expired personal-data export
+ *               files, which is benign, and moves the event's next run) with cron-run and prints the duration,
  *               rescheduled and over_budget. Without that event: "no safe event found", nothing runs. Needs the Site health risky switch.
  *   history     history-changes-list for today, page by page while has_more (at most 10 pages of 50): every write this script made (kept
  *               in a small ledger file in the temp folder) must have a row; then history-change-get of each update, delete and move row
@@ -145,6 +146,8 @@ function stepHomepage(ctx) {
   const old = { show_on_front: String(s.show_on_front), page_on_front: Number(s.page_on_front) || 0, page_for_posts: Number(s.page_for_posts) || 0 };
   if (old.show_on_front !== 'posts' && old.show_on_front !== 'page') throw new Fail('settings-get gave an odd show_on_front');
   if (old.page_for_posts === Number(ctx.page)) throw new Usage('the nominated page is the posts page of the site; nominate another d5b-live- page');
+  // settings-set-homepage with show_on_front posts zeroes both ids, so leftover ids could not be put back through an ability.
+  if (old.show_on_front === 'posts' && (old.page_on_front !== 0 || old.page_for_posts !== 0)) throw new Usage("the site's leftover homepage ids cannot be restored through an ability; set them by hand or skip this step");
   const keep = old.show_on_front === 'page' ? old.page_for_posts : 0;
   ctx.lines.push(`plan: show_on_front ${old.show_on_front} -> page, page_on_front ${old.page_on_front} -> ${tok(ctx.page)}, page_for_posts stays ${keep}; afterwards all three go back to ${old.show_on_front}, ${old.page_on_front}, ${old.page_for_posts}.`);
   if (ctx.confirm !== 'go') {
@@ -162,7 +165,7 @@ function stepHomepage(ctx) {
     const back = old.show_on_front === 'page' ? { show_on_front: 'page', page_on_front: old.page_on_front, page_for_posts: old.page_for_posts } : { show_on_front: 'posts' };
     must(ctx, 'POST', 'settings-set-homepage', back); rec(ctx, 'settings-set-homepage', null, null);
     const n = readSettings(ctx);
-    const same = String(n.show_on_front) === old.show_on_front && (Number(n.page_on_front) || 0) === (old.show_on_front === 'page' ? old.page_on_front : 0) && (Number(n.page_for_posts) || 0) === (old.show_on_front === 'page' ? old.page_for_posts : 0);
+    const same = String(n.show_on_front) === old.show_on_front && (Number(n.page_on_front) || 0) === old.page_on_front && (Number(n.page_for_posts) || 0) === old.page_for_posts;
     if (!expect(ctx, same, 'the homepage settings are NOT back to the values read first')) throw new Fail('homepage differs after the put-back');
   }, `Put Settings > Reading back to show_on_front ${old.show_on_front}, page_on_front ${old.page_on_front}, page_for_posts ${old.page_for_posts} (the change history keeps the old values).`);
   return 'ok';
@@ -216,11 +219,23 @@ function stepCss(ctx) {
   return 'ok';
 }
 
+/** The layout as text: sidebar id => widget ids, without the empty wp_inactive_widgets key the plugin may add. */
+function widgetMap(j) {
+  const m = {};
+  for (const s of (Array.isArray(j.sidebars) ? j.sidebars : [])) {
+    const ids = (Array.isArray(s.widgets) ? s.widgets : []).map(w => String(w.id));
+    if (s.id === '_multiwidget' || (s.id === INACTIVE && !ids.length)) continue;
+    m[s.id] = ids;
+  }
+  return JSON.stringify(Object.keys(m).sort().map(k => [k, m[k]]));
+}
+
 function stepWidget(ctx) {
   const l = must(ctx, 'GET', 'widgets-list', {});
   const sb = (Array.isArray(l.json.sidebars) ? l.json.sidebars : []).find(s => s && typeof s.id === 'string' && s.id !== INACTIVE && typeof s.name === 'string' && s.name !== '');
   if (!sb) throw new Fail('no registered sidebar to put a widget in');
   const WTITLE = MARK + 'widget';
+  const map0 = widgetMap(l.json);
   let id = null;
   guarded(ctx, 'widget', () => {
     const add = must(ctx, 'POST', 'widgets-add', { sidebar: sb.id, type: 'text', settings: { title: WTITLE, text: MARK + 'widget-' + ctx.stamp }, position: 0 });
@@ -240,6 +255,7 @@ function stepWidget(ctx) {
     const l2 = must(ctx, 'GET', 'widgets-list', {});
     const still = (l2.json.sidebars || []).some(s => (s.widgets || []).some(w => w.id === id));
     if (!expect(ctx, !still, `the widget ${tok(id)} is still listed after the remove`)) throw new Fail('widget still present');
+    expect(ctx, widgetMap(l2.json) === map0, 'the widget layout (sidebars_widgets) is NOT back to what it was before the step');
   }, `Remove the widget titled ${WTITLE} (Appearance > Widgets).`);
   return 'ok';
 }

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * abilities-live-write.js: the live write run of the divi5-builder abilities (issue #32, release 2.2.0), one step at a time.
+ * abilities-live-write.js: the live write run of the divi5-builder abilities (issue #32, release 2.2.0, plugin 2.3.0), one step at a time.
  *
  *   node scripts/abilities-live-write.js <site> <step> [--page <id>] [--confirm <code>] [--image-url <url>] [--old <text> --new <text>]
  *   steps: posts, media, tag, menu, divi, history, all

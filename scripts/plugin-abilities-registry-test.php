@@ -13,7 +13,7 @@
  * Set D5B_PLUGIN_DIR to test another copy of plugin/divi5-builder (used for mutation testing).
  */
 $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
-define( 'D5B_VERSION', '2.2.0' );
+define( 'D5B_VERSION', '2.3.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 foreach ( array( 'parts', 'switches', 'blocks-text-fields', 'blocks', 'abilities/categories', 'abilities/register', 'abilities/secrets', 'abilities/audit', 'abilities/scrub', 'abilities/history', 'abilities/confirm',
 	'abilities/read-content', 'abilities/read-structure', 'abilities/read-site', 'abilities/read-divi', 'abilities/read-history',

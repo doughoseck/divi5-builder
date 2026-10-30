@@ -126,6 +126,24 @@ fresh();
 r = go(['homepage', '--page', '9', '--confirm', 'go']);
 check('a draft page: the plugin refuses it (400) -> exit 1, nothing to put back, options unchanged', r.code === 1 && /settings-set-homepage  refused:invalid_input  HTTP 400/.test(r.out) && posts(r).length === 1 && sameState(r, ['opts']), [r.code, r.out]);
 
+{
+  // leftover homepage ids under show_on_front posts cannot be restored through an ability: refuse before any write
+  fresh();
+  const st0 = JSON.parse(fs.readFileSync(STATE, 'utf8')); st0.mdl.site = JSON.parse(JSON.stringify(ORIG)); Object.assign(st0.mdl.site.opts, { show_on_front: 'posts', page_on_front: '8', page_for_posts: '0' }); fs.writeFileSync(STATE, JSON.stringify(st0));
+  r = go(['homepage', '--page', '7', '--confirm', 'go']);
+  check('show_on_front posts with a leftover page_on_front -> exit 2, the message, no write', r.code === 2 && /leftover homepage ids cannot be restored through an ability/.test(r.out) && !posts(r).length && sameState(r, []) && site(r).opts.page_on_front === '8', [r.code, r.out]);
+  r = go(['homepage', '--page', '7']);
+  check('... also without --confirm go (nothing to plan)', r.code === 2 && !posts(r).length, [r.code, r.out]);
+}
+
+console.log('--- css guards');
+for (const [label, patch, why] of [['a truncated stylesheet', { cssTruncated: true }, /longer than appearance-get returns/], ['a masked ([redacted]) stylesheet', { css: 'a{} [redacted]' }, /masked/]]) {
+  fresh();
+  const st0 = JSON.parse(fs.readFileSync(STATE, 'utf8')); st0.mdl.site = Object.assign(JSON.parse(JSON.stringify(ORIG)), patch); fs.writeFileSync(STATE, JSON.stringify(st0));
+  r = go(['css']);
+  check(label + ' -> exit 1 and no POST', r.code === 1 && why.test(r.out) && !posts(r).length, [r.code, r.out]);
+}
+
 console.log('--- history');
 fresh();
 for (const s of ['settings', 'theme-mod', 'css', 'widget', 'cache', 'cron']) go([s]);

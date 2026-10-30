@@ -16,7 +16,7 @@
  * was at ce24986 (from git) and against the file under test; the two outputs must be byte-identical.
  */
 $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
-define( 'D5B_VERSION', '2.2.0' );
+define( 'D5B_VERSION', '2.3.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 
 // ---- stand-ins the shared stubs do not have
