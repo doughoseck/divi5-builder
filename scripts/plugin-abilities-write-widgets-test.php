@@ -229,6 +229,23 @@ $GLOBALS['T_options']['widget_text'][9] = array( 'title' => 'stored only' );
 $s0 = snapshot();
 check( 'settings stored but placed nowhere: still not_found', 'not_found' === code( call( 'widgets-remove', array( 'id' => 'text-9' ) ) ) && $s0 === snapshot() );
 
+// fix wave M4: every placement goes; ids are matched exactly
+site();
+$GLOBALS['T_options']['sidebars_widgets']['footer-1'] = array( 'block-3', 'text-2' ); // a broken layout: text-2 in two sidebars
+$map_before = smap();
+$r = call( 'widgets-remove', array( 'id' => 'text-2' ) );
+$row = hlast();
+check( 'a widget placed in two sidebars: remove takes it out of BOTH; placements lists both', is_array( $r ) && array( 'block-3', 'calendar', 'legacy_thing-2' ) === smap()['sidebar-1'] && array( 'block-3' ) === smap()['footer-1'] && ! isset( opt( 'text' )[2] )
+	&& array( array( 'sidebar' => 'sidebar-1', 'position' => 0 ), array( 'sidebar' => 'footer-1', 'position' => 1 ) ) === $r['placements'] && 'sidebar-1' === $r['sidebar'], array( $r, smap() ) );
+check( '... the row records every placement and the whole map before', array( array( 'sidebar' => 'sidebar-1', 'position' => 0 ), array( 'sidebar' => 'footer-1', 'position' => 1 ) ) === $row['before']['placements'] && unpair( $row['before']['sidebars_widgets'] ) === $map_before, $row['before'] );
+site();
+$GLOBALS['T_options']['sidebars_widgets']['footer-1'] = array( 'text-02' );
+$s0 = snapshot();
+foreach ( array( 'widgets-remove' => array( 'id' => 'text-02' ), 'widgets-update' => array( 'id' => 'text-02', 'settings' => array( 'title' => 'x' ) ), 'widgets-move' => array( 'id' => 'text-02', 'sidebar' => 'sidebar-1', 'position' => 0 ) ) as $ab => $in ) {
+	$r = call( $ab, $in );
+	check( "$ab: text-02 is not text-2 (a leading zero is invalid_input); text-2's settings and placements are untouched", 'invalid_input' === code( $r ) && $s0 === snapshot() && isset( opt( 'text' )[2] ), array( code( $r ), msg( $r ) ) );
+}
+
 echo "legacy single-instance widgets\n";
 site();
 $s0 = snapshot();

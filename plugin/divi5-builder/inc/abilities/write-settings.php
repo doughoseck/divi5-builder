@@ -50,8 +50,15 @@ if ( ! function_exists( 'd5b_ws_allowed' ) ) {
 	function d5b_ws_v_time_format( $v ) { return d5b_ws_v_text( $v, 'time_format', 50 ); }
 	function d5b_ws_v_start_of_week( $v ) { return d5b_ws_v_int( $v, 'start_of_week', 0, 6 ); }
 
-	/** Core accepts any whole number (and turns "abc" into 1); the plugin keeps it to 1..100 so a typo cannot hide the site. */
-	function d5b_ws_v_posts_per_page( $v ) { return d5b_ws_v_int( $v, 'posts_per_page', 1, 100 ); }
+	/**
+	 * Core accepts any whole number (and turns "abc" into 1); the plugin takes -1 (show all, as core allows) or 1..500, so a
+	 * typo (0, a huge number) cannot hide or overload the site.
+	 */
+	function d5b_ws_v_posts_per_page( $v ) {
+		if ( -1 === $v || '-1' === $v ) { return -1; }
+		$ok = d5b_ws_v_int( $v, 'posts_per_page', 1, 500 );
+		return is_wp_error( $ok ) ? d5b_ws_bad( 'posts_per_page', 'must be a whole number from 1 to 500, or -1 to show all.' ) : $ok;
+	}
 
 	function d5b_ws_v_default_comment_status( $v ) {
 		return in_array( $v, array( 'open', 'closed' ), true ) ? $v : d5b_ws_bad( 'default_comment_status', 'must be open or closed.' );
@@ -59,7 +66,8 @@ if ( ! function_exists( 'd5b_ws_allowed' ) ) {
 
 	function d5b_ws_v_timezone_string( $v ) {
 		if ( '' === $v ) { return ''; }
-		if ( ! is_string( $v ) || ! in_array( $v, timezone_identifiers_list(), true ) ) { return d5b_ws_bad( 'timezone_string', 'must be a time zone name such as Africa/Johannesburg, or "" to use gmt_offset.' ); }
+		// ALL_WITH_BC, as core's wp_timezone_choice lists them: US/Eastern and the other backward-compatible names are valid.
+		if ( ! is_string( $v ) || ! in_array( $v, timezone_identifiers_list( DateTimeZone::ALL_WITH_BC ), true ) ) { return d5b_ws_bad( 'timezone_string', 'must be a time zone name such as Africa/Johannesburg, or "" to use gmt_offset.' ); }
 		return $v;
 	}
 
@@ -244,8 +252,13 @@ if ( ! function_exists( 'd5b_ws_allowed' ) ) {
 		return $out;
 	}
 
+	/** First line of the write handlers: the settings capability, with a message about changing (not reading) them. */
+	function d5b_ws_guard(): ?WP_Error {
+		return d5b_rs_ok( 'settings' ) ? null : new WP_Error( 'forbidden', 'You do not have permission to change the site settings (manage_options).' );
+	}
+
 	function d5b_ws_h_settings_set( array $in ) {
-		$e = d5b_rs_guard( 'settings' ); if ( $e ) { return $e; }
+		$e = d5b_ws_guard(); if ( $e ) { return $e; }
 		foreach ( array_keys( $in ) as $k ) {
 			if ( 'settings' !== $k ) { return new WP_Error( 'invalid_input', 'Unknown input "' . substr( preg_replace( '/[^A-Za-z0-9_\-]/', '', (string) $k ), 0, 100 ) . '". Allowed: settings.' ); }
 		}
@@ -266,7 +279,7 @@ if ( ! function_exists( 'd5b_ws_allowed' ) ) {
 	}
 
 	function d5b_ws_h_homepage( array $in ) {
-		$e = d5b_rs_guard( 'settings' ); if ( $e ) { return $e; }
+		$e = d5b_ws_guard(); if ( $e ) { return $e; }
 		$a = d5b_rc_args( $in, array( 'show_on_front' => 'enum:posts|page', 'page_on_front' => 'int', 'page_for_posts' => 'int' ), array( 'show_on_front' ) );
 		if ( is_wp_error( $a ) ) { return $a; }
 		if ( ! d5b_abilities_risky_on( 'settings' ) ) { return new WP_Error( 'not_allowed', 'Setting the homepage is a risky action and the Settings risky switch is off.' ); }
@@ -277,10 +290,18 @@ if ( ! function_exists( 'd5b_ws_allowed' ) ) {
 			if ( ! d5b_abilities_category_on( 'pages' ) ) { return new WP_Error( 'not_allowed', 'The Pages ability category is switched off, so the homepage cannot be set.' ); }
 		} else {
 			if ( $front < 1 ) { return new WP_Error( 'invalid_input', 'page_on_front is required with show_on_front page: the id of a published page.' ); }
+			// page_for_posts left out keeps the stored posts page (an explicit 0 clears it); a kept page is not changed, so it
+			// is not checked again, but it may not be the new homepage.
+			$kept = ! array_key_exists( 'page_for_posts', $a );
+			if ( $kept ) {
+				$cur  = get_option( 'page_for_posts', 0 );
+				$blog = is_scalar( $cur ) ? (int) $cur : 0;
+				if ( $blog === $front ) { return new WP_Error( 'invalid_input', 'page ' . $front . ' is the site\'s posts page now; pass page_for_posts (another page, or 0 for none) to make it the homepage.' ); }
+			}
 			if ( $front === $blog ) { return new WP_Error( 'invalid_input', 'page_on_front and page_for_posts must be different pages.' ); }
 			$fp = d5b_ws_page( 'page_on_front', $front );
 			if ( is_wp_error( $fp ) ) { return $fp; }
-			if ( 0 !== $blog ) {
+			if ( 0 !== $blog && ! $kept ) {
 				$bp = d5b_ws_page( 'page_for_posts', $blog );
 				if ( is_wp_error( $bp ) ) { return $bp; }
 			}
@@ -310,17 +331,17 @@ if ( ! function_exists( 'd5b_ws_allowed' ) ) {
 
 	$d5b_ws_value = array( 'type' => array( 'string', 'integer', 'number', 'boolean' ) );
 	d5b_wc_def( 'settings-set', 'settings', 'Change site settings',
-		'Changes site settings: settings is an object of setting name => value, at least one. Normal keys: ' . implode( ', ', d5b_ws_keys( 'normal' ) ) . '. Risky keys: ' . implode( ', ', d5b_ws_keys( 'risky' ) ) . '; while the Settings risky switch is off, a call with any risky key is refused whole (not_allowed) and nothing is written. Values are checked as wp-admin checks them (core\'s sanitize_option): posts_per_page 1 to 100, start_of_week 0 (Sunday) to 6, default_comment_status open or closed, date_format and time_format at most 50 characters, timezone_string a zone name or "", gmt_offset -12 to 14, WPLANG "" or an installed language, permalink_structure "" or a structure with a tag such as /%postname%/ (the rewrite rules are flushed and rewrite_file_written says whether .htaccess or web.config could be written), blog_public 1 or 0. Refuses unknown keys and siteurl, home and admin_email (invalid_input, with the allow-list), any value WordPress rejects (invalid_input with its message), and text holding [redacted] (masked_read). Returns the stored values and the keys that changed. One change-history row keeps the old value of every key given.',
+		'Changes site settings: settings is an object of setting name => value, at least one. Normal keys: ' . implode( ', ', d5b_ws_keys( 'normal' ) ) . '. Risky keys: ' . implode( ', ', d5b_ws_keys( 'risky' ) ) . '; while the Settings risky switch is off, a call with any risky key is refused whole (not_allowed) and nothing is written. Values are checked as wp-admin checks them (core\'s sanitize_option): posts_per_page 1 to 500 or -1 (show all), start_of_week 0 (Sunday) to 6, default_comment_status open or closed, date_format and time_format at most 50 characters, timezone_string a zone name (the backward-compatible names such as US/Eastern too) or "", gmt_offset -12 to 14, WPLANG "" or an installed language, permalink_structure "" or a structure with a tag such as /%postname%/ (the rewrite rules are flushed and rewrite_file_written says whether .htaccess or web.config could be written), blog_public 1 or 0. Refuses unknown keys and siteurl, home and admin_email (invalid_input, with the allow-list), any value WordPress rejects (invalid_input with its message), and text holding [redacted] (masked_read). Returns the stored values and the keys that changed. One change-history row keeps the old value of every key given.',
 		array( 'settings' => array( 'type' => 'object', 'minProperties' => 1, 'additionalProperties' => $d5b_ws_value, 'description' => 'Setting name => new value, for example {"blogdescription": "Fresh bread daily", "posts_per_page": 12}. Allowed: ' . d5b_ws_allowed_text() . '.' ) ),
 		array( 'settings' ), 'd5b_ws_h_settings_set', d5b_rs_perm( 'settings' ),
 		array( 'idempotent' => true ) );
 
 	d5b_wc_def( 'settings-set-homepage', 'settings', 'Set the homepage',
-		'Sets what the homepage shows (Settings > Reading). show_on_front posts shows the latest posts (page_on_front and page_for_posts become 0). show_on_front page shows page_on_front, a published page you may edit, and page_for_posts (optional, 0 for none) is the page that lists the posts; the two must differ. A risky action: needs the Settings risky switch on, and the Pages category on as well. Refuses a missing, unpublished or non-page id and the same page twice. Returns the three values and the ones that changed. One change-history row keeps the three old values.',
+		'Sets what the homepage shows (Settings > Reading). show_on_front posts shows the latest posts (page_on_front and page_for_posts become 0). show_on_front page shows page_on_front, a published page you may edit, and page_for_posts is the page that lists the posts (0 for none; left out, the current posts page stays); the two must differ. A risky action: needs the Settings risky switch on, and the Pages category on as well. Refuses a missing, unpublished or non-page id and the same page twice. Returns the three values and the ones that changed. One change-history row keeps the three old values.',
 		array(
 			'show_on_front'  => array( 'type' => 'string', 'enum' => array( 'posts', 'page' ), 'description' => 'posts (the latest posts) or page (a static page).' ),
 			'page_on_front'  => array( 'type' => 'integer', 'minimum' => 0, 'description' => 'With page: the id of the published page to show as the homepage.' ),
-			'page_for_posts' => array( 'type' => 'integer', 'minimum' => 0, 'description' => 'With page: the id of the published page that lists the posts, or 0 for none. Must differ from page_on_front.' ),
+			'page_for_posts' => array( 'type' => 'integer', 'minimum' => 0, 'description' => 'With page: the id of the published page that lists the posts, or 0 for none; left out, the current posts page stays. Must differ from page_on_front.' ),
 		), array( 'show_on_front' ), 'd5b_ws_h_homepage', 'd5b_ws_can_homepage',
 		array( 'idempotent' => true ), array( 'risky' => true ) );
 

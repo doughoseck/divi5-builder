@@ -80,6 +80,10 @@ if ( ! function_exists( 'd5b_ww_sidebar_ok' ) ) {
 		if ( 1 !== preg_match( '/^(.+)-(\d{1,9})$/D', $id, $m ) || (int) $m[2] < 1 ) {
 			return new WP_Error( 'invalid_input', 'The widget "' . d5b_rc_cut( $id, 100 ) . '" is not a multi-instance widget (type-number); legacy single-instance widgets are changed in wp-admin.' );
 		}
+		// Ids are matched exactly: text-02 is not text-2 (its number would be, and the settings of text-2 would change).
+		if ( '0' === $m[2][0] ) {
+			return new WP_Error( 'invalid_input', 'The widget id "' . d5b_rc_cut( $id, 100 ) . '" has a number with a leading zero; use the id exactly as widgets-list returns it.' );
+		}
 		$w = d5b_ww_type( $m[1] );
 		if ( null === $w ) { return d5b_ww_unknown_type( $m[1] ); }
 		return array( $m[1], (int) $m[2], $w );
@@ -130,6 +134,16 @@ if ( ! function_exists( 'd5b_ww_sidebar_ok' ) ) {
 			if ( false !== $pos ) { return array( (string) $sid, (int) $pos ); }
 		}
 		return null;
+	}
+
+	/** Every place the widget is in: a list of array( sidebar, position ), in the map's order (empty when none). */
+	function d5b_ww_find_all( string $id, array $map ): array {
+		$out = array();
+		foreach ( $map as $sid => $ids ) {
+			if ( ! is_array( $ids ) ) { continue; }
+			foreach ( array_values( array_map( 'strval', $ids ) ) as $pos => $x ) { if ( $x === $id ) { $out[] = array( (string) $sid, (int) $pos ); } }
+		}
+		return $out;
 	}
 
 	/** The map with $id taken out of $sidebar (every occurrence there). */
@@ -404,9 +418,14 @@ if ( ! function_exists( 'd5b_ww_sidebar_ok' ) ) {
 		list( $id, $base, $number, $w, $map, $sidebar, $position ) = $x;
 		$old = d5b_ww_instance( $base, $number );
 		if ( null !== $old && ! d5b_wc_secret_free( $old ) ) { return d5b_wc_secret_error( 'widget' ); }
-		$before = array( 'id' => $id, 'sidebar' => $sidebar, 'position' => $position, 'instance' => null === $old ? array( 'absent' => true ) : d5b_wc_meta_value( $old ), 'sidebars_widgets' => d5b_ww_pairs( $map ) );
+		// Every placement of the id goes (a broken layout can hold it in two sidebars): the settings are deleted, so a
+		// placement left behind would point at nothing. All of them are recorded.
+		$places = array_map( function ( $p ) { return array( 'sidebar' => $p[0], 'position' => $p[1] ); }, d5b_ww_find_all( $id, $map ) );
+		$before = array( 'id' => $id, 'sidebar' => $sidebar, 'position' => $position, 'placements' => $places, 'instance' => null === $old ? array( 'absent' => true ) : d5b_wc_meta_value( $old ), 'sidebars_widgets' => d5b_ww_pairs( $map ) );
 		$big = d5b_wc_check_content_size( d5b_ww_json( $before ) ); if ( true !== $big ) { return $big; }
-		wp_set_sidebars_widgets( d5b_ww_take( $map, $id, $sidebar ) );
+		$new = $map;
+		foreach ( $places as $p ) { $new = d5b_ww_take( $new, $id, $p['sidebar'] ); }
+		wp_set_sidebars_widgets( $new );
 		if ( null !== d5b_ww_find( $id, d5b_ww_map() ) && d5b_ww_json( d5b_ww_map() ) === d5b_ww_json( $map ) ) {
 			return new WP_Error( 'write_failed', 'WordPress did not store the widget layout (another plugin may block it).' );
 		}
@@ -416,7 +435,7 @@ if ( ! function_exists( 'd5b_ww_sidebar_ok' ) ) {
 			d5b_ww_unsave( $base, $number );
 			if ( null !== d5b_ww_instance( $base, $number ) ) { $warn[] = 'WordPress kept the widget\'s settings (another plugin may block the change); the widget is no longer placed.'; }
 		}
-		$out = array( 'id' => $id, 'sidebar' => $sidebar, 'position' => $position, 'removed' => true );
+		$out = array( 'id' => $id, 'sidebar' => $sidebar, 'position' => $position, 'placements' => $places, 'removed' => true );
 		if ( $warn ) { $out['warnings'] = $warn; }
 		$hid = d5b_wc_history_row( 'divi5-builder/widgets-remove', 'widget', $number, 'delete', $before, array( 'absent' => true ), 'Removed widget ' . $id . ' from ' . $sidebar );
 		if ( $hid < 1 ) { $out['_history_failed'] = true; }
@@ -450,7 +469,7 @@ if ( ! function_exists( 'd5b_ww_sidebar_ok' ) ) {
 		array( 'idempotent' => true ) );
 
 	d5b_wc_def( 'widgets-remove', 'widgets', 'Remove a widget',
-		'Removes one widget from its sidebar and deletes its settings. To take a widget off the site but keep it, move it to wp_inactive_widgets instead. The change-history row keeps the sidebar, the position, the whole settings and the whole widget layout, so it can be put back. Refuses a widget in no sidebar (not_found) and a widget whose settings hold a secret-named key. Returns the id, where it was and removed true. Core\'s REST-only widget hooks (rest_delete_widget) do not run.',
+		'Removes one widget from its sidebar (from every sidebar, when a broken layout lists it more than once) and deletes its settings. To take a widget off the site but keep it, move it to wp_inactive_widgets instead. The change-history row keeps every place it was in, the whole settings and the whole widget layout, so it can be put back. Refuses a widget in no sidebar (not_found) and a widget whose settings hold a secret-named key. Returns the id, where it was (sidebar and position: the first place; placements: all of them) and removed true. Core\'s REST-only widget hooks (rest_delete_widget) do not run.',
 		array( 'id' => $d5b_ww_id ),
 		array( 'id' ), 'd5b_ww_h_remove', d5b_rs_perm( 'widgets' ),
 		array() );

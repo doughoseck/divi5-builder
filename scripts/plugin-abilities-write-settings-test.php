@@ -137,7 +137,7 @@ check( 'risky on: the mix writes all', is_array( $r ) && 'New' === opt( 'blognam
 
 echo "settings-set: values\n";
 $cases = array(
-	array( 'posts_per_page', 'abc' ), array( 'posts_per_page', 0 ), array( 'posts_per_page', 101 ), array( 'posts_per_page', 1.5 ), array( 'posts_per_page', true ),
+	array( 'posts_per_page', 'abc' ), array( 'posts_per_page', 0 ), array( 'posts_per_page', 501 ), array( 'posts_per_page', -2 ), array( 'posts_per_page', '-0' ), array( 'posts_per_page', 1.5 ), array( 'posts_per_page', true ),
 	array( 'start_of_week', 7 ), array( 'start_of_week', -1 ), array( 'default_comment_status', 'maybe' ),
 	array( 'WPLANG', 'fr_FR' ), array( 'WPLANG', 'en_US' ), array( 'blog_public', 2 ), array( 'blog_public', 'yes' ),
 	array( 'timezone_string', 'Mars/Base' ), array( 'gmt_offset', '1e0' ), array( 'gmt_offset', 15 ), array( 'gmt_offset', 'abc' ),
@@ -151,7 +151,7 @@ foreach ( $cases as $c ) {
 site( true ); $GLOBALS['T_languages'] = array( 'af' );
 $r = call( 'settings-set', array( 'settings' => array( 'WPLANG' => 'fr_FR' ) ) );
 check( 'WPLANG not installed: the message lists the installed languages', false !== strpos( msg( $r ), 'af' ) && false !== strpos( msg( $r ), 'Install' ) );
-foreach ( array( array( 'posts_per_page', 100, 100 ), array( 'posts_per_page', '1', 1 ), array( 'gmt_offset', -9.5, '-9.5' ), array( 'gmt_offset', '14', '14' ), array( 'WPLANG', '', '' ), array( 'timezone_string', '', '' ), array( 'blog_public', true, 1 ), array( 'start_of_week', '6', 6 ) ) as $c ) {
+foreach ( array( array( 'posts_per_page', 100, 100 ), array( 'posts_per_page', 500, 500 ), array( 'posts_per_page', -1, -1 ), array( 'posts_per_page', '-1', -1 ), array( 'posts_per_page', '1', 1 ), array( 'gmt_offset', -9.5, '-9.5' ), array( 'gmt_offset', '14', '14' ), array( 'WPLANG', '', '' ), array( 'timezone_string', '', '' ), array( 'timezone_string', 'US/Eastern', 'US/Eastern' ), array( 'timezone_string', 'Africa/Johannesburg', 'Africa/Johannesburg' ), array( 'blog_public', true, 1 ), array( 'start_of_week', '6', 6 ) ) as $c ) {
 	site( true ); $GLOBALS['T_options']['WPLANG'] = 'af'; $GLOBALS['T_options']['blog_public'] = 0; $GLOBALS['T_options']['posts_per_page'] = 7; $GLOBALS['T_options']['gmt_offset'] = '3';
 	$r = call( 'settings-set', array( 'settings' => array( $c[0] => $c[1] ) ) );
 	check( $c[0] . ' ' . json_encode( $c[1] ) . ' is accepted and stored as ' . json_encode( $c[2] ), is_array( $r ) && $c[2] === opt( $c[0] ), array( $r, opt( $c[0] ) ) );
@@ -215,6 +215,8 @@ $r = call( 'settings-set', array( 'settings' => array( 'blogdescription' => 'New
 check( '... unless the stored value holds it too', is_array( $r ) && 'New [redacted] tagline' === opt( 'blogdescription' ) );
 site( true, array( 'read', 'edit_posts' ) );
 check( 'without manage_options: refused by the gate and by the handler', 'FORBIDDEN' === call( 'settings-set', array( 'settings' => array( 'blogname' => 'X' ) ) ) && 'forbidden' === code( handler( 'settings-set', array( 'settings' => array( 'blogname' => 'X' ) ) ) ) && 'Old name' === opt( 'blogname' ) );
+$hm = handler( 'settings-set-homepage', array( 'show_on_front' => 'posts' ) ); $sm = handler( 'settings-set', array( 'settings' => array( 'blogname' => 'X' ) ) );
+check( '... and the write handlers\' message speaks of changing the settings, not reading them', false !== strpos( msg( $sm ), 'change the site settings' ) && false === stripos( msg( $sm ), 'read' ) && 'forbidden' === code( $hm ) && false !== strpos( msg( $hm ), 'change the site settings' ), array( msg( $sm ), msg( $hm ) ) );
 site( false ); d5b_abilities_set_category( 'settings', false, false, 't' );
 check( 'Settings category off: refused', 'FORBIDDEN' === call( 'settings-set', array( 'settings' => array( 'blogname' => 'X' ) ) ) && 'Old name' === opt( 'blogname' ) );
 
@@ -268,6 +270,15 @@ check( 'back to the latest posts: all three written (ids 0), the row keeps the p
 site( true ); $p = pages();
 $r = call( 'settings-set-homepage', array( 'show_on_front' => 'page', 'page_on_front' => $p['home'], 'page_for_posts' => 0 ) );
 check( 'page_for_posts 0 is allowed', is_array( $r ) && $p['home'] === opt( 'page_on_front' ) && 0 === opt( 'page_for_posts' ) );
+// page_for_posts left out keeps the stored posts page; an explicit 0 clears it.
+site( true ); $p = pages(); $GLOBALS['T_options']['show_on_front'] = 'page'; $GLOBALS['T_options']['page_on_front'] = $p['home']; $GLOBALS['T_options']['page_for_posts'] = $p['blog'];
+$other = t_add_post( array( 'post_type' => 'page', 'post_title' => 'Other', 'post_author' => 3 ) );
+$r = call( 'settings-set-homepage', array( 'show_on_front' => 'page', 'page_on_front' => $other ) );
+check( 'page_for_posts left out: the stored posts page stays, only page_on_front changes', is_array( $r ) && $other === opt( 'page_on_front' ) && $p['blog'] === opt( 'page_for_posts' ) && array( 'page_on_front' ) === $r['changed'] && $p['blog'] === $r['page_for_posts'], $r );
+$r = call( 'settings-set-homepage', array( 'show_on_front' => 'page', 'page_on_front' => $p['blog'] ) );
+check( 'page_for_posts left out and the new homepage IS the stored posts page: invalid_input asking for page_for_posts; nothing written', 'invalid_input' === code( $r ) && false !== strpos( msg( $r ), 'posts page now; pass page_for_posts' ) && $other === opt( 'page_on_front' ) && $p['blog'] === opt( 'page_for_posts' ), array( code( $r ), msg( $r ) ) );
+$r = call( 'settings-set-homepage', array( 'show_on_front' => 'page', 'page_on_front' => $other, 'page_for_posts' => 0 ) );
+check( 'an explicit 0 clears the posts page', is_array( $r ) && 0 === opt( 'page_for_posts' ) && array( 'page_for_posts' ) === $r['changed'], $r );
 
 echo "history failure\n";
 site( false );
