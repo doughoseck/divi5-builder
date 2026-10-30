@@ -35,6 +35,7 @@ function t_reset() {
 	if ( function_exists( 't_content_reset' ) ) { t_content_reset(); }
 	if ( function_exists( 't_media_reset' ) ) { t_media_reset(); }
 	if ( function_exists( 't_settings_reset' ) ) { t_settings_reset(); }
+	if ( function_exists( 't_widgets_reset' ) && class_exists( 'WP_Widget_Factory', false ) ) { t_widgets_reset(); }
 }
 // A new request: WordPress starts a request with the gate not yet run.
 function t_new_request() { unset( $GLOBALS['d5b_gate_ran'] ); }
@@ -96,7 +97,7 @@ if ( ! getenv( 'T_NO_DEACTIVATE' ) ) {
 }
 
 function get_option( $n, $d = false ) { return array_key_exists( $n, $GLOBALS['T_options'] ) ? $GLOBALS['T_options'][ $n ] : $d; }
-function update_option( $n, $v, $autoload = null ) { $GLOBALS['T_writes'][] = array( 'update_option', $n ); $GLOBALS['T_options'][ $n ] = $v; if ( null !== $autoload ) { $GLOBALS['T_autoload'][ $n ] = $autoload; } return true; }
+function update_option( $n, $v, $autoload = null ) { if ( in_array( $n, $GLOBALS['T_frozen_options'] ?? array(), true ) ) { return false; } $GLOBALS['T_writes'][]= array( 'update_option', $n ); $GLOBALS['T_options'][ $n ] = $v; if ( null !== $autoload ) { $GLOBALS['T_autoload'][ $n ] = $autoload; } return true; }
 function add_option( $n, $v = '', $dep = '', $autoload = 'yes' ) { $GLOBALS['T_writes'][] = array( 'add_option', $n ); $GLOBALS['T_options'][ $n ] = $v; $GLOBALS['T_autoload'][ $n ] = $autoload; return true; }
 function delete_option( $n ) { $GLOBALS['T_writes'][] = array( 'delete_option', $n ); unset( $GLOBALS['T_options'][ $n ] ); return true; }
 function get_site_option( $n, $d = false ) { return array_key_exists( $n, $GLOBALS['T_site_options'] ) ? $GLOBALS['T_site_options'][ $n ] : $d; }
@@ -1545,3 +1546,99 @@ function wp_update_custom_css_post( $css, $args = array() ) {
 	$GLOBALS['T_custom_css'] = $p;
 	return $p;
 }
+
+// ---- widgets (2.3.0, write-widgets.php)
+// core 6.4.1 (widgets.php, class-wp-widget.php, class-wp-widget-factory.php, widgets/class-wp-widget-text.php,
+// widgets/class-wp-widget-block.php):
+//   the placement is the option sidebars_widgets (sidebar id => list of widget ids, plus array_version 3, which
+//   wp_get_sidebars_widgets leaves out and wp_set_sidebars_widgets adds); an instance is widget_<id_base>[<number>] with
+//   _multiwidget 1 in the same option; $wp_widget_factory->widgets holds the WP_Widget objects keyed by class name;
+//   $wp_registered_sidebars the theme's sidebars.
+//   T_frozen_options  option names update_option silently refuses (returns false, stores nothing), as a plugin's
+//                     pre_update_option filter can
+// Not core: wp_kses_post below removes only script/style/iframe tags (their text stays, as kses leaves it) and on*
+// attributes; core's allow-list removes much more. Enough to see that a widget's own update() ran.
+// wp_get_sidebars_widgets: a test that defines its own (plugin-abilities-site-test.php, from T_sidebars) keeps it.
+if ( ! function_exists( 'wp_get_sidebars_widgets' ) ) {
+	function wp_get_sidebars_widgets( $deprecated = true ) {
+		$s = get_option( 'sidebars_widgets', array() );
+		if ( is_array( $s ) ) { unset( $s['array_version'] ); }
+		foreach ( $GLOBALS['T_filters']['sidebars_widgets'] ?? array() as $cb ) { $s = call_user_func( $cb, $s ); }
+		return $s;
+	}
+}
+function wp_set_sidebars_widgets( $sidebars_widgets ) {
+	if ( ! isset( $sidebars_widgets['array_version'] ) ) { $sidebars_widgets['array_version'] = 3; }
+	update_option( 'sidebars_widgets', $sidebars_widgets );
+}
+function wp_parse_args( $args, $defaults = array() ) {
+	if ( is_object( $args ) ) { $args = get_object_vars( $args ); }
+	return is_array( $args ) ? array_merge( (array) $defaults, $args ) : (array) $defaults;
+}
+if ( ! function_exists( 'wp_kses_post' ) ) {
+	function wp_kses_post( $s ) {
+		$s = preg_replace( '#</?(script|style|iframe)\b[^>]*>#i', '', (string) $s );
+		return preg_replace( '#\s+on[a-z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)#i', '', $s );
+	}
+}
+if ( ! class_exists( 'WP_Widget' ) ) {
+	class WP_Widget {
+		public $id_base; public $name; public $option_name; public $widget_options; public $control_options;
+		public $number = false; public $id = false;
+		public function __construct( $id_base, $name, $widget_options = array(), $control_options = array() ) {
+			$this->id_base         = empty( $id_base ) ? preg_replace( '/(wp_)?widget_/', '', strtolower( get_class( $this ) ) ) : strtolower( $id_base );
+			$this->name            = $name;
+			$this->option_name     = 'widget_' . $this->id_base;
+			$this->widget_options  = wp_parse_args( $widget_options, array( 'classname' => str_replace( '\\', '_', $this->option_name ), 'customize_selective_refresh' => false ) );
+			$this->control_options = wp_parse_args( $control_options, array( 'id_base' => $this->id_base ) );
+		}
+		/** core: returns the new instance as given (a subclass sanitises). */
+		public function update( $new_instance, $old_instance ) { return $new_instance; }
+	}
+	class WP_Widget_Text extends WP_Widget {
+		public function __construct() { parent::__construct( 'text', 'Text', array( 'show_instance_in_rest' => true ) ); }
+		/** core 6.4.1, as is. */
+		public function update( $new_instance, $old_instance ) {
+			$new_instance = wp_parse_args( $new_instance, array( 'title' => '', 'text' => '', 'filter' => false, 'visual' => null ) );
+			$instance = $old_instance;
+			$instance['title'] = sanitize_text_field( $new_instance['title'] );
+			if ( current_user_can( 'unfiltered_html' ) ) { $instance['text'] = $new_instance['text']; } else { $instance['text'] = wp_kses_post( $new_instance['text'] ); }
+			$instance['filter'] = ! empty( $new_instance['filter'] );
+			if ( isset( $old_instance['filter'] ) && 'content' === $old_instance['filter'] ) { $instance['visual'] = true; }
+			if ( 'content' === $new_instance['filter'] ) { $instance['visual'] = true; }
+			if ( isset( $new_instance['visual'] ) ) { $instance['visual'] = ! empty( $new_instance['visual'] ); }
+			if ( ! empty( $instance['visual'] ) ) { $instance['filter'] = true; }
+			return $instance;
+		}
+	}
+	class WP_Widget_Block extends WP_Widget {
+		protected $default_instance = array( 'content' => '' );
+		public function __construct() { parent::__construct( 'block', 'Block', array( 'show_instance_in_rest' => true ) ); }
+		/** core 6.4.1, as is. */
+		public function update( $new_instance, $old_instance ) {
+			$instance = array_merge( $this->default_instance, $old_instance );
+			if ( current_user_can( 'unfiltered_html' ) ) { $instance['content'] = $new_instance['content']; } else { $instance['content'] = wp_kses_post( $new_instance['content'] ); }
+			return $instance;
+		}
+	}
+	class WP_Widget_Factory {
+		public $widgets = array();
+		/** core: a class name (keyed by it) or an instance (keyed by its object hash). */
+		public function register( $widget ) {
+			if ( $widget instanceof WP_Widget ) { $this->widgets[ spl_object_hash( $widget ) ] = $widget; } else { $this->widgets[ $widget ] = new $widget(); }
+		}
+		public function get_widget_object( $id_base ) {
+			foreach ( $this->widgets as $w ) { if ( $w->id_base === $id_base ) { return $w; } }
+			return null;
+		}
+	}
+}
+/** A fresh factory with core's text and block widgets, no sidebars. */
+function t_widgets_reset() {
+	$GLOBALS['wp_widget_factory'] = new WP_Widget_Factory();
+	$GLOBALS['wp_widget_factory']->register( 'WP_Widget_Text' );
+	$GLOBALS['wp_widget_factory']->register( 'WP_Widget_Block' );
+	$GLOBALS['wp_registered_sidebars'] = array();
+	$GLOBALS['T_frozen_options'] = array();
+}
+t_widgets_reset();
