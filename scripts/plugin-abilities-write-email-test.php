@@ -131,6 +131,10 @@ check( '... the attempt counted against the limit', 1 === (int) ( get_transient(
 $GLOBALS['T_mail_fail'] = false;
 $r = send( array( 'to' => 'admin' ) );
 check( 'a later good send does not repeat the old error', array( 'sent' => true, 'mailer_error' => null ) === $r, $r );
+site();
+$GLOBALS['T_mail_fail'] = 'SMTP Error: The following recipients failed: ED@example.org: mailbox full';
+$r = send( array( 'to' => 'user:3' ) );
+check( 'a mailer error naming the recipient: the address is replaced in the answer and the row', 'SMTP Error: The following recipients failed: [recipient]: mailbox full' === ( $r['mailer_error'] ?? '' ) && false === stripos( json_encode( array( hrows(), arows(), $r ) ), 'ed@example.org' ), $r );
 
 // ---- the rate limit
 echo "the rate limit\n";
