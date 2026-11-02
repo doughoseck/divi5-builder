@@ -1121,6 +1121,27 @@ class T_Filesystem {
 		if ( ! empty( $GLOBALS['T_fs_copy_fail'] ) || ( ! $overwrite && file_exists( $to ) ) ) { return false; }
 		return @copy( $from, $to );
 	}
+	// As WP_Filesystem_Direct::delete: a file is unlinked; a folder needs $recursive (else rmdir), then everything in it
+	// (a link to a folder is listed as a folder and followed, as core's dirlist does), then the folder.
+	function delete( $file, $recursive = false, $type = false ) {
+		$GLOBALS['T_fs_deletes'][] = array( $file, $recursive );
+		if ( empty( $file ) ) { return false; }
+		$file = str_replace( '\\', '/', $file );
+		if ( 'f' === $type || is_file( $file ) ) { return @unlink( $file ); }
+		if ( ! $recursive && is_dir( $file ) ) { return @rmdir( $file ); }
+		$file = rtrim( $file, '/' ) . '/';
+		$ok = true;
+		foreach ( array_diff( (array) @scandir( $file ), array( '.', '..' ) ) as $f ) { if ( ! $this->delete( $file . $f, $recursive, is_dir( $file . $f ) ? 'd' : 'f' ) ) { $ok = false; } }
+		if ( file_exists( $file ) && ! @rmdir( $file ) ) { $ok = false; }
+		return $ok;
+	}
+}
+// Removes a test folder (or file) with everything in it; a link is removed, never followed.
+function t_plugins_rmtree( $p ) {
+	if ( is_link( $p ) || is_file( $p ) ) { @unlink( $p ); return; }
+	if ( ! is_dir( $p ) ) { return; }
+	foreach ( array_diff( (array) scandir( $p ), array( '.', '..' ) ) as $f ) { t_plugins_rmtree( $p . '/' . $f ); }
+	@rmdir( $p );
 }
 // As core: sets the global $wp_filesystem (direct) and returns true; with T_fs_fail it returns false and sets nothing.
 function WP_Filesystem( $args = false, $context = false, $allow_relaxed_file_ownership = false ) {
@@ -1999,6 +2020,13 @@ if ( ! class_exists( 'WP_Theme_JSON_Resolver', false ) ) {
 //   T_file_mods_off       wp_is_file_mod_allowed() answers false (DISALLOW_FILE_MODS)
 //   T_plugin_hooks        hook => list of callables run when activate_plugin / deactivate_plugins fire it (not silent);
 //                         T_hook_log every such hook in order
+// Update, rollback and delete (Task 3) need real files: with T_plugins_disk true, get_plugins() reads WP_PLUGIN_DIR as core
+// does (the .php files at the top and one folder down, their Plugin Name / Version / Network headers) and keeps the answer
+// until wp_clean_plugins_cache() (core's 'plugins' cache), so a caller that forgets to clean it sees the old list.
+//   T_upgrade_result      file => what Plugin_Upgrader::bulk_upgrade gives for that plugin instead of updating it (false, WP_Error)
+//   T_upgrade_calls       every list given to bulk_upgrade;  T_copies_at_upgrade  count( T_copy_calls ) when it ran
+//   T_uninstalls          every plugin file uninstall_plugin ran for;  T_delete_calls  every list given to delete_plugins
+//   T_fs_deletes          every array( path, recursive ) given to $wp_filesystem->delete
 if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 	function t_plugins_reset() {
 		$GLOBALS['T_plugin_table'] = array(); $GLOBALS['T_activate_fail'] = array(); $GLOBALS['T_activate_calls'] = array(); $GLOBALS['T_traps'] = array();
@@ -2007,12 +2035,41 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		$GLOBALS['T_plugins_cache_cleans'] = 0; $GLOBALS['T_site_transients'] = array(); $GLOBALS['T_site_transient_deletes'] = array();
 		$GLOBALS['T_update_checks'] = array(); $GLOBALS['T_fresh'] = array(); $GLOBALS['T_file_mods_off'] = false;
 		$GLOBALS['T_plugin_hooks'] = array(); $GLOBALS['T_hook_log'] = array();
+		$GLOBALS['T_plugins_disk'] = false; $GLOBALS['T_plugins_cache'] = null; $GLOBALS['T_upgrade_result'] = array(); $GLOBALS['T_upgrade_calls'] = array();
+		$GLOBALS['T_copies_at_upgrade'] = null; $GLOBALS['T_uninstalls'] = array(); $GLOBALS['T_delete_calls'] = array(); $GLOBALS['T_fs_deletes'] = array();
 	}
 	t_plugins_reset();
+	// The headers core's get_plugin_data reads (the first 8 KB, "Plugin Name:" etc. at the start of a comment line); null without a name.
+	function t_plugin_headers( $file ) {
+		$h = (string) @file_get_contents( $file, false, null, 0, 8192 );
+		$get = function ( $k ) use ( $h ) { return preg_match( '/^[ \t\/*#@]*' . preg_quote( $k, '/' ) . ':(.*)$/mi', $h, $m ) ? trim( $m[1] ) : ''; };
+		$name = $get( 'Plugin Name' );
+		if ( '' === $name ) { return null; }
+		return array( 'Name' => $name, 'Version' => $get( 'Version' ), 'Network' => 'true' === strtolower( $get( 'Network' ) ) );
+	}
 	function get_plugins( $plugin_folder = '' ) {
 		$out = array();
-		foreach ( $GLOBALS['T_plugin_table'] as $f => $h ) { $out[ $f ] = array_merge( array( 'Name' => $f, 'Version' => '', 'Network' => false ), $h ); }
-		return $out;
+		if ( empty( $GLOBALS['T_plugins_disk'] ) ) {
+			foreach ( $GLOBALS['T_plugin_table'] as $f => $h ) { $out[ $f ] = array_merge( array( 'Name' => $f, 'Version' => '', 'Network' => false ), $h ); }
+			return $out;
+		}
+		if ( is_array( $GLOBALS['T_plugins_cache'] ) ) { return $GLOBALS['T_plugins_cache']; }
+		$root = WP_PLUGIN_DIR;
+		foreach ( (array) @scandir( $root ) as $f ) {
+			if ( ! is_string( $f ) || '' === $f || '.' === $f[0] ) { continue; }
+			if ( is_dir( $root . '/' . $f ) ) {
+				foreach ( (array) @scandir( $root . '/' . $f ) as $g ) {
+					if ( ! is_string( $g ) || '.' === ( $g[0] ?? '.' ) || '.php' !== substr( $g, -4 ) || ! is_file( $root . '/' . $f . '/' . $g ) ) { continue; }
+					$h = t_plugin_headers( $root . '/' . $f . '/' . $g );
+					if ( null !== $h ) { $out[ $f . '/' . $g ] = $h; }
+				}
+			} elseif ( '.php' === substr( $f, -4 ) ) {
+				$h = t_plugin_headers( $root . '/' . $f );
+				if ( null !== $h ) { $out[ $f ] = $h; }
+			}
+		}
+		uasort( $out, function ( $a, $b ) { return strnatcasecmp( $a['Name'], $b['Name'] ); } );
+		return $GLOBALS['T_plugins_cache'] = $out;
 	}
 	function is_plugin_active_for_network( $plugin ) {
 		if ( ! is_multisite() ) { return false; }
@@ -2020,7 +2077,7 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 	}
 	function is_plugin_active( $plugin ) { return in_array( $plugin, (array) get_option( 'active_plugins', array() ), true ) || is_plugin_active_for_network( $plugin ); }
 	function is_plugin_inactive( $plugin ) { return ! is_plugin_active( $plugin ); }
-	function is_network_only_plugin( $plugin ) { return ! empty( $GLOBALS['T_plugin_table'][ $plugin ]['Network'] ); }
+	function is_network_only_plugin( $plugin ) { return ! empty( get_plugins()[ $plugin ]['Network'] ); }
 	// As core: a network activation on a multisite (asked for, or a Network: true plugin) goes to the network list; the plugin
 	// must be in get_plugins(); an active plugin is left as it is (null); the sandbox include runs inside ob_start(), and a
 	// plugin that throws leaves that buffer open (core does not catch); output after activating is WP_Error unexpected_output
@@ -2031,7 +2088,7 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		$plugin = trim( $plugin );
 		if ( is_multisite() && ( $network_wide || is_network_only_plugin( $plugin ) ) ) { $network_wide = true; $current = (array) get_site_option( 'active_sitewide_plugins', array() ); }
 		else { $current = (array) get_option( 'active_plugins', array() ); }
-		if ( ! isset( $GLOBALS['T_plugin_table'][ $plugin ] ) ) { return new WP_Error( 'plugin_not_found', 'Plugin file does not exist.' ); }
+		if ( ! isset( get_plugins()[ $plugin ] ) ) { return new WP_Error( 'plugin_not_found', 'Plugin file does not exist.' ); }
 		$fail = $GLOBALS['T_activate_fail'][ $plugin ] ?? '';
 		if ( 'requirements' === $fail ) { return new WP_Error( 'plugin_php_incompatible', '<p><strong>Error:</strong> Current PHP version does not meet minimum requirements for Test Plugin.</p>' ); }
 		if ( ( $network_wide && ! isset( $current[ $plugin ] ) ) || ( ! $network_wide && ! in_array( $plugin, $current, true ) ) ) {
@@ -2085,7 +2142,70 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		$slug = (string) ( $args->slug ?? '' );
 		return $GLOBALS['T_plugins_api'][ $slug ] ?? new WP_Error( 'plugins_api_failed', 'Plugin not found.' );
 	}
-	function wp_clean_plugins_cache( $clear_update_cache = true ) { $GLOBALS['T_plugins_cache_cleans']++; if ( $clear_update_cache ) { delete_site_transient( 'update_plugins' ); } }
+	function wp_clean_plugins_cache( $clear_update_cache = true ) { $GLOBALS['T_plugins_cache_cleans']++; $GLOBALS['T_plugins_cache'] = null; if ( $clear_update_cache ) { delete_site_transient( 'update_plugins' ); } }
+	// As core (plugin.php): a plugin with uninstall.php in its folder (for a single-file plugin, the plugins folder itself:
+	// dirname is '.'), or one registered in the uninstall_plugins option.
+	function is_uninstallable_plugin( $plugin ) {
+		$file = plugin_basename( $plugin );
+		$u    = (array) get_option( 'uninstall_plugins' );
+		return isset( $u[ $file ] ) || file_exists( WP_PLUGIN_DIR . '/' . dirname( $file ) . '/uninstall.php' );
+	}
+	// As core: uninstall.php is included (the option entry dropped), else the registered callback runs on uninstall_{$file}.
+	// (core also defines WP_UNINSTALL_PLUGIN; a constant cannot be defined twice in one test run, so it is not.)
+	function uninstall_plugin( $plugin ) {
+		$file = plugin_basename( $plugin );
+		$GLOBALS['T_traps'][] = 'uninstall_plugin'; $GLOBALS['T_uninstalls'][] = $file;
+		$u = (array) get_option( 'uninstall_plugins' );
+		do_action( 'pre_uninstall_plugin', $plugin, $u );
+		if ( file_exists( WP_PLUGIN_DIR . '/' . dirname( $file ) . '/uninstall.php' ) ) {
+			if ( isset( $u[ $file ] ) ) { unset( $u[ $file ] ); update_option( 'uninstall_plugins', $u ); }
+			include WP_PLUGIN_DIR . '/' . dirname( $file ) . '/uninstall.php';
+			return true;
+		}
+		if ( isset( $u[ $file ] ) ) {
+			$cb = $u[ $file ]; unset( $u[ $file ] ); update_option( 'uninstall_plugins', $u );
+			if ( is_callable( $cb ) ) { $cb(); }
+		}
+		return null;
+	}
+	// As core's delete_plugins (plugin.php), reduced: the file system (WP_Filesystem; nothing done without it), then per plugin
+	// the uninstall routine when it has one, then its folder (or its single file) removed with $wp_filesystem->delete; the
+	// deleted plugins dropped from the update list. It does NOT clean the plugins cache (core does not). With the table
+	// (not T_plugins_disk) the plugin is dropped from T_plugin_table.
+	function delete_plugins( $plugins, $deprecated = '' ) {
+		$GLOBALS['T_traps'][] = 'delete_plugins'; $GLOBALS['T_delete_calls'][] = $plugins;
+		if ( empty( $plugins ) ) { return false; }
+		if ( ! WP_Filesystem() ) { return null; }
+		$fs = $GLOBALS['wp_filesystem']; $dir = rtrim( str_replace( '\\', '/', WP_PLUGIN_DIR ), '/' ) . '/';
+		$errors = array();
+		foreach ( $plugins as $plugin_file ) {
+			if ( is_uninstallable_plugin( $plugin_file ) ) { uninstall_plugin( $plugin_file ); }
+			do_action( 'delete_plugin', $plugin_file );
+			$this_dir = rtrim( dirname( $dir . $plugin_file ), '/' ) . '/';
+			$deleted  = ( strpos( $plugin_file, '/' ) && $this_dir !== $dir ) ? $fs->delete( $this_dir, true ) : $fs->delete( $dir . $plugin_file );
+			do_action( 'deleted_plugin', $plugin_file, $deleted );
+			if ( ! $deleted ) { $errors[] = $plugin_file; continue; }
+			if ( empty( $GLOBALS['T_plugins_disk'] ) ) { unset( $GLOBALS['T_plugin_table'][ $plugin_file ] ); }
+		}
+		$current = get_site_transient( 'update_plugins' );
+		if ( $current ) { foreach ( array_diff( $plugins, $errors ) as $f ) { unset( $current->response[ $f ] ); } set_site_transient( 'update_plugins', $current ); }
+		if ( $errors ) { return new WP_Error( 'could_not_remove_plugin', 'Could not fully remove the plugin ' . implode( ', ', $errors ) . '.' ); }
+		return true;
+	}
+	// The new version an update writes (T_plugins_disk): the old folder (or single file) removed, as clear_destination does,
+	// then the plugin file with the new Version header and a changelog.txt saying so. With the table: the version changed.
+	function t_plugins_replace( $plugin, $version ) {
+		if ( empty( $GLOBALS['T_plugins_disk'] ) ) { $GLOBALS['T_plugin_table'][ $plugin ]['Version'] = $version; return array( 'destination_name' => dirname( $plugin ) ); }
+		$name = (string) ( get_plugins()[ $plugin ]['Name'] ?? $plugin );
+		$path = WP_PLUGIN_DIR . '/' . $plugin;
+		if ( false !== strpos( $plugin, '/' ) ) {
+			t_plugins_rmtree( dirname( $path ) );
+			@mkdir( dirname( $path ), 0777, true );
+			file_put_contents( dirname( $path ) . '/changelog.txt', $name . ' ' . $version . ' changes' );
+		}
+		file_put_contents( $path, "<?php\n/*\nPlugin Name: " . $name . "\nVersion: " . $version . "\n*/\n// the new code of " . $version . "\n" );
+		return array( 'destination_name' => dirname( $plugin ) );
+	}
 	function wp_clean_themes_cache( $clear_update_cache = true ) { if ( $clear_update_cache ) { delete_site_transient( 'update_themes' ); } }
 	// As core's wp_clean_update_cache (update.php): the three update transients.
 	function wp_clean_update_cache() { $GLOBALS['T_traps'][] = 'wp_clean_update_cache'; wp_clean_plugins_cache(); wp_clean_themes_cache(); delete_site_transient( 'update_core' ); }
@@ -2122,6 +2242,24 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 				return true;
 			}
 			function plugin_info() { return '' === $this->t_file ? false : $this->t_file; }
+			// As core's bulk_upgrade: per plugin, true when the update list has no offer for it (up to date), else the run's
+			// result (T_upgrade_result, or the new version written by t_plugins_replace); a false stops the loop; the plugins
+			// cache cleaned at the end (clear_update_cache, default true). Returns file => result.
+			function bulk_upgrade( $plugins, $args = array() ) {
+				$GLOBALS['T_traps'][] = 'bulk_upgrade'; $GLOBALS['T_upgrade_calls'][] = $plugins;
+				$GLOBALS['T_copies_at_upgrade'] = count( $GLOBALS['T_copy_calls'] ?? array() );
+				$current = get_site_transient( 'update_plugins' );
+				$results = array();
+				foreach ( $plugins as $plugin ) {
+					if ( ! is_object( $current ) || ! isset( $current->response[ $plugin ] ) ) { $results[ $plugin ] = true; continue; }
+					$r = $current->response[ $plugin ];
+					$result = array_key_exists( $plugin, $GLOBALS['T_upgrade_result'] ) ? $GLOBALS['T_upgrade_result'][ $plugin ] : t_plugins_replace( $plugin, (string) $r->new_version );
+					$results[ $plugin ] = $result;
+					if ( false === $result ) { break; }
+				}
+				wp_clean_plugins_cache( $args['clear_update_cache'] ?? true );
+				return $results;
+			}
 		}
 	}
 }

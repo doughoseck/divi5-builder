@@ -16,16 +16,25 @@
  * one per 5 minutes; install takes only a downloads.wordpress.org link as plugins_api returned it, refused BEFORE the
  * upgrader runs, never over an installed folder; an activation that makes the pages worse is undone; a fatal activation is
  * activation_failed with no after round; this plugin never acts on itself; a network activation needs a network admin.
+ *
+ * Task 3 (plugins-update, plugins-rollback, plugins-delete-preview / plugins-delete) runs on a real plugins folder and a
+ * real uploads store under the system temp folder (T_plugins_disk: get_plugins() reads the files as core does, cached until
+ * wp_clean_plugins_cache). The promises: the copy is taken BEFORE the upgrader runs and holds the old files byte for byte; a
+ * copy that cannot be made refuses the update (and removes its row) unless without_copy; rollback_on_failure puts the old
+ * files back at once; a rollback restores byte-identical files and keeps the files it replaces; a newer kept copy is not
+ * skipped without force_older; a delete runs the plugin's uninstall routine unless keep_data, and a code taken for one
+ * keep_data value is refused for the other.
  */
 $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
 define( 'D5B_VERSION', '2.4.0' );
 define( 'T_PLUGIN_STANDINS', true );
-define( 'WP_PLUGIN_DIR', str_replace( '\\', '/', sys_get_temp_dir() ) . '/d5b-wplug-' . getmypid() . '/plugins' ); // never made: the table is get_plugins()
+// Made only by the update, rollback and delete sections (disk_site()); before them the table is get_plugins().
+define( 'WP_PLUGIN_DIR', str_replace( '\\', '/', sys_get_temp_dir() ) . '/d5b-wplug-' . getmypid() . '/plugins' );
 define( 'D5B_FILE', WP_PLUGIN_DIR . '/divi5-builder/divi5-builder.php' );
 require __DIR__ . '/plugin-test-stubs.php';
 function wp_json_encode( $v ) { return json_encode( $v ); }
 
-foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/history', 'inc/abilities/read-content', 'inc/abilities/read-site', 'inc/abilities/write-common', 'inc/abilities/maint-common', 'inc/abilities/write-plugins', 'parts/updates' ) as $f ) { require $dir . '/' . $f . '.php'; }
+foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/history', 'inc/abilities/read-content', 'inc/abilities/read-site', 'inc/abilities/write-common', 'inc/abilities/confirm', 'inc/abilities/maint-common', 'inc/abilities/write-plugins', 'parts/updates' ) as $f ) { require $dir . '/' . $f . '.php'; }
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . substr( is_string( $detail ) ? $detail : json_encode( $detail ), 0, 800 ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
@@ -47,6 +56,8 @@ function serve_site() {
 		if ( 'https://x.example/' !== preg_replace( '/[?&]d5b=[0-9]+$/', '', $url ) ) { return null; }
 		foreach ( $GLOBALS['T_breaks'] as $p ) { if ( is_plugin_active( $p ) ) { return array( 'code' => 500, 'body' => 'There has been a critical error on this website.' ); } }
 		foreach ( $GLOBALS['T_needs'] as $p ) { if ( ! is_plugin_active( $p ) ) { return array( 'code' => 500, 'body' => 'There has been a critical error on this website.' ); } }
+		// T_breaks_at: plugin => the installed version that breaks the site (read from the plugins folder, as WordPress would load it).
+		foreach ( $GLOBALS['T_breaks_at'] ?? array() as $p => $v ) { $all = get_plugins(); if ( isset( $all[ $p ] ) && $v === $all[ $p ]['Version'] ) { return array( 'code' => 500, 'body' => 'There has been a critical error on this website.' ); } }
 		return array( 'code' => 200, 'body' => page() );
 	};
 }
@@ -63,7 +74,7 @@ function site( array $caps = ADMIN, bool $multi = false, bool $risky = true ) {
 		SELF_FILE => array( 'Name' => 'Divi 5 Builder', 'Version' => '2.4.0' ),
 	);
 	update_option( 'active_plugins', array( AKISMET, SELF_FILE ) );
-	$GLOBALS['T_breaks'] = array(); $GLOBALS['T_needs'] = array();
+	$GLOBALS['T_breaks'] = array(); $GLOBALS['T_needs'] = array(); $GLOBALS['T_breaks_at'] = array();
 	serve_site();
 }
 function call( $name, $in = array() ) {
@@ -335,6 +346,231 @@ $r = call( 'plugins-deactivate', array( 'plugin' => HELLO ) );
 check( 'deactivate: not active: already_inactive, nothing called, no row', is_array( $r ) && true === $r['already_inactive'] && array() === $GLOBALS['T_deactivate_calls'] && array() === hrows(), $r );
 site( ADMIN, false, false );
 check( 'deactivate: the Plugins risky switch off: refused', 'FORBIDDEN' === call( 'plugins-deactivate', array( 'plugin' => AKISMET ) ) );
+
+// ======== Task 3: update, rollback, delete (a real plugins folder and a real store)
+$T_BASE = dirname( WP_PLUGIN_DIR );
+function t_rm( $d ) {
+	if ( is_link( $d ) || is_file( $d ) ) { @unlink( $d ); return; }
+	if ( ! file_exists( $d ) ) { return; }
+	if ( ! is_dir( $d ) ) { @rmdir( $d ); return; }
+	foreach ( array_diff( (array) scandir( $d ), array( '.', '..' ) ) as $f ) { t_rm( $d . '/' . $f ); }
+	@rmdir( $d );
+}
+register_shutdown_function( function () use ( $T_BASE ) { t_rm( $T_BASE ); } );
+function t_put( $path, $body ) { if ( ! is_dir( dirname( $path ) ) ) { mkdir( dirname( $path ), 0777, true ); } file_put_contents( $path, $body ); }
+// A plugin on disk: its main file with the headers, and the extra files (path in its folder => content).
+function plug_write( $file, $name, $version, array $extra = array() ) {
+	$p = WP_PLUGIN_DIR . '/' . $file;
+	t_put( $p, "<?php\n/*\nPlugin Name: " . $name . "\nVersion: " . $version . "\n*/\n// the code of " . $version . "\n" );
+	foreach ( $extra as $rel => $body ) { t_put( dirname( $p ) . '/' . $rel, $body ); }
+	wp_clean_plugins_cache( false );
+}
+// Every file under $path (a folder, or one file) => sha1 of its bytes, by relative path.
+function tree( $path ) {
+	if ( is_file( $path ) ) { return array( '' => sha1_file( $path ) ); }
+	$out = array();
+	if ( ! is_dir( $path ) ) { return $out; }
+	$it = new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $path, FilesystemIterator::SKIP_DOTS ) );
+	foreach ( $it as $f ) { $out[ str_replace( '\\', '/', substr( $f->getPathname(), strlen( $path ) + 1 ) ) ] = sha1_file( $f->getPathname() ); }
+	ksort( $out );
+	return $out;
+}
+const ADMIN_ALL = array( 'read', 'manage_options', 'update_plugins', 'install_plugins', 'activate_plugins', 'delete_plugins' );
+const ACME = 'acme-pro-folder/acme.php'; // a plugin whose folder is not its slug
+const SOLO = 'solo.php';                 // a single-file plugin
+function disk_site( array $caps = ADMIN_ALL, bool $multi = false, bool $risky = true ) {
+	global $T_BASE;
+	site( $caps, $multi, $risky );
+	t_rm( $T_BASE ); mkdir( WP_PLUGIN_DIR, 0777, true ); mkdir( $T_BASE . '/uploads', 0777, true );
+	$GLOBALS['T_upload_basedir'] = $T_BASE . '/uploads';
+	$GLOBALS['T_plugins_disk'] = true; $GLOBALS['T_plugins_cache'] = null;
+	plug_write( AKISMET, 'Akismet', '5.0', array( 'readme.txt' => 'akismet readme 5.0', 'inc/class.php' => '<?php // akismet class 5.0' ) );
+	plug_write( HELLO, 'Hello Dolly', '1.7.2', array( 'lyrics.txt' => 'hello lyrics' ) );
+	plug_write( SELF_FILE, 'Divi 5 Builder', '2.4.0' );
+	plug_write( ACME, 'Acme Pro', '3.0', array( 'assets/acme.css' => 'body{}' ) );
+	plug_write( SOLO, 'Solo', '1.0' );
+	$GLOBALS['T_fresh']['update_plugins'] = offers( array( AKISMET => '5.1', ACME => '3.1', SOLO => '1.1' ) );
+}
+function version_of( $f ) { $all = get_plugins(); return $all[ $f ]['Version'] ?? null; }
+function row( $id ) { return d5b_history_get( (int) $id ); }
+function kept_path( $id ) { return (string) ( row( $id )['after']['kept']['path'] ?? '' ); }
+
+echo "update, rollback, delete: registration\n";
+site();
+$defs = d5b_ability_defs();
+$up = $defs['divi5-builder/plugins-update'] ?? null; $rb = $defs['divi5-builder/plugins-rollback'] ?? null;
+$dp = $defs['divi5-builder/plugins-delete-preview'] ?? null; $dl = $defs['divi5-builder/plugins-delete'] ?? null;
+check( 'the four exist, risky, in plugins', null !== $up && null !== $rb && null !== $dp && null !== $dl && array( true, true, true, true ) === array( $up['risky'] ?? null, $rb['risky'] ?? null, $dp['risky'] ?? null, $dl['risky'] ?? null ) && 'plugins' === $up['category'] && 'plugins' === $rb['category'] && 'plugins' === $dp['category'] && 'plugins' === $dl['category'] );
+check( 'update: plugin required; rollback_on_failure and without_copy optional', array( 'plugin' ) === ( $up['input_schema']['required'] ?? null ) && array( 'plugin', 'rollback_on_failure', 'without_copy' ) === array_keys( $up['input_schema']['properties'] ?? array() ), $up['input_schema'] ?? null );
+check( 'rollback: plugin and history_id required; force_older optional', array( 'plugin', 'history_id' ) === ( $rb['input_schema']['required'] ?? null ) && array( 'plugin', 'history_id', 'force_older' ) === array_keys( $rb['input_schema']['properties'] ?? array() ) );
+check( 'delete-preview: readonly; delete: destructive with confirmation', true === ( $dp['annotations']['readonly'] ?? null ) && true === ( $dl['annotations']['destructive'] ?? null ) && array( 'plugin', 'keep_data', 'confirmation' ) === array_keys( $dl['input_schema']['properties'] ?? array() ) );
+check( 'the new codes have their own HTTP status (not 500)', 500 !== d5b_ability_http_status( 'active' ) && 500 !== d5b_ability_http_status( 'newer_copy_exists' ) && 500 !== d5b_ability_http_status( 'copy_missing' ) && 500 !== d5b_ability_http_status( 'update_failed' ) && 500 !== d5b_ability_http_status( 'delete_failed' ) && 500 !== d5b_ability_http_status( 'restore_mismatch' ) );
+
+echo "plugins-update\n";
+disk_site();
+$old = tree( WP_PLUGIN_DIR . '/akismet' );
+$r = call( 'plugins-update', array( 'plugin' => AKISMET ) );
+check( 'update: updated 5.0 -> 5.1, the version read from the folder', is_array( $r ) && true === $r['updated'] && '5.0' === $r['from'] && '5.1' === $r['to'] && '5.1' === $r['version'] && '5.1' === version_of( AKISMET ), $r );
+$hid = (int) ( $r['history_id'] ?? 0 );
+check( 'update: copy before upgrader (trap order): copy_dir ran before bulk_upgrade, and the kept copy holds the OLD files byte for byte', null !== $GLOBALS['T_copies_at_upgrade'] && $GLOBALS['T_copies_at_upgrade'] >= 1 && $old === tree( kept_path( $hid ) ) && false !== strpos( kept_path( $hid ), '/d5b-history/' . $hid . '-' ), array( $GLOBALS['T_copies_at_upgrade'], kept_path( $hid ) ) );
+$h = row( $hid );
+check( '... one row, written first: plugin, update, before { plugin, version }, after { version, kept, pages, rolled_back }', 1 === count( hrows() ) && 'plugin' === $h['object_type'] && 'update' === $h['action'] && 'divi5-builder/plugins-update' === $h['ability'] && array( 'plugin' => AKISMET, 'version' => '5.0' ) === $h['before'] && '5.1' === $h['after']['version'] && is_array( $h['after']['kept'] ) && isset( $h['after']['pages']['after'] ) && false === $h['after']['rolled_back'], $h );
+check( '... the result: kept without its path, pages, human_check, no problems, an active plugin stays active', array( 'bytes', 'files' ) === array_keys( (array) $r['kept'] ) && 3 === $r['kept']['files'] && false === strpos( json_encode( $r ), 'd5b-history' ) && d5b_human_check() === $r['human_check'] && array() === $r['problems'] && in_array( AKISMET, active(), true ), $r );
+$st = call( 'plugins-status' );
+check( '... plugins-status lists the kept copy (akismet 5.0)', array( 'plugin' => AKISMET, 'version' => '5.0', 'history_id' => $hid ) === array_intersect_key( (array) ( $st['kept_copies'][0] ?? array() ), array_flip( array( 'plugin', 'version', 'history_id' ) ) ), $st['kept_copies'] ?? null );
+
+disk_site(); $GLOBALS['T_copy_fail'] = true;
+$r = call( 'plugins-update', array( 'plugin' => AKISMET ) );
+check( 'update: copy error refuses and removes the row (copy_failed, no upgrade, still 5.0, no row, no store folder left)', 'copy_failed' === code( $r ) && 0 === count( $GLOBALS['T_upgrade_calls'] ) && '5.0' === version_of( AKISMET ) && array() === hrows() && array() === array_values( array_diff( (array) @scandir( $T_BASE . '/uploads/d5b-history' ), array( '.', '..', '.htaccess', 'index.html' ) ) ), array( code( $r ), hrows() ) );
+disk_site(); $GLOBALS['T_copy_fail'] = true;
+$r = call( 'plugins-update', array( 'plugin' => AKISMET, 'without_copy' => true ) );
+$h = hlast();
+check( 'update: without_copy proceeds with kept null (updated, the row says kept null, the result says it cannot be put back)', is_array( $r ) && true === $r['updated'] && null === $r['kept'] && '5.1' === version_of( AKISMET ) && array_key_exists( 'kept', $h['after'] ) && null === $h['after']['kept'] && 'copy_failed' === ( $r['copy_error'] ?? null ) && 1 === preg_match( '/cannot put/i', implode( ' ', (array) ( $r['warnings'] ?? array() ) ) ), array( $r, $h ) );
+
+disk_site(); $GLOBALS['T_breaks_at'] = array( AKISMET => '5.1' );
+$old = tree( WP_PLUGIN_DIR . '/akismet' );
+$r = call( 'plugins-update', array( 'plugin' => AKISMET, 'rollback_on_failure' => true ) );
+check( 'update: rollback_on_failure restores at once (pages worse -> the old files back byte for byte, rolled_back true, the problem named)', is_array( $r ) && true === $r['rolled_back'] && '5.0' === version_of( AKISMET ) && '5.0' === $r['version'] && $old === tree( WP_PLUGIN_DIR . '/akismet' ) && 1 === count( $r['problems'] ) && in_array( AKISMET, active(), true ), $r );
+$uh = row( $r['history_id'] ?? 0 ); $rh = row( $r['rollback_history_id'] ?? 0 );
+check( '... the update row says rolled_back; a rollback row keeps the 5.1 files it replaced', true === ( $uh['after']['rolled_back'] ?? null ) && 'rollback' === ( $rh['action'] ?? null ) && '5.1' === $rh['before']['version'] && is_array( $rh['after']['kept'] ) && false !== strpos( (string) @file_get_contents( $rh['after']['kept']['path'] . '/akismet.php' ), 'Version: 5.1' ), array( $uh, $rh ) );
+check( '... no folder left beside the plugin (no <dir>.d5b-<time>)', array() === preg_grep( '/\.d5b-/', scandir( WP_PLUGIN_DIR ) ) && 5 === count( array_diff( scandir( WP_PLUGIN_DIR ), array( '.', '..' ) ) ), scandir( WP_PLUGIN_DIR ) );
+disk_site(); $GLOBALS['T_breaks_at'] = array( AKISMET => '5.1' );
+$r = call( 'plugins-update', array( 'plugin' => AKISMET ) );
+check( 'update: default leaves the new version (pages worse, problems reported, rolled_back false, still 5.1)', is_array( $r ) && false === $r['rolled_back'] && '5.1' === version_of( AKISMET ) && 1 === count( $r['problems'] ) && 1 === count( hrows() ), $r );
+
+disk_site(); $GLOBALS['T_upgrade_result'] = array( AKISMET => new WP_Error( 'download_failed', 'Download failed.' ) );
+$r = call( 'plugins-update', array( 'plugin' => AKISMET ) );
+check( 'update: the upgrader fails -> update_failed with the reason; the row says failed and keeps the copy', 'update_failed' === code( $r ) && false !== strpos( $r->get_error_message(), 'Download failed' ) && is_array( hlast()['after']['kept'] ) && '' !== (string) ( hlast()['after']['failed'] ?? '' ) && d5b_human_check() === ( edata( $r )['human_check'] ?? null ), array( code( $r ), hlast() ) );
+disk_site();
+$r = call( 'plugins-update', array( 'plugin' => HELLO ) );
+check( 'update: nothing offered -> already_up_to_date, no row, no copy, no upgrade', is_array( $r ) && true === ( $r['already_up_to_date'] ?? null ) && false === $r['updated'] && array() === hrows() && array() === $GLOBALS['T_copy_calls'] && array() === $GLOBALS['T_upgrade_calls'], $r );
+$r = call( 'plugins-update', array( 'plugin' => SELF_FILE ) );
+check( 'update: self refused (no row, no copy, no upgrade)', 'self' === code( $r ) && array() === hrows() && array() === $GLOBALS['T_copy_calls'] && array() === $GLOBALS['T_upgrade_calls'], code( $r ) );
+check( 'update: not installed -> not_found', 'not_found' === code( call( 'plugins-update', array( 'plugin' => 'nope/nope.php' ) ) ) && array() === hrows() );
+disk_site( ADMIN_ALL, false, false );
+check( 'update: the Plugins risky switch off: refused', 'FORBIDDEN' === call( 'plugins-update', array( 'plugin' => AKISMET ) ) && array() === $GLOBALS['T_upgrade_calls'] );
+disk_site( array( 'read', 'manage_options', 'activate_plugins', 'delete_plugins' ) );
+check( 'update: without update_plugins: refused', 'FORBIDDEN' === call( 'plugins-update', array( 'plugin' => AKISMET ) ) && array() === $GLOBALS['T_upgrade_calls'] );
+disk_site( ADMIN_ALL, true ); $GLOBALS['T_user_login'] = 'siteadmin';
+check( 'update: multisite, not a network administrator: refused', 'FORBIDDEN' === call( 'plugins-update', array( 'plugin' => AKISMET ) ) && array() === $GLOBALS['T_upgrade_calls'] );
+disk_site(); $GLOBALS['T_file_mods_off'] = true;
+check( 'update: file changes switched off: not_allowed, no row', 'not_allowed' === code( call( 'plugins-update', array( 'plugin' => AKISMET ) ) ) && array() === hrows() && array() === $GLOBALS['T_upgrade_calls'] );
+
+echo "plugins-rollback\n";
+disk_site();
+$v50 = tree( WP_PLUGIN_DIR . '/akismet' );
+$u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
+$v51 = tree( WP_PLUGIN_DIR . '/akismet' );
+$rows_before = count( hrows() );
+$r = call( 'plugins-rollback', array( 'plugin' => HELLO, 'history_id' => $u1 ) );
+check( 'rollback: wrong plugin -> not_found, nothing changed, no row', 'not_found' === code( $r ) && $v51 === tree( WP_PLUGIN_DIR . '/akismet' ) && $rows_before === count( hrows() ), code( $r ) );
+check( 'rollback: a row that is not an update/rollback/delete -> not_found', 'not_found' === code( call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => d5b_wc_history_row( 'divi5-builder/plugins-activate', 'plugin', 0, 'activate', array( 'plugin' => AKISMET ), array( 'kept' => array( 'path' => kept_path( $u1 ) ) ), 'x' ) ) ) ) );
+check( 'rollback: self refused', 'self' === code( call( 'plugins-rollback', array( 'plugin' => SELF_FILE, 'history_id' => $u1 ) ) ) );
+$r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
+check( 'rollback: restores byte-identical files (5.0 back), the result names the new row', is_array( $r ) && $v50 === tree( WP_PLUGIN_DIR . '/akismet' ) && '5.0' === version_of( AKISMET ) && '5.0' === $r['version'] && '5.1' === $r['replaced_version'] && $u1 === $r['restored_from'], $r );
+$rh = row( $r['history_id'] ?? 0 );
+check( 'rollback: replaced folder kept in the new row (rollback row, before 5.1, after.kept = the 5.1 files byte for byte)', 'rollback' === ( $rh['action'] ?? null ) && 'divi5-builder/plugins-rollback' === $rh['ability'] && array( 'plugin' => AKISMET, 'version' => '5.1', 'from_history_id' => $u1 ) === $rh['before'] && $v51 === tree( $rh['after']['kept']['path'] ) && false !== strpos( $rh['after']['kept']['path'], '/d5b-history/' . $rh['id'] . '-' ) && isset( $rh['after']['pages']['after'] ), $rh );
+check( '... an active plugin stays active; pages and human_check; no <dir>.d5b-<time> left in the plugins folder', in_array( AKISMET, active(), true ) && true === $r['active'] && isset( $r['pages']['before'], $r['pages']['after'] ) && d5b_human_check() === $r['human_check'] && array() === preg_grep( '/\.d5b-/', scandir( WP_PLUGIN_DIR ) ), $r );
+check( '... the copy it restored from is still there (rolling back twice works)', $v50 === tree( kept_path( $u1 ) ) );
+check( 'rollback: an older copy than the newest kept for that plugin -> newer_copy_exists', 'newer_copy_exists' === code( call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) ) ) && $v50 === tree( WP_PLUGIN_DIR . '/akismet' ) );
+
+disk_site();
+$u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
+$GLOBALS['T_fresh']['update_plugins'] = offers( array( AKISMET => '5.2' ) );
+$u2 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
+$v52 = tree( WP_PLUGIN_DIR . '/akismet' ); $nrows = count( hrows() );
+$r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
+check( 'rollback: newer copy without force_older refused (newer_copy_exists names the newer row, nothing changed)', 'newer_copy_exists' === code( $r ) && $u2 === ( edata( $r )['newer_history_id'] ?? null ) && $v52 === tree( WP_PLUGIN_DIR . '/akismet' ) && $nrows === count( hrows() ), array( code( $r ), edata( $r ) ) );
+$r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1, 'force_older' => true ) );
+check( '... with force_older the older copy is restored (5.0)', is_array( $r ) && '5.0' === version_of( AKISMET ), $r );
+
+disk_site();
+$u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
+t_rm( kept_path( $u1 ) );
+$r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
+check( 'rollback: missing copy -> copy_missing, nothing changed, no row', 'copy_missing' === code( $r ) && '5.1' === version_of( AKISMET ) && 1 === count( hrows() ), code( $r ) );
+disk_site(); $GLOBALS['T_copy_fail'] = true;
+$u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET, 'without_copy' => true ) )['history_id'];
+check( 'rollback: an update row that kept no copy -> not_found', 'not_found' === code( call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) ) ) );
+disk_site();
+$u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
+$tampered = d5b_wc_history_row( 'divi5-builder/plugins-update', 'plugin', 0, 'update', array( 'plugin' => AKISMET, 'version' => '1' ), array( 'version' => '5.1', 'kept' => array( 'path' => WP_PLUGIN_DIR . '/hello-dolly', 'bytes' => 1, 'files' => 1 ) ), 'x' );
+check( 'rollback: a row whose kept path is not in the store -> copy_missing (never copies from anywhere else)', 'copy_missing' === code( call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $tampered, 'force_older' => true ) ) ) && '5.1' === version_of( AKISMET ) );
+
+disk_site();
+$u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
+plug_write( AKISMET, 'Akismet', '5.3' ); // updated since, outside the abilities
+$r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
+check( 'rollback: installed newer than the row -> warnings (5.3 installed, the row left 5.1), still restored', is_array( $r ) && '5.0' === version_of( AKISMET ) && 1 === count( preg_grep( '/5\.3/', (array) ( $r['warnings'] ?? array() ) ) ), $r );
+
+disk_site();
+$acme0 = tree( WP_PLUGIN_DIR . '/acme-pro-folder' );
+$ua = (int) call( 'plugins-update', array( 'plugin' => ACME ) )['history_id'];
+check( 'rollback of a plugin whose folder differs from its slug: the copy is of acme-pro-folder', '3.1' === version_of( ACME ) && 1 === preg_match( '#/plugin/acme-pro-folder$#', kept_path( $ua ) ) && $acme0 === tree( kept_path( $ua ) ), kept_path( $ua ) );
+$r = call( 'plugins-rollback', array( 'plugin' => ACME, 'history_id' => $ua ) );
+check( '... restored into acme-pro-folder, byte for byte, and the plugin file resolves', is_array( $r ) && $acme0 === tree( WP_PLUGIN_DIR . '/acme-pro-folder' ) && '3.0' === version_of( ACME ) && ! is_dir( WP_PLUGIN_DIR . '/acme' ), $r );
+disk_site();
+$solo0 = tree( WP_PLUGIN_DIR . '/solo.php' );
+$us = (int) call( 'plugins-update', array( 'plugin' => SOLO ) )['history_id'];
+$r = call( 'plugins-rollback', array( 'plugin' => SOLO, 'history_id' => $us ) );
+check( 'rollback of a single-file plugin: the file back byte for byte, the replaced file kept', is_array( $r ) && $solo0 === tree( WP_PLUGIN_DIR . '/solo.php' ) && '1.0' === version_of( SOLO ) && is_file( (string) row( $r['history_id'] )['after']['kept']['path'] ) && array() === preg_grep( '/\.d5b-/', scandir( WP_PLUGIN_DIR ) ), $r );
+disk_site();
+$ua = (int) call( 'plugins-update', array( 'plugin' => ACME ) )['history_id'];
+// the kept copy no longer holds acme.php (a plugin that renamed its main file): the swap is undone
+rename( kept_path( $ua ) . '/acme.php', kept_path( $ua ) . '/acme-main.php' );
+$now = tree( WP_PLUGIN_DIR . '/acme-pro-folder' );
+$r = call( 'plugins-rollback', array( 'plugin' => ACME, 'history_id' => $ua ) );
+check( 'rollback: the plugin file does not resolve after the swap -> restore_mismatch, the swap undone (3.1 files back)', 'restore_mismatch' === code( $r ) && $now === tree( WP_PLUGIN_DIR . '/acme-pro-folder' ) && '3.1' === version_of( ACME ) && array() === preg_grep( '/\.d5b-/', scandir( WP_PLUGIN_DIR ) ), array( code( $r ), is_wp_error( $r ) ? $r->get_error_message() : $r ) );
+
+echo "plugins-delete\n";
+disk_site();
+$r = call( 'plugins-delete-preview', array( 'plugin' => AKISMET ) );
+check( 'delete: active refused (preview and delete), nothing removed', 'active' === code( $r ) && 'active' === code( call( 'plugins-delete', array( 'plugin' => AKISMET, 'confirmation' => 'ABCDEFGHJKLM' ) ) ) && is_dir( WP_PLUGIN_DIR . '/akismet' ) && array() === hrows(), code( $r ) );
+check( 'delete: self refused', 'self' === code( call( 'plugins-delete-preview', array( 'plugin' => SELF_FILE ) ) ) && 'self' === code( call( 'plugins-delete', array( 'plugin' => SELF_FILE, 'confirmation' => 'X' ) ) ) );
+t_put( WP_PLUGIN_DIR . '/hello-dolly/uninstall.php', "<?php\nupdate_option( 'hello_uninstalled', 1 );\n" );
+update_option( 'hello_data', 'keep me?' );
+$hello0 = tree( WP_PLUGIN_DIR . '/hello-dolly' );
+$p = call( 'plugins-delete-preview', array( 'plugin' => HELLO ) );
+check( 'delete: preview says has_uninstall (uninstall.php), that the data goes for good, and gives a code; nothing removed', is_array( $p ) && true === $p['has_uninstall'] && false === $p['keep_data'] && '1.7.2' === $p['version'] && 1 === preg_match( '/for good/', (string) $p['note'] ) && 12 === strlen( (string) $p['confirmation'] ) && is_dir( WP_PLUGIN_DIR . '/hello-dolly' ) && array() === hrows(), $p );
+check( '... no uninstall.php and not registered: has_uninstall false', false === ( call( 'plugins-delete-preview', array( 'plugin' => ACME ) )['has_uninstall'] ?? null ) );
+update_option( 'uninstall_plugins', array( ACME => 'acme_uninstall_cb' ) );
+check( '... registered in uninstall_plugins: has_uninstall true', true === ( call( 'plugins-delete-preview', array( 'plugin' => ACME ) )['has_uninstall'] ?? null ) );
+$r = call( 'plugins-delete', array( 'plugin' => HELLO, 'confirmation' => $p['confirmation'] ) );
+check( 'delete: delete runs uninstall_plugin (through delete_plugins), the folder is gone, WordPress no longer lists it', is_array( $r ) && true === $r['deleted'] && true === $r['uninstall_ran'] && array( HELLO ) === $GLOBALS['T_uninstalls'] && 1 === get_option( 'hello_uninstalled' ) && array( array( HELLO ) ) === $GLOBALS['T_delete_calls'] && ! file_exists( WP_PLUGIN_DIR . '/hello-dolly' ) && null === version_of( HELLO ), $r );
+$h = hlast();
+check( '... the row: delete, before { plugin, version, keep_data, has_uninstall }, after.kept = the folder byte for byte', 'delete' === $h['action'] && 'divi5-builder/plugins-delete' === $h['ability'] && HELLO === $h['before']['plugin'] && '1.7.2' === $h['before']['version'] && false === $h['before']['keep_data'] && true === $h['before']['has_uninstall'] && $hello0 === tree( $h['after']['kept']['path'] ) && true === $h['after']['deleted'], $h );
+check( '... the copy was taken before delete_plugins ran (it holds uninstall.php)', isset( tree( $h['after']['kept']['path'] )['uninstall.php'] ) );
+$r2 = call( 'plugins-rollback', array( 'plugin' => HELLO, 'history_id' => $h['id'] ) );
+check( '... and plugins-rollback puts a deleted plugin back (files byte for byte, not active)', is_array( $r2 ) && $hello0 === tree( WP_PLUGIN_DIR . '/hello-dolly' ) && '1.7.2' === version_of( HELLO ) && false === $r2['active'], $r2 );
+
+disk_site();
+t_put( WP_PLUGIN_DIR . '/hello-dolly/uninstall.php', "<?php\nupdate_option( 'hello_uninstalled', 1 );\n" );
+$hello0 = tree( WP_PLUGIN_DIR . '/hello-dolly' );
+get_plugins(); // fill the plugins cache, as a request that listed the plugins before would have
+$p = call( 'plugins-delete-preview', array( 'plugin' => HELLO, 'keep_data' => true ) );
+check( 'delete keep_data: the preview says the data stays', is_array( $p ) && true === $p['keep_data'] && true === $p['has_uninstall'] && 1 === preg_match( '/not run|stays/i', (string) $p['note'] ), $p );
+$r = call( 'plugins-delete', array( 'plugin' => HELLO, 'keep_data' => true, 'confirmation' => $p['confirmation'] ) );
+check( 'delete: keep_data skips uninstall and removes the folder (no delete_plugins, no uninstall, folder gone, cache cleaned)', is_array( $r ) && true === $r['deleted'] && false === $r['uninstall_ran'] && array() === $GLOBALS['T_uninstalls'] && array() === $GLOBALS['T_delete_calls'] && false === get_option( 'hello_uninstalled' ) && ! file_exists( WP_PLUGIN_DIR . '/hello-dolly' ) && null === version_of( HELLO ), $r );
+check( '... the copy is kept byte for byte', $hello0 === tree( hlast()['after']['kept']['path'] ) && true === hlast()['before']['keep_data'] );
+
+disk_site();
+$p = call( 'plugins-delete-preview', array( 'plugin' => HELLO ) );
+$r = call( 'plugins-delete', array( 'plugin' => HELLO, 'keep_data' => true, 'confirmation' => $p['confirmation'] ) );
+check( 'delete: code taken with keep_data=false refused for keep_data=true (confirmation_invalid stale), nothing removed, no row', 'confirmation_invalid' === code( $r ) && 'stale' === ( edata( $r )['reason'] ?? null ) && is_dir( WP_PLUGIN_DIR . '/hello-dolly' ) && array() === hrows() && array() === $GLOBALS['T_delete_calls'], array( code( $r ), edata( $r ) ) );
+$p = call( 'plugins-delete-preview', array( 'plugin' => HELLO, 'keep_data' => true ) );
+$r = call( 'plugins-delete', array( 'plugin' => HELLO, 'confirmation' => $p['confirmation'] ) );
+check( '... and the other way round (keep_data=true code for a delete that would run uninstall)', 'confirmation_invalid' === code( $r ) && is_dir( WP_PLUGIN_DIR . '/hello-dolly' ) && array() === $GLOBALS['T_uninstalls'] );
+check( 'delete: no code -> confirmation_invalid', 'confirmation_invalid' === code( call( 'plugins-delete', array( 'plugin' => HELLO ) ) ) && is_dir( WP_PLUGIN_DIR . '/hello-dolly' ) );
+disk_site(); $p = call( 'plugins-delete-preview', array( 'plugin' => HELLO ) ); $GLOBALS['T_copy_fail'] = true;
+$r = call( 'plugins-delete', array( 'plugin' => HELLO, 'confirmation' => $p['confirmation'] ) );
+check( 'delete: the copy cannot be made -> copy_failed, nothing removed, no row', 'copy_failed' === code( $r ) && is_dir( WP_PLUGIN_DIR . '/hello-dolly' ) && array() === hrows() && array() === $GLOBALS['T_delete_calls'], code( $r ) );
+disk_site( array( 'read', 'manage_options', 'update_plugins', 'activate_plugins' ) );
+check( 'delete: without delete_plugins: refused', 'FORBIDDEN' === call( 'plugins-delete-preview', array( 'plugin' => HELLO ) ) && 'FORBIDDEN' === call( 'plugins-delete', array( 'plugin' => HELLO, 'confirmation' => 'X' ) ) );
+disk_site( ADMIN_ALL, false, false );
+check( 'delete: the Plugins risky switch off: refused', 'FORBIDDEN' === call( 'plugins-delete-preview', array( 'plugin' => HELLO ) ) );
+disk_site( ADMIN_ALL, true ); $GLOBALS['T_user_login'] = 'siteadmin';
+check( 'delete: multisite, not a network administrator: refused', 'FORBIDDEN' === call( 'plugins-delete-preview', array( 'plugin' => HELLO ) ) );
+$GLOBALS['T_plugins_disk'] = false;
 
 echo "no secrets\n";
 site(); cf7();

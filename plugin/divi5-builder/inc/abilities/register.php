@@ -243,6 +243,9 @@ if ( ! function_exists( 'd5b_ability_http_status' ) ) {
 			// Plugins (2.4.0): this plugin itself, a slug already installed, a download link not on downloads.wordpress.org, a
 			// check asked again too soon, a plugin that failed to activate, an install the upgrader did not finish.
 			'self' => 403, 'exists' => 409, 'bad_source' => 403, 'too_soon' => 429, 'activation_failed' => 409, 'install_failed' => 502,
+			// Update, rollback, delete (2.4.0): an active plugin not deleted, an older copy while a newer one is kept, a kept copy
+			// that is gone, a copy without the plugin file, an update or delete the engine did not finish.
+			'active' => 409, 'newer_copy_exists' => 409, 'copy_missing' => 410, 'restore_mismatch' => 409, 'update_failed' => 502, 'delete_failed' => 502,
 			'internal_error' => 500, 'write_failed' => 500,
 		);
 		return $map[ $code ] ?? $default;
