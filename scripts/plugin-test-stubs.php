@@ -2705,7 +2705,9 @@ if ( defined( 'T_USER_STANDINS' ) ) {
 	}
 	function username_exists( $username ) { $u = get_user_by( 'login', $username ); return $u ? (int) $u->ID : false; }
 	function email_exists( $email ) { $u = get_user_by( 'email', $email ); return $u ? (int) $u->ID : false; }
+	// T_user_fail[ 'get_user_meta:<key>' ]: a database error reading that key (core's get_metadata then gives false).
 	function get_user_meta( $id, $key = '', $single = false ) {
+		if ( '' !== $key && isset( $GLOBALS['T_user_fail'][ 'get_user_meta:' . $key ] ) ) { return false; }
 		$all = $GLOBALS['T_umeta'][ (int) $id ] ?? array();
 		if ( '' === $key ) { return $all; }
 		$vals = $all[ $key ] ?? array();
@@ -2714,7 +2716,10 @@ if ( defined( 'T_USER_STANDINS' ) ) {
 	// As core's update_metadata: key and value unslashed; no row yet -> added; else every row of the key set to the value
 	// (false when that changes nothing).
 	function update_user_meta( $id, $key, $value, $prev = '' ) {
+		$GLOBALS['T_user_calls'][] = array( 'update_user_meta', (int) $id, wp_unslash( $key ) );
 		if ( isset( $GLOBALS['T_user_fail']['update_user_meta'] ) ) { return $GLOBALS['T_user_fail']['update_user_meta']; }
+		// T_user_fail[ 'update_user_meta:<key>' ]: a database error writing that key (nothing stored).
+		if ( isset( $GLOBALS['T_user_fail'][ 'update_user_meta:' . wp_unslash( $key ) ] ) ) { return false; }
 		$key = wp_unslash( $key ); $value = wp_unslash( $value );
 		$rows = $GLOBALS['T_umeta'][ (int) $id ][ $key ] ?? null;
 		if ( null === $rows ) { $GLOBALS['T_umeta'][ (int) $id ][ $key ] = array( $value ); return 1000 + count( $GLOBALS['T_umeta'][ (int) $id ] ); }

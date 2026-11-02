@@ -104,19 +104,40 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 	}
 
 	/**
-	 * A reset link is refused for 24 hours after the user's email or role was changed through the abilities (users-update rows
-	 * of the change history whose after holds email or roles): a changed address plus a reset link is an account takeover in
-	 * two steps. Fails closed when the history cannot be read. @return true|WP_Error
+	 * The marker of an identity change: a protected user meta (underscore, so users-meta-set/-delete can never touch it) holding
+	 * the UTC unix time of the last email or role change made through the abilities. Written BEFORE the change.
+	 */
+	function d5b_wu_marker_key(): string {
+		return '_d5b_identity_changed_at';
+	}
+
+	function d5b_wu_now(): int {
+		return function_exists( 'd5b_maint_now' ) ? (int) d5b_maint_now() : time();
+	}
+
+	/** Writes the marker (now) on the user and reads it back. @return true|WP_Error unavailable when it did not stick */
+	function d5b_wu_mark_identity_change( int $id ) {
+		$now = d5b_wu_now();
+		update_user_meta( $id, d5b_wu_marker_key(), (string) $now );
+		if ( function_exists( 'wp_cache_delete' ) ) { wp_cache_delete( $id, 'user_meta' ); }
+		$rows = get_user_meta( $id, d5b_wu_marker_key(), false );
+		if ( is_array( $rows ) && 1 === count( $rows ) && (int) $rows[0] === $now ) { return true; }
+		return new WP_Error( 'unavailable', 'The plugin could not record this email or role change on the user (its reset-link guard), so nothing was changed. Try again later.' );
+	}
+
+	/**
+	 * A reset link is refused for 24 hours after the user's email or role was changed through the abilities: a changed address
+	 * plus a reset link is an account takeover in two steps. Read fresh from the user's own marker (no history lookup, no row
+	 * limit to flood). A marker that cannot be read refuses the reset. @return true|WP_Error
 	 */
 	function d5b_wu_recently_changed( int $id ) {
-		if ( ! function_exists( 'd5b_history_list' ) || ! d5b_history_table_exists() ) {
-			return new WP_Error( 'history_unavailable', 'The change history cannot be read on this site, so it cannot be checked whether this user\'s email or role changed recently; no reset link was sent.' );
+		if ( function_exists( 'wp_cache_delete' ) ) { wp_cache_delete( $id, 'user_meta' ); }
+		$rows = get_user_meta( $id, d5b_wu_marker_key(), false );
+		if ( ! is_array( $rows ) ) {
+			return new WP_Error( 'unavailable', 'It could not be read whether this user\'s email or role changed recently, so no reset link was sent. Try again later.' );
 		}
-		$rows = d5b_history_list( array( 'ability' => 'divi5-builder/users-update', 'object_type' => 'user', 'object_id' => $id, 'since' => gmdate( 'Y-m-d H:i:s', time() - 86400 ) ), 500 );
-		foreach ( $rows as $row ) {
-			$full  = d5b_history_get( (int) $row['id'] );
-			$after = is_array( $full ) ? (array) $full['after'] : array();
-			if ( array_key_exists( 'email', $after ) || array_key_exists( 'roles', $after ) ) {
+		foreach ( $rows as $t ) {
+			if ( d5b_wu_now() - (int) $t < 86400 ) {
 				return new WP_Error( 'recently_changed', 'This user\'s email address or role was changed through the abilities in the last 24 hours, so no reset link is sent through them now. Send it from wp-admin if it is wanted.' );
 			}
 		}
@@ -293,12 +314,20 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		foreach ( $changes as $k => $v ) { $data[ $map[ $k ] ] = $v; }
 		// core unslashes; an email change sends core's own notice to the OLD address (wp_update_user), on purpose not suppressed.
 		$roles_before = array_values( array_map( 'strval', (array) ( $u->roles ?? array() ) ) );
+		// An email or role change marks the user FIRST (the reset-link guard reads it); no marker, no change.
+		if ( isset( $changes['email'] ) || isset( $changes['role'] ) ) {
+			$ok = d5b_wu_mark_identity_change( $id );
+			if ( true !== $ok ) { return $ok; }
+		}
 		$r = wp_update_user( wp_slash( $data ) );
 		if ( is_wp_error( $r ) ) { return d5b_wu_core_error( $r ); }
 		// The last-administrator check above ran before the write; another request may have demoted the other administrator in
 		// between. Counted again now: a site left with none gets the role back and the change is refused.
 		$undo = null; $undone = false;
 		if ( isset( $changes['role'] ) && in_array( 'administrator', $roles_before, true ) && 'administrator' !== $changes['role'] && d5b_wu_admin_count() < 1 ) {
+			// Putting the role back is a role change too: marked again first. Its failure does not stop the restore (the marker
+			// written before the change is there already, and a site without an administrator is the worse outcome).
+			d5b_wu_mark_identity_change( $id );
 			if ( d5b_wu_restore_roles( $id, $roles_before ) ) { $undone = true; }
 			else { $undo = 'The site now has no administrator and the role could not be put back: make a user an administrator in wp-admin or with WP-CLI now.'; }
 		}
