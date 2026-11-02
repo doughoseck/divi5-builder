@@ -504,7 +504,7 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 	 * files are removed instead of kept (kept null) and a warning says so. A live folder that is or holds a link is refused
 	 * (linked) whatever the options.
 	 * The copy must still match the file list fingerprinted in its row (kept.manifest_sha1), else copy_tampered. The whole
-	 * restore holds the item's lock (d5b_maint_item_lock, 120 s, read fresh): a second update or rollback of the same folder
+	 * restore holds the item's lock (d5b_maint_item_lock, 600 s, read fresh): a second update or rollback of the same folder
 	 * meanwhile is busy and touches nothing. The rollback row is written before the renames with the two folder names
 	 * (aside, staging), so a request that dies between them leaves a row that says where the files are.
 	 * Errors: invalid_input, not_found (no such row, no copy recorded), copy_missing, copy_tampered, busy, linked,
@@ -513,7 +513,7 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 	 */
 	function d5b_maint_restore( string $kind, string $dir, int $history_id, array $opts = array() ) {
 		$lock  = d5b_maint_item_lock( $kind, $dir );
-		$token = d5b_maint_lock_take( $lock, 120, 'An update or rollback of this ' . ( 'theme' === $kind ? 'theme' : 'plugin' ) );
+		$token = d5b_maint_lock_take( $lock, d5b_maint_item_lock_ttl(), 'An update or rollback of this ' . ( 'theme' === $kind ? 'theme' : 'plugin' ) );
 		if ( is_wp_error( $token ) ) { return $token; }
 		try {
 			return d5b_maint_restore_run( $kind, $dir, $history_id, $opts );
@@ -677,10 +677,10 @@ if ( ! function_exists( 'd5b_maint_update_sequence' ) ) {
 	function d5b_maint_update_sequence( string $kind, string $item, string $dir, array $opts ) {
 		if ( 'plugin' !== $kind && 'theme' !== $kind ) { return new WP_Error( 'invalid_input', 'kind must be plugin or theme.' ); }
 		if ( ! function_exists( 'wpsu_update' ) ) { return new WP_Error( 'unavailable', 'The update code is not loaded on this site, so nothing was updated.' ); }
-		// The item's lock (120 s, read fresh) for the whole update: a rollback or another update of the same folder meanwhile is
+		// The item's lock (600 s, read fresh) for the whole update: a rollback or another update of the same folder meanwhile is
 		// busy. The automatic restore below runs under the same lock (a nested take).
 		$lock  = d5b_maint_item_lock( $kind, $dir );
-		$token = d5b_maint_lock_take( $lock, 120, 'An update or rollback of this ' . $kind );
+		$token = d5b_maint_lock_take( $lock, d5b_maint_item_lock_ttl(), 'An update or rollback of this ' . $kind );
 		if ( is_wp_error( $token ) ) { return $token; }
 		try {
 			return d5b_maint_update_run( $kind, $item, $dir, $opts );
@@ -887,6 +887,11 @@ if ( ! function_exists( 'd5b_maint_lock_fresh' ) ) {
 		if ( d5b_maint_lock_fresh( $name ) !== $token ) { return false; }
 		delete_transient( $name );
 		return true;
+	}
+
+	/** How long an item's lock holds (seconds): 600, the ceiling the update engine gives itself (set_time_limit), so a slow update is never taken over. */
+	function d5b_maint_item_lock_ttl(): int {
+		return 600;
 	}
 
 	/** The lock name of one plugin or theme folder: the update, rollback and automatic restore of it never overlap. */

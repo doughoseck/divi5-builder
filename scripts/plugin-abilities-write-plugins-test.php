@@ -856,7 +856,15 @@ check( 'M2 a second rollback and an update of the same plugin while the first ro
 check( 'M2 ... the first rollback finished normally (5.0 back, no dot folder), and the lock is gone', is_array( $r ) && '5.0' === version_of( AKISMET ) && array() === preg_grep( '/\.d5b-/', scandir( WP_PLUGIN_DIR ) ) && '' === d5b_maint_lock_fresh( d5b_maint_item_lock( 'plugin', 'akismet' ) ), $r );
 check( 'M2 the rollback row written before the renames names both folders (staging, aside), names only', is_array( $mid ) && 'rollback' === $mid['action'] && true === ( $mid['after']['running'] ?? null ) && 1 === preg_match( '/^\.d5b-new-akismet-\d+$/', (string) ( $mid['after']['staging'] ?? '' ) ) && 1 === preg_match( '/^\.d5b-old-akismet-\d+$/', (string) ( $mid['after']['aside'] ?? '' ) ), $mid['after'] ?? null );
 check( 'M2 another plugin is not held up by that lock', d5b_maint_item_lock( 'plugin', 'akismet' ) !== d5b_maint_item_lock( 'plugin', 'acme-pro-folder' ) );
-// The lock held by a request that died: past its 120 s it is taken over.
+// The item lock holds 600 s (the engine's own time limit): read while the rollback swaps.
+disk_site();
+$u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
+$held = null;
+$GLOBALS['T_rename_hook'] = function ( $from, $to ) use ( &$held ) { if ( null === $held ) { $held = d5b_maint_lock_fresh( d5b_maint_item_lock( 'plugin', 'akismet' ) ); } return null; };
+call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
+$GLOBALS['T_rename_hook'] = null;
+check( 'M2 the item lock runs 600 s: its value expires at now + 600', 600 === d5b_maint_item_lock_ttl() && is_string( $held ) && (int) strtok( $held, '|' ) === (int) floor( $GLOBALS['T_clock'] ) + 600, $held );
+// The lock held by a request that died: past its time it is taken over.
 disk_site();
 $u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
 set_transient( d5b_maint_item_lock( 'plugin', 'akismet' ), ( (int) $GLOBALS['T_clock'] + 30 ) . '|' . str_repeat( 'e', 16 ), 120 );
