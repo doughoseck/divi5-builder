@@ -2046,6 +2046,7 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		$GLOBALS['T_plugins_disk'] = false; $GLOBALS['T_plugins_cache'] = null; $GLOBALS['T_upgrade_result'] = array(); $GLOBALS['T_upgrade_calls'] = array();
 		$GLOBALS['T_copies_at_upgrade'] = null; $GLOBALS['T_uninstalls'] = array(); $GLOBALS['T_delete_calls'] = array(); $GLOBALS['T_fs_deletes'] = array();
 		$GLOBALS['T_maintenance'] = array(); $GLOBALS['T_in_maintenance'] = false; $GLOBALS['T_opcache'] = array();
+		$GLOBALS['T_wp_version'] = '6.9'; $GLOBALS['T_core_upgrade_calls'] = array(); $GLOBALS['T_core_upgrade_result'] = null; $GLOBALS['T_lang_upgrade_calls'] = array(); $GLOBALS['T_lang_upgrade_result'] = null;
 		t_themes_reset();
 	}
 	// The headers core's get_plugin_data reads (the first 8 KB, "Plugin Name:" etc. at the start of a comment line); null without a name.
@@ -2232,8 +2233,17 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 	function wp_update_plugins() { $GLOBALS['T_update_checks'][] = 'wp_update_plugins'; if ( isset( $GLOBALS['T_fresh']['update_plugins'] ) ) { set_site_transient( 'update_plugins', $GLOBALS['T_fresh']['update_plugins'] ); } }
 	function wp_update_themes() { $GLOBALS['T_update_checks'][] = 'wp_update_themes'; if ( isset( $GLOBALS['T_fresh']['update_themes'] ) ) { set_site_transient( 'update_themes', $GLOBALS['T_fresh']['update_themes'] ); } }
 	function get_core_updates( $options = array() ) { $t = get_site_transient( 'update_core' ); return is_object( $t ) && isset( $t->updates ) ? (array) $t->updates : array(); }
-	function wp_get_translation_updates() { return array(); }
-	if ( ! function_exists( 'get_bloginfo' ) ) { function get_bloginfo( $k = '' ) { return 'version' === $k ? '6.9' : ''; } }
+	// As core (update.php): the translations listed in the three update transients (update_core, update_plugins, update_themes).
+	function wp_get_translation_updates() {
+		$out = array();
+		foreach ( array( 'update_core', 'update_plugins', 'update_themes' ) as $t ) {
+			$v = get_site_transient( $t );
+			if ( is_object( $v ) && ! empty( $v->translations ) ) { foreach ( (array) $v->translations as $tr ) { $out[] = (object) $tr; } }
+		}
+		return $out;
+	}
+	// 'version' is the WordPress version: T_wp_version (default 6.9); the core update stand-in changes it.
+	if ( ! function_exists( 'get_bloginfo' ) ) { function get_bloginfo( $k = '' ) { return 'version' === $k ? (string) ( $GLOBALS['T_wp_version'] ?? '6.9' ) : ''; } }
 	// As core: the template option (switch_theme writes it); 'teststyle' when it was never set.
 	if ( ! function_exists( 'get_template' ) ) { function get_template() { return (string) get_option( 'template', 'teststyle' ); } }
 	function wp_is_file_mod_allowed( $context ) { return empty( $GLOBALS['T_file_mods_off'] ); }
@@ -2522,6 +2532,43 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		if ( '' !== (string) ( $old['Template'] ?? '' ) ) { $h['Template'] = $old['Template']; }
 		t_theme_write( $stylesheet, $h, array( 'changelog.txt' => $h['Name'] . ' ' . $version . ' changes' ) );
 		return array( 'destination_name' => $stylesheet );
+	}
+	// ---- core and translations (2.4.0 Task 5, write-core.php), in the same opt-in block.
+	//   T_wp_version          the WordPress version get_bloginfo( 'version' ) answers (the update_core transient lists what is offered:
+	//                         ->updates = [ { response: upgrade, current: version } ], ->translations = [ {...} ])
+	//   T_core_upgrade_calls  every update object given to Core_Upgrader::upgrade;  T_core_upgrade_result  what it returns instead of
+	//                         updating (a WP_Error, false);  T_lang_upgrade_calls / T_lang_upgrade_result likewise for the language packs
+	// As core's Core_Upgrader::upgrade( $current ): the new version string on success (core 6.4.1 class-core-upgrader.php returns
+	// the result of update_core(), the new version), else a WP_Error / false. The files are not touched: core's own update_core()
+	// replaces the WHOLE of WordPress, nothing a plugin could keep a copy of.
+	if ( ! class_exists( 'Core_Upgrader', false ) ) {
+		class Core_Upgrader extends WP_Upgrader {
+			function upgrade( $current, $args = array() ) {
+				$GLOBALS['T_traps'][] = 'core_upgrade'; $GLOBALS['T_core_upgrade_calls'][] = $current;
+				if ( $GLOBALS['T_core_upgrade_result'] instanceof Throwable ) { echo 'printed by the upgrader'; throw $GLOBALS['T_core_upgrade_result']; }
+				if ( null !== $GLOBALS['T_core_upgrade_result'] ) { return $GLOBALS['T_core_upgrade_result']; }
+				$GLOBALS['T_wp_version'] = (string) $current->current;
+				return (string) $current->current;
+			}
+		}
+	}
+	// As core's Language_Pack_Upgrader::bulk_upgrade(): every pack in wp_get_translation_updates() installed (one result each),
+	// the updates dropped from the three transients; false when there is nothing to do.
+	if ( ! class_exists( 'Language_Pack_Upgrader', false ) ) {
+		class Language_Pack_Upgrader extends WP_Upgrader {
+			function bulk_upgrade( $language_updates = array(), $args = array() ) {
+				$GLOBALS['T_traps'][] = 'lang_upgrade';
+				if ( empty( $language_updates ) ) { $language_updates = wp_get_translation_updates(); }
+				$GLOBALS['T_lang_upgrade_calls'][] = count( $language_updates );
+				if ( empty( $language_updates ) ) { return false; }
+				if ( null !== $GLOBALS['T_lang_upgrade_result'] ) { return $GLOBALS['T_lang_upgrade_result']; }
+				foreach ( array( 'update_core', 'update_plugins', 'update_themes' ) as $t ) {
+					$v = get_site_transient( $t );
+					if ( is_object( $v ) && isset( $v->translations ) ) { $v->translations = array(); set_site_transient( $t, $v ); }
+				}
+				return array_fill( 0, count( $language_updates ), true );
+			}
+		}
 	}
 	t_plugins_reset();
 }
