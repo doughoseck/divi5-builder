@@ -100,7 +100,15 @@ if (process.env.FAKE_MAINT_STATE && require.main !== module) {
         if (self(f)) return E(400, 'self');
         if (!p) return E(404, 'not_found');
         if (!p.nv || p.nv === p.version) return E(400, 'already_up_to_date');
-        const from = p.version; p.version = p.nv;
+        const from = p.version;
+        // m.updateFail: the upgrader failed part-way (as update_failed: 502, the row written first with the kept copy, the
+        // same fields as a result in the error data; the plugin left half-removed, version '').
+        if (m.updateFail) {
+          p.version = '';
+          const fh = row(short, 'plugin', 0, 'update', 'Updated plugin ' + f + ' from ' + from + ' to ' + p.nv, { plugin: f, version: from }, { to: p.nv, kept: rowKept(short), pages, failed: 'Could not copy file. SECRET-LEAK-VALUE' });
+          return E(502, 'update_failed', { plugin: f, from, to: p.nv, version: '', updated: false, kept: keptOf(short), history_id: fh, rolled_back: false, problems: [], human_check: HC });
+        }
+        p.version = p.nv;
         const hid = row(short, 'plugin', 0, 'update', 'Updated plugin ' + f + ' from ' + from + ' to ' + p.version, { plugin: f, version: from }, { to: p.version, kept: rowKept(short), pages });
         return [200, Object.assign({ plugin: f, from, to: p.version, version: p.version, updated: true, kept: keptOf(short), history_id: hid, rolled_back: false, problems: [], pages }, human())];
       }
@@ -204,6 +212,8 @@ if (process.env.FAKE_MAINT_STATE && require.main !== module) {
       st.requests = st.requests || []; st.requests.push(opts.method + ' ' + p);
       let status = 404, out = { code: 'rest_no_route' };
       if (p === '/wp-json/' && opts.method === 'GET') { status = 200; out = { name: 'fake', url: 'https://fake.test', home: 'https://fake.test', namespaces: ['wp/v2', 'wp-abilities/v1'] }; }
+      // The account wp.js signs in with (m.meId, else 1); its other fields are never printed.
+      else if (p === '/wp-json/wp/v2/users/me' && opts.method === 'GET') { status = 200; out = { id: st.mdl.meId || 1, name: 'tester', slug: 'SECRET-LEAK-VALUE' }; }
       else if (/^\/wp-json\/wp-abilities\/v1\/abilities\/divi5-builder\/[a-z0-9-]+\/run$/.test(p)) {
         const r = modelRun(st.mdl, p.match(/\/divi5-builder\/([a-z0-9-]+)\/run$/)[1], opts.method, q, body); status = r[0]; out = r[1];
       }
@@ -275,6 +285,7 @@ check('an activation the plugin reverted -> exit 1, no deactivate, still deleted
 start({ installFile: 'akismet-two/akismet.php' });
 r = go(['plugin', '--confirm', 'go']);
 check('GUARD: an install that reports another plugin file -> exit 2, nothing activated or deleted', r.code === 2 && /hello-dolly/.test(r.out) && JSON.stringify(posts(r)) === '["plugins-install"]', [r.code, r.out, r.calls]);
+check('... and the message names the leftover install and says to delete it (it is left installed)', /plugins-install installed akismet-two\/akismet\.php, not a hello-dolly\/ plugin\. It is left installed and inactive: delete it on the Plugins screen \(history row \d+\)/.test(r.out) && !!r.m.plugins['akismet-two/akismet.php'], r.out);
 start({ plugins: { 'hello-dolly/hello.php': { name: 'Hello Dolly', version: '1.7.2', active: false, nv: null }, 'akismet/akismet.php': { name: 'Akismet', version: '5.0', active: true, nv: '5.1' } } });
 r = go(['plugin', '--confirm', 'go']);
 check('a hello-dolly left by an earlier run (exists): used as it is, exit 0, gone after', r.code === 0 && /already installed/.test(r.out) && !r.m.plugins['hello-dolly/hello.php'], [r.code, r.out]);
@@ -321,6 +332,25 @@ check('this plugin itself -> exit 2, nothing sent', r.code === 2 && !r.calls.len
 start({ keptNull: ['plugins-update'] });
 r = go(['update', '--item', 'akismet/akismet.php']);
 check('KEPT COPY: an update with no kept copy -> exit 1, the old version named, no rollback tried', r.code === 1 && /plugins-update kept no copy/.test(r.out) && !posts(r).includes('plugins-rollback'), [r.code, r.out]);
+// M9: a failed update (update_failed, 502): the files may have changed part-way; its row keeps the copy of 5.0.
+start({ updateFail: true });
+r = go(['update', '--item', 'akismet/akismet.php']);
+const failHid = (r.m.hist.find(x => x.ability === 'divi5-builder/plugins-update') || {}).id;
+check('M9 a failed update -> exit 1; the history row of the kept copy is printed with the rollback to run', r.code === 1 && Number.isInteger(failHid) && new RegExp('plugins-update  refused:update_failed  HTTP 502  history_id=' + failHid).test(r.out) && new RegExp('History row ' + failHid + ' keeps the copy of 5\\.0: if akismet/akismet\\.php is broken, put it back with plugins-rollback with history_id ' + failHid).test(r.out), [r.code, r.out]);
+check('M9 ... no rollback is tried by the script (the maintainer decides)', !posts(r).includes('plugins-rollback'), r.calls);
+const hcLine = (r.out.split('\n').find(l => l.startsWith('HUMAN CHECK: ')) || '');
+check('M9 ... the HUMAN CHECK line names the failed update as a change; never "no change"', /This run changed: plugins-update akismet\/akismet\.php \(FAILED part-way: the files may have changed\)/.test(hcLine) && !/no change|changed nothing/.test(r.out), hcLine);
+check('M9 ... the planted secret in the error body is not printed', !/SECRET-LEAK|Could not copy/.test(r.out), r.out);
+// M9: a step that fails after writes went through names them on the HUMAN CHECK line, with the plugin's sentence.
+start({ bad: { 'plugins-deactivate': 'not_allowed' } });
+r = go(['plugin', '--confirm', 'go']);
+const hc2 = (r.out.split('\n').find(l => l.startsWith('HUMAN CHECK: ')) || '');
+check('M9 a failed plugin step (deactivate refused): HUMAN CHECK names what the run changed (install, activate) before the plugin\'s sentence', r.code === 1 && /^HUMAN CHECK: This run changed: plugins-install hello-dolly; plugins-activate hello-dolly\/hello\.php\. Please look at the site yourself/.test(hc2), hc2);
+start();
+r = go(['history']);
+check('M9 a run with no write at all: "this run made no change"', /^HUMAN CHECK: this run made no change/m.test(r.out), r.out);
+r = go(['email']);
+check('M9 a run whose only write is a test email: the HUMAN CHECK line names it (no "no change")', /^HUMAN CHECK: This run changed: email-send-test\. Look at the site/m.test(r.out) && !/no change/.test(r.out), r.out);
 start({ bad: { 'plugins-rollback': 'copy_missing' } });
 r = go(['update', '--item', 'akismet/akismet.php']);
 check('a rollback that fails -> exit 1 and the put-back message names the history row', r.code === 1 && /plugins-rollback with history_id \d+/.test(r.out), [r.code, r.out]);
@@ -331,7 +361,7 @@ r = go(['user']);
 check('without --confirm go: the plan, exit 3, nothing sent', r.code === 3 && /^plan: /m.test(r.out) && /d5b-live-user/.test(r.out) && !r.calls.length, [r.code, r.out]);
 r = go(['user', '--confirm', 'go']);
 check('with --confirm go: exit 0', r.code === 0 && /RESULT: every step passed/.test(r.out), [r.code, r.out]);
-check('... create, reset, role, reset refused, caller from the history, preview, delete, list', JSON.stringify(r.calls) === JSON.stringify(['POST users-create', 'POST users-password-reset', 'POST users-update', 'POST users-password-reset', 'GET history-changes-list', 'GET users-delete-preview', 'POST users-delete', 'GET users-list']), r.calls);
+check('... create, reset, role, reset refused, preview, delete, list (the caller from wp/v2/users/me, not from the history)', JSON.stringify(r.calls) === JSON.stringify(['POST users-create', 'POST users-password-reset', 'POST users-update', 'POST users-password-reset', 'GET users-delete-preview', 'POST users-delete', 'GET users-list']) && (r.st.requests || []).includes('GET /wp-json/wp/v2/users/me'), [r.calls, r.st.requests]);
 check('... the user is gone, the others untouched', Object.keys(r.m.users).join() === '1,2' && r.m.users[2].roles[0] === 'editor', r.m.users);
 check('... the reset after the role change was refused with recently_changed (the 24 h block)', /users-password-reset  refused:recently_changed/.test(r.out) && /\(expected recently_changed\)/.test(r.out), r.out);
 check('... created as a subscriber on the site\'s own domain, deleted reassigning to the caller (1)', r.m.hist.some(x => x.ability === 'divi5-builder/users-create' && /\(subscriber\)/.test(x.summary) && x.after.email === 'd5b-live-user@fake.test') && r.m.hist.some(x => x.ability === 'divi5-builder/users-delete' && x.before.reassign_to === 1), r.m.hist);
@@ -351,6 +381,14 @@ check('a d5b-live-user left by an earlier run (exists): used, exit 0, deleted', 
 start({ bad: { 'users-update': 'not_allowed' } });
 r = go(['user', '--confirm', 'go']);
 check('a role change that fails -> exit 1 and the user is still deleted', r.code === 1 && Object.keys(r.m.users).join() === '1,2', [r.code, r.out]);
+// The caller is who the REST API says (users/me), not the first user a history row names: here wp.js signs in as user 2.
+start({ meId: 2 });
+r = go(['user', '--confirm', 'go']);
+const delRow = r.m.hist.find(x => x.ability === 'divi5-builder/users-delete') || {};
+check('callerId: the delete reassigns to the account wp.js signs in with (users/me = 2), although the history rows name user 1', r.code === 0 && delRow.before && delRow.before.reassign_to === 2, [r.code, r.out, delRow.before && delRow.before.reassign_to]);
+start({ meId: 'x' });
+r = go(['user', '--confirm', 'go']);
+check('callerId: users/me gives no id -> exit 1, no delete (the test user is left, the message says to delete it)', r.code === 1 && /wp\/v2\/users\/me/.test(r.out) && !posts(r).includes('users-delete') && /Delete the user d5b-live-user/.test(r.out), [r.code, r.out]);
 
 console.log('--- email');
 start();
@@ -396,7 +434,7 @@ for (const [label, args] of [['no step', []], ['a bad step', ['nope']], ['an unk
 
 console.log('--- what crosses the wire and what is printed');
 const allReqs = all.reduce((a, x) => a.concat(x.st.requests || []), []);
-check('every request is the REST index (GET) or a GET/POST to a divi5-builder run route', allReqs.length > 100 && allReqs.every(x => x === 'GET /wp-json/' || /^(GET|POST) \/wp-json\/wp-abilities\/v1\/abilities\/divi5-builder\/[a-z0-9-]+\/run$/.test(x)), allReqs.filter(x => x !== 'GET /wp-json/' && !/run$/.test(x)).slice(0, 3));
+check('every request is the REST index (GET), the caller (GET users/me) or a GET/POST to a divi5-builder run route', allReqs.length > 100 && allReqs.every(x => x === 'GET /wp-json/' || x === 'GET /wp-json/wp/v2/users/me' || /^(GET|POST) \/wp-json\/wp-abilities\/v1\/abilities\/divi5-builder\/[a-z0-9-]+\/run$/.test(x)), allReqs.filter(x => x !== 'GET /wp-json/' && x !== 'GET /wp-json/wp/v2/users/me' && !/run$/.test(x)).slice(0, 3));
 const outAll = all.map(x => x.out).join('\n');
 check('no planted secret, error message or confirmation code is printed', !/SECRET-LEAK-VALUE|ERR-MSG-|CONFIRM-/.test(outAll), outAll.split('\n').filter(l => /SECRET-LEAK|ERR-MSG|CONFIRM-/.test(l)).slice(0, 3));
 check('the application password never appears', !/aaaa ?bbbb/.test(outAll), 'password found');

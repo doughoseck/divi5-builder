@@ -6,8 +6,10 @@
  *   steps: plugin, theme-switch, update, user, email, history, all
  *
  * It talks to the site only through scripts/wp.js (the helpers of abilities-live-write.js: rest-get for the readonly abilities,
- * rest-post for the writes, rest-get --index once for the site's address; wp.js holds the credentials, this script never sees or
- * prints them), and only to the run routes wp-abilities/v1/abilities/divi5-builder/<name>/run. It is for the maintainer to run on
+ * rest-post for the writes, rest-get --index once for the site's address, rest-get wp/v2/users/me once for the caller's id; wp.js
+ * holds the credentials, this script never sees or prints them), and otherwise only to the run routes
+ * wp-abilities/v1/abilities/divi5-builder/<name>/run. A failed plugins-update prints the history row that keeps the copy, and the
+ * HUMAN CHECK line after a failed step names what the run changed (never "no change" after a write). It is for the maintainer to run on
  * a dev site; nothing in its Node test touches a site.
  *
  *   plugin        --confirm go: installs hello-dolly from wordpress.org (plugins-install; one left by an earlier run is used as it
@@ -26,7 +28,7 @@
  *   user          --confirm go: users-create d5b-live-user (subscriber, d5b-live-user@<the site's own domain>; no inbox is read,
  *                 only results), users-password-reset, users-update role author, users-password-reset again (must be refused
  *                 recently_changed: the 24 h block after an identity change), then users-delete-preview and users-delete
- *                 reassigning to the caller (read from the history row of this user). Only the login d5b-live-user is ever
+ *                 reassigning to the caller (its id from GET wp/v2/users/me). Only the login d5b-live-user is ever
  *                 deleted (exit 2 otherwise). Without --confirm go: the plan, exit 3. Needs the Users category and risky switch.
  *   email         email-send-test to me (the caller's own address); sent must be true. Needs the Email category.
  *   history       history-changes-list for today, page by page while has_more (at most 10 pages of 50): every write this script
@@ -116,8 +118,9 @@ function readLedger(ctx) {
   catch (e) { return { entries: [] }; }
 }
 /** One write that went through: the history step looks for its row, by its history id when the result gave one, else by ability,
- *  object id and a word of the summary. */
+ *  object id and a word of the summary. It is also named on the HUMAN CHECK line when a step fails (what this run changed). */
 function rec(ctx, short, hid, id, needle) {
+  if (Array.isArray(ctx.changed)) ctx.changed.push(short + (needle ? ' ' + tok(needle) : (id === undefined || id === null ? '' : ' (user ' + tok(id) + ')')));
   const led = readLedger(ctx);
   led.entries.push({ day: ctx.day, ability: short, hid: Number.isInteger(hid) && hid > 0 ? hid : null, id: id === undefined || id === null ? null : Number(id), needle: needle || null });
   fs.writeFileSync(ledgerPath(ctx.site), JSON.stringify(led));
@@ -152,8 +155,11 @@ function stepPlugin(ctx) {
   line(ctx, 'plugins-install', ins, []);
   if (ins.ok && ins.json && typeof ins.json === 'object') {
     file = ins.json.plugin;
-    guardPlugin(file);
     rec(ctx, 'plugins-install', ins.json.history_id, null, TEST_SLUG);
+    // Installed, but not a hello-dolly/ plugin: it stays (inactive); the message names it for the maintainer to delete.
+    if (typeof file !== 'string' || !file.startsWith(TEST_SLUG + '/')) {
+      throw new Usage(`plugins-install installed ${tok(file) || 'a plugin it did not name'}, not a ${TEST_SLUG}/ plugin. It is left installed and inactive: delete it on the Plugins screen (history row ${tok(ins.json.history_id)}). Nothing more was changed`);
+    }
   } else if (!ins.ok && ins.code === 'exists') {
     const s = must(ctx, 'GET', 'plugins-status', {});
     const row = (Array.isArray(s.json.plugins) ? s.json.plugins : []).find(p => p && typeof p.item === 'string' && p.item.startsWith(TEST_SLUG + '/'));
@@ -245,7 +251,20 @@ function stepUpdate(ctx) {
   ctx.lines.push(`plan: update ${tok(ctx.item)} from ${tok(row.version)} to ${tok(row.new_version)} (a copy kept first, checked), then roll it back to that kept copy.`);
   let hid = null;
   guarded(ctx, 'update', () => {
-    const u = must(ctx, 'POST', 'plugins-update', { plugin: ctx.item }, j => [keptText(j.kept), problemsText(j)]);
+    const u = postAbility(ctx, 'plugins-update', { plugin: ctx.item });
+    line(ctx, 'plugins-update', u, u.ok && u.json && typeof u.json === 'object' ? [keptText(u.json.kept), problemsText(u.json)] : (u.history_id ? ['history_id=' + tok(u.history_id)] : []));
+    if (!u.ok) {
+      // update_failed: WordPress may have changed the files part-way. Its row keeps the copy of the version before.
+      if (u.code === 'update_failed' || u.history_id) {
+        rec(ctx, 'plugins-update', u.history_id, null, ctx.item);
+        ctx.changed[ctx.changed.length - 1] += ' (FAILED part-way: the files may have changed)';
+        throw new Fail(`plugins-update failed (refused:${tok(u.code)}, HTTP ${u.status}). ` + (u.history_id
+          ? `History row ${tok(u.history_id)} keeps the copy of ${tok(row.version)}: if ${tok(ctx.item)} is broken, put it back with plugins-rollback with history_id ${tok(u.history_id)}`
+          : 'No history row was named: read the change history (history-changes-list) for the row of this update') + ', and look at the site now');
+      }
+      throw new Fail(`plugins-update wanted ok, got refused:${tok(u.code)} (HTTP ${u.status})`);
+    }
+    if (!u.json || typeof u.json !== 'object') throw new Fail('plugins-update gave no JSON answer');
     rec(ctx, 'plugins-update', u.json.history_id, null, ctx.item);
     human(ctx, 'plugins-update', u.json);
     if (!keptOk(u.json.kept)) throw new Fail(`plugins-update kept no copy, so the plugin cannot roll it back: put ${tok(row.version)} back by hand (Plugins > Add New > Upload)`);
@@ -266,12 +285,14 @@ function stepUpdate(ctx) {
   return 'ok';
 }
 
-/** The caller's user id: the user_id of a history row this run wrote about the test user. */
-function callerId(ctx, id) {
-  const r = must(ctx, 'GET', 'history-changes-list', { since: ctx.day, object_type: 'user', object_id: id, per_page: 50 });
-  const row = (Array.isArray(r.json.items) ? r.json.items : []).find(x => x && Number(x.user_id) > 0 && /^divi5-builder\/users-/.test(String(x.ability)));
-  if (!row) throw new Fail('no history row of today about the test user names who ran it, so there is no one to reassign to');
-  return Number(row.user_id);
+/** The caller's user id, as the REST API knows the account wp.js signs in with (GET wp/v2/users/me; only its id is read). */
+function callerId(ctx) {
+  let j = null;
+  try { j = JSON.parse(execFileSync(process.execPath, [ctx.wpjs, ctx.site, 'rest-get', 'wp/v2/users/me'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })); }
+  catch (e) { j = null; }
+  const id = j && typeof j === 'object' ? Number(j.id) : NaN;
+  if (!Number.isInteger(id) || id < 1) throw new Fail('the REST API did not say who you are (wp/v2/users/me), so there is no one to reassign to');
+  return id;
 }
 
 function stepUser(ctx) {
@@ -312,7 +333,7 @@ function stepUser(ctx) {
     line(ctx, 'users-password-reset', r2, [want ? '(expected recently_changed)' : '(WANTED recently_changed)']);
     expect(ctx, want, 'a reset link right after the role change was not refused with recently_changed');
   }, () => {
-    const me = callerId(ctx, id);
+    const me = callerId(ctx);
     if (me === id) throw new Usage('the caller is the test user itself: nothing is deleted');
     const p = must(ctx, 'GET', 'users-delete-preview', { id, reassign_to: me }, j => ['posts_total=' + tok(j.posts_total)]);
     if (!p.json.user || p.json.user.login !== TEST_LOGIN) throw new Usage(`user ${tok(id)} is not ${TEST_LOGIN}: it is never deleted by this script`);
@@ -406,7 +427,7 @@ function parseArgs(argv) {
 function run(argv, wpjs) {
   const o = parseArgs(argv);
   const now = new Date();
-  const ctx = { site: o.site, wpjs, stamp: stampOf(now), day: dayOf(now), item: o.item, theme: o.theme, confirm: o.confirm, lines: [], failures: 0, human: null };
+  const ctx = { site: o.site, wpjs, stamp: stampOf(now), day: dayOf(now), item: o.item, theme: o.theme, confirm: o.confirm, lines: [], failures: 0, human: null, changed: [] };
   const fns = { plugin: stepPlugin, 'theme-switch': stepThemeSwitch, update: stepUpdate, user: stepUser, email: stepEmail, history: stepHistory };
   let list = [o.step];
   if (o.step === 'all') list = ['plugin', 'theme-switch', 'update', 'user', 'email', 'history'];
@@ -421,8 +442,12 @@ function run(argv, wpjs) {
       if (e instanceof Fail) { ctx.failures++; ctx.lines.push('  FAILED: ' + e.message); } else throw e;
     }
   }
-  ctx.lines.push(ctx.human ? 'HUMAN CHECK: ' + ctx.human
-    : 'HUMAN CHECK: these steps changed nothing the pages show (no plugin, theme or update result asked for a look); after a plugin, theme or update step, look at the site in a browser and on a phone.');
+  // The human check, truthful about what this run did: after a failed step it names every write that went through (or may
+  // have, part-way); "made no change" only when no write went through at all.
+  const changed = ctx.changed.length ? 'This run changed: ' + ctx.changed.join('; ') + '. ' : '';
+  if (ctx.human) ctx.lines.push('HUMAN CHECK: ' + (ctx.failures ? changed : '') + ctx.human);
+  else if (changed) ctx.lines.push('HUMAN CHECK: ' + changed + 'Look at the site in a browser and on a phone now.');
+  else ctx.lines.push('HUMAN CHECK: this run made no change; after a plugin, theme or update step, look at the site in a browser and on a phone.');
   const code = ctx.failures ? 1 : (needConfirm ? 3 : 0);
   ctx.lines.push(ctx.failures ? `RESULT: ${ctx.failures} check(s) failed.` : (needConfirm ? 'RESULT: stopped at a plan; run again with --confirm go for that step.' : 'RESULT: every step passed.'));
   return { code, lines: ctx.lines };

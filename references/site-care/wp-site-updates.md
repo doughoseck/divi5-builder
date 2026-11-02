@@ -114,6 +114,10 @@ route is decided once the maintainer's sites are all on 6.9.
 To try the abilities on a dev site: `node scripts/abilities-live-maint.js <site> plugin|theme-switch|update|user|email|history|all`
 (only the `hello-dolly` plugin and a `d5b-live-user` user are ever deleted; deletes and the theme switch print a plan and
 exit 3 until `--confirm go`; `update --item <plugin file>` updates and rolls back, or skips when nothing is waiting).
+Before the `plugin` step, deactivate WordPress's own `hello.php` if it is active: it declares the same function as the
+wordpress.org `hello-dolly`, so activating `hello-dolly` next to it is a PHP fatal (the abilities answer `activation_failed`,
+or the request ends with no answer). A failed update prints the history row that keeps the copy of the version before
+(`plugins-rollback` with that `history_id` puts it back); after a failed step the HUMAN CHECK line names what the run changed.
 
 ## Not covered
 

@@ -62,7 +62,9 @@ function parseErr(e) {
   const err = String(e.stderr || e.message);
   const m = /HTTP (\d{3})/.exec(err);
   const c = /"code"\s*:\s*"([A-Za-z0-9_:\-]+)"/.exec(err);
-  return { ok: false, status: m ? Number(m[1]) : 0, code: c ? tok(c[1]) : 'http_' + (m ? m[1] : '0'), json: null };
+  // The history row an error names in its data (a failed update keeps a copy in it): a number only, never the rest of the body.
+  const h = /"history_id"\s*:\s*(\d{1,12})\b/.exec(err);
+  return { ok: false, status: m ? Number(m[1]) : 0, code: c ? tok(c[1]) : 'http_' + (m ? m[1] : '0'), json: null, history_id: h ? Number(h[1]) : null };
 }
 
 function wp(ctx, args) {
