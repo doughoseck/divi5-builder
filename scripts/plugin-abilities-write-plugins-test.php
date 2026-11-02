@@ -360,9 +360,22 @@ $T_BASE = dirname( WP_PLUGIN_DIR );
 function t_rm( $d ) {
 	if ( is_link( $d ) || is_file( $d ) ) { @unlink( $d ); return; }
 	if ( ! file_exists( $d ) ) { return; }
+	// A Windows junction: neither a link nor a folder to PHP, removed with rmdir (its target is not touched).
 	if ( ! is_dir( $d ) ) { @rmdir( $d ); return; }
-	foreach ( array_diff( (array) scandir( $d ), array( '.', '..' ) ) as $f ) { t_rm( $d . '/' . $f ); }
+	foreach ( array_diff( (array) scandir( $d ), array( '.', '..' ) ) as $f ) {
+		$p = $d . '/' . $f;
+		if ( is_link( $p ) || ( file_exists( $p ) && ! is_dir( $p ) && ! is_file( $p ) ) || realpath( $p ) !== realpath( $d ) . DIRECTORY_SEPARATOR . $f ) { @unlink( $p ) || @rmdir( $p ); continue; }
+		t_rm( $p );
+	}
 	@rmdir( $d );
+}
+// A directory link: a symbolic link where PHP may make one, else a Windows junction (no privilege needed). false when neither.
+function t_link_dir( $target, $link ) {
+	if ( @symlink( $target, $link ) ) { return true; }
+	if ( '\\' !== DIRECTORY_SEPARATOR ) { return false; }
+	exec( 'cmd /c mklink /J "' . str_replace( '/', '\\', $link ) . '" "' . str_replace( '/', '\\', $target ) . '" 2>&1', $o, $rc );
+	clearstatcache();
+	return 0 === $rc && file_exists( $link );
 }
 register_shutdown_function( function () use ( $T_BASE ) { t_rm( $T_BASE ); } );
 function t_put( $path, $body ) { if ( ! is_dir( dirname( $path ) ) ) { mkdir( dirname( $path ), 0777, true ); } file_put_contents( $path, $body ); }
@@ -689,6 +702,86 @@ $u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id']
 check( '... while an update row restore needs update_plugins only', is_array( call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) ) ) && '5.0' === version_of( AKISMET ) );
 t_set_caps( ADMIN_ALL );
 check( '... with install_plugins it is put back', is_array( call( 'plugins-rollback', array( 'plugin' => HELLO, 'history_id' => $d['history_id'] ) ) ) && '1.7.2' === version_of( HELLO ) );
+
+echo "a linked plugin: without_copy never lifts the refusal\n";
+const LINKP = 'linkp/linkp.php';
+function linked_site() {
+	global $T_BASE;
+	disk_site();
+	t_put( $T_BASE . '/outside-linkp/linkp.php', "<?php\n/*\nPlugin Name: Linkp\nVersion: 1.0\n*/\n" );
+	t_put( $T_BASE . '/outside-linkp/data.txt', 'what the link points to' );
+	$ok = t_link_dir( $T_BASE . '/outside-linkp', WP_PLUGIN_DIR . '/linkp' );
+	wp_clean_plugins_cache( false );
+	$GLOBALS['T_fresh']['update_plugins'] = offers( array( AKISMET => '5.1', LINKP => '1.1' ) );
+	return $ok;
+}
+$ok = linked_site(); $out0 = tree( $T_BASE . '/outside-linkp' );
+$r = call( 'plugins-update', array( 'plugin' => LINKP, 'without_copy' => true ) );
+check( 'update a plugin whose folder is a link, without_copy: linked (409); no upgrade, no row, what it points to untouched', $ok && '1.0' === version_of( LINKP ) && 'linked' === code( $r ) && array() === $GLOBALS['T_upgrade_calls'] && array() === hrows() && $out0 === tree( $T_BASE . '/outside-linkp' ) && 409 === d5b_ability_http_status( 'linked' ), array( $ok, code( $r ) ) );
+$p = call( 'plugins-delete-preview', array( 'plugin' => LINKP, 'without_copy' => true ) );
+$r = call( 'plugins-delete', array( 'plugin' => LINKP, 'without_copy' => true, 'confirmation' => $p['confirmation'] ?? '' ) );
+check( 'delete it, without_copy: linked; delete_plugins never called, no row, the link and what it points to untouched', 'linked' === code( $r ) && array() === $GLOBALS['T_delete_calls'] && array() === hrows() && file_exists( WP_PLUGIN_DIR . '/linkp/linkp.php' ) && $out0 === tree( $T_BASE . '/outside-linkp' ), array( code( $p ), code( $r ) ) );
+$p = call( 'plugins-delete-preview', array( 'plugin' => LINKP, 'keep_data' => true, 'without_copy' => true ) );
+$r = call( 'plugins-delete', array( 'plugin' => LINKP, 'keep_data' => true, 'without_copy' => true, 'confirmation' => $p['confirmation'] ?? '' ) );
+check( '... with keep_data too: linked, nothing removed', 'linked' === code( $r ) && $out0 === tree( $T_BASE . '/outside-linkp' ) && array() === hrows(), code( $r ) );
+
+// The three codes without_copy does lift.
+disk_site();
+t_big( WP_PLUGIN_DIR . '/akismet/huge.bin', 536870913 );
+$r = call( 'plugins-update', array( 'plugin' => AKISMET, 'without_copy' => true ) );
+check( 'without_copy still lifts copy_too_big (update proceeds, kept null, copy_error)', is_array( $r ) && true === $r['updated'] && null === $r['kept'] && 'copy_too_big' === ( $r['copy_error'] ?? null ), $r );
+t_rm( WP_PLUGIN_DIR . '/akismet/huge.bin' );
+disk_site();
+$filler = $T_BASE . '/uploads/d5b-history/999999-' . str_repeat( 'a', 32 ) . '/filler.bin';
+t_big( $filler, 2147483648 - 10 );
+$r = call( 'plugins-update', array( 'plugin' => AKISMET, 'without_copy' => true ) );
+check( '... and store_full on an update', is_array( $r ) && true === $r['updated'] && 'store_full' === ( $r['copy_error'] ?? null ), $r );
+$p = call( 'plugins-delete-preview', array( 'plugin' => HELLO, 'without_copy' => true ) );
+$r = call( 'plugins-delete', array( 'plugin' => HELLO, 'without_copy' => true, 'confirmation' => $p['confirmation'] ) );
+check( '... and store_full on a delete', is_array( $r ) && true === $r['deleted'] && 'store_full' === ( $r['copy_error'] ?? null ) && ! file_exists( WP_PLUGIN_DIR . '/hello-dolly' ), $r );
+@unlink( $filler ); clearstatcache();
+
+echo "rollback_on_failure with a full store\n";
+// How big the store is after one update of akismet, and how big the 5.1 folder is (measured on a fresh site).
+disk_site();
+call( 'plugins-update', array( 'plugin' => AKISMET ) );
+$after_one = d5b_history_store_bytes(); $s51 = d5b_maint_tree_size( WP_PLUGIN_DIR . '/akismet' )['bytes'];
+disk_site(); $GLOBALS['T_breaks_at'] = array( AKISMET => '5.1' );
+$v50 = tree( WP_PLUGIN_DIR . '/akismet' );
+$filler = $T_BASE . '/uploads/d5b-history/999999-' . str_repeat( 'a', 32 ) . '/filler.bin';
+t_big( $filler, 2147483648 - $after_one - $s51 + 1 ); // room for the 5.0 copy, not for the 5.1 files after it
+$r = call( 'plugins-update', array( 'plugin' => AKISMET, 'rollback_on_failure' => true ) );
+$rh = row( $r['rollback_history_id'] ?? 0 );
+check( 'the store has room for the copy of 5.0 but not for the broken 5.1: the site is restored anyway (5.0 byte for byte), the rollback row keeps null, a warning says the new version was not kept', is_array( $r ) && is_array( $r['kept'] ) && true === $r['rolled_back'] && $v50 === tree( WP_PLUGIN_DIR . '/akismet' ) && is_array( $rh ) && array_key_exists( 'kept', $rh['after'] ) && null === $rh['after']['kept'] && 1 === count( preg_grep( '/not kept.*store is full/', (array) ( $r['warnings'] ?? array() ) ) ) && array() === preg_grep( '/\.d5b-/', scandir( WP_PLUGIN_DIR ) ), array( $r['warnings'] ?? null, $rh['after'] ?? null ) );
+// By hand, the same full store refuses: break 5.0 into 5.1 again by an update without the automatic restore.
+$GLOBALS['T_breaks_at'] = array();
+$nrows = count( hrows() );
+$u2 = call( 'plugins-update', array( 'plugin' => AKISMET, 'without_copy' => true ) );
+$r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => (int) $r['history_id'], 'force_older' => true ) );
+check( '... a rollback asked by hand is still refused for the full store (store_full), live untouched', is_array( $u2 ) && 'store_full' === code( $r ) && '5.1' === version_of( AKISMET ), array( code( $r ), $u2['copy_error'] ?? null ) );
+@unlink( $filler ); clearstatcache();
+$ok = linked_site();
+$u = d5b_wc_history_row( 'divi5-builder/plugins-update', 'plugin', 0, 'update', array( 'plugin' => LINKP, 'version' => '1.0' ), array( 'running' => true ), 'x' );
+$kp = $T_BASE . '/uploads/d5b-history/' . $u . '-' . str_repeat( 'b', 32 ) . '/plugin/linkp';
+t_put( $kp . '/linkp.php', "<?php\n/*\nPlugin Name: Linkp\nVersion: 0.9\n*/\n" );
+d5b_history_set_after( $u, array( 'version' => '1.0', 'kept' => array( 'path' => $kp, 'bytes' => 1, 'files' => 1 ) ) );
+check( '... an automatic restore still refuses a live folder that is a link (linked), whatever keep_optional says', $ok && 'linked' === code( d5b_maint_restore( 'plugin', 'linkp', $u, array( 'keep_optional' => true ) ) ) && $out0 === tree( $T_BASE . '/outside-linkp' ) );
+
+echo "rollback: the renames of the swap\n";
+disk_site();
+$u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
+$v51 = tree( WP_PLUGIN_DIR . '/akismet' ); $nrows = count( hrows() );
+$GLOBALS['T_rename_refuse_re'] = '#/plugins/akismet$#'; $GLOBALS['T_maintenance'] = array();
+$r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
+check( 'the first rename (live -> .d5b-old) refused: copy_failed, live untouched (5.1 byte for byte), staging removed, row deleted, maintenance off', 'copy_failed' === code( $r ) && false !== strpos( $r->get_error_message(), 'nothing was changed' ) && $v51 === tree( WP_PLUGIN_DIR . '/akismet' ) && array() === preg_grep( '/\.d5b-/', scandir( WP_PLUGIN_DIR ) ) && $nrows === count( hrows() ) && array( true, false ) === $GLOBALS['T_maintenance'], array( code( $r ), is_wp_error( $r ) ? $r->get_error_message() : $r ) );
+$GLOBALS['T_rename_refuse_re'] = '#/\.d5b-new-#'; $GLOBALS['T_maintenance'] = array();
+$r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
+check( 'the second rename (staging -> live) refused, the put-back works: copy_failed, live back as it was (5.1 byte for byte), no dot folder, row deleted', 'copy_failed' === code( $r ) && false !== strpos( $r->get_error_message(), 'nothing was changed' ) && $v51 === tree( WP_PLUGIN_DIR . '/akismet' ) && array() === preg_grep( '/\.d5b-/', scandir( WP_PLUGIN_DIR ) ) && $nrows === count( hrows() ) && array( true, false ) === $GLOBALS['T_maintenance'], array( code( $r ), is_wp_error( $r ) ? $r->get_error_message() : $r ) );
+$GLOBALS['T_rename_refuse_re'] = '#/\.d5b-(new|old)-#';
+$r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
+$left = array_values( preg_grep( '/^\.d5b-old-akismet-/', scandir( WP_PLUGIN_DIR ) ) );
+check( 'the second rename AND the put-back refused: the live folder is missing, its files whole in .d5b-old-*, the message names it (no "nothing was changed"), staging removed', 'copy_failed' === code( $r ) && ! file_exists( WP_PLUGIN_DIR . '/akismet' ) && 1 === count( $left ) && $v51 === tree( WP_PLUGIN_DIR . '/' . $left[0] ) && false !== strpos( $r->get_error_message(), $left[0] ) && false === strpos( $r->get_error_message(), 'nothing was changed' ) && array() === preg_grep( '/^\.d5b-new-/', scandir( WP_PLUGIN_DIR ) ), array( is_wp_error( $r ) ? $r->get_error_message() : $r, $left ) );
+$GLOBALS['T_rename_refuse_re'] = '';
 
 echo "history reads: a kept copy shows as its size\n";
 disk_site(); d5b_abilities_set_category( 'history', true, false, 'tester' );

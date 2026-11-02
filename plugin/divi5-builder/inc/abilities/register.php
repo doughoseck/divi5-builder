@@ -246,6 +246,8 @@ if ( ! function_exists( 'd5b_ability_http_status' ) ) {
 			// Update, rollback, delete (2.4.0): an active plugin not deleted, an older copy while a newer one is kept, a kept copy
 			// that is gone, a copy without the plugin file, an update or delete the engine did not finish.
 			'active' => 409, 'newer_copy_exists' => 409, 'copy_missing' => 410, 'restore_mismatch' => 409, 'update_failed' => 502, 'delete_failed' => 502,
+			// A plugin or theme that is (or holds) a link: never copied, updated, swapped or deleted (without_copy does not lift it).
+			'linked' => 409,
 			'internal_error' => 500, 'write_failed' => 500,
 		);
 		return $map[ $code ] ?? $default;

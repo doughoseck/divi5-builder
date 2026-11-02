@@ -250,7 +250,9 @@ check( 'a missing plugin, a name with a slash, a theme that is a file, a row id 
 mkdir( $T_BASE . '/outside', 0777, true ); t_put( $T_BASE . '/outside/secret.txt', 'outside' );
 $linked = t_link_dir( $T_BASE . '/outside', WP_PLUGIN_DIR . '/two/linked' );
 $k = d5b_keep_copy( 'plugin', 'two', 51 );
-check( 'a plugin folder holding a link is refused (copy_failed), the link not followed', $linked && 'copy_failed' === code( $k ) && array() === row_dirs( 51 ), array( $linked, code( $k ) ) );
+check( 'a plugin folder holding a link is refused (linked, its own code: without_copy never lifts it), the link not followed', $linked && 'linked' === code( $k ) && array() === row_dirs( 51 ), array( $linked, code( $k ) ) );
+$linked2 = t_link_dir( $T_BASE . '/outside', WP_PLUGIN_DIR . '/whole-link' );
+check( '... a plugin folder that IS a link: linked too; 409', $linked2 && 'linked' === code( d5b_keep_copy( 'plugin', 'whole-link', 52 ) ) && 409 === d5b_ability_http_status( 'linked' ) && array() === row_dirs( 52 ) );
 
 check( 'the three copy errors have their HTTP status (413, 507, 503), the same in the table and in the error data',
 	413 === d5b_ability_http_status( 'copy_too_big' ) && 507 === d5b_ability_http_status( 'store_full' ) && 503 === d5b_ability_http_status( 'copy_failed' )

@@ -224,13 +224,29 @@ if ( ! function_exists( 'd5b_maint_filesystem' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_maint_linked_error' ) ) {
+	/** The refusal for a plugin or theme that is a link or holds one ($what: "is a link" / "contains a link"). Never bypassed. */
+	function d5b_maint_linked_error( string $kind, string $what ): WP_Error {
+		return new WP_Error( 'linked', 'The ' . $kind . ' ' . $what . ' (a symbolic link or a junction). WordPress would follow it when it removes or replaces the files, and change what it points to, so nothing was changed (without_copy does not lift this). Change it on the server by hand.', array( 'status' => 409 ) );
+	}
+}
+
+if ( ! function_exists( 'd5b_maint_copy_bypassable' ) ) {
+	/** Whether without_copy may go on after this keep-copy error: only copy_too_big, store_full and a genuine failed copy. */
+	function d5b_maint_copy_bypassable( WP_Error $e ): bool {
+		return in_array( $e->get_error_code(), array( 'copy_too_big', 'store_full', 'copy_failed' ), true );
+	}
+}
+
 if ( ! function_exists( 'd5b_keep_copy' ) ) {
 	/**
 	 * Keeps a copy of a plugin folder (WP_PLUGIN_DIR/<dir_name>), a single-file plugin (WP_PLUGIN_DIR/<file>.php) or a theme
 	 * folder (the theme root/<dir_name>) in the store, before it is changed: <store>/<row id>-<32 hex>/<kind>/<dir_name>,
 	 * a mirror of the original (a folder for a folder, the file for a single-file plugin), made with core's copy_dir.
-	 * The size is measured before anything is written. Errors: copy_too_big (over 512 MB), store_full (the store plus this
-	 * copy over 2 GB; nothing is ever deleted early to make room), copy_failed (with the reason; a part-made copy is removed).
+	 * The size is measured before anything is written. Errors: linked (the plugin or theme is a link or holds one: never
+	 * copied, and a caller must not change it either, whatever without_copy says, because core's delete and the upgrader's
+	 * clear_destination follow links), copy_too_big (over 512 MB), store_full (the store plus this copy over 2 GB; nothing is
+	 * ever deleted early to make room), copy_failed (with the reason; a part-made copy is removed).
 	 * @return array{path:string,bytes:int,files:int}|WP_Error
 	 */
 	function d5b_keep_copy( string $kind, string $dir_name, int $row_id ) {
@@ -246,13 +262,13 @@ if ( ! function_exists( 'd5b_keep_copy' ) ) {
 			if ( '' === $parent ) { return $fail( 'the themes folder is not known' ); }
 		}
 		$src = rtrim( str_replace( '\\', '/', $parent ), '/' ) . '/' . $dir_name;
-		if ( d5b_maint_is_link( $src ) ) { return $fail( 'the ' . $kind . ' is a link' ); }
+		if ( d5b_maint_is_link( $src ) ) { return d5b_maint_linked_error( $kind, 'is a link' ); }
 		$single = is_file( $src );
 		if ( ! $single && ! is_dir( $src ) ) { return $fail( 'the ' . $kind . ' was not found' ); }
 		if ( $single && 'theme' === $kind ) { return $fail( 'a theme is a folder' ); }
 
 		$size = d5b_maint_tree_size( $src );
-		if ( $size['links'] > 0 ) { return $fail( 'the ' . $kind . ' contains a link, which is not copied' ); }
+		if ( $size['links'] > 0 ) { return d5b_maint_linked_error( $kind, 'contains a link' ); }
 		if ( $size['bytes'] > d5b_maint_copy_cap() ) {
 			return new WP_Error( 'copy_too_big', 'The ' . $kind . ' is ' . $size['bytes'] . ' bytes, over the 512 MB a kept copy may take.', array( 'status' => 413, 'bytes' => $size['bytes'], 'cap' => d5b_maint_copy_cap() ) );
 		}
@@ -467,12 +483,15 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 	 *     never lists a leftover as a plugin;
 	 *  5. the replaced files moved into the new row's store folder: the rollback row's kept (a rollback is undoable). Once a
 	 *     whole copy is in the store it is kept; a leftover is named in the warnings.
-	 * The kept copy stays in the store (it can be put back twice).
-	 * Errors: invalid_input, not_found (no such row, no copy recorded), copy_missing, copy_too_big, store_full, copy_failed,
-	 * history_unavailable.
+	 * The kept copy stays in the store (it can be put back twice). $opts['keep_optional'] (the automatic restore of
+	 * rollback_on_failure): when the replaced files are too big or the store is full, the restore still runs, the replaced
+	 * files are removed instead of kept (kept null) and a warning says so. A live folder that is or holds a link is refused
+	 * (linked) whatever the options.
+	 * Errors: invalid_input, not_found (no such row, no copy recorded), copy_missing, linked, copy_too_big, store_full,
+	 * copy_failed, history_unavailable.
 	 * @return array{history_id:int,version:string,replaced_version:string,kept:?array,warnings:string[]}|WP_Error
 	 */
-	function d5b_maint_restore( string $kind, string $dir, int $history_id ) {
+	function d5b_maint_restore( string $kind, string $dir, int $history_id, array $opts = array() ) {
 		$fail = function ( string $why ) { return new WP_Error( 'copy_failed', 'The kept copy could not be put back: ' . $why . '.', array( 'status' => 503 ) ); };
 		if ( ( 'plugin' !== $kind && 'theme' !== $kind ) || '' === $dir || '.' === $dir[0] || 1 === preg_match( '#[/\\\\\x00]#', $dir ) ) {
 			return new WP_Error( 'invalid_input', 'Not a plugin or theme folder name: ' . substr( preg_replace( '/[^A-Za-z0-9._\- ]/', '?', $dir ), 0, 100 ) . '.' );
@@ -497,16 +516,23 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 		$parent = d5b_maint_parent( $kind, $dir );
 		if ( '' === $parent ) { return $fail( 'the ' . $kind . 's folder is not known' ); }
 		$target = $parent . '/' . $dir;
-		if ( d5b_maint_is_link( $target ) ) { return $fail( 'the ' . $kind . ' is a link' ); }
+		// A live folder that is a link or holds one is never swapped, whatever the options.
+		if ( d5b_maint_is_link( $target ) ) { return d5b_maint_linked_error( $kind, 'is a link' ); }
 		$cur = file_exists( $target ) ? d5b_maint_tree_size( $target ) : null;
-		if ( null !== $cur && $cur['links'] > 0 ) { return $fail( 'the ' . $kind . ' contains a link, which is not kept' ); }
+		if ( null !== $cur && $cur['links'] > 0 ) { return d5b_maint_linked_error( $kind, 'contains a link' ); }
+		// Keeping the files being replaced: refused for space, unless $opts['keep_optional'] (an automatic restore after a
+		// broken update: the broken site matters more than the version the update just downloaded).
+		$no_keep = '';
+		$store   = d5b_history_store_bytes();
 		if ( null !== $cur && $cur['bytes'] > d5b_maint_copy_cap() ) {
-			return new WP_Error( 'copy_too_big', 'The files being replaced are ' . $cur['bytes'] . ' bytes, over the 512 MB a kept copy may take, so nothing was put back.', array( 'status' => 413, 'bytes' => $cur['bytes'], 'cap' => d5b_maint_copy_cap() ) );
-		}
-		$store = d5b_history_store_bytes();
-		if ( null !== $cur && $store + $cur['bytes'] > d5b_maint_store_cap() ) {
+			$e = new WP_Error( 'copy_too_big', 'The files being replaced are ' . $cur['bytes'] . ' bytes, over the 512 MB a kept copy may take, so nothing was put back.', array( 'status' => 413, 'bytes' => $cur['bytes'], 'cap' => d5b_maint_copy_cap() ) );
+			if ( empty( $opts['keep_optional'] ) ) { return $e; }
+			$no_keep = 'they are over the 512 MB a kept copy may take';
+		} elseif ( null !== $cur && $store + $cur['bytes'] > d5b_maint_store_cap() ) {
 			$oldest = d5b_maint_oldest_row_at();
-			return new WP_Error( 'store_full', 'The kept copies take ' . $store . ' bytes; keeping the files being replaced (' . $cur['bytes'] . ' bytes) would take the store over 2 GB. Copies are removed with their history row after 30 days' . ( null === $oldest ? '' : '; the oldest row is from ' . $oldest . ' UTC' ) . '.', array( 'status' => 507, 'store_bytes' => $store, 'bytes' => $cur['bytes'], 'cap' => d5b_maint_store_cap(), 'oldest_row_at' => $oldest ) );
+			$e = new WP_Error( 'store_full', 'The kept copies take ' . $store . ' bytes; keeping the files being replaced (' . $cur['bytes'] . ' bytes) would take the store over 2 GB. Copies are removed with their history row after 30 days' . ( null === $oldest ? '' : '; the oldest row is from ' . $oldest . ' UTC' ) . '.', array( 'status' => 507, 'store_bytes' => $store, 'bytes' => $cur['bytes'], 'cap' => d5b_maint_store_cap(), 'oldest_row_at' => $oldest ) );
+			if ( empty( $opts['keep_optional'] ) ) { return $e; }
+			$no_keep = 'the change history store is full (2 GB)';
 		}
 		if ( ! d5b_history_files_prepare() ) { return $fail( 'the store folder could not be made' ); }
 		if ( ! d5b_maint_filesystem() ) { return $fail( 'no file system access (copy_dir)' ); }
@@ -563,7 +589,12 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 
 		// 3. the replaced files into the new row's store folder: the rollback is itself undoable
 		$warn = array(); $kept_new = null;
-		if ( '' !== $aside ) {
+		if ( '' !== $aside && '' !== $no_keep ) {
+			// keep_optional and no room: the replaced (just-downloaded) files are removed instead of kept.
+			$gone   = d5b_maint_remove_tree( $aside );
+			$warn[] = 'The version that was replaced was not kept, because ' . $no_keep . ': this rollback itself cannot be undone from the change history (update again to get that version back).'
+				. ( $gone ? '' : ' Its files could not be removed either: delete ' . basename( $aside ) . ' in ' . $where . ' by hand (WordPress does not list it).' );
+		} elseif ( '' !== $aside ) {
 			$folder = d5b_history_files_root() . '/' . $new . '-' . bin2hex( random_bytes( 16 ) );
 			$dest   = $folder . '/' . $kind . '/' . $dir;
 			$mv     = @mkdir( $folder . '/' . $kind, 0755, true ) ? d5b_maint_move( $aside, $dest ) : array( 'moved' => false, 'leftover' => false );
@@ -621,7 +652,8 @@ if ( ! function_exists( 'd5b_maint_update_sequence' ) ) {
 		$kept = d5b_keep_copy( $kind, $dir, $hid );
 		$copy_error = null;
 		if ( is_wp_error( $kept ) ) {
-			if ( empty( $opts['without_copy'] ) ) { d5b_history_delete( $hid ); return $kept; }
+			// without_copy lifts only a copy that is too big, a full store or a failed copy; never "linked".
+			if ( empty( $opts['without_copy'] ) || ! d5b_maint_copy_bypassable( $kept ) ) { d5b_history_delete( $hid ); return $kept; }
 			$copy_error = $kept; $kept = null;
 		}
 
@@ -651,7 +683,7 @@ if ( ! function_exists( 'd5b_maint_update_sequence' ) ) {
 			if ( null === $kept ) {
 				$warn[] = 'rollback_on_failure was asked, but no copy was kept, so nothing was put back.';
 			} else {
-				$rb = d5b_maint_restore( $kind, $dir, $hid );
+				$rb = d5b_maint_restore( $kind, $dir, $hid, array( 'keep_optional' => true ) ); // the site first: keeping the broken version is optional
 				if ( is_wp_error( $rb ) ) {
 					$warn[] = 'rollback_on_failure: the previous version could not be put back: ' . d5b_maint_err_text( $rb );
 				} else {
