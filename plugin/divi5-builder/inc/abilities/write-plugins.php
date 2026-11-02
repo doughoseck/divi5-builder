@@ -16,8 +16,10 @@
  *    https://downloads.wordpress.org/ (anything else, a plugins_api filter's link included, is bad_source BEFORE the
  *    upgrader runs). A slug whose folder is installed is refused (exists). Never activates. On a network: a network
  *    administrator only (install_plugins is network-wide).
- *  - plugins-activate runs the page checks around activate_plugin(): when the pages got worse the plugin is deactivated
- *    again (reverted: true). A WP_Error from activate_plugin, or a plugin that throws while it is loaded, is
+ *  - plugins-activate runs the page checks around activate_plugin(), not silent (the plugin's own activation routine runs,
+ *    as on the Plugins screen): when the pages got worse the plugin is deactivated again (reverted: true), not silent
+ *    either, so its deactivation routine cleans up what its activation made (one that throws is caught, and the plugin is
+ *    then switched off silently). A WP_Error from activate_plugin, or a plugin that throws while it is loaded, is
  *    activation_failed and there is no after round; a plugin core switched on before complaining (unexpected_output) is
  *    switched off again. plugins-deactivate runs the checks after and is never reverted.
  *  - This plugin (and the old plugins it replaces) is refused for activate and deactivate (self). Network activation and
@@ -133,13 +135,27 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 		return $out;
 	}
 
+	/**
+	 * The status as an answer: each plugin and theme row keeps only its known fields (item, name, version, active,
+	 * new_version, kind, blocked). An offer's package url can carry a licence key in its query (premium plugins); the engine
+	 * does not copy it today and the secret filter does not look inside urls, so it is dropped here by construction.
+	 */
+	function d5b_wplug_safe_status( array $s ): array {
+		$keep = array_flip( array( 'item', 'name', 'version', 'active', 'new_version', 'kind', 'blocked' ) );
+		foreach ( array( 'plugins', 'themes' ) as $k ) {
+			if ( ! isset( $s[ $k ] ) || ! is_array( $s[ $k ] ) ) { continue; }
+			$s[ $k ] = array_values( array_map( function ( $r ) use ( $keep ) { return is_array( $r ) ? array_intersect_key( $r, $keep ) : array(); }, $s[ $k ] ) );
+		}
+		return $s;
+	}
+
 	// ---- plugins-status (read)
 
 	function d5b_wplug_h_status( array $in ) {
 		if ( ! d5b_wplug_ok( 'update_plugins' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to read the update list.' ); }
 		$a = d5b_rc_args( $in, array() ); if ( is_wp_error( $a ) ) { return $a; }
 		if ( ! function_exists( 'wpsu_status' ) ) { return new WP_Error( 'unavailable', 'The update code is not loaded on this site.' ); }
-		$s = (array) wpsu_status( false ); // the stored list: nothing cleared, nothing asked
+		$s = d5b_wplug_safe_status( (array) wpsu_status( false ) ); // the stored list: nothing cleared, nothing asked
 		$s['kept_copies'] = d5b_wplug_kept_copies();
 		return $s;
 	}
@@ -153,7 +169,7 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 		if ( ! d5b_maint_rate( 'updates-check', 1, 300 ) ) {
 			return new WP_Error( 'too_soon', 'The update list was refreshed less than 5 minutes ago; plugins-status shows it. Try again later.' );
 		}
-		$s = (array) wpsu_status( true, true );
+		$s = d5b_wplug_safe_status( (array) wpsu_status( true, true ) );
 		$count = function ( $rows ) { return count( array_filter( (array) $rows, function ( $r ) { return is_array( $r ) && null !== ( $r['new_version'] ?? null ); } ) ); };
 		$counts = array(
 			'plugins'      => $count( $s['plugins'] ?? array() ),
@@ -241,6 +257,30 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 		return d5b_wplug_target( $a, $verb );
 	}
 
+	/**
+	 * Deactivates $plugin as the Plugins screen does (not silent: its own deactivation routine runs, so what its activation
+	 * routine made is cleaned up), with anything it prints swallowed and anything it throws caught. core saves the active list
+	 * AFTER the routine, so a routine that throws leaves the plugin active: then it is deactivated again, silently.
+	 * @return array{thrown:bool,forced:bool}
+	 */
+	function d5b_wplug_deactivate( string $plugin, bool $net ): array {
+		$thrown = false; $forced = false;
+		$run = function ( bool $silent ) use ( $plugin, $net, &$thrown ) {
+			$level = ob_get_level();
+			ob_start(); // a routine that prints would break the JSON answer
+			try {
+				deactivate_plugins( $plugin, $silent, $net );
+			} catch ( Throwable $e ) {
+				$thrown = true;
+			} finally {
+				while ( ob_get_level() > $level ) { ob_end_clean(); }
+			}
+		};
+		$run( false );
+		if ( d5b_wplug_is_active( $plugin, $net ) ) { $run( true ); $forced = true; }
+		return array( 'thrown' => $thrown, 'forced' => $forced );
+	}
+
 	function d5b_wplug_h_activate( array $in ) {
 		$t = d5b_wplug_start( $in, 'activate' );
 		if ( is_wp_error( $t ) ) { return $t; }
@@ -262,7 +302,7 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 		try {
 			$pages = d5b_pages_check( function () use ( $plugin, $net, $level, &$err ) {
 				try {
-					$r = activate_plugin( $plugin, '', $net, true );
+					$r = activate_plugin( $plugin, '', $net, false ); // not silent: the plugin's own activation routine runs, as on the Plugins screen
 				} catch ( Throwable $e ) {
 					$r = new WP_Error( 'internal_error', 'the plugin stopped with an error while it was loaded (' . get_class( $e ) . ')' );
 				} finally {
@@ -279,25 +319,27 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 
 		if ( null !== $err ) {
 			// unexpected_output: core switched the plugin on before it complained. The answer is "failed", so the state is too.
-			$reverted = false;
-			if ( d5b_wplug_is_active( $plugin, $net ) ) { deactivate_plugins( $plugin, true, $net ); $reverted = true; }
+			$reverted = false; $rv = array( 'thrown' => false, 'forced' => false );
+			if ( d5b_wplug_is_active( $plugin, $net ) ) { $rv = d5b_wplug_deactivate( $plugin, $net ); $reverted = true; }
 			$still = d5b_wplug_is_active( $plugin, $net );
-			d5b_history_set_after( $hid, array( 'active' => d5b_wplug_active_list( $net ), 'failed' => $err->get_error_code(), 'reverted' => $reverted ) );
+			d5b_history_set_after( $hid, array( 'active' => d5b_wplug_active_list( $net ), 'failed' => $err->get_error_code(), 'reverted' => $reverted, 'deactivation_error' => $rv['thrown'] ) );
 			return new WP_Error( 'activation_failed', 'The plugin "' . $plugin . '" could not be activated: ' . d5b_wplug_msg( $err ) . '.'
 				. ( $reverted ? ' WordPress had switched it on before it complained, so it was switched off again.' : '' )
+				. ( $rv['thrown'] ? ' Its deactivation routine stopped with an error, so it was switched off without it.' : '' )
 				. ( $still ? ' It is still active: deactivate it on the Plugins screen.' : '' ),
 				array( 'plugin' => $plugin, 'reason' => $err->get_error_code(), 'reverted' => $reverted, 'active' => $still, 'pages' => null, 'human_check' => d5b_human_check() ) );
 		}
 
 		$problems = (array) $pages['problems'];
-		$reverted = false;
+		$reverted = false; $rv = array( 'thrown' => false, 'forced' => false );
 		if ( array() !== $problems ) {
-			deactivate_plugins( $plugin, true, $net ); // guardrail 22: a checked activation that made the pages worse is undone
+			$rv = d5b_wplug_deactivate( $plugin, $net ); // guardrail 22: a checked activation that made the pages worse is undone
 			$reverted = true;
 		}
 		$active = d5b_wplug_is_active( $plugin, $net );
 		$out    = array( 'plugin' => $plugin, 'network' => $net, 'active' => $active, 'reverted' => $reverted, 'problems' => $problems, 'pages' => $pages, 'human_check' => d5b_human_check() );
 		$warn   = array();
+		if ( $rv['thrown'] ) { $warn[] = 'The plugin\'s deactivation routine stopped with an error, so it was switched off without it; what its activation routine made may still be there.'; }
 		if ( $reverted && $active ) { $warn[] = 'The pages got worse but the plugin could not be switched off again: deactivate it on the Plugins screen.'; }
 		if ( ! $reverted && ! $active ) { $warn[] = 'WordPress reported no error, but the plugin is not active.'; }
 		if ( ! empty( $pages['unavailable'] ) ) { $warn[] = 'The site could not fetch its own pages before the change, so there was no page check: only the human check can tell.'; }
@@ -316,22 +358,12 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 		$before = d5b_wplug_active_list( $net );
 		$hid    = d5b_wc_history_row( 'divi5-builder/plugins-deactivate', 'plugin', 0, 'deactivate', array( 'plugin' => $plugin, 'network' => $net, 'active' => $before ), array( 'running' => true ), 'Deactivated plugin ' . $plugin . ( $net ? ' for the network' : '' ) );
 		if ( $hid < 1 ) { return new WP_Error( 'history_unavailable', 'The change history row could not be written, so the plugin was not deactivated.' ); }
-		$thrown = false;
-		$level  = ob_get_level();
-		$pages  = d5b_pages_check( function () use ( $plugin, $net, $level, &$thrown ) {
-			ob_start(); // a deactivation routine that prints would break the JSON answer
-			try {
-				deactivate_plugins( $plugin, false, $net ); // not silent: the plugin's own deactivation routine runs, as on the Plugins screen
-			} catch ( Throwable $e ) {
-				$thrown = true;
-			} finally {
-				while ( ob_get_level() > $level ) { ob_end_clean(); }
-			}
-		} );
+		$rv    = array( 'thrown' => false, 'forced' => false );
+		$pages = d5b_pages_check( function () use ( $plugin, $net, &$rv ) { $rv = d5b_wplug_deactivate( $plugin, $net ); } );
 		$active = d5b_wplug_is_active( $plugin, $net );
 		$out    = array( 'plugin' => $plugin, 'network' => $net, 'active' => $active, 'reverted' => false, 'problems' => (array) $pages['problems'], 'pages' => $pages, 'human_check' => d5b_human_check() );
 		$warn   = array();
-		if ( $thrown ) { $warn[] = 'The plugin\'s deactivation routine stopped with an error.'; }
+		if ( $rv['thrown'] ) { $warn[] = 'The plugin\'s deactivation routine stopped with an error, so it was switched off without it.'; }
 		if ( $active ) { $warn[] = 'The plugin is still active.'; }
 		if ( ! empty( $pages['unavailable'] ) ) { $warn[] = 'The site could not fetch its own pages before the change, so there was no page check: only the human check can tell.'; }
 		if ( ! d5b_history_set_after( $hid, array( 'active' => d5b_wplug_active_list( $net ), 'pages' => $pages, 'reverted' => false ) ) ) { $warn[] = 'The change history row could not be completed.'; }
@@ -361,7 +393,7 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 		array( 'idempotent' => false ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'plugins-activate', 'plugins', 'Activate a plugin (checked)',
-		'Activates an installed plugin, with a page check around it (the home page and the recently changed pages, fetched before and after). When the pages got worse the plugin is deactivated again at once and the answer says reverted true with the problems. A plugin that fails to load or that WordPress refuses answers activation_failed (and is left, or put back, inactive). A risky action: needs the Plugins risky switch and activate_plugins; network true (multisite) needs a network administrator. This plugin itself is refused (self). Returns plugin, network, active, reverted, problems, pages (before, after, problems, unavailable) and human_check; already_active when it was.' . $d5b_wplug_human . ' One change-history row records the active list before and after, the pages and reverted.',
+		'Activates an installed plugin as the Plugins screen does (its own activation routine runs), with a page check around it (the home page and the recently changed pages, fetched before and after). When the pages got worse the plugin is deactivated again at once (its deactivation routine runs, to clean up) and the answer says reverted true with the problems. A plugin that fails to load, throws, prints, or that WordPress refuses answers activation_failed (and is left, or put back, inactive). An uncatchable PHP fatal while the plugin loads (a compile error, a function declared twice) ends the request with no answer at all; the Plugins screen avoids that with a redirect sandbox this call cannot use. When there is no answer, read plugins-status (is it active?) and the change history row of this call, and check the site. A risky action: needs the Plugins risky switch and activate_plugins; network true (multisite) needs a network administrator. This plugin itself is refused (self). Returns plugin, network, active, reverted, problems, pages (before, after, problems, unavailable) and human_check; already_active when it was.' . $d5b_wplug_human . ' One change-history row records the active list before and after, the pages and reverted.',
 		array( 'plugin' => $d5b_wplug_plugin, 'network' => $d5b_wplug_network ), array( 'plugin' ), 'd5b_wplug_h_activate', d5b_wplug_can( 'activate_plugins' ),
 		array( 'idempotent' => false ), array( 'risky' => true ) );
 

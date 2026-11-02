@@ -97,7 +97,7 @@ function register_setting( $group, $name, $args = array() ) { $GLOBALS['T_settin
 // Set T_NO_DEACTIVATE in the environment to run without deactivate_plugins (as before wp-admin/includes/plugin.php is loaded).
 if ( ! getenv( 'T_NO_DEACTIVATE' ) ) {
 	// With the plugin stand-ins (T_PLUGIN_STANDINS, at the end of this file) it also changes the active lists as core does.
-	function deactivate_plugins( $plugins, $silent = false, $network = null ) { $GLOBALS['T_deactivated'][] = $plugins; $GLOBALS['T_deactivate_calls'][] = array( $plugins, $silent, $network ); if ( function_exists( 't_plugins_deactivate' ) ) { t_plugins_deactivate( $plugins, $network ); } }
+	function deactivate_plugins( $plugins, $silent = false, $network = null ) { $GLOBALS['T_deactivated'][] = $plugins; $GLOBALS['T_deactivate_calls'][] = array( $plugins, $silent, $network ); if ( function_exists( 't_plugins_deactivate' ) ) { t_plugins_deactivate( $plugins, $network, $silent ); } }
 }
 
 function get_option( $n, $d = false ) { return array_key_exists( $n, $GLOBALS['T_options'] ) ? $GLOBALS['T_options'][ $n ] : $d; }
@@ -1997,6 +1997,8 @@ if ( ! class_exists( 'WP_Theme_JSON_Resolver', false ) ) {
 //   T_site_transients     name => value;  T_site_transient_deletes  every name deleted;  T_update_checks  the update calls
 //   T_fresh               name => what wp_version_check / wp_update_plugins / wp_update_themes store (the fresh answer)
 //   T_file_mods_off       wp_is_file_mod_allowed() answers false (DISALLOW_FILE_MODS)
+//   T_plugin_hooks        hook => list of callables run when activate_plugin / deactivate_plugins fire it (not silent);
+//                         T_hook_log every such hook in order
 if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 	function t_plugins_reset() {
 		$GLOBALS['T_plugin_table'] = array(); $GLOBALS['T_activate_fail'] = array(); $GLOBALS['T_activate_calls'] = array(); $GLOBALS['T_traps'] = array();
@@ -2004,6 +2006,7 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		unset( $GLOBALS['T_install_result'] );
 		$GLOBALS['T_plugins_cache_cleans'] = 0; $GLOBALS['T_site_transients'] = array(); $GLOBALS['T_site_transient_deletes'] = array();
 		$GLOBALS['T_update_checks'] = array(); $GLOBALS['T_fresh'] = array(); $GLOBALS['T_file_mods_off'] = false;
+		$GLOBALS['T_plugin_hooks'] = array(); $GLOBALS['T_hook_log'] = array();
 	}
 	t_plugins_reset();
 	function get_plugins( $plugin_folder = '' ) {
@@ -2034,23 +2037,46 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		if ( ( $network_wide && ! isset( $current[ $plugin ] ) ) || ( ! $network_wide && ! in_array( $plugin, $current, true ) ) ) {
 			ob_start();
 			if ( 'fatal' === $fail ) { echo 'Fatal output'; throw new Error( 'Call to undefined function t_missing_function()' ); }
-			if ( ! $silent ) { do_action( 'activate_plugin', $plugin, $network_wide ); }
+			// Not silent: activate_plugin and activate_{$plugin} (register_activation_hook) BEFORE the list is saved, inside
+			// the buffer; activated_plugin after it. A hook that throws leaves the buffer open and the plugin inactive.
+			if ( ! $silent ) { t_plugins_fire( 'activate_plugin', $plugin, $network_wide ); t_plugins_fire( "activate_{$plugin}", $network_wide ); }
 			if ( $network_wide ) { $c = (array) get_site_option( 'active_sitewide_plugins', array() ); $c[ $plugin ] = time(); update_site_option( 'active_sitewide_plugins', $c ); }
 			else { $c = (array) get_option( 'active_plugins', array() ); $c[] = $plugin; sort( $c ); update_option( 'active_plugins', $c ); }
+			if ( ! $silent ) { t_plugins_fire( 'activated_plugin', $plugin, $network_wide ); }
 			if ( 'output' === $fail ) { echo 'Notice: something printed'; }
 			if ( ob_get_length() > 0 ) { $output = ob_get_clean(); return new WP_Error( 'unexpected_output', 'The plugin generated unexpected output.', $output ); }
 			ob_end_clean();
 		}
 		return null;
 	}
-	// The option changes of core's deactivate_plugins (the stand-in above records the call, then calls this).
-	function t_plugins_deactivate( $plugins, $network_wide ) {
+	// A plugin hook: recorded with do_action (T_do_actions), then the callbacks of T_plugin_hooks[ hook ] run, in order
+	// (the stub's do_action only records). T_hook_log: every hook fired, in order.
+	function t_plugins_fire( $hook, ...$args ) {
+		$GLOBALS['T_hook_log'][] = $hook;
+		do_action( $hook, ...$args );
+		foreach ( (array) ( $GLOBALS['T_plugin_hooks'][ $hook ] ?? array() ) as $cb ) { $cb( ...$args ); }
+	}
+	// core's deactivate_plugins after the stand-in above recorded the call: per plugin, not silent: deactivate_plugin, then
+	// the lists changed in memory, then deactivate_{$plugin} (register_deactivation_hook) and deactivated_plugin; the lists
+	// are SAVED after the loop, so a hook that throws leaves the plugin active.
+	function t_plugins_deactivate( $plugins, $network_wide, $silent = false ) {
+		$net = is_multisite() ? (array) get_site_option( 'active_sitewide_plugins', array() ) : array();
+		$cur = (array) get_option( 'active_plugins', array() );
+		$do_blog = false; $do_network = false;
 		foreach ( (array) $plugins as $p ) {
 			$p = trim( $p );
 			if ( ! is_plugin_active( $p ) ) { continue; }
-			if ( false !== $network_wide && is_plugin_active_for_network( $p ) ) { $s = (array) get_site_option( 'active_sitewide_plugins', array() ); unset( $s[ $p ] ); update_site_option( 'active_sitewide_plugins', $s ); }
-			if ( true !== $network_wide ) { $c = (array) get_option( 'active_plugins', array() ); $k = array_search( $p, $c, true ); if ( false !== $k ) { unset( $c[ $k ] ); update_option( 'active_plugins', array_values( $c ) ); } }
+			$net_deact = false !== $network_wide && is_plugin_active_for_network( $p );
+			if ( ! $silent ) { t_plugins_fire( 'deactivate_plugin', $p, $net_deact ); }
+			if ( false !== $network_wide ) {
+				if ( is_plugin_active_for_network( $p ) ) { $do_network = true; unset( $net[ $p ] ); }
+				elseif ( $network_wide ) { continue; }
+			}
+			if ( true !== $network_wide ) { $k = array_search( $p, $cur, true ); if ( false !== $k ) { $do_blog = true; unset( $cur[ $k ] ); } }
+			if ( ! $silent ) { t_plugins_fire( "deactivate_{$p}", $net_deact ); t_plugins_fire( 'deactivated_plugin', $p, $net_deact ); }
 		}
+		if ( $do_blog ) { update_option( 'active_plugins', array_values( $cur ) ); }
+		if ( $do_network ) { update_site_option( 'active_sitewide_plugins', $net ); }
 	}
 	function plugins_api( $action, $args = array() ) {
 		$GLOBALS['T_traps'][] = 'plugins_api';

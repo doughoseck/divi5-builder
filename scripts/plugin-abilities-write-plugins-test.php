@@ -108,6 +108,17 @@ $r = call( 'plugins-status' );
 $row1 = d5b_history_get( $k1 );
 check( 'kept_copies: only plugin rows with kept not null, as { plugin, version, history_id, kept_at }', array( array( 'plugin' => AKISMET, 'version' => '4.9', 'history_id' => $k1, 'kept_at' => d5b_wc_iso( (string) $row1['created_at'] ) ) ) === $r['kept_copies'] && '' !== $r['kept_copies'][0]['kept_at'], $r['kept_copies'] );
 check( 'kept_copies never shows the path of the copy', false === strpos( json_encode( $r ), '/x/akismet' ) );
+// A premium plugin's offer: the package url carries a licence key (the literal split so no whole key-shaped string is in the source).
+function keyed_offers( $file, $ver ) {
+	$t = offers( array( $file => $ver ) );
+	$t->response[ $file ]->package = 'https://vendor.example/download.zip?li' . 'cense_key=' . 'ZQ7x' . 'K9pL2mN4';
+	return $t;
+}
+function no_key( $r ) { $j = json_encode( $r ); return false === strpos( $j, 'ZQ7x' . 'K9pL2mN4' ) && false === strpos( $j, 'cense_key' ) && false === strpos( $j, 'vendor.example' ); }
+site();
+$GLOBALS['T_site_transients']['update_plugins'] = keyed_offers( AKISMET, '5.1' );
+$r = call( 'plugins-status' );
+check( 'status: a stored package url with a licence key never reaches the result (the offer is still shown)', is_array( $r ) && no_key( $r ) && '5.1' === $r['plugins'][0]['new_version'], $r );
 site( array( 'read', 'manage_options' ) );
 check( 'without update_plugins: refused', 'FORBIDDEN' === call( 'plugins-status' ) );
 site();
@@ -131,6 +142,9 @@ check( 'updates-check clears once and is rate-limited: a second check within 5 m
 check( '... too_soon answers 429', 429 === d5b_ability_http_status( 'too_soon' ) );
 $GLOBALS['T_clock'] += 2;
 check( 'after 5 minutes it runs again', is_array( call( 'updates-check' ) ) && 2 === traps( 'wp_clean_update_cache' ) && 2 === count( hrows() ) );
+site(); $GLOBALS['T_fresh']['update_plugins'] = keyed_offers( AKISMET, '5.3' );
+$r = call( 'updates-check' );
+check( 'updates-check: a fresh package url with a licence key reaches neither the result nor the row', is_array( $r ) && no_key( $r ) && no_key( hrows() ) && '5.3' === $r['plugins'][0]['new_version'], $r );
 site( array( 'read', 'manage_options' ) );
 check( 'without update_plugins: refused, nothing cleared', 'FORBIDDEN' === call( 'updates-check' ) && 0 === traps( 'wp_clean_update_cache' ) );
 site(); d5b_abilities_set_category( 'core', false, false, 'tester' );
@@ -201,7 +215,7 @@ site();
 $before_list = active();
 $r = call( 'plugins-activate', array( 'plugin' => HELLO ) );
 check( 'activate: pages fine -> stays active, reverted false, no problems', is_array( $r ) && true === $r['active'] && false === $r['reverted'] && array() === $r['problems'] && in_array( HELLO, active(), true ), $r );
-check( '... activate_plugin( plugin, \'\', false, true )', array( array( HELLO, '', false, true ) ) === $GLOBALS['T_activate_calls'], $GLOBALS['T_activate_calls'] );
+check( '... activate_plugin( plugin, \'\', false, false )', array( array( HELLO, '', false, false ) ) === $GLOBALS['T_activate_calls'], $GLOBALS['T_activate_calls'] );
 check( '... the result carries pages (both rounds) and human_check', isset( $r['pages']['before'], $r['pages']['after'] ) && 1 === count( $r['pages']['before'] ) && 1 === count( $r['pages']['after'] ) && d5b_human_check() === $r['human_check'], $r );
 $h = hlast();
 check( '... one row: plugin, activate; before = the active list, after = the active list + pages + reverted', 1 === count( hrows() ) && 'plugin' === $h['object_type'] && 'activate' === $h['action'] && $before_list === $h['before']['active'] && HELLO === $h['before']['plugin'] && active() === $h['after']['active'] && false === $h['after']['reverted'] && isset( $h['after']['pages']['before'], $h['after']['pages']['after'] ), $h );
@@ -210,7 +224,7 @@ check( '... no deactivation', array() === $GLOBALS['T_deactivate_calls'] );
 site(); $GLOBALS['T_breaks'] = array( HELLO );
 $r = call( 'plugins-activate', array( 'plugin' => HELLO ) );
 check( 'activate: pages worse -> deactivated, reverted true, the problem named', is_array( $r ) && true === $r['reverted'] && false === $r['active'] && ! in_array( HELLO, active(), true ) && 1 === count( $r['problems'] ) && false !== strpos( $r['problems'][0], 'answered 500' ), $r );
-check( '... deactivate_plugins( plugin, true, false ) once', array( array( HELLO, true, false ) ) === $GLOBALS['T_deactivate_calls'], $GLOBALS['T_deactivate_calls'] );
+check( '... deactivate_plugins( plugin, false, false ) once: not silent', array( array( HELLO, false, false ) ) === $GLOBALS['T_deactivate_calls'], $GLOBALS['T_deactivate_calls'] );
 $h = hlast();
 check( '... both rounds in the row, reverted true, the after list without the plugin', true === $h['after']['reverted'] && 1 === count( $h['after']['pages']['before'] ) && 1 === count( $h['after']['pages']['after'] ) && 1 === count( $h['after']['pages']['problems'] ) && ! in_array( HELLO, $h['after']['active'], true ), $h );
 check( '... the result still carries human_check', d5b_human_check() === $r['human_check'] );
@@ -224,11 +238,44 @@ check( '... the row: failed, the active list unchanged', 'activate' === hlast()[
 
 site(); $GLOBALS['T_activate_fail'] = array( HELLO => 'output' );
 $r = call( 'plugins-activate', array( 'plugin' => HELLO ) );
-check( 'activate: unexpected output (core had already activated it) -> activation_failed, switched off again, no page round after', 'activation_failed' === code( $r ) && ! in_array( HELLO, active(), true ) && true === edata( $r )['reverted'] && array( array( HELLO, true, false ) ) === $GLOBALS['T_deactivate_calls'] && 1 === count( $GLOBALS['T_http_calls'] ), array( code( $r ), active(), edata( $r ) ) );
+check( 'activate: unexpected output (core had already activated it) -> activation_failed, switched off again, no page round after', 'activation_failed' === code( $r ) && ! in_array( HELLO, active(), true ) && true === edata( $r )['reverted'] && array( array( HELLO, false, false ) ) === $GLOBALS['T_deactivate_calls'] && 1 === count( $GLOBALS['T_http_calls'] ), array( code( $r ), active(), edata( $r ) ) );
 check( '... the printed text is not in the answer', false === strpos( json_encode( array( $r->get_error_message(), edata( $r ) ) ), 'something printed' ) );
 site(); $GLOBALS['T_activate_fail'] = array( HELLO => 'requirements' );
 $r = call( 'plugins-activate', array( 'plugin' => HELLO ) );
 check( 'activate: requirements not met -> activation_failed, nothing switched on or off', 'activation_failed' === code( $r ) && ! in_array( HELLO, active(), true ) && array() === $GLOBALS['T_deactivate_calls'] && false !== strpos( $r->get_error_message(), 'PHP version' ), is_wp_error( $r ) ? $r->get_error_message() : $r );
+
+echo "activation and deactivation routines (not silent)\n";
+// (a) The plugin's own activation routine runs, before the list is saved; activated_plugin after it.
+site(); $seen = array();
+$GLOBALS['T_plugin_hooks'][ 'activate_' . HELLO ][] = function () use ( &$seen ) { $seen[] = array( 'activate', is_plugin_active( HELLO ) ); update_option( 'hello_table_made', 1 ); };
+$GLOBALS['T_plugin_hooks']['activated_plugin'][] = function ( $p ) use ( &$seen ) { $seen[] = array( 'activated', is_plugin_active( $p ) ); };
+$r = call( 'plugins-activate', array( 'plugin' => HELLO ) );
+check( '(a) the activation routine ran (activate_<plugin> before the list was saved, activated_plugin after): not silent', is_array( $r ) && true === $r['active'] && array( array( 'activate', false ), array( 'activated', true ) ) === $seen && 1 === get_option( 'hello_table_made' ) && array( 'activate_plugin', 'activate_' . HELLO, 'activated_plugin' ) === $GLOBALS['T_hook_log'], array( $seen, $GLOBALS['T_hook_log'] ) );
+// (b) A routine that prints: core answers unexpected_output with the plugin already active -> switched off again.
+site(); $GLOBALS['T_plugin_hooks'][ 'activate_' . HELLO ][] = function () { echo 'Table created!'; };
+$r = call( 'plugins-activate', array( 'plugin' => HELLO ) );
+check( '(b) an activation routine that echoes -> unexpected_output -> activation_failed, reverted true, inactive, no after round', 'activation_failed' === code( $r ) && 'unexpected_output' === edata( $r )['reason'] && true === edata( $r )['reverted'] && ! in_array( HELLO, active(), true ) && 1 === count( $GLOBALS['T_http_calls'] ) && false === strpos( json_encode( array( $r->get_error_message(), edata( $r ) ) ), 'Table created' ), array( code( $r ), edata( $r ), active() ) );
+check( '... the revert ran the deactivation routine (not silent)', array( array( HELLO, false, false ) ) === $GLOBALS['T_deactivate_calls'] && in_array( 'deactivate_' . HELLO, $GLOBALS['T_hook_log'], true ), array( $GLOBALS['T_deactivate_calls'], $GLOBALS['T_hook_log'] ) );
+// (c) A routine that throws before the list is saved: not active, no after round, the buffer closed.
+site(); $GLOBALS['T_plugin_hooks'][ 'activate_' . HELLO ][] = function () { echo 'half'; throw new RuntimeException( 'cannot create table' ); }; $level = ob_get_level();
+$r = call( 'plugins-activate', array( 'plugin' => HELLO ) );
+check( '(c) an activation routine that throws -> activation_failed, not active, nothing to revert, no after round', 'activation_failed' === code( $r ) && false === edata( $r )['reverted'] && ! in_array( HELLO, active(), true ) && array() === $GLOBALS['T_deactivate_calls'] && 1 === count( $GLOBALS['T_http_calls'] ) && $level === ob_get_level(), array( code( $r ), edata( $r ), count( $GLOBALS['T_http_calls'] ) ) );
+check( '... a RuntimeException from the plugin is not mistaken for the internal stop; its message is not passed on', is_wp_error( $r ) && false === strpos( $r->get_error_message(), 'cannot create table' ) );
+// The revert after bad page checks runs the plugin's deactivation routine, which cleans up.
+site(); $GLOBALS['T_breaks'] = array( HELLO );
+$GLOBALS['T_plugin_hooks'][ 'activate_' . HELLO ][] = function () { update_option( 'hello_table_made', 1 ); };
+$GLOBALS['T_plugin_hooks'][ 'deactivate_' . HELLO ][] = function () { delete_option( 'hello_table_made' ); };
+$r = call( 'plugins-activate', array( 'plugin' => HELLO ) );
+check( 'revert after worse pages: the deactivation routine fires and cleans up what the activation made', is_array( $r ) && true === $r['reverted'] && false === $r['active'] && false === get_option( 'hello_table_made' ) && in_array( 'deactivate_' . HELLO, $GLOBALS['T_hook_log'], true ) && ! isset( $r['warnings'] ), $r );
+// A deactivation routine that throws during the revert: caught, the plugin still ends inactive (switched off silently after).
+site(); $GLOBALS['T_breaks'] = array( HELLO ); $level = ob_get_level();
+$GLOBALS['T_plugin_hooks'][ 'deactivate_' . HELLO ][] = function () { echo 'bye'; throw new Error( 'boom in deactivation' ); };
+$r = call( 'plugins-activate', array( 'plugin' => HELLO ) );
+check( 'revert with a deactivation routine that throws: caught, the plugin ends inactive, reverted true, a warning', is_array( $r ) && true === $r['reverted'] && false === $r['active'] && ! in_array( HELLO, active(), true ) && array( array( HELLO, false, false ), array( HELLO, true, false ) ) === $GLOBALS['T_deactivate_calls'] && ! empty( $r['warnings'] ) && $level === ob_get_level(), array( $r, $GLOBALS['T_deactivate_calls'] ) );
+site(); $GLOBALS['T_plugin_hooks'][ 'activate_' . HELLO ][] = function () { echo 'x'; };
+$GLOBALS['T_plugin_hooks'][ 'deactivate_' . HELLO ][] = function () { throw new Error( 'boom' ); };
+$r = call( 'plugins-activate', array( 'plugin' => HELLO ) );
+check( 'unexpected_output revert with a deactivation routine that throws: still ends inactive', 'activation_failed' === code( $r ) && true === edata( $r )['reverted'] && false === edata( $r )['active'] && ! in_array( HELLO, active(), true ), array( code( $r ), edata( $r ) ) );
 
 site(); $GLOBALS['T_http_fn'] = function () { return null; };
 $r = call( 'plugins-activate', array( 'plugin' => HELLO ) );
@@ -257,12 +304,12 @@ site( ADMIN, true ); $GLOBALS['T_user_login'] = 'siteadmin';
 $r = call( 'plugins-activate', array( 'plugin' => HELLO, 'network' => true ) );
 check( 'multisite: network activate needs is_super_admin (a site admin is refused, nothing called)', 'forbidden' === code( $r ) && array() === $GLOBALS['T_activate_calls'] && array() === (array) get_site_option( 'active_sitewide_plugins', array() ), code( $r ) );
 $r = call( 'plugins-activate', array( 'plugin' => HELLO ) );
-check( 'multisite: a site admin activates for this site', is_array( $r ) && true === $r['active'] && in_array( HELLO, active(), true ) && array( array( HELLO, '', false, true ) ) === $GLOBALS['T_activate_calls'], $r );
+check( 'multisite: a site admin activates for this site', is_array( $r ) && true === $r['active'] && in_array( HELLO, active(), true ) && array( array( HELLO, '', false, false ) ) === $GLOBALS['T_activate_calls'], $r );
 site( ADMIN, true ); $GLOBALS['T_user_login'] = 'siteadmin'; $GLOBALS['T_plugin_table'][ HELLO ]['Network'] = true;
 check( 'multisite: a Network: true plugin without network (core would network-activate it): not_allowed', 'not_allowed' === code( call( 'plugins-activate', array( 'plugin' => HELLO ) ) ) && array() === $GLOBALS['T_activate_calls'] );
 site( ADMIN, true );
 $r = call( 'plugins-activate', array( 'plugin' => HELLO, 'network' => true ) );
-check( 'multisite: a network administrator activates network-wide', is_array( $r ) && true === $r['active'] && true === $r['network'] && isset( ( (array) get_site_option( 'active_sitewide_plugins', array() ) )[ HELLO ] ) && array( array( HELLO, '', true, true ) ) === $GLOBALS['T_activate_calls'], $r );
+check( 'multisite: a network administrator activates network-wide', is_array( $r ) && true === $r['active'] && true === $r['network'] && isset( ( (array) get_site_option( 'active_sitewide_plugins', array() ) )[ HELLO ] ) && array( array( HELLO, '', true, false ) ) === $GLOBALS['T_activate_calls'], $r );
 check( '... the row records the network list', array() === hlast()['before']['active'] && array( HELLO ) === hlast()['after']['active'] && true === hlast()['before']['network'], hlast() );
 $GLOBALS['T_user_login'] = 'siteadmin';
 check( 'multisite: deactivating a network-active plugin for one site: not_allowed', 'not_allowed' === code( call( 'plugins-deactivate', array( 'plugin' => HELLO ) ) ) && array() === $GLOBALS['T_deactivate_calls'] );
@@ -280,6 +327,9 @@ check( '... one row: deactivate, before/after active lists, pages, reverted fals
 site(); $GLOBALS['T_needs'] = array( AKISMET );
 $r = call( 'plugins-deactivate', array( 'plugin' => AKISMET ) );
 check( 'deactivate: pages worse -> the problem is reported, never reverted (stays inactive, no activate call)', is_array( $r ) && 1 === count( $r['problems'] ) && false === $r['reverted'] && false === $r['active'] && array() === $GLOBALS['T_activate_calls'], $r );
+site(); $GLOBALS['T_plugin_hooks'][ 'deactivate_' . AKISMET ][] = function () { echo 'x'; throw new Error( 'boom' ); }; $level = ob_get_level();
+$r = call( 'plugins-deactivate', array( 'plugin' => AKISMET ) );
+check( 'deactivate: a deactivation routine that throws is caught; the plugin still ends inactive, with a warning', is_array( $r ) && false === $r['active'] && ! in_array( AKISMET, active(), true ) && ! empty( $r['warnings'] ) && $level === ob_get_level(), $r );
 site();
 $r = call( 'plugins-deactivate', array( 'plugin' => HELLO ) );
 check( 'deactivate: not active: already_inactive, nothing called, no row', is_array( $r ) && true === $r['already_inactive'] && array() === $GLOBALS['T_deactivate_calls'] && array() === hrows(), $r );
