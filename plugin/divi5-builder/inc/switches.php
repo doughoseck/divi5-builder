@@ -80,7 +80,9 @@ if ( ! function_exists( 'd5b_abilities_category_stored_on' ) ) {
 	 * a stored value counts as on only when it is an array whose 'on' is a real true. A scalar, false, "off", 0 or [] is off.
 	 */
 	function d5b_abilities_category_stored_on( array $rows, string $slug ): bool {
-		if ( ! array_key_exists( $slug, $rows ) ) { return true; }
+		// A category added after the first switches were stored (email, 2.4.0) is off until an admin ticks it: a site whose
+		// master was on must not start sending email on update. The older categories keep their default.
+		if ( ! array_key_exists( $slug, $rows ) ) { return ! in_array( $slug, array( 'email' ), true ); }
 		$row = $rows[ $slug ];
 		return is_array( $row ) && array_key_exists( 'on', $row ) && true === $row['on'];
 	}
@@ -191,11 +193,14 @@ if ( ! function_exists( 'd5b_abilities_set_category' ) ) {
 }
 
 if ( ! function_exists( 'd5b_abilities_upgrade_notice_text' ) ) {
-	/** The notice text: $version 1 is the 2.2.0 text, 2 the 2.3.0 text; null reads which one is stored (2.2.0's when unknown). */
+	/** The notice text: $version 1 is the 2.2.0 text, 2 the 2.3.0 text, 3 the 2.4.0 text; null reads which one is stored (2.2.0's when unknown). */
 	function d5b_abilities_upgrade_notice_text( ?int $version = null ): string {
 		if ( null === $version ) {
-			$v       = is_multisite() ? get_site_option( 'd5b_abilities_upgrade_notice', 0 ) : get_option( 'd5b_abilities_upgrade_notice', 0 );
-			$version = 2 === (int) $v ? 2 : 1;
+			$v       = (int) ( is_multisite() ? get_site_option( 'd5b_abilities_upgrade_notice', 0 ) : get_option( 'd5b_abilities_upgrade_notice', 0 ) );
+			$version = in_array( $v, array( 2, 3 ), true ) ? $v : 1;
+		}
+		if ( 3 === $version ) {
+			return 'The AI abilities master switch was turned off by the update to 2.4.0, which adds abilities that manage users, plugins, themes, WordPress updates and email, and whose normal writes send a test email, send password reset links, update translations and refresh the update list. Review the switches and turn it on again when you are ready.';
 		}
 		if ( 2 === $version ) {
 			return 'divi5-builder 2.3.0 adds AI abilities that can change site settings, theme settings, widgets and caches, and risky actions behind their own switches. The AI abilities master switch was turned off during the update; review the switches and turn it on again when you are ready.';
@@ -214,10 +219,16 @@ if ( ! function_exists( 'd5b_abilities_upgrade_consent' ) ) {
 	 * '1' -> '2' (2.1.x to 2.2.0, abilities that write): the 2.2.0 step, once per network (d5b_abilities_consent_220).
 	 * '2' -> '3' and '1' -> '3' (2.3.0: settings, theme settings, widgets, caches, risky actions): the 2.3.0 step, once per
 	 * network (d5b_abilities_consent_230); a site that skips 2.2.0 gets this one step with the 2.3.0 text.
+	 * '3' -> '4', and '1' or '2' -> '4' (2.4.0: users, plugins, themes, WordPress updates and email; normal writes that send a
+	 * test email, send password reset links, update translations and refresh the update list): the 2.4.0 step, once per
+	 * network (d5b_abilities_consent_240), notice 3; a site that skips 2.2.0 and 2.3.0 gets this one step.
 	 * No arguments means the 2.2.0 step, as before. Any other move: nothing.
 	 */
 	function d5b_abilities_upgrade_consent( string $from = '1', string $to = '2' ): void {
-		if ( '3' === $to && in_array( $from, array( '1', '2' ), true ) ) {
+		if ( '4' === $to && in_array( $from, array( '1', '2', '3' ), true ) ) {
+			$once = 'd5b_abilities_consent_240'; $notice = 3;
+			$why  = 'turned off by the update to 2.4.0, which adds abilities that manage users, plugins, themes, WordPress updates and email, and whose normal writes send a test email, send password reset links, update translations and refresh the update list';
+		} elseif ( '3' === $to && in_array( $from, array( '1', '2' ), true ) ) {
 			$once = 'd5b_abilities_consent_230'; $notice = 2;
 			$why  = 'turned off by the update to 2.3.0, which adds abilities that change site settings, theme settings, widgets and caches';
 		} elseif ( '2' === $to && '1' === $from ) {

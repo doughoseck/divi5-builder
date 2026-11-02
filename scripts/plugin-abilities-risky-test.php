@@ -72,7 +72,10 @@ function site( bool $master, bool $cat_on, bool $risky_on ) {
 echo "the helpers\n";
 check( 'd5b_ability_risky: true only for risky => true exactly', true === d5b_ability_risky( array( 'risky' => true ) ) && false === d5b_ability_risky( array() ) && false === d5b_ability_risky( array( 'risky' => 1 ) ) && false === d5b_ability_risky( array( 'risky' => 'yes' ) ) && false === d5b_ability_risky( array( 'risky' => false ) ) );
 $four = array(); foreach ( array_keys( d5b_ability_categories() ) as $s ) { if ( d5b_category_has_risky( $s ) ) { $four[] = $s; } }
-check( 'd5b_category_has_risky: exactly settings, templates, appearance, health', array( 'settings', 'templates', 'appearance', 'health' ) === $four && false === d5b_category_has_risky( 'nonsense' ), $four );
+$cats = d5b_ability_categories();
+$rw = true; foreach ( array( 'users', 'plugins', 'themes', 'core' ) as $s ) { if ( 0 !== strpos( $cats[ $s ]['description'], 'Read ' ) || 1 !== preg_match( '/\b(update|change|create|install|delete)\b/', $cats[ $s ]['description'] ) ) { $rw = false; } }
+check( 'the users, plugins, themes and core descriptions say read AND write now', $rw, array_map( function ( $c ) { return $c['description']; }, $cats ) );
+check( 'd5b_category_has_risky: exactly settings, templates, appearance, health, users, plugins, themes, core (never email)', array( 'settings', 'templates', 'appearance', 'health', 'users', 'plugins', 'themes', 'core' ) === $four && false === d5b_category_has_risky( 'email' ) && false === d5b_category_has_risky( 'nonsense' ), $four );
 
 echo "the registration gate\n";
 site( true, true, false );
@@ -118,11 +121,16 @@ $notes = array(
 	'templates'  => 'Changes the theme\'s templates and global styles on block themes. A broken template can blank a page until it is put back.',
 	'appearance' => 'Can change Custom CSS and theme settings. A wrong CSS rule can hide the whole page until it is put back.',
 	'health'     => 'Can run a scheduled task now. Tasks belong to plugins and may do real work (send emails, process orders, run migrations).',
+	'users'      => 'Can create users including administrators, change roles and emails, and delete users. A deleted user\'s content is reassigned, never deleted. Passwords are never set or shown; resets go by email.',
+	'plugins'    => 'Can install plugins from wordpress.org, activate, deactivate, update, roll back and delete them. A plugin change can take the site down; the previous version is kept for 30 days and a broken activation is reverted.',
+	'themes'     => 'Can install themes from wordpress.org, switch, update, roll back and delete them. Switching theme changes how the whole site looks; the previous version and the previous theme name are kept for 30 days.',
+	'core'       => 'Can update WordPress itself. There is no rollback for a core update; keep a backup.',
 );
-$ok = true; foreach ( $notes as $slug => $note ) { if ( false === strpos( $h, 'name="d5b_risky[' . $slug . ']"' ) || false === strpos( $h, esc_html( $note ) ) ) { $ok = false; } }
-check( 'the four risky checkboxes render, each with its verbatim note', $ok );
-check( 'the label reads "Also allow risky actions" four times', 4 === substr_count( $h, 'Also allow risky actions' ) );
-check( 'no other category has a risky box', 4 === preg_match_all( '/name="d5b_risky\[/', $h ) && 0 === preg_match( '/name="d5b_risky\[(posts|pages|widgets|cache|users)\]/', $h ) );
+$ok = true; foreach ( $notes as $slug => $note ) { if ( false === strpos( $h, 'name="d5b_risky[' . $slug . ']"' ) || false === strpos( $h, esc_html( $note ) ) || $note !== d5b_risky_note( $slug ) ) { $ok = false; } }
+check( 'the eight risky checkboxes render, each with its verbatim note (users, plugins, themes, core added in 2.4.0)', $ok );
+check( 'the label reads "Also allow risky actions" eight times', 8 === substr_count( $h, 'Also allow risky actions' ) );
+check( 'no other category has a risky box (email has none)', 8 === preg_match_all( '/name="d5b_risky\[/', $h ) && 0 === preg_match( '/name="d5b_risky\[(posts|pages|widgets|cache|email)\]/', $h ) && '' === d5b_risky_note( 'email' ) );
+check( 'the email category box renders, unticked on a fresh store', false !== strpos( $h, 'name="d5b_abilities_cat[email]"' ) && 0 === preg_match( '/name="d5b_abilities_cat\[email\]"[^>]*checked/', $h ) );
 check( 'fresh store: every risky box is unticked', 0 === preg_match( '/name="d5b_risky\[[a-z]+\]"[^>]*checked/', $h ) );
 d5b_abilities_set_category( 'appearance', true, true, 'doug' );
 $h = html( 'd5b_settings_render' );
@@ -191,6 +199,30 @@ check( 'multisite: the first site turns the master off and records d5b_abilities
 fresh(); t_set_multisite( true ); d5b_abilities_set_master( true, 'ann' ); update_site_option( 'd5b_abilities_consent_220', 1 );
 d5b_abilities_upgrade_consent( '1', '3' );
 check( 'multisite: a 2.2.0 consent already given does not stop the 2.3.0 step (its own option)', false === d5b_abilities_master_on() && 1 === get_site_option( 'd5b_abilities_consent_230', null ) );
+
+echo "the 2.4.0 upgrade step\n";
+$text24 = 'The AI abilities master switch was turned off by the update to 2.4.0, which adds abilities that manage users, plugins, themes, WordPress updates and email, and whose normal writes send a test email, send password reset links, update translations and refresh the update list. Review the switches and turn it on again when you are ready.';
+$why24  = 'turned off by the update to 2.4.0, which adds abilities that manage users, plugins, themes, WordPress updates and email, and whose normal writes send a test email, send password reset links, update translations and refresh the update list';
+fresh(); t_set_caps( array( 'manage_options' ) ); d5b_abilities_set_master( true, 'ann' ); d5b_abilities_upgrade_consent( '3', '4' );
+$m = d5b_abilities_switches()['master'];
+check( "'3' -> '4', master on: master off, changed_by 0 with the 2.4.0 reason word for word, notice 3", false === $m['on'] && '0' === $m['changed_by'] && $why24 === $m['reason'] && 3 === $notice(), $m );
+check( '... the notice text is the 2.4.0 text, and the settings page shows it with its Dismiss form', $text24 === d5b_abilities_upgrade_notice_text() && $text24 === d5b_abilities_upgrade_notice_text( 3 ) && false !== strpos( $h = html( 'd5b_settings_render' ), esc_html( $text24 ) ) && false !== strpos( $h, 'name="d5b_dismiss_upgrade_notice"' ) );
+check( '... the older texts are still what 1 and 2 give', 0 === strpos( d5b_abilities_upgrade_notice_text( 1 ), 'divi5-builder 2.2.0 adds' ) && $text23 === d5b_abilities_upgrade_notice_text( 2 ) );
+foreach ( array( '1', '2' ) as $from ) {
+	fresh(); d5b_abilities_set_master( true, 'ann' ); d5b_abilities_upgrade_consent( $from, '4' );
+	check( "'$from' -> '4' (steps skipped): the 2.4.0 step once, with notice 3 and the 2.4.0 reason", false === d5b_abilities_master_on() && 3 === $notice() && $why24 === d5b_abilities_switches()['master']['reason'] );
+}
+fresh(); d5b_abilities_set_master( false, 'ann' ); d5b_abilities_upgrade_consent( '3', '4' );
+check( "'3' -> '4', master already off: nothing (the master row untouched, no notice)", 'ann' === d5b_abilities_switches()['master']['changed_by'] && null === $notice() );
+fresh(); d5b_abilities_set_master( true, 'ann' ); d5b_abilities_upgrade_consent( '4', '4' ); d5b_abilities_upgrade_consent( '0', '4' ); d5b_abilities_upgrade_consent( '3', '3' );
+check( "'4' already (or a move that is not an upgrade): nothing", true === d5b_abilities_master_on() && null === $notice() );
+fresh(); t_set_multisite( true ); d5b_abilities_set_master( true, 'ann' ); update_site_option( 'd5b_abilities_consent_230', 1 );
+d5b_abilities_upgrade_consent( '3', '4' );
+$first = false === d5b_abilities_master_on() && 3 === $notice() && 1 === get_site_option( 'd5b_abilities_consent_240', null );
+d5b_abilities_set_master( true, 'netadmin' ); delete_site_option( 'd5b_abilities_upgrade_notice' );
+d5b_abilities_upgrade_consent( '3', '4' ); d5b_abilities_upgrade_consent( '2', '4' );
+check( 'multisite: the first site turns the master off and records d5b_abilities_consent_240 (a 2.3.0 consent does not stop it); the next sites leave a master switched on again alone, no new notice', $first && true === d5b_abilities_master_on() && null === $notice() );
+check( 'uninstall removes the 2.4.0 consent option', false !== strpos( file_get_contents( $dir . '/uninstall.php' ), "'d5b_abilities_consent_240'" ) );
 
 echo "the shipped definitions\n";
 foreach ( array( 'blocks-text-fields', 'blocks', 'abilities/secrets', 'abilities/audit', 'abilities/scrub', 'abilities/history', 'abilities/confirm',

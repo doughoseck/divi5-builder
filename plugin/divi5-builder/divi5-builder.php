@@ -67,6 +67,7 @@ foreach ( array(
 	'inc/abilities/write-themes.php',
 	'inc/abilities/write-core.php',
 	'inc/abilities/write-users.php',
+	'inc/abilities/write-email.php',
 	'inc/settings.php',
 	'parts/page-building.php',
 	'parts/media-audit.php',

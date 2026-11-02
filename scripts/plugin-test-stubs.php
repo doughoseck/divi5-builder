@@ -2891,3 +2891,26 @@ if ( defined( 'T_USER_STANDINS' ) ) {
 	}
 	t_users_reset();
 }
+
+// ---- email (2.4.0 Task 7, write-email.php). pluggable.php's wp_mail at the surface the plugin uses:
+//   T_mails      every call: array( to, subject, message, headers )
+//   T_mail_fail  a message (or true): the send fails as PHPMailer's catch block does in core 6.4.1: do_action( 'wp_mail_failed',
+//                new WP_Error( 'wp_mail_failed', message, mail_data ) ), then false. The do_action stand-in only records, so the
+//                listeners added with add_action( 'wp_mail_failed', ... ) are run here as core's do_action would.
+// wp_date: the site's time as core formats it (UTC here; T_wp_date overrides the text).
+if ( ! function_exists( 'wp_mail' ) ) {
+	function wp_mail( $to, $subject, $message, $headers = '', $attachments = array() ) {
+		$GLOBALS['T_mails'][] = array( $to, $subject, $message, $headers );
+		$fail = $GLOBALS['T_mail_fail'] ?? false;
+		if ( false === $fail || null === $fail ) { return true; }
+		$msg  = is_string( $fail ) ? $fail : 'Could not instantiate mail function.';
+		$data = array( 'to' => (array) $to, 'subject' => $subject, 'message' => $message, 'headers' => array(), 'attachments' => array(), 'phpmailer_exception_code' => 2 );
+		$err  = new WP_Error( 'wp_mail_failed', $msg, $data );
+		do_action( 'wp_mail_failed', $err );
+		foreach ( $GLOBALS['T_actions']['wp_mail_failed'] ?? array() as $cb ) { call_user_func( $cb, $err ); }
+		return false;
+	}
+}
+if ( ! function_exists( 'wp_date' ) ) {
+	function wp_date( $format, $timestamp = null, $timezone = null ) { return $GLOBALS['T_wp_date'] ?? gmdate( (string) $format, null === $timestamp ? time() : (int) $timestamp ); }
+}

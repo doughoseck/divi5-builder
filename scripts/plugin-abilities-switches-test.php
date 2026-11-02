@@ -40,8 +40,8 @@ function post_abilities( array $extra ) { $_POST = array_merge( array( 'action' 
 // ---- categories (data)
 echo "the category table\n";
 $cats = d5b_ability_categories();
-$want = array( 'posts', 'pages', 'media', 'taxonomy', 'comments', 'meta', 'cpt', 'blocks', 'menus', 'revisions', 'search', 'settings', 'templates', 'appearance', 'widgets', 'cache', 'health', 'users', 'plugins', 'themes', 'core', 'history', 'divi' );
-check( 'the 23 slugs, in order', $want === array_keys( $cats ), array_keys( $cats ) );
+$want = array( 'posts', 'pages', 'media', 'taxonomy', 'comments', 'meta', 'cpt', 'blocks', 'menus', 'revisions', 'search', 'settings', 'templates', 'appearance', 'widgets', 'cache', 'health', 'users', 'plugins', 'themes', 'core', 'email', 'history', 'divi' );
+check( 'the 24 slugs, in order (email added in 2.4.0)', $want === array_keys( $cats ), array_keys( $cats ) );
 $ok = true;
 foreach ( $cats as $slug => $c ) { if ( 'divi5-builder-' . $slug !== $c['wp_slug'] || '' === $c['label'] || '' === $c['description'] || false !== strpos( $c['label'] . $c['description'], "\u{2014}" ) ) { $ok = false; } }
 check( 'each has label, description and wp_slug = divi5-builder-<slug>, no em dash', $ok );
@@ -52,8 +52,8 @@ fresh();
 $a = d5b_abilities_switches();
 check( 'fresh store: master off', false === $a['master']['on'] && false === d5b_abilities_master_on(), $a['master'] );
 $allcat = true; $norisky = true;
-foreach ( $want as $slug ) { if ( true !== $a['categories'][ $slug ]['on'] ) { $allcat = false; } if ( false !== $a['categories'][ $slug ]['risky_on'] ) { $norisky = false; } }
-check( 'fresh store: every category reads on in the normalized store', $allcat && 23 === count( $a['categories'] ) );
+foreach ( $want as $slug ) { if ( ( 'email' !== $slug ) !== $a['categories'][ $slug ]['on'] ) { $allcat = false; } if ( false !== $a['categories'][ $slug ]['risky_on'] ) { $norisky = false; } }
+check( 'fresh store: every category reads on in the normalized store, except email (off until ticked, 2.4.0)', $allcat && 24 === count( $a['categories'] ) );
 check( 'fresh store: every risky off', $norisky );
 check( 'fresh store: nothing is written by reading', array() === $GLOBALS['T_writes'] );
 check( 'fresh store: category_on and risky_on are false (master off)', false === d5b_abilities_category_on( 'posts' ) && false === d5b_abilities_risky_on( 'posts' ) );
@@ -213,7 +213,7 @@ $h = html( 'd5b_settings_render' );
 $risk = 'Lets AI clients connected to this site (over the REST API) read site content and settings through this plugin. Nothing is shared until you switch this on. Every call is logged for 30 days. Secrets are filtered out by name and shape; the filter is careful but not perfect, so switch on only what you need. With this on, connected AI clients can also create and change content in the categories you tick. Every change is kept in the change history for 30 days.';
 check( 'has an "AI abilities" section and the master checkbox', false !== strpos( $h, 'AI abilities' ) && false !== strpos( $h, 'name="d5b_abilities_master"' ) );
 check( 'the risk note is printed verbatim', false !== strpos( $h, esc_html( $risk ) ) );
-check( 'one checkbox per category, named d5b_abilities_cat[<slug>]', 23 === substr_count( $h, 'name="d5b_abilities_cat[' ), substr_count( $h, 'name="d5b_abilities_cat[' ) );
+check( 'one checkbox per category, named d5b_abilities_cat[<slug>]', 24 === substr_count( $h, 'name="d5b_abilities_cat[' ), substr_count( $h, 'name="d5b_abilities_cat[' ) );
 check( 'master off: every category checkbox is enabled (none disabled) and the form marker is printed', 0 === preg_match( '/name="d5b_abilities_cat\[[a-z]+\]"[^>]*disabled/', $h ) && false === strpos( $h, 'disabled' ) && 1 === substr_count( $h, 'name="d5b_abilities_cat_form"' ), $h );
 check( 'master off: the master box is not checked', 1 === preg_match( '/name="d5b_abilities_master"(?![^>]*checked)/', $h ) );
 // The spec (Defaults): "When it is switched on, the read and normal-write categories are already ticked."
@@ -333,6 +333,28 @@ $_POST = $page; run_save();
 check( 'case A: the consent step turned the master off, then a page loaded before it is saved: refused, nothing changes (master stays off, notice stays)',
 	$after_update === stored() && false === d5b_abilities_master_on() && true === d5b_abilities_upgrade_notice_on() && array( $stale_url ) === $GLOBALS['T_redirects'], array( stored(), $GLOBALS['T_redirects'] ) );
 check( '... and the page then shows the error', false !== strpos( html( function () { $_GET['d5b_stale'] = '1'; d5b_settings_render(); } ), 'The switches changed since this page was loaded (by another admin or an update). Reload and try again.' ) );
+// The same guard for the 2.4.0 step.
+fresh(); t_set_caps( array( 'manage_options' ) ); $GLOBALS['T_user_login'] = 'doug';
+d5b_abilities_set_master( true, 'doug' ); d5b_abilities_set_category( 'users', true, true, 'doug' );
+$page = form_post( html( 'd5b_settings_render' ) );
+d5b_abilities_upgrade_consent( '3', '4' );
+$after_update = stored();
+$_POST = $page; run_save();
+check( "case A for 2.4.0: '3' -> '4' turned the master off, a page loaded before it is saved: refused, the master stays off, notice 3 stays",
+	$after_update === stored() && false === d5b_abilities_master_on() && 3 === get_option( 'd5b_abilities_upgrade_notice' ) && array( $stale_url ) === $GLOBALS['T_redirects'], array( stored(), $GLOBALS['T_redirects'] ) );
+
+// The email category (2.4.0): a stored switch set that does not name it reads it off (it starts off everywhere); it is a
+// category like the others once stored.
+fresh(); t_set_caps( array( 'manage_options' ) );
+d5b_abilities_set_master( true, 'doug' ); d5b_abilities_set_category( 'posts', true, false, 'doug' );
+check( 'email: missing from the stored switches -> off (category_on false, the switches say off), while comments (never stored, older) reads on', false === d5b_abilities_category_on( 'email' ) && false === d5b_abilities_switches()['categories']['email']['on'] && true === d5b_abilities_category_on( 'comments' ) && ! isset( stored()['abilities']['categories']['email'] ) );
+update_option( 'd5b_switches', array( 'abilities' => array( 'master' => array( 'on' => true ) ) ) );
+check( 'email: no categories stored at all -> still off', false === d5b_abilities_category_on( 'email' ) );
+d5b_abilities_set_category( 'email', true, false, 'doug' );
+check( 'email: stored on -> on; its risky_on stays false', true === d5b_abilities_category_on( 'email' ) && false === d5b_abilities_risky_on( 'email' ) );
+$page = form_post( html( 'd5b_settings_render' ) ); unset( $page['d5b_abilities_cat']['email'] );
+$_POST = $page; run_save();
+check( 'email: unticked on the form -> off', false === d5b_abilities_category_on( 'email' ) && false === stored()['abilities']['categories']['email']['on'] );
 
 fresh(); t_set_caps( array( 'manage_options' ) ); $GLOBALS['T_user_login'] = 'a';
 d5b_abilities_set_master( true, 'a' ); d5b_abilities_set_category( 'health', true, true, 'a' ); d5b_abilities_set_category( 'appearance', true, true, 'a' );
