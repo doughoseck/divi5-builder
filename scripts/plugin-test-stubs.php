@@ -39,6 +39,7 @@ function t_reset() {
 	if ( function_exists( 't_cron_reset' ) ) { t_cron_reset(); }
 	if ( function_exists( 't_templates_reset' ) ) { t_templates_reset(); }
 	if ( function_exists( 't_plugins_reset' ) ) { t_plugins_reset(); }
+	if ( function_exists( 't_users_reset' ) ) { t_users_reset(); }
 }
 // A new request: WordPress starts a request with the gate not yet run.
 function t_new_request() { unset( $GLOBALS['d5b_gate_ran'] ); }
@@ -215,6 +216,7 @@ function wp_slash( $v ) { if ( is_array( $v ) ) { return array_map( 'wp_slash', 
 if ( ! defined( 'ARRAY_A' ) ) { define( 'ARRAY_A', 'ARRAY_A' ); }
 class T_Wpdb {
 	public $posts = 'wp_posts'; public $postmeta = 'wp_postmeta'; public $options = 'wp_options';
+	public $users = 'wp_users'; public $usermeta = 'wp_usermeta'; public $comments = 'wp_comments'; public $links = 'wp_links';
 	public $prefix = 'wp_'; public $tables = array(); public $queries = array(); public $unprepared = array(); public $fail_insert = false; public $fail_update = false; public $insert_id = 0; public $suppress_now = false; public $suppress_log = array();
 	private $prepared = array(); private $next_id = 1;
 	function get_blog_prefix( $id = null ) { return 'wp_' . ( ( null === $id || 1 === (int) $id ) ? '' : (int) $id . '_' ); }
@@ -270,6 +272,10 @@ class T_Wpdb {
 		$this->note( $sql );
 		if ( preg_match( "/^SHOW TABLES LIKE '(.*)'$/", $sql, $m ) ) { $t = stripslashes( stripslashes( $m[1] ) ); return isset( $this->tables[ $t ] ) ? $t : null; }
 		// As MySQL: the smallest created_at, NULL for an empty table (and for a missing one, with an error).
+		// The comments a user wrote, every status (the user stand-ins, T_USER_STANDINS).
+		if ( preg_match( '/^SELECT COUNT\(\*\) FROM wp_comments WHERE user_id = (\d+)$/', $sql, $m ) ) {
+			$n = 0; foreach ( $GLOBALS['T_comments'] ?? array() as $c ) { if ( (int) $c->user_id === (int) $m[1] ) { $n++; } } return (string) $n;
+		}
 		if ( preg_match( '/^SELECT MIN\(created_at\) FROM (\S+)$/', $sql, $m ) ) {
 			$rows = $this->tables[ $m[1] ] ?? array(); if ( array() === $rows ) { return null; }
 			$c = array_column( $rows, 'created_at' ); sort( $c, SORT_STRING ); return (string) $c[0];
@@ -283,6 +289,8 @@ class T_Wpdb {
 	function get_col( $sql ) {
 		$this->note( $sql );
 		$q = "'((?:[^'\\\\]|\\\\.)*)'";
+		// Core's own query in wp_delete_user / remove_user_from_blog: every item (any type, any status) of the author.
+		if ( preg_match( '/^SELECT ID FROM wp_posts WHERE post_author = (\d+)$/', $sql, $m ) ) { return array_map( 'strval', t_author_ids( (int) $m[1] ) ); }
 		if ( preg_match( "/^SELECT post_id FROM wp_postmeta WHERE meta_key = $q AND meta_value = $q LIMIT (\\d+)$/", $sql, $m ) ) {
 			$k = stripslashes( $m[1] ); $v = stripslashes( $m[2] ); $out = array();
 			foreach ( $GLOBALS['T_meta'] as $id => $keys ) { foreach ( $keys[ $k ] ?? array() as $x ) { if ( (string) $x === $v ) { $out[] = (string) $id; break; } } }
@@ -336,6 +344,13 @@ class T_Wpdb {
 	}
 	function get_results( $sql, $output = 'OBJECT' ) {
 		$this->note( $sql );
+		// The items of an author counted by type (any status), as MySQL's GROUP BY answers it.
+		if ( preg_match( '/^SELECT post_type, COUNT\(\*\) AS n FROM wp_posts WHERE post_author = (\d+) GROUP BY post_type$/', $sql, $m ) ) {
+			$by = array();
+			foreach ( t_author_ids( (int) $m[1] ) as $id ) { $t = isset( $GLOBALS['T_posts'][ $id ] ) ? (string) $GLOBALS['T_posts'][ $id ]->post_type : 'post'; $by[ $t ] = ( $by[ $t ] ?? 0 ) + 1; }
+			$out = array(); foreach ( $by as $t => $n ) { $r = array( 'post_type' => $t, 'n' => (string) $n ); $out[] = ARRAY_A === $output ? $r : (object) $r; }
+			return $out;
+		}
 		if ( ! preg_match( '/^SELECT .+ FROM (\S+)(?: WHERE (.+?))? ORDER BY id DESC LIMIT (\d+) OFFSET (\d+)$/', $sql, $m ) ) { return null; }
 		if ( ! isset( $this->tables[ $m[1] ] ) ) { return null; }
 		$rows = array_reverse( $this->tables[ $m[1] ] );
@@ -531,6 +546,21 @@ function current_user_can( $cap, $id = null, $key = null ) {
 	// core maps add_post_meta and delete_post_meta exactly as edit_post_meta.
 	if ( 'edit_post_meta' === $cap || 'delete_post_meta' === $cap || 'add_post_meta' === $cap ) { return null !== $id && t_post_cap( 'edit_post', (int) $id ) && ! is_protected_meta( (string) $key, 'post' ) && ! in_array( (string) $key, $GLOBALS['T_meta_auth_denied'] ?? array(), true ); }
 	if ( null !== $id && ( 'read_post' === $cap || 'edit_post' === $cap || 'delete_post' === $cap ) ) { return t_post_cap( $cap, (int) $id ); }
+	// The user meta caps as core's map_meta_cap (capabilities.php, 6.4.1): edit_user on oneself needs nothing more; on a network
+	// edit_user/edit_users need manage_network_users, and only a super admin edits a super admin; promote_user is promote_users;
+	// delete_user/delete_users on a network only a super admin; remove_user never oneself (unless super admin), else remove_users;
+	// create_users on a network a super admin, or the network option add_new_users.
+	$me = (int) ( $GLOBALS['T_user_id'] ?? 0 );
+	$net = ! empty( $GLOBALS['T_multisite'] );
+	if ( 'edit_user' === $cap || 'edit_users' === $cap ) {
+		if ( 'edit_user' === $cap && null !== $id && (int) $id === $me && $me > 0 ) { return true; }
+		if ( $net && ( ( ! is_super_admin() && 'edit_user' === $cap && null !== $id && is_super_admin( (int) $id ) ) || ! t_has_cap( 'manage_network_users' ) ) ) { return false; }
+		return t_has_cap( 'edit_users' );
+	}
+	if ( 'promote_user' === $cap ) { return t_has_cap( 'promote_users' ); }
+	if ( 'delete_user' === $cap || 'delete_users' === $cap ) { return ( ! $net || is_super_admin() ) && t_has_cap( 'delete_users' ); }
+	if ( 'remove_user' === $cap ) { return ! ( null !== $id && (int) $id === $me && ! is_super_admin() ) && t_has_cap( 'remove_users' ); }
+	if ( 'create_users' === $cap && $net ) { return ( is_super_admin() || get_site_option( 'add_new_users' ) ) && t_has_cap( 'create_users' ); }
 	return t_has_cap( $cap );
 }
 function get_post( $id = null ) { return is_object( $id ) ? $id : ( $GLOBALS['T_posts'][ (int) $id ] ?? null ); }
@@ -2571,4 +2601,257 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		}
 	}
 	t_plugins_reset();
+}
+
+// ---- users (2.4.0 Task 6, write-users.php). OPT-IN: define T_USER_STANDINS before requiring this file. Core 6.4.1 at the surface
+// the plugin uses (wp-includes/user.php, pluggable.php, ms-functions.php, wp-admin/includes/user.php):
+//   T_users        id => user object (ID, user_login, user_email, display_name, user_url, user_registered, roles = the roles on the
+//                  current site); on a network a user is a member of the sites in T_user_blogs (t_add_user adds blog 1)
+//   T_umeta        id => key => list of values (get_user_meta and friends; keys and values unslashed as core's metadata API does)
+//   T_roles        role => array( name, capabilities ) (wp_roles()->roles);  T_editable_roles  null = all, else the role names the
+//                  editable_roles filter leaves (get_editable_roles)
+//   T_user_calls   every call: array( function, args ... );  T_generated  every password wp_generate_password returned
+//   T_user_pass    id => the plain password the user was created with (wp_insert_user / wpmu_create_user)
+//   T_user_mails   every email these functions send: array( to, what )
+//   T_author_ids   user id => post ids: the author's items instead of those in T_posts (a 30,000-post user without the posts)
+//   T_user_fail    function name => what it returns instead of acting (a WP_Error, false)
+//   T_count_users  how many times count_users ran (it queries every time, as core: no cache)
+if ( defined( 'T_USER_STANDINS' ) ) {
+	function t_users_reset() {
+		$GLOBALS['T_users'] = array(); $GLOBALS['T_umeta'] = array(); $GLOBALS['T_user_calls'] = array(); $GLOBALS['T_user_pass'] = array();
+		$GLOBALS['T_generated'] = array(); $GLOBALS['T_user_mails'] = array(); $GLOBALS['T_author_ids'] = array(); $GLOBALS['T_user_fail'] = array();
+		$GLOBALS['T_count_users'] = 0; $GLOBALS['T_next_user'] = 50; $GLOBALS['T_editable_roles'] = null;
+		$GLOBALS['T_roles'] = array();
+		foreach ( array( 'administrator', 'editor', 'author', 'contributor', 'subscriber' ) as $r ) { $GLOBALS['T_roles'][ $r ] = array( 'name' => ucfirst( $r ), 'capabilities' => array() ); }
+	}
+	// A user as core keeps one: the row, the usual meta (nickname, names, description, the role and level of the current site as
+	// wp_capabilities / wp_user_level, a session) and, on a network, membership of blog 1 when it has a role.
+	function t_add_user( $id, $login, array $roles, array $f = array() ) {
+		$GLOBALS['T_users'][ (int) $id ] = (object) array_merge( array( 'ID' => (int) $id, 'user_login' => $login, 'user_email' => $login . '@example.org', 'display_name' => ucfirst( $login ),
+			'user_url' => '', 'user_registered' => '2026-01-01 10:00:00', 'roles' => array_values( $roles ) ), $f );
+		$GLOBALS['T_umeta'][ (int) $id ] = array( 'nickname' => array( $login ), 'first_name' => array( '' ), 'last_name' => array( '' ), 'description' => array( '' ),
+			'wp_capabilities' => array( array_fill_keys( $roles, true ) ), 'wp_user_level' => array( in_array( 'administrator', $roles, true ) ? '10' : '0' ),
+			'session_tokens' => array( array( 'tokhash' => array( 'expiration' => 1 ) ) ), 'rich_editing' => array( 'true' ) );
+		if ( array() !== $roles ) { $GLOBALS['T_user_blogs'][ (int) $id ] = array( 1 ); }
+		return (int) $id;
+	}
+	// The author's items: T_author_ids when a test set it, else the posts in T_posts by that author; ascending.
+	function t_author_ids( $uid ) {
+		if ( isset( $GLOBALS['T_author_ids'][ (int) $uid ] ) ) { return array_values( array_map( 'intval', $GLOBALS['T_author_ids'][ (int) $uid ] ) ); }
+		$out = array(); foreach ( $GLOBALS['T_posts'] as $id => $p ) { if ( (int) $p->post_author === (int) $uid ) { $out[] = (int) $id; } }
+		sort( $out ); return $out;
+	}
+	// UPDATE posts SET post_author = to WHERE post_author = from.
+	function t_reassign_posts( $from, $to ) {
+		foreach ( $GLOBALS['T_posts'] as $p ) { if ( (int) $p->post_author === (int) $from ) { $p->post_author = (int) $to; } }
+		if ( isset( $GLOBALS['T_author_ids'][ (int) $from ] ) ) { $GLOBALS['T_author_ids'][ (int) $to ] = array_merge( $GLOBALS['T_author_ids'][ (int) $to ] ?? array(), $GLOBALS['T_author_ids'][ (int) $from ] ); unset( $GLOBALS['T_author_ids'][ (int) $from ] ); }
+	}
+	function t_set_roles( $id, array $roles ) {
+		$GLOBALS['T_users'][ (int) $id ]->roles = array_values( $roles );
+		$GLOBALS['T_umeta'][ (int) $id ]['wp_capabilities'] = array( array_fill_keys( $roles, true ) );
+	}
+	// As core (formatting.php), the parts that matter here: tags, accents, octets and entities out; strict keeps a-z 0-9 space _ . - @.
+	function sanitize_user( $username, $strict = false ) {
+		$u = strip_tags( (string) $username );
+		if ( function_exists( 'remove_accents' ) ) { $u = remove_accents( $u ); }
+		$u = preg_replace( '|%([a-fA-F0-9][a-fA-F0-9])|', '', $u ); $u = preg_replace( '/&.+?;/', '', $u );
+		if ( $strict ) { $u = preg_replace( '|[^a-z0-9 _.\-@]|i', '', $u ); }
+		return preg_replace( '|\s+|', ' ', trim( $u ) );
+	}
+	function is_email( $email ) { return false !== filter_var( (string) $email, FILTER_VALIDATE_EMAIL ) ? $email : false; }
+	// As core's esc_url_raw for what a profile url holds: http(s) kept, a bare domain gets http://, anything else is dropped.
+	function esc_url_raw( $url ) {
+		$url = trim( (string) $url );
+		if ( '' === $url ) { return ''; }
+		if ( preg_match( '#^https?://[^\s"<>]+$#i', $url ) ) { return $url; }
+		return preg_match( '#^[a-z0-9.\-]+\.[a-z]{2,}(/[^\s"<>]*)?$#i', $url ) ? 'http://' . $url : '';
+	}
+	// MySQL compares logins and emails without case (utf8mb4_*_ci).
+	function get_user_by( $field, $value ) {
+		if ( 'id' === $field || 'ID' === $field ) { return get_userdata( (int) $value ); }
+		$col = 'login' === $field ? 'user_login' : ( 'email' === $field ? 'user_email' : null );
+		if ( null === $col || '' === (string) $value ) { return false; }
+		foreach ( $GLOBALS['T_users'] as $u ) { if ( 0 === strcasecmp( (string) $u->$col, (string) $value ) ) { return $u; } }
+		return false;
+	}
+	function username_exists( $username ) { $u = get_user_by( 'login', $username ); return $u ? (int) $u->ID : false; }
+	function email_exists( $email ) { $u = get_user_by( 'email', $email ); return $u ? (int) $u->ID : false; }
+	function get_user_meta( $id, $key = '', $single = false ) {
+		$all = $GLOBALS['T_umeta'][ (int) $id ] ?? array();
+		if ( '' === $key ) { return $all; }
+		$vals = $all[ $key ] ?? array();
+		return $single ? ( $vals[0] ?? '' ) : $vals;
+	}
+	// As core's update_metadata: key and value unslashed; no row yet -> added; else every row of the key set to the value
+	// (false when that changes nothing).
+	function update_user_meta( $id, $key, $value, $prev = '' ) {
+		if ( isset( $GLOBALS['T_user_fail']['update_user_meta'] ) ) { return $GLOBALS['T_user_fail']['update_user_meta']; }
+		$key = wp_unslash( $key ); $value = wp_unslash( $value );
+		$rows = $GLOBALS['T_umeta'][ (int) $id ][ $key ] ?? null;
+		if ( null === $rows ) { $GLOBALS['T_umeta'][ (int) $id ][ $key ] = array( $value ); return 1000 + count( $GLOBALS['T_umeta'][ (int) $id ] ); }
+		$same = true; foreach ( $rows as $r ) { if ( maybe_serialize( $r ) !== maybe_serialize( $value ) ) { $same = false; } }
+		if ( $same ) { return false; }
+		$GLOBALS['T_umeta'][ (int) $id ][ $key ] = array_fill( 0, count( $rows ), $value );
+		return true;
+	}
+	function add_user_meta( $id, $key, $value, $unique = false ) {
+		$key = wp_unslash( $key ); $value = wp_unslash( $value );
+		if ( $unique && isset( $GLOBALS['T_umeta'][ (int) $id ][ $key ] ) ) { return false; }
+		$GLOBALS['T_umeta'][ (int) $id ][ $key ][] = $value;
+		return 2000 + count( $GLOBALS['T_umeta'][ (int) $id ][ $key ] );
+	}
+	function delete_user_meta( $id, $key, $value = '' ) {
+		if ( isset( $GLOBALS['T_user_fail']['delete_user_meta'] ) ) { return $GLOBALS['T_user_fail']['delete_user_meta']; }
+		$key = wp_unslash( $key );
+		if ( ! isset( $GLOBALS['T_umeta'][ (int) $id ][ $key ] ) ) { return false; }
+		unset( $GLOBALS['T_umeta'][ (int) $id ][ $key ] );
+		return true;
+	}
+	// As core: a fresh count of the current site's users by role (every call queries; there is no cache).
+	function count_users( $strategy = 'time', $site_id = null ) {
+		$GLOBALS['T_count_users']++;
+		$out = array( 'total_users' => 0, 'avail_roles' => array() );
+		foreach ( $GLOBALS['T_users'] as $u ) {
+			if ( ! empty( $GLOBALS['T_multisite'] ) && ! is_user_member_of_blog( (int) $u->ID, get_current_blog_id() ) ) { continue; }
+			$out['total_users']++;
+			$roles = (array) $u->roles;
+			if ( array() === $roles ) { $out['avail_roles']['none'] = ( $out['avail_roles']['none'] ?? 0 ) + 1; }
+			foreach ( $roles as $r ) { $out['avail_roles'][ $r ] = ( $out['avail_roles'][ $r ] ?? 0 ) + 1; }
+		}
+		return $out;
+	}
+	function get_editable_roles() {
+		$r = $GLOBALS['T_roles'];
+		return is_array( $GLOBALS['T_editable_roles'] ) ? array_intersect_key( $r, array_flip( $GLOBALS['T_editable_roles'] ) ) : $r;
+	}
+	function wp_generate_password( $length = 12, $special_chars = true, $extra_special_chars = false ) {
+		$v = 'mossylantern' . count( $GLOBALS['T_generated'] ) . 'quietharbor';
+		$GLOBALS['T_generated'][] = $v;
+		$GLOBALS['T_user_calls'][] = array( 'wp_generate_password', $length, $special_chars, $extra_special_chars );
+		return $v;
+	}
+	// wp_insert_user without an ID: as core (user.php), the input is slashed (core unslashes the row fields, the metadata API the
+	// meta); empty or too long login, a login or email already in use refused with core's codes; the role (or default_role) on
+	// the current site (on a network that makes the user a member of it).
+	function t_user_create( array $d ) {
+		$login = trim( sanitize_user( (string) ( $d['user_login'] ?? '' ), true ) );
+		if ( '' === $login ) { return new WP_Error( 'empty_user_login', 'Cannot create a user with an empty login name.' ); }
+		if ( mb_strlen( $login ) > 60 ) { return new WP_Error( 'user_login_too_long', 'Username may not be longer than 60 characters.' ); }
+		if ( username_exists( $login ) ) { return new WP_Error( 'existing_user_login', 'Sorry, that username already exists!' ); }
+		$email = (string) wp_unslash( $d['user_email'] ?? '' );
+		if ( '' !== $email && email_exists( $email ) ) { return new WP_Error( 'existing_user_email', 'Sorry, that email address is already used!' ); }
+		$id = $GLOBALS['T_next_user']++;
+		$role = array_key_exists( 'role', $d ) ? (string) $d['role'] : (string) get_option( 'default_role', 'subscriber' );
+		$GLOBALS['T_users'][ $id ] = (object) array( 'ID' => $id, 'user_login' => $login, 'user_email' => $email, 'display_name' => (string) wp_unslash( $d['display_name'] ?? $login ),
+			'user_url' => (string) wp_unslash( $d['user_url'] ?? '' ), 'user_registered' => '2026-11-02 10:00:00', 'roles' => '' === $role ? array() : array( $role ) );
+		$GLOBALS['T_umeta'][ $id ] = array();
+		$GLOBALS['T_user_pass'][ $id ] = (string) ( $d['user_pass'] ?? '' );
+		foreach ( array( 'nickname' => $login, 'first_name' => '', 'last_name' => '', 'description' => '' ) as $k => $def ) { update_user_meta( $id, $k, $d[ $k ] ?? $def ); }
+		update_user_meta( $id, 'wp_capabilities', '' === $role ? array() : array( $role => true ) );
+		if ( '' !== $role ) { $GLOBALS['T_user_blogs'][ $id ][] = get_current_blog_id(); }
+		return $id;
+	}
+	function wp_insert_user( $userdata ) {
+		$d = is_object( $userdata ) ? get_object_vars( $userdata ) : (array) $userdata;
+		$GLOBALS['T_user_calls'][] = array( 'wp_insert_user', $d );
+		if ( isset( $GLOBALS['T_user_fail']['wp_insert_user'] ) ) { return $GLOBALS['T_user_fail']['wp_insert_user']; }
+		if ( ! empty( $d['ID'] ) ) { return t_user_apply( $d ); }
+		return t_user_create( $d );
+	}
+	// wp_update_user as core: an unknown id refused; a new email checked (in use: existing_user_email) and core's own notice of
+	// the change sent to the OLD address; the fields given set (slashed input); role set on the current site (set_role).
+	function t_user_apply( array $d ) {
+		$id = (int) ( $d['ID'] ?? 0 ); $u = get_userdata( $id );
+		if ( ! $u ) { return new WP_Error( 'invalid_user_id', 'Invalid user ID.' ); }
+		if ( isset( $d['user_email'] ) ) {
+			$new = (string) wp_unslash( $d['user_email'] );
+			if ( 0 !== strcasecmp( $new, (string) $u->user_email ) ) {
+				$owner = email_exists( $new );
+				if ( $owner && (int) $owner !== $id ) { return new WP_Error( 'existing_user_email', 'Sorry, that email address is already used!' ); }
+			}
+			if ( $new !== (string) $u->user_email ) { $GLOBALS['T_user_mails'][] = array( (string) $u->user_email, 'email_change_notice' ); }
+			$u->user_email = $new;
+		}
+		foreach ( array( 'display_name' => 'display_name', 'user_url' => 'user_url' ) as $k => $col ) { if ( isset( $d[ $k ] ) ) { $u->$col = (string) wp_unslash( $d[ $k ] ); } }
+		foreach ( array( 'first_name', 'last_name', 'description', 'nickname' ) as $k ) { if ( isset( $d[ $k ] ) ) { update_user_meta( $id, $k, $d[ $k ] ); } }
+		if ( isset( $d['role'] ) ) { t_set_roles( $id, '' === (string) $d['role'] ? array() : array( (string) $d['role'] ) ); }
+		return $id;
+	}
+	function wp_update_user( $userdata ) {
+		$d = is_object( $userdata ) ? get_object_vars( $userdata ) : (array) $userdata;
+		$GLOBALS['T_user_calls'][] = array( 'wp_update_user', $d );
+		if ( isset( $GLOBALS['T_user_fail']['wp_update_user'] ) ) { return $GLOBALS['T_user_fail']['wp_update_user']; }
+		return t_user_apply( $d );
+	}
+	// pluggable.php: 'user' or 'both' emails the user the link to set a password ('admin' tells the site admin only).
+	function wp_new_user_notification( $user_id, $deprecated = null, $notify = '' ) {
+		$GLOBALS['T_user_calls'][] = array( 'wp_new_user_notification', $user_id, $deprecated, $notify );
+		$u = get_userdata( $user_id );
+		if ( $u && in_array( $notify, array( 'user', 'both' ), true ) ) { $GLOBALS['T_user_mails'][] = array( (string) $u->user_email, 'set_password_link' ); }
+	}
+	// As core (user.php): the login unslashed and trimmed; with an @ it is looked up as an email first, then as a login.
+	function retrieve_password( $user_login = null ) {
+		$l = trim( (string) wp_unslash( (string) $user_login ) );
+		$u = false;
+		if ( '' !== $l ) { $u = strpos( $l, '@' ) ? ( get_user_by( 'email', $l ) ?: get_user_by( 'login', $l ) ) : get_user_by( 'login', $l ); }
+		$GLOBALS['T_user_calls'][] = array( 'retrieve_password', $user_login, $u ? (int) $u->ID : 0 );
+		if ( isset( $GLOBALS['T_user_fail']['retrieve_password'] ) ) { return $GLOBALS['T_user_fail']['retrieve_password']; }
+		if ( '' === $l ) { return new WP_Error( 'empty_username', 'Please enter a username or email address.' ); }
+		if ( ! $u ) { return new WP_Error( 'invalidcombo', 'There is no account with that username or email address.' ); }
+		$GLOBALS['T_user_mails'][] = array( (string) $u->user_email, 'password_reset_link' );
+		return true;
+	}
+	// wp-admin/includes/user.php: with a reassign id every item of the user (core's own query) gets that author; then on a network
+	// the user leaves the current site, else the user and every meta row are deleted. false for an unknown user.
+	function wp_delete_user( $id, $reassign = null ) {
+		global $wpdb;
+		$GLOBALS['T_user_calls'][] = array( 'wp_delete_user', $id, $reassign );
+		if ( isset( $GLOBALS['T_user_fail']['wp_delete_user'] ) ) { return $GLOBALS['T_user_fail']['wp_delete_user']; }
+		$id = (int) $id;
+		if ( ! get_userdata( $id ) ) { return false; }
+		if ( null !== $reassign ) {
+			$post_ids = $wpdb->get_col( $wpdb->prepare( "SELECT ID FROM $wpdb->posts WHERE post_author = %d", $id ) );
+			t_reassign_posts( $id, (int) $reassign );
+		} else {
+			foreach ( t_author_ids( $id ) as $pid ) { unset( $GLOBALS['T_posts'][ $pid ] ); }
+		}
+		if ( ! empty( $GLOBALS['T_multisite'] ) ) { remove_user_from_blog( $id, get_current_blog_id() ); }
+		else { unset( $GLOBALS['T_users'][ $id ], $GLOBALS['T_umeta'][ $id ] ); }
+		return true;
+	}
+	// ms-functions.php: the user loses every role on the site (no longer a member); with a reassign id the user's items get that author.
+	function remove_user_from_blog( $user_id, $blog_id = 0, $reassign = 0 ) {
+		global $wpdb;
+		$GLOBALS['T_user_calls'][] = array( 'remove_user_from_blog', $user_id, $blog_id, $reassign );
+		if ( isset( $GLOBALS['T_user_fail']['remove_user_from_blog'] ) ) { return $GLOBALS['T_user_fail']['remove_user_from_blog']; }
+		$user_id = (int) $user_id;
+		if ( ! get_userdata( $user_id ) ) { return new WP_Error( 'user_does_not_exist', 'That user does not exist.' ); }
+		$GLOBALS['T_user_blogs'][ $user_id ] = array_values( array_diff( $GLOBALS['T_user_blogs'][ $user_id ] ?? array(), array( (int) $blog_id ) ) );
+		t_set_roles( $user_id, array() );
+		if ( $reassign ) {
+			$post_ids = $wpdb->get_col( $wpdb->prepare( "SELECT ID FROM $wpdb->posts WHERE post_author = %d", $user_id ) );
+			if ( ! empty( $post_ids ) ) { t_reassign_posts( $user_id, (int) $reassign ); }
+		}
+		return true;
+	}
+	// ms-functions.php: the login made strict and without spaces, the user created for the network with no role on any site;
+	// false on failure.
+	function wpmu_create_user( $user_name, $password, $email ) {
+		$GLOBALS['T_user_calls'][] = array( 'wpmu_create_user', $user_name, $password, $email );
+		if ( isset( $GLOBALS['T_user_fail']['wpmu_create_user'] ) ) { return $GLOBALS['T_user_fail']['wpmu_create_user']; }
+		$user_name = preg_replace( '/\s+/', '', sanitize_user( $user_name, true ) );
+		$id = t_user_create( array( 'user_login' => wp_slash( $user_name ), 'user_email' => wp_slash( $email ), 'user_pass' => $password ) );
+		if ( is_wp_error( $id ) ) { return false; }
+		t_set_roles( $id, array() ); $GLOBALS['T_user_blogs'][ $id ] = array();
+		return $id;
+	}
+	function add_user_to_blog( $blog_id, $user_id, $role ) {
+		$GLOBALS['T_user_calls'][] = array( 'add_user_to_blog', $blog_id, $user_id, $role );
+		if ( isset( $GLOBALS['T_user_fail']['add_user_to_blog'] ) ) { return $GLOBALS['T_user_fail']['add_user_to_blog']; }
+		if ( ! get_userdata( $user_id ) ) { return new WP_Error( 'user_does_not_exist', 'The requested user does not exist.' ); }
+		$GLOBALS['T_user_blogs'][ (int) $user_id ][] = (int) $blog_id;
+		t_set_roles( $user_id, array( (string) $role ) );
+		return true;
+	}
+	t_users_reset();
 }
