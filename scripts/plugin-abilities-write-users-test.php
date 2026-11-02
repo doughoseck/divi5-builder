@@ -318,6 +318,71 @@ check( 'meta-set: a name with two rows ends as the one value; the row keeps both
 $r = call( 'users-meta-delete', array( 'id' => 4, 'key' => 'favourite_color' ) );
 check( 'meta-delete: gone, the row first with every value', is_array( $r ) && true === $r['deleted'] && ! isset( $GLOBALS['T_umeta'][4]['favourite_color'] ) && 'delete' === hlast()['action'] && array( 'it\'s "green"\\' ) === hlast()['before']['rows'], $r );
 check( 'meta-delete: a field the user does not have -> not_found', 'not_found' === code( call( 'users-meta-delete', array( 'id' => 4, 'key' => 'nothing_here' ) ) ) );
+
+echo "fix wave M3: the fields of another administrator or user manager\n";
+site();
+update_user_meta( 2, 'googleauthenticator_enabled', 'enabled' );
+$r1 = call( 'users-meta-set', array( 'id' => 2, 'key' => 'googleauthenticator_enabled', 'value' => 'disabled' ) );
+$r2 = call( 'users-meta-delete', array( 'id' => 2, 'key' => 'googleauthenticator_enabled' ) );
+check( 'M3 another administrator\'s 2FA-style field: users-meta-set and -delete refused not_allowed, the field unchanged, no row', 'not_allowed' === code( $r1 ) && 'not_allowed' === code( $r2 ) && 'enabled' === get_user_meta( 2, 'googleauthenticator_enabled', true ) && array() === hrows(), array( code( $r1 ), code( $r2 ) ) );
+$GLOBALS['T_roles']['usermanager'] = array( 'name' => 'User manager', 'capabilities' => array( 'read' => true, 'list_users' => true, 'edit_users' => true ) );
+check( 'M3 ... a user manager without the administrator role (user 9: edit_users etc.) is protected too', 'not_allowed' === code( call( 'users-meta-set', array( 'id' => 9, 'key' => 'wfls-2fa', 'value' => '0' ) ) ) );
+check( 'M3 ... the caller\'s own fields and an editor\'s are still writable', is_array( call( 'users-meta-set', array( 'id' => 1, 'key' => 'favourite_color', 'value' => 'red' ) ) ) && is_array( call( 'users-meta-set', array( 'id' => 3, 'key' => 'favourite_color', 'value' => 'red' ) ) ) );
+site( NET_ADMIN, true ); $GLOBALS['T_site_options']['site_admins'] = array( 'boss', 'sub' );
+check( 'M3 ... on a network a super admin is protected whatever their role here', 'not_allowed' === code( call( 'users-meta-set', array( 'id' => 4, 'key' => 'favourite_color', 'value' => 'x' ) ) ) );
+
+echo "fix wave M5: a powerful role needs promote_users even when it is the default\n";
+site( array( 'read', 'list_users', 'create_users' ) );
+$GLOBALS['T_options']['default_role'] = 'administrator';
+$r = call( 'users-create', array( 'login' => 'sneaky', 'email' => 'sneaky@example.org', 'role' => 'administrator' ) );
+check( 'M5 default_role administrator, a caller with create_users only: not_allowed, no user made', 'not_allowed' === code( $r ) && false === username_exists( 'sneaky' ) && array() === calls( 'wp_insert_user' ), code( $r ) );
+$GLOBALS['T_roles']['usermanager'] = array( 'name' => 'User manager', 'capabilities' => array( 'read' => true, 'list_users' => true, 'edit_users' => true ) );
+$GLOBALS['T_options']['default_role'] = 'usermanager';
+check( 'M5 ... nor a default role that holds edit_users (a custom role)', 'not_allowed' === code( call( 'users-create', array( 'login' => 'sneaky2', 'email' => 'sneaky2@example.org', 'role' => 'usermanager' ) ) ) && false === username_exists( 'sneaky2' ) );
+$GLOBALS['T_options']['default_role'] = 'subscriber';
+check( 'M5 ... the plain default role is still given without promote_users', is_array( call( 'users-create', array( 'login' => 'plainone', 'email' => 'plainone@example.org', 'role' => 'subscriber' ) ) ) );
+site();
+$GLOBALS['T_options']['default_role'] = 'subscriber';
+check( 'M5 ... and with promote_users an administrator can be created', is_array( call( 'users-create', array( 'login' => 'newadmin', 'email' => 'newadmin@example.org', 'role' => 'administrator' ) ) ) );
+
+echo "fix wave M4: one administrator-count change at a time\n";
+// A delete of administrator 2 while another request (right after our final count) tries to demote administrator 1.
+site( MANAGER, false, true, 9 );
+t_add_user( 5, 'heir', array( 'author' ) );
+$p = call( 'users-delete-preview', array( 'id' => 2, 'reassign_to' => 5 ) );
+$other = null;
+$GLOBALS['T_after_count'] = function ( $k ) use ( &$other ) {
+	if ( $k < 2 || null !== $other ) { return; }
+	$other = 'running'; // once (the other request counts too)
+	$saved = $GLOBALS['d5b_maint_locks'] ?? array(); $GLOBALS['d5b_maint_locks'] = array(); // another request
+	$other = call( 'users-update', array( 'id' => 1, 'role' => 'editor' ) );
+	$GLOBALS['d5b_maint_locks'] = $saved;
+};
+$GLOBALS['T_count_users'] = 0;
+$r = call( 'users-delete', array( 'id' => 2, 'reassign_to' => 5, 'confirmation' => $p['confirmation'] ?? '' ) );
+$GLOBALS['T_after_count'] = null;
+check( 'M4 a demote while a delete holds the administrators lock: busy (409), the site keeps administrator 1', 'busy' === code( $other ) && array( 'administrator' ) === get_userdata( 1 )->roles && is_array( $r ) && false === get_userdata( 2 ), array( code( $other ), code( $r ) ) );
+check( 'M4 ... the lock is released after the delete', '' === d5b_maint_lock_fresh( 'd5b_users_admin_lock' ) );
+// The other way round: a delete while a role change holds it.
+site( MANAGER, false, true, 9 );
+t_add_user( 5, 'heir', array( 'author' ) );
+$p = call( 'users-delete-preview', array( 'id' => 1, 'reassign_to' => 5 ) );
+$other = null;
+$GLOBALS['T_after_count'] = function ( $k ) use ( &$other, $p ) {
+	if ( null !== $other ) { return; }
+	$other = 'running'; // once (the other request counts too)
+	$saved = $GLOBALS['d5b_maint_locks'] ?? array(); $GLOBALS['d5b_maint_locks'] = array();
+	$other = call( 'users-delete', array( 'id' => 1, 'reassign_to' => 5, 'confirmation' => $p['confirmation'] ?? '' ) );
+	$GLOBALS['d5b_maint_locks'] = $saved;
+};
+$r = call( 'users-update', array( 'id' => 2, 'role' => 'editor' ) );
+$GLOBALS['T_after_count'] = null;
+check( 'M4 a delete while a role change holds the lock: busy, nothing deleted; the role change went through', 'busy' === code( $other ) && false !== get_userdata( 1 ) && is_array( $r ) && array( 'editor' ) === get_userdata( 2 )->roles && array() === calls( 'wp_delete_user' ), array( code( $other ), code( $r ) ) );
+site();
+set_transient( 'd5b_users_admin_lock', ( (int) $GLOBALS['T_clock'] + 20 ) . '|' . str_repeat( 'f', 16 ), 30 );
+check( 'M4 the lock held by another request: a role change and a delete are busy; a change without a role is not held up', 'busy' === code( call( 'users-update', array( 'id' => 3, 'role' => 'author' ) ) ) && 'busy' === code( call( 'users-delete', array( 'id' => 3, 'reassign_to' => 1, 'confirmation' => 'x' ) ) ) && is_array( call( 'users-update', array( 'id' => 3, 'display_name' => 'Ed' ) ) ) && array( 'editor' ) === get_userdata( 3 )->roles );
+$GLOBALS['T_clock'] += 21;
+check( 'M4 ... past its 30 s it is taken over', is_array( call( 'users-update', array( 'id' => 3, 'role' => 'author' ) ) ) && array( 'author' ) === get_userdata( 3 )->roles );
 check( 'meta-set: a value that is an object -> invalid_input', 'invalid_input' === code( d5b_wu_meta_set( array( 'id' => 4, 'key' => 'k1', 'value' => new ArrayObject( array() ) ) ) ) );
 
 // ---- users-delete-preview / users-delete

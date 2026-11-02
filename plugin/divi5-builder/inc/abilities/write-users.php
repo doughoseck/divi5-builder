@@ -195,6 +195,31 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		return new WP_Error( 'not_allowed', 'You may not give the role "' . d5b_rc_cut( $role, 60 ) . '". Roles you can give: ' . implode( ', ', array_map( 'strval', array_keys( $roles ) ) ) . '.' );
 	}
 
+	/**
+	 * True for administrator, and for any role that holds a protected capability (promote_users, edit_users, manage_options,
+	 * delete_users), as get_editable_roles() lists its capabilities. An unknown role counts as powerful (fails closed).
+	 */
+	function d5b_wu_role_powerful( string $role ): bool {
+		if ( 'administrator' === $role ) { return true; }
+		d5b_wu_admin_includes();
+		$roles = (array) get_editable_roles();
+		if ( ! isset( $roles[ $role ] ) ) { return true; }
+		$caps = (array) ( $roles[ $role ]['capabilities'] ?? array() );
+		foreach ( array( 'promote_users', 'edit_users', 'manage_options', 'delete_users' ) as $cap ) {
+			if ( ! empty( $caps[ $cap ] ) ) { return true; }
+		}
+		return false;
+	}
+
+	/**
+	 * The administrators lock (30 s, read fresh, d5b_maint_lock_take): a role change and a delete that can change how many
+	 * administrators the site has never run at the same time, so two of them cannot both pass the last-administrator count.
+	 * @return string|WP_Error the token, or busy
+	 */
+	function d5b_wu_admin_lock() {
+		return d5b_maint_lock_take( 'd5b_users_admin_lock', 30, 'A role change or a user delete' );
+	}
+
 	/** The masked-read check for every text field given. @return true|WP_Error */
 	function d5b_wu_masked( array $fields, array $stored ) {
 		foreach ( $fields as $k => $v ) {
@@ -225,9 +250,16 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		$role = (string) $a['role'];
 		$ok = d5b_wu_role_ok( $role ); if ( true !== $ok ) { return $ok; }
 		// As core's edit_user() for a new user: without promote_users the user gets the default role, so any other role needs it.
+		// A role with power over users or the site (administrator, or one holding a protected capability) needs it always, even
+		// when it is the default role: an editor can never create an administrator.
 		$default = (string) get_option( 'default_role', 'subscriber' );
-		if ( $role !== $default && ! current_user_can( 'promote_users' ) ) {
-			return new WP_Error( 'not_allowed', 'Giving a new user a role other than the default ("' . d5b_rc_cut( $default, 60 ) . '") needs promote_users.' );
+		if ( ! current_user_can( 'promote_users' ) ) {
+			if ( d5b_wu_role_powerful( $role ) ) {
+				return new WP_Error( 'not_allowed', 'The role "' . d5b_rc_cut( $role, 60 ) . '" has power over users or the site: giving it to a new user needs promote_users, whatever the default role is.' );
+			}
+			if ( $role !== $default ) {
+				return new WP_Error( 'not_allowed', 'Giving a new user a role other than the default ("' . d5b_rc_cut( $default, 60 ) . '") needs promote_users.' );
+			}
 		}
 		$names = array_intersect_key( $a, array( 'display_name' => 1, 'first_name' => 1, 'last_name' => 1 ) );
 		$ok = d5b_wu_masked( $names, array() ); if ( true !== $ok ) { return $ok; }
@@ -267,8 +299,20 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 
 	// ---- users-update
 
-	/** @return array|WP_Error */
+	/** A role change holds the administrators lock from its count to its re-count (busy while another holds it). @return array|WP_Error */
 	function d5b_wu_update( array $in ) {
+		if ( ! array_key_exists( 'role', $in ) ) { return d5b_wu_update_run( $in ); }
+		$token = d5b_wu_admin_lock();
+		if ( is_wp_error( $token ) ) { return $token; }
+		try {
+			return d5b_wu_update_run( $in );
+		} finally {
+			d5b_maint_lock_release( 'd5b_users_admin_lock', $token );
+		}
+	}
+
+	/** @return array|WP_Error */
+	function d5b_wu_update_run( array $in ) {
 		if ( ! d5b_wu_ok( 'edit_users' ) ) { return new WP_Error( 'forbidden', 'You may not edit users.' ); }
 		$a = d5b_rc_args( $in, array( 'id' => 'id', 'display_name' => 'text:250', 'first_name' => 'text:250', 'last_name' => 'text:250', 'url' => 'text:200', 'description' => 'text:10000', 'email' => 'key', 'role' => 'slug' ), array( 'id' ) );
 		if ( is_wp_error( $a ) ) { return $a; }
@@ -419,6 +463,11 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		$u = d5b_wu_user( $id );
 		if ( is_wp_error( $u ) ) { return $u; }
 		if ( ! current_user_can( 'edit_user', (int) $u->ID ) ) { return new WP_Error( 'not_allowed', 'You may not edit this user.' ); }
+		// Another administrator or user manager: their fields are theirs. A plugin's two-factor switch or recovery address kept
+		// in an ordinary field would otherwise be one call away from their account.
+		if ( (int) $u->ID !== (int) get_current_user_id() && d5b_wu_protected( (int) $u->ID ) ) {
+			return new WP_Error( 'not_allowed', 'This user is another administrator or user manager: their fields are changed only by themselves (their profile screen) or in wp-admin, never through the abilities.' );
+		}
 		$ok = d5b_wu_meta_key_case_ok( (int) $u->ID, $key );
 		if ( true !== $ok ) { return $ok; }
 		return $u;
@@ -581,8 +630,19 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		) + $code;
 	}
 
-	/** @return array|WP_Error */
+	/** The delete holds the administrators lock from its count to the delete (busy while another holds it). @return array|WP_Error */
 	function d5b_wu_delete( array $in ) {
+		$token = d5b_wu_admin_lock();
+		if ( is_wp_error( $token ) ) { return $token; }
+		try {
+			return d5b_wu_delete_run( $in );
+		} finally {
+			d5b_maint_lock_release( 'd5b_users_admin_lock', $token );
+		}
+	}
+
+	/** @return array|WP_Error */
+	function d5b_wu_delete_run( array $in ) {
 		if ( ! d5b_wu_ok( 'delete_users' ) ) { return new WP_Error( 'forbidden', 'You may not delete users.' ); }
 		$a = d5b_rc_args( $in, array( 'id' => 'id', 'reassign_to' => 'id', 'confirmation' => 'str' ), array( 'id', 'reassign_to' ) );
 		if ( is_wp_error( $a ) ) { return $a; }
@@ -646,12 +706,12 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 	$d5b_wu_reassign = array( 'reassign_to' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The user who gets every item of the deleted user (required; an existing user of this site, not the one deleted).' ) );
 
 	d5b_wc_def( 'users-create', 'users', 'Create a user',
-		'Creates one user with login, email and role (one of the roles you can give: an editor can never create an administrator), and optionally display_name, first_name, last_name. No password is set or shown: WordPress emails the user its own link to set one. Refuses a login or email already in use (exists), a role you cannot give (not_allowed; a role other than the site\'s default role also needs promote_users), an invalid login or email (invalid_input). On a network the user is created for the network and added to this site; once the network user exists the answer is always the created user with history_id, plus warnings when adding it to this site or setting the names failed (do not create it again). A risky action: needs the Users risky switch and create_users. Returns the user (no password, ever) and history_id.',
+		'Creates one user with login, email and role (one of the roles you can give: an editor can never create an administrator), and optionally display_name, first_name, last_name. No password is set or shown: WordPress emails the user its own link to set one. Refuses a login or email already in use (exists), a role you cannot give (not_allowed; a role other than the site\'s default role also needs promote_users, and so does administrator or any role with promote_users, edit_users, manage_options or delete_users even when it is the default), an invalid login or email (invalid_input). On a network the user is created for the network and added to this site; once the network user exists the answer is always the created user with history_id, plus warnings when adding it to this site or setting the names failed (do not create it again). A risky action: needs the Users risky switch and create_users. Returns the user (no password, ever) and history_id.',
 		array( 'login' => array( 'type' => 'string', 'maxLength' => 60, 'description' => 'The login name: letters, digits, spaces and _ . - @ (on a network: lowercase letters and digits, at least 4).' ) ) + $d5b_wu_email + $d5b_wu_role + $d5b_wu_names,
 		array( 'login', 'email', 'role' ), 'd5b_wu_h_create', d5b_wu_can( 'create_users' ), array(), array( 'risky' => true ) );
 
 	d5b_wc_def( 'users-update', 'users', 'Update a user',
-		'Changes display_name, first_name, last_name, url, description, email or role of one user (only the fields given) and returns the user. Refuses: your own role or email (own_account: use your profile screen); the email of another administrator or user manager (a super admin, or anyone with promote_users, edit_users, manage_options or delete_users: other_admin_email, they change it themselves); taking the administrator role from the last administrator (last_admin); a role you cannot give or without promote_users (not_allowed); an email another user has (exists). An email change sends WordPress\'s own notice to the old address. A risky action: needs the Users risky switch and edit_users. The change history keeps the previous values.',
+		'Changes display_name, first_name, last_name, url, description, email or role of one user (only the fields given) and returns the user. Refuses: your own role or email (own_account: use your profile screen); the email of another administrator or user manager (a super admin, or anyone with promote_users, edit_users, manage_options or delete_users: other_admin_email, they change it themselves); taking the administrator role from the last administrator (last_admin); a role you cannot give or without promote_users (not_allowed); an email another user has (exists); a role change while another role change or user delete runs (busy, 409: nothing changed, try again). An email change sends WordPress\'s own notice to the old address. A risky action: needs the Users risky switch and edit_users. The change history keeps the previous values.',
 		$d5b_wu_id + $d5b_wu_names + array(
 			'url'         => array( 'type' => 'string', 'maxLength' => 200, 'description' => 'The website address (http or https).' ),
 			'description' => array( 'type' => 'string', 'maxLength' => 10000, 'description' => 'The biographical info.' ),
@@ -663,7 +723,7 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		$d5b_wu_id, array( 'id' ), 'd5b_wu_h_reset', d5b_wu_can( 'edit_users' ), array() );
 
 	d5b_wc_def( 'users-meta-set', 'users', 'Set a user field',
-		'Sets one field (user meta) of one user to value and returns it. value is text, a number, true/false, or a list or object of those (8 levels, 1 MB at most). When the name holds several rows they are ALL replaced by this one value (replaced_rows). Refuses with not_allowed: roles and capabilities (capabilities, user_level, any name ending _capabilities or _user_level), session_tokens, use_ssl, dismissed_wp_pointers, protected names (starting with an underscore) and secret-looking names; with invalid_input a name that is not plain ASCII or differs from a stored one only by case. A risky action: needs the Users risky switch and edit_users. The change history keeps every previous row.',
+		'Sets one field (user meta) of one user to value and returns it. value is text, a number, true/false, or a list or object of those (8 levels, 1 MB at most). When the name holds several rows they are ALL replaced by this one value (replaced_rows). Refuses with not_allowed: roles and capabilities (capabilities, user_level, any name ending _capabilities or _user_level), session_tokens, use_ssl, dismissed_wp_pointers, protected names (starting with an underscore) and secret-looking names, and any field of another administrator or user manager (a super admin, or anyone with promote_users, edit_users, manage_options or delete_users: they change their own); with invalid_input a name that is not plain ASCII or differs from a stored one only by case. A risky action: needs the Users risky switch and edit_users. The change history keeps every previous row.',
 		$d5b_wu_id + $d5b_wu_key + array( 'value' => array( 'type' => array( 'string', 'number', 'integer', 'boolean', 'array', 'object' ), 'description' => 'The new value.' ) ),
 		array( 'id', 'key', 'value' ), 'd5b_wu_h_meta_set', d5b_wu_can( 'edit_users' ), array( 'idempotent' => true ), array( 'risky' => true ) );
 
@@ -676,7 +736,7 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		$d5b_wu_id + $d5b_wu_reassign, array( 'id', 'reassign_to' ), 'd5b_wu_h_delete_preview', d5b_wu_can( 'delete_users' ), array( 'readonly' => true ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'users-delete', 'users', 'Delete a user',
-		'Step two of a user delete: every item of the user gets the author reassign_to, then the user is deleted (on a network: removed from this site). Only with the confirmation code from users-delete-preview, by the same user, for the same user and reassign_to, with the same item count, used once, within 10 minutes; anything else is refused with confirmation_invalid and nothing changes. The change history row is written BEFORE the delete with the user\'s record and the ids of the items that move; when it cannot be written nothing is deleted (history_unavailable). The same refusals as the preview, checked again. Returns deleted true, reassigned_to, posts_reassigned, comments_left and history_id. A risky action: needs the Users risky switch and delete_users.',
+		'Step two of a user delete: every item of the user gets the author reassign_to, then the user is deleted (on a network: removed from this site). Only with the confirmation code from users-delete-preview, by the same user, for the same user and reassign_to, with the same item count, used once, within 10 minutes; anything else is refused with confirmation_invalid and nothing changes. The change history row is written BEFORE the delete with the user\'s record and the ids of the items that move; when it cannot be written nothing is deleted (history_unavailable). The same refusals as the preview, checked again; busy (409, nothing deleted) while a role change or another user delete runs. Returns deleted true, reassigned_to, posts_reassigned, comments_left and history_id. A risky action: needs the Users risky switch and delete_users.',
 		$d5b_wu_id + $d5b_wu_reassign + array( 'confirmation' => array( 'type' => 'string', 'description' => 'The confirmation code from the preview, after the user said OK.' ) ),
 		array( 'id', 'reassign_to', 'confirmation' ), 'd5b_wu_h_delete', d5b_wu_can( 'delete_users' ), array( 'destructive' => true ), array( 'risky' => true ) );
 
