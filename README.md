@@ -311,10 +311,18 @@ php  scripts/plugin-abilities-write-media-test.php     # media: safe upload (htt
 php  scripts/plugin-abilities-write-terms-test.php     # categories, tags and other terms
 php  scripts/plugin-abilities-write-menus-test.php     # menus, items, locations
 php  scripts/plugin-abilities-write-divi-test.php      # Divi section and text edits, design-system and Theme Builder restores
+php  scripts/plugin-abilities-risky-test.php          # the risky switches: registration gate, permission re-check, the 2.3.0 consent step
+php  scripts/plugin-abilities-write-settings-test.php   # site settings (allow-list, sanitize_option, risky keys) and the homepage
+php  scripts/plugin-abilities-write-appearance-test.php # theme mods and the Custom CSS (hash, size, </style)
+php  scripts/plugin-abilities-write-widgets-test.php    # widgets: add, update, move, remove, the layout kept in the history
+php  scripts/plugin-abilities-write-site-test.php       # cache flush and the cron run (lock, order, lifecycle deny-list)
+php  scripts/plugin-abilities-write-templates-test.php  # templates and global styles on block themes
+php  scripts/plugin-abilities-registry-test.php         # the annotations of every ability, over the whole registry
 node scripts/switch-advice-test.js    # what the scripts say when a switch is off
 node scripts/plugin-live-check-test.js  # the read-only live check (plugin-live-check.js <site>): GET only, exit 0/1/2
 node scripts/abilities-live-check-test.js  # the read-only abilities check (abilities-live-check.js <site>): GET only, exit 0/1/2
 node scripts/abilities-live-write-test.js  # the live write script (abilities-live-write.js <site> <step>) against the fake site: only d5b-live- items, previews then --confirm, exit 0/1/2/3
+node scripts/abilities-live-site-test.js  # the live site script (abilities-live-site.js <site> <step>) against the fake site: changes and puts back, homepage needs --confirm go, exit 0/1/2/3
 node scripts/build-plugin-zips-test.js  # the zip build and the must-use loader next to it
 php  scripts/ds-write-test.php "<path to a Divi 5 theme folder>"   # the plugin's design-system writes, nested variables included: run it against a 5.18 AND a 5.15 copy
 node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts every store back (plugin >= 2.0.1; the "nested" part needs Divi 5.18)
@@ -323,7 +331,7 @@ node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts
 ## Security
 
 - **Found a vulnerability? Report it privately** - see [SECURITY.md](SECURITY.md).
-  Run the latest plugin (**divi5-builder 2.2.0**; the old single-file 1.8.3 and newer already fixed a Contributor-level option read).
+  Run the latest plugin (**divi5-builder 2.3.0**; the old single-file 1.8.3 and newer already fixed a Contributor-level option read).
 - Use the lowest role that works: page building needs an **Editor** Application Password.
 - Never commit `~/.web-creds.txt` or any Application Password.
 - The plugin exposes existing Divi meta keys, the global colour palette and (1.5+)

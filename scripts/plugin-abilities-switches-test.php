@@ -11,7 +11,7 @@
  * never bypass the master, the 2.0.0 part switches and the abilities switches survive each other's writes, and
  * only a request with a valid nonce and the right capability changes anything.
  */
-define( 'D5B_VERSION', '2.2.0' );
+define( 'D5B_VERSION', '2.3.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 $GLOBALS['T_exits'] = 0;
 function d5b_settings_exit() { $GLOBALS['T_exits']++; }
@@ -31,7 +31,9 @@ $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . ( is_string( $detail ) ? $detail : json_encode( $detail ) ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
 function fresh() { t_reset(); t_admin_reset(); t_set_caps( array() ); t_set_multisite( false ); $_POST = array(); $_GET = array(); $GLOBALS['T_exits'] = 0; }
 function stored() { return is_multisite() ? get_site_option( 'd5b_switches', null ) : get_option( 'd5b_switches', null ); }
-function run_save() { try { d5b_settings_save(); return null; } catch ( Throwable $e ) { return $e; } }
+// A post without d5b_switch_rev is the form of a page loaded just now: it carries the current revision. The stale-page
+// checks below set their own.
+function run_save() { if ( ! array_key_exists( 'd5b_switch_rev', $_POST ) ) { $_POST['d5b_switch_rev'] = d5b_abilities_switch_rev(); } try { d5b_settings_save(); return null; } catch ( Throwable $e ) { return $e; } }
 function html( $fn ) { ob_start(); $fn(); return ob_get_clean(); }
 function post_abilities( array $extra ) { $_POST = array_merge( array( 'action' => 'd5b_save_switches', '_wpnonce' => 'x' ), $extra ); }
 
@@ -308,5 +310,55 @@ foreach ( array( 'audit' => '&tab=audit', 'history' => '&tab=history', 'settings
 	run_save();
 	check( "dismiss from tab '$t' redirects to the page" . ( '' === $suffix ? ' (Settings tab)' : $suffix ), array( 'https://x.example/wp-admin/options-general.php?page=divi5-builder' . $suffix ) === $GLOBALS['T_redirects'], $GLOBALS['T_redirects'] );
 }
+
+// ---- 2.3.0 fix wave I1: a page loaded before the switches changed cannot save over the change
+echo "stale settings page (d5b_switch_rev)\n";
+/** What a browser posts for the form as rendered: every hidden field of the main form and every ticked box. */
+function form_post( string $html ): array {
+	$p = array( 'action' => 'd5b_save_switches', '_wpnonce' => 'x' );
+	preg_match_all( '#<input type="hidden" name="([^"]+)" value="([^"]*)"#', $html, $h, PREG_SET_ORDER );
+	foreach ( $h as $m ) { if ( 'd5b_dismiss_upgrade_notice' === $m[1] || 'd5b_tab' === $m[1] ) { continue; } $p[ $m[1] ] = html_entity_decode( $m[2] ); }
+	preg_match_all( '#<input type="checkbox" id="[^"]+" name="([^"]+)" value="1" checked="checked"#', $html, $c, PREG_SET_ORDER );
+	foreach ( $c as $m ) { if ( preg_match( '#^([a-z0-9_]+)\[([^\]]+)\]$#', $m[1], $mm ) ) { $p[ $mm[1] ][ $mm[2] ] = '1'; } else { $p[ $m[1] ] = '1'; } }
+	return $p;
+}
+$stale_url = 'https://x.example/wp-admin/options-general.php?page=divi5-builder&d5b_stale=1';
+fresh(); t_set_caps( array( 'manage_options' ) ); $GLOBALS['T_user_login'] = 'doug';
+d5b_abilities_set_master( true, 'doug' ); d5b_abilities_set_category( 'settings', true, false, 'doug' );
+$page = form_post( html( 'd5b_settings_render' ) );
+check( 'the form carries d5b_switch_rev = the stored state as rendered', ( $page['d5b_switch_rev'] ?? '' ) === d5b_abilities_switch_rev() && 32 === strlen( $page['d5b_switch_rev'] ?? '' ), $page );
+d5b_abilities_upgrade_consent( '2', '3' ); // the update runs in another request after the page was loaded
+$after_update = stored();
+$_POST = $page; run_save();
+check( 'case A: the consent step turned the master off, then a page loaded before it is saved: refused, nothing changes (master stays off, notice stays)',
+	$after_update === stored() && false === d5b_abilities_master_on() && true === d5b_abilities_upgrade_notice_on() && array( $stale_url ) === $GLOBALS['T_redirects'], array( stored(), $GLOBALS['T_redirects'] ) );
+check( '... and the page then shows the error', false !== strpos( html( function () { $_GET['d5b_stale'] = '1'; d5b_settings_render(); } ), 'The switches changed since this page was loaded (by another admin or an update). Reload and try again.' ) );
+
+fresh(); t_set_caps( array( 'manage_options' ) ); $GLOBALS['T_user_login'] = 'a';
+d5b_abilities_set_master( true, 'a' ); d5b_abilities_set_category( 'health', true, true, 'a' ); d5b_abilities_set_category( 'appearance', true, true, 'a' );
+$pageA = form_post( html( 'd5b_settings_render' ) );
+d5b_abilities_set_category( 'health', true, false, 'b' ); // admin B turns cron running off
+$after_b = stored();
+$pageA['d5b_on']['updates'] = '1'; // admin A also ticks a part switch on the old page
+$_POST = $pageA; run_save();
+check( 'case B: another admin turned a risky switch off, then a stale page is saved: refused, the risky switch stays off and no part switch changes',
+	$after_b === stored() && false === d5b_abilities_risky_on( 'health' ) && 'b' === d5b_abilities_switches()['categories']['health']['changed_by'] && false === d5b_switch_is_on( 'updates' ) && array( $stale_url ) === $GLOBALS['T_redirects'], stored() );
+$GLOBALS['T_redirects'] = array();
+$pageA2 = form_post( html( 'd5b_settings_render' ) ); unset( $pageA2['d5b_risky']['appearance'] );
+$_POST = $pageA2; run_save();
+check( 'a normal save from a page loaded now works (appearance risky off, health stays off)', false === d5b_abilities_risky_on( 'appearance' ) && false === d5b_abilities_risky_on( 'health' ) && true === d5b_abilities_master_on()
+	&& array( 'https://x.example/wp-admin/options-general.php?page=divi5-builder&updated=1' ) === $GLOBALS['T_redirects'], $GLOBALS['T_redirects'] );
+fresh(); t_set_caps( array( 'manage_options' ) );
+$before = stored(); $_POST = array( 'action' => 'd5b_save_switches', '_wpnonce' => 'x', 'd5b_abilities_master' => '1', 'd5b_switch_rev' => '' ); run_save();
+check( 'a post with an empty d5b_switch_rev is refused (master stays off)', false === d5b_abilities_master_on() && $before === stored() && array( $stale_url ) === $GLOBALS['T_redirects'] );
+fresh(); t_set_caps( array( 'manage_options' ) );
+$_POST = array( 'action' => 'd5b_save_switches', '_wpnonce' => 'x', 'd5b_abilities_master' => '1', 'd5b_switch_rev' => array( d5b_abilities_switch_rev() ) ); run_save();
+check( 'a d5b_switch_rev that is not a string is refused', false === d5b_abilities_master_on() );
+fresh(); t_set_multisite( true ); t_set_caps( array( 'manage_network_options' ) );
+$page = form_post( html( 'd5b_settings_render' ) ); $page['d5b_abilities_master'] = '1';
+d5b_abilities_set_category( 'posts', false, false, 'other' );
+$_POST = $page; run_save();
+check( 'multisite: a stale network page is refused too, to the network page', false === d5b_abilities_master_on() && array( 'https://x.example/wp-admin/network/settings.php?page=divi5-builder&d5b_stale=1' ) === $GLOBALS['T_redirects'], $GLOBALS['T_redirects'] );
+
 echo "\n$n checks, $failed failed\n";
 exit( $failed ? 1 : 0 );

@@ -15,7 +15,7 @@
  * newest first, filterable, paged, administrator-only and masked.
  */
 $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
-define( 'D5B_VERSION', '2.2.0' );
+define( 'D5B_VERSION', '2.3.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 
 // ---- stand-ins the shared stubs do not have (page-building.php's Theme Builder reads)

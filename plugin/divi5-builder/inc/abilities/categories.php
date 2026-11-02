@@ -7,6 +7,13 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
+if ( ! function_exists( 'd5b_category_has_risky' ) ) {
+	/** True for the categories that have a risky switch in the settings page (those with risky actions in this release). */
+	function d5b_category_has_risky( string $slug ): bool {
+		return in_array( $slug, array( 'settings', 'templates', 'appearance', 'health' ), true );
+	}
+}
+
 if ( ! function_exists( 'd5b_ability_categories' ) ) {
 	/** @return array<string, array{label:string, description:string, wp_slug:string}> keyed by the short slug */
 	function d5b_ability_categories(): array {
@@ -22,12 +29,12 @@ if ( ! function_exists( 'd5b_ability_categories' ) ) {
 			'menus'     => array( 'Menus', 'Read navigation menus, change them and their items, and delete a menu after a confirmation step.' ),
 			'revisions' => array( 'Revisions', 'Read the revision history of content and restore an earlier revision.' ),
 			'search'    => array( 'Search', 'Search site content.' ),
-			'settings'  => array( 'Settings', 'Read the safe site settings. Includes the admin email.' ),
-			'templates' => array( 'Templates', 'Read templates and template parts.' ),
-			'appearance' => array( 'Appearance', 'Read theme appearance details.' ),
-			'widgets'   => array( 'Widgets', 'Read widgets and sidebars.' ),
-			'cache'     => array( 'Cache', 'Read the cache status.' ),
-			'health'    => array( 'Site health', 'Read the site health summary. Includes the debug log and scheduled tasks.' ),
+			'settings'  => array( 'Settings', 'Read and change the safe site settings, and set the homepage. Includes the admin email.' ),
+			'templates' => array( 'Templates', 'Read and change templates, template parts and global styles on block themes.' ),
+			'appearance' => array( 'Appearance', 'Read and change theme settings and the Custom CSS.' ),
+			'widgets'   => array( 'Widgets', 'Read, add, change, move and remove widgets.' ),
+			'cache'     => array( 'Cache', 'Read the cache status and flush the caches.' ),
+			'health'    => array( 'Site health', 'Read the site health summary and run a scheduled task now. Includes the debug log and scheduled tasks.' ),
 			'users'     => array( 'Users', 'Read users, without any secrets. Includes users\' names, roles and email addresses.' ),
 			'plugins'   => array( 'Plugins', 'Read the installed plugins.' ),
 			'themes'    => array( 'Themes', 'Read the installed themes.' ),

@@ -24,7 +24,9 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 	function d5b_rs_cap_map(): array {
 		$admin = array( 'manage_options', '' );
 		return array(
-			'settings' => $admin, 'templates' => $admin, 'appearance' => $admin, 'cache' => $admin,
+			'settings' => $admin, 'appearance' => $admin, 'cache' => $admin,
+			// Templates and global styles: edit_theme_options, as core's templates and global styles controllers (fix wave M8).
+			'templates' => array( 'edit_theme_options', '' ),
 			// The debug log is one file for the whole network, so on a network the whole health category needs the network
 			// capability: a sub-site administrator does not get it.
 			'health'   => array( 'manage_options', 'manage_network' ),
@@ -113,7 +115,22 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 			'id' => (string) ( $t->id ?? '' ), 'slug' => (string) ( $t->slug ?? '' ), 'theme' => (string) ( $t->theme ?? '' ), 'type' => (string) ( $t->type ?? '' ),
 			'title' => is_string( $t->title ?? null ) ? $t->title : '', 'source' => (string) ( $t->source ?? '' ), 'status' => (string) ( $t->status ?? '' ),
 			'has_theme_file' => ! empty( $t->has_theme_file ), 'is_custom' => ! empty( $t->is_custom ),
+			// md5 of the content as WordPress returns it (for a theme-file template, the file's content): templates-update's expect_hash.
+			'hash' => md5( (string) ( $t->content ?? '' ) ),
 		);
+	}
+
+	/**
+	 * The user layer of the global styles: the active theme's wp_global_styles post, read without creating it (a read
+	 * changes nothing). @return array array( post id or 0, the stored JSON text or '', the decoded layer or array() )
+	 */
+	function d5b_rs_user_styles(): array {
+		if ( ! class_exists( 'WP_Theme_JSON_Resolver' ) || ! method_exists( 'WP_Theme_JSON_Resolver', 'get_user_data_from_wp_global_styles' ) ) { return array( 0, '', array() ); }
+		$cpt  = WP_Theme_JSON_Resolver::get_user_data_from_wp_global_styles( function_exists( 'wp_get_theme' ) ? wp_get_theme() : null );
+		$id   = is_array( $cpt ) ? (int) ( $cpt['ID'] ?? 0 ) : 0;
+		$json = is_array( $cpt ) ? (string) ( $cpt['post_content'] ?? '' ) : '';
+		$dec  = '' === $json ? null : json_decode( $json, true );
+		return array( $id, $json, is_array( $dec ) ? $dec : array() );
 	}
 
 	function d5b_rs_h_templates_list( array $in ) {
@@ -135,7 +152,7 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$t = get_block_template( $a['id'], $a['type'] ?? 'wp_template' );
 		if ( ! is_object( $t ) ) { return new WP_Error( 'not_found', 'No template with that id.' ); }
 		list( $content, $trunc, $bytes ) = d5b_rs_cap_text( $t->content ?? '' );
-		return d5b_rs_template_row( $t ) + array( 'content' => $content, 'truncated' => $trunc, 'content_bytes' => $bytes, 'hash' => md5( (string) ( $t->content ?? '' ) ) );
+		return d5b_rs_template_row( $t ) + array( 'content' => $content, 'truncated' => $trunc, 'content_bytes' => $bytes );
 	}
 
 	function d5b_rs_h_global_styles_get( array $in ) {
@@ -145,8 +162,18 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$data = null;
 		if ( class_exists( 'WP_Theme_JSON_Resolver' ) ) { $data = WP_Theme_JSON_Resolver::get_merged_data()->get_raw_data(); }
 		elseif ( function_exists( 'wp_get_global_styles' ) ) { $data = wp_get_global_styles(); }
-		list( $content, $trunc, $bytes ) = d5b_rs_cap_text( d5b_rs_json( $data ) );
-		return array( 'is_block_theme' => true, 'content' => $content, 'truncated' => $trunc, 'content_bytes' => $bytes );
+		// The merged data goes through the same key scrub as user below: as JSON text it would pass the result scrubber's
+		// key removal by.
+		$merged = function_exists( 'd5b_ability_scrub_keys' ) && is_array( $data ) ? d5b_ability_scrub_keys( $data ) : $data;
+		list( $content, $trunc, $bytes ) = d5b_rs_cap_text( d5b_rs_json( $merged ) );
+		list( , $json, $user ) = d5b_rs_user_styles();
+		// user: the user layer alone, as stored (global-styles-set writes only it), through the key scrub: a value under a
+		// secret-named key is left out, and then masked is true (global-styles-set refuses to write over such a layer);
+		// user_hash: md5 of the stored JSON text (md5 of '' when the theme has no user layer yet), global-styles-set's expect_hash.
+		$shown = function_exists( 'd5b_ability_scrub_keys' ) ? d5b_ability_scrub_keys( $user ) : $user;
+		$out   = array( 'is_block_theme' => true, 'content' => $content, 'truncated' => $trunc, 'content_bytes' => $bytes, 'user' => $shown, 'user_hash' => md5( $json ) );
+		if ( $shown !== $user || $merged !== $data ) { $out['masked'] = true; }
+		return $out;
 	}
 
 	// ---- appearance
@@ -177,6 +204,9 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$css = function_exists( 'wp_get_custom_css_post' ) ? wp_get_custom_css_post( $theme->get_stylesheet() ) : null;
 		list( $text, $trunc, $bytes ) = d5b_rs_cap_text( is_object( $css ) ? ( $css->post_content ?? '' ) : '' );
 		$out['custom_css'] = $text; $out['custom_css_truncated'] = $trunc; $out['custom_css_bytes'] = $bytes;
+		// md5 of the whole stylesheet (before the cut above): the expect_hash of appearance-custom-css-set.
+		// The stored content, unfiltered (wp_get_custom_css's filter may add rules that are not stored), as the write hashes it.
+		$out['custom_css_hash'] = md5( (string) ( is_object( $css ) ? ( $css->post_content ?? '' ) : '' ) );
 		return $out;
 	}
 
@@ -239,6 +269,19 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		return array( 'good' => $good, 'recommended' => $rec, 'critical' => $crit, 'total' => $good + $rec + $crit, 'cached' => true );
 	}
 
+	/**
+	 * One scheduled event as cron-list lists it (cron-run's history keeps the same). The number of arguments only: they
+	 * often hold addresses, ids and tokens. timestamp and args_key (core's md5 of the serialised args, the event's key in
+	 * the cron array) identify the event exactly for cron-run. Named args_key, not key: "key" is a secret name to the
+	 * scrubber and the history's key filter, which would drop it.
+	 */
+	function d5b_rs_cron_row( string $hook, int $ts, string $key, $ev ): array {
+		$ev = is_array( $ev ) ? $ev : array();
+		return array( 'hook' => $hook, 'schedule' => ! empty( $ev['schedule'] ) ? (string) $ev['schedule'] : 'single',
+			'next_run' => gmdate( 'Y-m-d\TH:i:s\Z', $ts ), 'arg_count' => is_array( $ev['args'] ?? null ) ? count( $ev['args'] ) : 0,
+			'timestamp' => $ts, 'args_key' => $key );
+	}
+
 	function d5b_rs_h_cron_list( array $in ) {
 		$e = d5b_rs_guard( 'health' ); if ( $e ) { return $e; }
 		$a = d5b_rc_args( $in, array() ); if ( is_wp_error( $a ) ) { return $a; }
@@ -248,13 +291,10 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		foreach ( $cron as $ts => $hooks ) {
 			if ( ! is_array( $hooks ) ) { continue; }
 			foreach ( $hooks as $hook => $items ) {
-				foreach ( (array) $items as $ev ) {
+				foreach ( (array) $items as $key => $ev ) {
 					$total++;
 					if ( count( $events ) >= 500 ) { continue; }
-					$ev = is_array( $ev ) ? $ev : array();
-					// The number of arguments only: they often hold addresses, ids and tokens.
-					$events[] = array( 'hook' => (string) $hook, 'schedule' => ! empty( $ev['schedule'] ) ? (string) $ev['schedule'] : 'single',
-						'next_run' => gmdate( 'Y-m-d\TH:i:s\Z', (int) $ts ), 'arg_count' => is_array( $ev['args'] ?? null ) ? count( $ev['args'] ) : 0 );
+					$events[] = d5b_rs_cron_row( (string) $hook, (int) $ts, (string) $key, $ev );
 				}
 			}
 		}
@@ -391,20 +431,20 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		$d5b_rs_none, array(), 'd5b_rs_h_settings_get', d5b_rs_perm( 'settings' ) );
 
 	d5b_rc_def( 'templates-list', 'templates', 'List block templates',
-		'Returns one page of the block templates or template parts of the active theme: id, slug, title, source and status, with total and total_pages. Refuses callers without manage_options. A classic theme returns an empty list with a note.',
+		'Returns one page of the block templates or template parts of the active theme: id, slug, title, source, status and hash (md5 of the content, the theme file\'s for a template not yet customised; the expect_hash of templates-update), with total and total_pages. Refuses callers without edit_theme_options. A classic theme returns an empty list with a note.',
 		array( 'type' => array( 'type' => 'string', 'enum' => array( 'wp_template', 'wp_template_part' ), 'default' => 'wp_template', 'description' => 'Templates (wp_template) or template parts (wp_template_part).' ) ) + d5b_rc_paging_props(),
 		array(), 'd5b_rs_h_templates_list', d5b_rs_perm( 'templates' ) );
 	d5b_rc_def( 'templates-get', 'templates', 'Get a block template',
-		'Returns one block template or template part with its raw block markup (at most 256 KB, with a truncated flag) and a hash. Refuses callers without manage_options, a bad id, and an id that does not exist.',
+		'Returns one block template or template part with its raw block markup (at most 256 KB, with a truncated flag) and a hash (md5 of the whole content; the expect_hash of templates-update). Refuses callers without edit_theme_options, a bad id, and an id that does not exist.',
 		array( 'id' => array( 'type' => 'string', 'description' => 'The template id as templates-list shows it, like twentytwentyfive//home.' ),
 			'type' => array( 'type' => 'string', 'enum' => array( 'wp_template', 'wp_template_part' ), 'default' => 'wp_template', 'description' => 'Whether the id is a template or a template part.' ) ),
 		array( 'id' ), 'd5b_rs_h_templates_get', d5b_rs_perm( 'templates' ) );
 	d5b_rc_def( 'global-styles-get', 'templates', 'Get global styles',
-		'Returns the merged global styles (theme.json plus the site owner\'s changes) of a block theme as JSON text, at most 256 KB with a truncated flag. Refuses callers without manage_options. A classic theme returns a note.',
+		'Returns the merged global styles (theme.json plus the site owner\'s changes) of a block theme as JSON text, at most 256 KB with a truncated flag, plus user (the site owner\'s layer alone, as stored, values under secret-named keys removed with masked true when any was; empty when there is none) and user_hash (md5 of the stored user layer; the expect_hash of global-styles-set). Refuses callers without edit_theme_options. A classic theme returns a note.',
 		$d5b_rs_none, array(), 'd5b_rs_h_global_styles_get', d5b_rs_perm( 'templates' ) );
 
 	d5b_rc_def( 'appearance-get', 'appearance', 'Get theme appearance',
-		'Returns the active theme and its parent, the theme settings (theme mods, values under secret-named keys removed) and the Custom CSS of the active theme, at most 256 KB with a truncated flag. Refuses callers without manage_options.',
+		'Returns the active theme and its parent, the theme settings (theme mods, values under secret-named keys removed) and the Custom CSS of the active theme, at most 256 KB with a truncated flag, plus custom_css_hash (md5 of the whole stylesheet; the expect_hash of appearance-custom-css-set). Refuses callers without manage_options.',
 		$d5b_rs_none, array(), 'd5b_rs_h_appearance_get', d5b_rs_perm( 'appearance' ) );
 
 	d5b_rc_def( 'widgets-list', 'widgets', 'List widgets',
@@ -419,7 +459,7 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 		'Returns the counts from the last Site Health run that WordPress stored (good, recommended, critical). Does not run the tests. Refuses callers without manage_options, and on a network without manage_network. Answers no_cached_result when Site Health has never been opened.',
 		$d5b_rs_none, array(), 'd5b_rs_h_health_status', d5b_rs_perm( 'health' ) );
 	d5b_rc_def( 'cron-list', 'health', 'List scheduled events',
-		'Returns the scheduled events (WP-Cron): hook, schedule name, next run in UTC and the number of arguments, never the argument values; at most 500 events. Refuses callers without manage_options, and on a network without manage_network.',
+		'Returns the scheduled events (WP-Cron): hook, schedule name, next run in UTC, timestamp, args_key (the id of the event\'s arguments; cron-run takes it) and the number of arguments, never the argument values; at most 500 events. Refuses callers without manage_options, and on a network without manage_network.',
 		$d5b_rs_none, array(), 'd5b_rs_h_cron_list', d5b_rs_perm( 'health' ) );
 	d5b_rc_def( 'error-log', 'health', 'Read the debug log',
 		'Returns the end of the WordPress debug log: the last 200 lines within the last 64 KB, with passwords, tokens and keys masked. Takes no path. Refuses callers without manage_options, and on a network without manage_network (the log is shared by every site). Answers no_debug_log when there is no log.',
@@ -451,6 +491,7 @@ if ( ! function_exists( 'd5b_rs_guard' ) ) {
 	d5b_ability_set_content_keys( array( 'templates-list', 'templates-get', 'global-styles-get', 'appearance-get' ) );
 
 	// Raw third-party data: theme mods, widget settings and option values are keyed and labelled by other plugins and themes.
-	// (Templates and global styles come back as one text field, already content.)
-	d5b_ability_set_raw_paths( array( 'appearance-get' => array( 'theme_mods' ), 'widgets-list' => array( 'sidebars.*.widgets.*.settings' ), 'settings-get' => array( 'settings' ) ) );
+	// (Templates and the merged global styles come back as one text field, already content; the user layer of the global
+	// styles comes back as the stored object, so it is raw third-party data like the theme mods.)
+	d5b_ability_set_raw_paths( array( 'appearance-get' => array( 'theme_mods' ), 'global-styles-get' => array( 'user' ), 'widgets-list' => array( 'sidebars.*.widgets.*.settings' ), 'settings-get' => array( 'settings' ) ) );
 }

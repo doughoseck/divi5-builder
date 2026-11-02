@@ -120,6 +120,17 @@ if ( ! function_exists( 'd5b_abilities_switches' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_abilities_switch_rev' ) ) {
+	/**
+	 * The revision of the stored abilities switches (master, categories, risky boxes, who and when): the settings form
+	 * carries it as d5b_switch_rev, and a save whose page showed another state is refused (2.3.0 fix wave, I1), so a page
+	 * opened before another admin's change or the update's consent step cannot quietly undo it.
+	 */
+	function d5b_abilities_switch_rev(): string {
+		return md5( serialize( d5b_abilities_switches() ) );
+	}
+}
+
 if ( ! function_exists( 'd5b_abilities_master_on' ) ) {
 	function d5b_abilities_master_on(): bool {
 		return true === d5b_abilities_switches()['master']['on'];
@@ -136,7 +147,7 @@ if ( ! function_exists( 'd5b_abilities_category_on' ) ) {
 }
 
 if ( ! function_exists( 'd5b_abilities_risky_on' ) ) {
-	/** False whenever the master or the category is off. Unused until 2.3.0: the risky switches arrive with 2.3.0 (2.2.0 has no risky abilities). */
+	/** False whenever the master or the category is off; the stored risky_on counts only as a real true. */
 	function d5b_abilities_risky_on( string $slug ): bool {
 		$a = d5b_abilities_switches();
 		if ( true !== $a['master']['on'] || ! isset( $a['categories'][ $slug ] ) || true !== $a['categories'][ $slug ]['on'] ) { return false; }
@@ -180,28 +191,50 @@ if ( ! function_exists( 'd5b_abilities_set_category' ) ) {
 }
 
 if ( ! function_exists( 'd5b_abilities_upgrade_notice_text' ) ) {
-	function d5b_abilities_upgrade_notice_text(): string {
+	/** The notice text: $version 1 is the 2.2.0 text, 2 the 2.3.0 text; null reads which one is stored (2.2.0's when unknown). */
+	function d5b_abilities_upgrade_notice_text( ?int $version = null ): string {
+		if ( null === $version ) {
+			$v       = is_multisite() ? get_site_option( 'd5b_abilities_upgrade_notice', 0 ) : get_option( 'd5b_abilities_upgrade_notice', 0 );
+			$version = 2 === (int) $v ? 2 : 1;
+		}
+		if ( 2 === $version ) {
+			return 'divi5-builder 2.3.0 adds AI abilities that can change site settings, theme settings, widgets and caches, and risky actions behind their own switches. The AI abilities master switch was turned off during the update; review the switches and turn it on again when you are ready.';
+		}
 		return 'divi5-builder 2.2.0 adds AI abilities that can create and change content. The AI abilities master switch was turned off during the update; review the category switches and turn it on again when you are ready.';
 	}
 }
 
 if ( ! function_exists( 'd5b_abilities_upgrade_consent' ) ) {
 	/**
-	 * The update from 2.1.x (schema 1, read-only abilities) to 2.2.0 (schema 2, abilities that write), called by
-	 * d5b_audit_maybe_install when it moves d5b_db_version from '1' to '2': a master switch that was on was given for reads
-	 * only, so it is turned off (changed_by '0', with the reason) and the settings page shows a notice until it is dismissed
-	 * (d5b_abilities_upgrade_notice, stored where the switches are). A master already off: nothing.
+	 * The update steps, called by d5b_audit_maybe_install when it moves d5b_db_version up: a master switch that was on was
+	 * given before the abilities could do this much, so it is turned off (changed_by '0', with the reason) and the settings
+	 * page shows a notice until it is dismissed (d5b_abilities_upgrade_notice, stored where the switches are). A master
+	 * already off: nothing.
+	 *
+	 * '1' -> '2' (2.1.x to 2.2.0, abilities that write): the 2.2.0 step, once per network (d5b_abilities_consent_220).
+	 * '2' -> '3' and '1' -> '3' (2.3.0: settings, theme settings, widgets, caches, risky actions): the 2.3.0 step, once per
+	 * network (d5b_abilities_consent_230); a site that skips 2.2.0 gets this one step with the 2.3.0 text.
+	 * No arguments means the 2.2.0 step, as before. Any other move: nothing.
 	 */
-	function d5b_abilities_upgrade_consent(): void {
+	function d5b_abilities_upgrade_consent( string $from = '1', string $to = '2' ): void {
+		if ( '3' === $to && in_array( $from, array( '1', '2' ), true ) ) {
+			$once = 'd5b_abilities_consent_230'; $notice = 2;
+			$why  = 'turned off by the update to 2.3.0, which adds abilities that change site settings, theme settings, widgets and caches';
+		} elseif ( '2' === $to && '1' === $from ) {
+			$once = 'd5b_abilities_consent_220'; $notice = 1;
+			$why  = 'turned off by the update to 2.2.0, which adds abilities that create and change content';
+		} else {
+			return;
+		}
 		// On a network the switches are one network option but every site upgrades its own tables: the step runs once per
-		// network (d5b_abilities_consent_220), so a master switched on again after the first site's update stays on.
+		// network, so a master switched on again after the first site's update stays on.
 		if ( is_multisite() ) {
-			if ( get_site_option( 'd5b_abilities_consent_220', 0 ) ) { return; }
-			update_site_option( 'd5b_abilities_consent_220', 1 );
+			if ( get_site_option( $once, 0 ) ) { return; }
+			update_site_option( $once, 1 );
 		}
 		if ( ! d5b_abilities_master_on() ) { return; }
-		d5b_abilities_set_master( false, '0', 'turned off by the update to 2.2.0, which adds abilities that create and change content' );
-		if ( is_multisite() ) { update_site_option( 'd5b_abilities_upgrade_notice', 1 ); } else { update_option( 'd5b_abilities_upgrade_notice', 1, false ); }
+		d5b_abilities_set_master( false, '0', $why );
+		if ( is_multisite() ) { update_site_option( 'd5b_abilities_upgrade_notice', $notice ); } else { update_option( 'd5b_abilities_upgrade_notice', $notice, false ); }
 	}
 }
 

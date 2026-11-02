@@ -17,7 +17,7 @@
  */
 $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
 if ( getenv( 'T_MEDIA_TRASH' ) ) { define( 'MEDIA_TRASH', true ); }
-define( 'D5B_VERSION', '2.2.0' );
+define( 'D5B_VERSION', '2.3.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 foreach ( array( 'parts', 'switches', 'abilities/categories', 'abilities/register', 'abilities/secrets', 'abilities/audit', 'abilities/scrub', 'abilities/history', 'abilities/confirm', 'abilities/read-content', 'abilities/read-structure', 'abilities/write-common', 'abilities/write-posts', 'abilities/write-media' ) as $f ) { require $dir . '/inc/' . $f . '.php'; }
 

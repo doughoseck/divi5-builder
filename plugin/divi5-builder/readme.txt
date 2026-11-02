@@ -3,7 +3,7 @@ Contributors: doughoseck
 Tags: divi, rest api
 Requires at least: 6.0
 Requires PHP: 7.4
-Stable tag: 2.2.0
+Stable tag: 2.3.0
 License: MIT
 
 Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.
@@ -26,6 +26,15 @@ Use at your own risk. With the AI abilities switched on, this plugin lets connec
 2. as a must-use plugin: copy the folder divi5-builder/ into wp-content/mu-plugins/ and the one file divi5-builder-loader.php next to it (it is published next to divi5-builder.zip in each release).
 
 == Changelog ==
+
+= 2.3.0 =
+* New: AI abilities for site management, behind the same master switch and the category switches. AI tools can now change site settings (title, tagline, date and time formats, posts per page, comment default), set the homepage, set theme settings and the Custom CSS, add, change, move and remove widgets, flush the caches, run one scheduled task now, and on block themes change templates and global styles.
+* Risky switches: the riskiest of these (the homepage, permalinks, time zone and search engine visibility; Custom CSS and theme settings; running a scheduled task; templates and global styles) have a second switch under their category, "Also allow risky actions", off by default, each with a plain note about what it allows. A risky action needs the master, the category and the risky switch.
+* Updating from 2.2.x: if the AI abilities master switch was on, the update turns it off and the settings page says so, because 2.3.0 abilities can change settings, widgets and caches. Review the switches and turn it on again when you are ready.
+* Change history: every one of these changes keeps the full previous value for 30 days (the old option values, the whole previous stylesheet, the widget layout and the widget's settings, the previous template). Flushing the caches and running a task leave a row saying what ran; there is nothing to put back.
+* Safe by construction: the site address (siteurl, home) and the admin email are never changed, only the listed settings can be, a task runs only if it is scheduled (never this plugin's own, never core's lifecycle hooks), and a value that was hidden in a read can never be written back. Theme settings, templates and global styles need the capability WordPress itself asks for (edit_theme_options), and the Custom CSS needs edit_theme_options and edit_css, as in the Customizer.
+* Global styles: changed as WordPress changes them. For a user without unfiltered_html they are sanitised as WordPress does, and a change that would lose something that way is refused with what it would lose, never dropped silently; an administrator's styles are stored as given.
+* Settings page: a page loaded before the switches changed (another admin, or this update) cannot be saved over them; it asks you to reload.
 
 = 2.2.0 =
 * New: abilities that change things, behind the same master switch and the category switches. AI tools can now create, update, trash and restore posts, pages and custom post types, work with media, categories and tags, comments, custom fields and menus, restore revisions, and edit Divi content. Nothing is changed unless the master switch and the category are both on.

@@ -34,6 +34,10 @@ function t_reset() {
 	if ( function_exists( 't_wpdb_reset' ) ) { t_wpdb_reset(); }
 	if ( function_exists( 't_content_reset' ) ) { t_content_reset(); }
 	if ( function_exists( 't_media_reset' ) ) { t_media_reset(); }
+	if ( function_exists( 't_settings_reset' ) ) { t_settings_reset(); }
+	if ( function_exists( 't_widgets_reset' ) && class_exists( 'WP_Widget_Factory', false ) ) { t_widgets_reset(); }
+	if ( function_exists( 't_cron_reset' ) ) { t_cron_reset(); }
+	if ( function_exists( 't_templates_reset' ) ) { t_templates_reset(); }
 }
 // A new request: WordPress starts a request with the gate not yet run.
 function t_new_request() { unset( $GLOBALS['d5b_gate_ran'] ); }
@@ -95,7 +99,7 @@ if ( ! getenv( 'T_NO_DEACTIVATE' ) ) {
 }
 
 function get_option( $n, $d = false ) { return array_key_exists( $n, $GLOBALS['T_options'] ) ? $GLOBALS['T_options'][ $n ] : $d; }
-function update_option( $n, $v, $autoload = null ) { $GLOBALS['T_writes'][] = array( 'update_option', $n ); $GLOBALS['T_options'][ $n ] = $v; if ( null !== $autoload ) { $GLOBALS['T_autoload'][ $n ] = $autoload; } return true; }
+function update_option( $n, $v, $autoload = null ) { if ( in_array( $n, $GLOBALS['T_frozen_options'] ?? array(), true ) ) { return false; } $GLOBALS['T_writes'][]= array( 'update_option', $n ); $GLOBALS['T_options'][ $n ] = $v; if ( null !== $autoload ) { $GLOBALS['T_autoload'][ $n ] = $autoload; } return true; }
 function add_option( $n, $v = '', $dep = '', $autoload = 'yes' ) { $GLOBALS['T_writes'][] = array( 'add_option', $n ); $GLOBALS['T_options'][ $n ] = $v; $GLOBALS['T_autoload'][ $n ] = $autoload; return true; }
 function delete_option( $n ) { $GLOBALS['T_writes'][] = array( 'delete_option', $n ); unset( $GLOBALS['T_options'][ $n ] ); return true; }
 function get_site_option( $n, $d = false ) { return array_key_exists( $n, $GLOBALS['T_site_options'] ) ? $GLOBALS['T_site_options'][ $n ] : $d; }
@@ -208,7 +212,7 @@ function wp_slash( $v ) { if ( is_array( $v ) ) { return array_map( 'wp_slash', 
 //   T_user_id          what get_current_user_id returns
 if ( ! defined( 'ARRAY_A' ) ) { define( 'ARRAY_A', 'ARRAY_A' ); }
 class T_Wpdb {
-	public $posts = 'wp_posts'; public $postmeta = 'wp_postmeta';
+	public $posts = 'wp_posts'; public $postmeta = 'wp_postmeta'; public $options = 'wp_options';
 	public $prefix = 'wp_'; public $tables = array(); public $queries = array(); public $unprepared = array(); public $fail_insert = false; public $fail_update = false; public $insert_id = 0; public $suppress_now = false; public $suppress_log = array();
 	private $prepared = array(); private $next_id = 1;
 	function get_blog_prefix( $id = null ) { return 'wp_' . ( ( null === $id || 1 === (int) $id ) ? '' : (int) $id . '_' ); }
@@ -308,6 +312,17 @@ class T_Wpdb {
 	}
 	function get_row( $sql, $output = 'OBJECT' ) {
 		$this->note( $sql );
+		if ( preg_match( "/^SELECT option_value FROM wp_options WHERE option_name = '_transient_([^']+)' LIMIT 1$/", $sql, $m ) && function_exists( 't_db_transient' ) ) {
+			$v = t_db_transient( stripslashes( $m[1] ) );
+			return null === $v ? null : (object) array( 'option_value' => $v );
+		}
+		// The cron option as the database holds it (T_cron_array, serialized with its version), read past the request's
+		// own copy (T_cron_request_copy, when a test models one, is what _get_cron_array() answers in this request).
+		if ( "SELECT option_value FROM wp_options WHERE option_name = 'cron' LIMIT 1" === $sql ) {
+			$GLOBALS['T_cron_fresh_reads'] = ( $GLOBALS['T_cron_fresh_reads'] ?? 0 ) + 1;
+			$c = $GLOBALS['T_cron_array'] ?? null;
+			return is_array( $c ) ? (object) array( 'option_value' => serialize( $c + array( 'version' => 2 ) ) ) : null;
+		}
 		if ( ! preg_match( '/^SELECT \* FROM (\S+) WHERE id = (\d+)$/', $sql, $m ) || ! isset( $this->tables[ $m[1] ] ) ) { return null; }
 		foreach ( $this->tables[ $m[1] ] as $r ) { if ( (int) $r['id'] === (int) $m[2] ) { return $r; } }
 		return null;
@@ -347,10 +362,21 @@ function get_attached_file( $id ) { $f = get_post_meta( $id, "_wp_attached_file"
 // WITHOUT //IGNORE, which fails on a bad byte, so a line with one bad byte comes back false (empty), not cleaned.
 function wp_check_invalid_utf8( $s, $strip = false ) { $s = (string) $s; if ( '' === $s || 1 === @preg_match( '/^./us', $s ) ) { return $s; } return $strip && function_exists( 'iconv' ) ? @iconv( 'utf-8', 'utf-8', $s ) : ''; }
 // T_transients: name => array( value, expires at, ttl ); a test expires one by lowering its expires-at.
-function set_transient( $n, $v, $ttl = 0 ) { if ( ! empty( $GLOBALS['T_transient_fail'] ) ) { return false; } $GLOBALS['T_transients'][ $n ] = array( $v, time() + $ttl, $ttl ); return true; }
+// As core, an expiration of 0 never expires (the doing_cron lock is set that way).
+// As core, a write reaches the database (T_db_transients, when a test models it) and, with a persistent object cache
+// (T_ext_cache), the shared cache (T_object_cache['transient']). T_on_set: name => callable run once right after that
+// transient is written (another process acting between our write and our read-back).
+function set_transient( $n, $v, $ttl = 0 ) {
+	if ( ! empty( $GLOBALS['T_transient_fail'] ) ) { return false; }
+	$GLOBALS['T_transients'][ $n ] = array( $v, (int) $ttl > 0 ? time() + (int) $ttl : PHP_INT_MAX, $ttl );
+	unset( $GLOBALS['T_db_transients'][ $n ] );
+	if ( ! empty( $GLOBALS['T_ext_cache'] ) ) { $GLOBALS['T_object_cache']['transient'][ $n ] = $v; }
+	if ( isset( $GLOBALS['T_on_set'][ $n ] ) ) { $cb = $GLOBALS['T_on_set'][ $n ]; unset( $GLOBALS['T_on_set'][ $n ] ); $cb(); }
+	return true;
+}
 // T_on_get: name => callable run once right after that transient is read (a concurrent request acting between a read and a write).
 function get_transient( $n ) { $t = $GLOBALS['T_transients'][ $n ] ?? null; $v = ( null === $t || $t[1] < time() ) ? false : $t[0]; if ( isset( $GLOBALS['T_on_get'][ $n ] ) ) { $cb = $GLOBALS['T_on_get'][ $n ]; unset( $GLOBALS['T_on_get'][ $n ] ); $cb(); } return $v; }
-function delete_transient( $n ) { $GLOBALS['T_transient_deletes'][] = array( $n, $GLOBALS['T_blog_id'] ?? 1 ); $had = false !== get_transient( $n ); unset( $GLOBALS['T_transients'][ $n ] ); return $had; }
+function delete_transient( $n ) { $GLOBALS['T_transient_deletes'][] = array( $n, $GLOBALS['T_blog_id'] ?? 1 ); $had = false !== get_transient( $n ); unset( $GLOBALS['T_transients'][ $n ], $GLOBALS['T_db_transients'][ $n ], $GLOBALS['T_object_cache']['transient'][ $n ] ); return $had; }
 function absint( $n ) { return abs( (int) $n ); }
 function switch_to_blog( $id ) { $GLOBALS['T_blog_stack'][] = $GLOBALS['T_blog_id']; $GLOBALS['T_blog_id'] = (int) $id; return true; }
 function restore_current_blog() { $GLOBALS['T_blog_id'] = array_pop( $GLOBALS['T_blog_stack'] ); return true; }
@@ -415,6 +441,7 @@ function t_content_reset() {
 	$GLOBALS['T_meta_auth_denied'] = array(); $GLOBALS['T_untrash_cascade'] = array(); $GLOBALS['T_insert_error'] = null; $GLOBALS['T_save_content'] = null;
 	$GLOBALS['T_meta_delete_blocked'] = false; $GLOBALS['T_on_set_terms'] = null; $GLOBALS['T_term_fail'] = false; $GLOBALS['T_term_delete_fail'] = false; $GLOBALS['T_menu_delete_fail'] = false; $GLOBALS['T_theme_mods'] = array(); $GLOBALS['T_term_meta'] = array();
 	$GLOBALS['T_cmeta'] = array(); $GLOBALS['T_comment_calls'] = array(); $GLOBALS['T_comment_blocked'] = false; $GLOBALS['T_comments_deleted'] = array(); $GLOBALS['T_new_comment_error'] = null;
+	$GLOBALS['T_custom_css'] = null; $GLOBALS['T_css_error'] = null; $GLOBALS['T_css_calls'] = array(); $GLOBALS['T_css_rewrite'] = null;
 	foreach ( array( 'post' => array( 1, 1, 0 ), 'page' => array( 1, 1, 1 ), 'attachment' => array( 1, 0, 0 ), 'revision' => array( 0, 0, 0 ), 'nav_menu_item' => array( 0, 0, 0 ), 'wp_block' => array( 0, 1, 0 ), 'wp_template' => array( 0, 1, 0 ), 'et_pb_layout' => array( 1, 1, 0 ) ) as $n => $f ) { t_add_type( $n, (bool) $f[0], (bool) $f[1], (bool) $f[2] ); }
 	foreach ( array( 'category' => array( 1, 1 ), 'post_tag' => array( 1, 1 ), 'nav_menu' => array( 0, 1 ), 'wp_theme' => array( 0, 0 ) ) as $n => $f ) { t_add_taxonomy( $n, (bool) $f[0], (bool) $f[1] ); }
 }
@@ -492,6 +519,8 @@ function t_post_cap( $cap, $id ) {
 // edit_post_meta( id, key ): as map_meta_cap, edit_post on the post, a key that is not protected, and the
 // auth_post_meta_{key} filter (here: the key is not in T_meta_auth_denied).
 function current_user_can( $cap, $id = null, $key = null ) {
+	// core maps edit_css to unfiltered_html (kept direct as well, so a test can grant it alone).
+	if ( 'edit_css' === $cap ) { return t_has_cap( 'edit_css' ) || t_has_cap( 'unfiltered_html' ); }
 	// core maps add_post_meta and delete_post_meta exactly as edit_post_meta.
 	if ( 'edit_post_meta' === $cap || 'delete_post_meta' === $cap || 'add_post_meta' === $cap ) { return null !== $id && t_post_cap( 'edit_post', (int) $id ) && ! is_protected_meta( (string) $key, 'post' ) && ! in_array( (string) $key, $GLOBALS['T_meta_auth_denied'] ?? array(), true ); }
 	if ( null !== $id && ( 'read_post' === $cap || 'edit_post' === $cap || 'delete_post' === $cap ) ) { return t_post_cap( $cap, (int) $id ); }
@@ -516,6 +545,8 @@ function apply_filters( $tag, $value, ...$args ) {
 	if ( 'd5b_ds_class' === $tag ) { return $GLOBALS['T_ds_classes'][ $args[0] ] ?? $value; }
 	// wp_delete_file: the callbacks added with add_filter run, as core's (Polylang/WPML return '' to keep a shared file).
 	if ( 'wp_delete_file' === $tag ) { foreach ( $GLOBALS['T_filters']['wp_delete_file'] ?? array() as $cb ) { $value = call_user_func( $cb, $value ); } return $value; }
+	// widget_update_callback (core's WP_Widget::update_callback): the callbacks added with add_filter run, as core's.
+	if ( 'widget_update_callback' === $tag ) { foreach ( $GLOBALS['T_filters']['widget_update_callback'] ?? array() as $cb ) { $value = call_user_func( $cb, $value, ...$args ); } return $value; }
 	return 'the_content' === $tag ? '<div class="filtered">' . $value . '</div>' : $value;
 }
 function wp_strip_all_tags( $s ) { return trim( strip_tags( (string) $s ) ); }
@@ -714,6 +745,13 @@ function wp_insert_post( $arr, $wp_error = false, $fire_after_hooks = true ) {
 	$id = t_add_post( $fields );
 	$dc = (int) get_option( 'default_category', 0 );
 	if ( 'post' === $type && isset( $GLOBALS['T_terms'][ $dc ] ) ) { $GLOBALS['T_object_terms'][ $id ]['category'] = array( $dc ); }
+	// core: tax_input is set only for a registered taxonomy and only when the user holds its assign_terms capability
+	// (silently skipped otherwise); terms of a flat taxonomy are names, created when missing (wp_set_post_terms).
+	foreach ( (array) ( $f['tax_input'] ?? array() ) as $tax => $terms ) {
+		$tobj = get_taxonomy( $tax );
+		if ( ! $tobj || ! current_user_can( $tobj->cap->assign_terms ) ) { continue; }
+		wp_set_object_terms( $id, is_array( $terms ) ? array_values( array_filter( $terms ) ) : $terms, $tax );
+	}
 	foreach ( (array) ( $arr['meta_input'] ?? array() ) as $k => $v ) { update_post_meta( $id, $k, $v ); }
 	return $id;
 }
@@ -1423,4 +1461,438 @@ function wp_delete_nav_menu( $menu ) {
 	foreach ( $locations as $loc => $id ) { if ( (int) $id === (int) $menu->term_id ) { $locations[ $loc ] = 0; } }
 	set_theme_mod( 'nav_menu_locations', $locations );
 	return $result;
+}
+
+// ---- site settings (2.3.0, write-settings.php)
+// core 6.4.1: sanitize_option (wp-includes/formatting.php) for the options the plugin writes or names, add_settings_error /
+// get_settings_errors (wp-admin/includes/template.php), get_available_languages, the rewrite object (set_permalink_structure,
+// flush_rules) and the server checks of wp-admin/includes/misc.php and file.php.
+//   T_languages     the installed languages (get_available_languages)
+//   T_mod_rewrite   got_mod_rewrite() (default true); T_iis7: iis7_supports_permalinks() (default false)
+//   T_home_path     get_home_path() (default ABSPATH); T_subdomain: is_subdomain_install() (default false)
+//   $wp_rewrite     a T_Rewrite: ->flushes lists every flush_rules call with the structure it saw
+class T_Rewrite {
+	public $permalink_structure = '';
+	public $flushes = array();
+	public $inits = 0;
+	public function set_permalink_structure( $s ) {
+		if ( $this->permalink_structure !== $s ) {
+			update_option( 'permalink_structure', $s );
+			$this->permalink_structure = (string) get_option( 'permalink_structure', '' );
+			$this->inits++;
+		}
+	}
+	public function flush_rules( $hard = true ) { $this->flushes[] = array( 'hard' => $hard, 'structure' => $this->permalink_structure ); }
+}
+function t_settings_reset() {
+	$GLOBALS['wp_settings_errors'] = array(); $GLOBALS['T_languages'] = array();
+	unset( $GLOBALS['T_mod_rewrite'], $GLOBALS['T_iis7'], $GLOBALS['T_home_path'], $GLOBALS['T_subdomain'] );
+	$GLOBALS['wp_rewrite'] = new T_Rewrite();
+}
+t_settings_reset();
+function add_settings_error( $setting, $code, $message, $type = 'error' ) {
+	$GLOBALS['wp_settings_errors'][] = array( 'setting' => $setting, 'code' => $code, 'message' => $message, 'type' => $type );
+}
+function get_settings_errors( $setting = '', $sanitize = false ) {
+	$all = (array) ( $GLOBALS['wp_settings_errors'] ?? array() );
+	if ( '' === $setting ) { return $all; }
+	return array_values( array_filter( $all, function ( $e ) use ( $setting ) { return $setting === $e['setting']; } ) );
+}
+function get_available_languages( $dir = null ) { return $GLOBALS['T_languages'] ?? array(); }
+function got_mod_rewrite() { return $GLOBALS['T_mod_rewrite'] ?? true; }
+function iis7_supports_permalinks() { return $GLOBALS['T_iis7'] ?? false; }
+function got_url_rewrite() { return got_mod_rewrite() || iis7_supports_permalinks(); }
+function get_home_path() { return $GLOBALS['T_home_path'] ?? ABSPATH; }
+function is_subdomain_install() { return $GLOBALS['T_subdomain'] ?? false; }
+function flush_rewrite_rules( $hard = true ) { global $wp_rewrite; if ( is_callable( array( $wp_rewrite, 'flush_rules' ) ) ) { $wp_rewrite->flush_rules( $hard ); } }
+// core's esc_url character filter (the part sanitize_url applies to a path).
+function t_sanitize_url( $s ) { return preg_replace( '|[^a-z0-9-~+_.?#=!&;,/:%@$\|*\'()\[\]\x80-\xff]|i', '', (string) $s ); }
+function sanitize_option( $option, $value ) {
+	$original = $value; $error = null;
+	// strip_invalid_text_for_column: invalid UTF-8 is dropped from text options.
+	$utf8 = function ( $s ) { return is_string( $s ) && 1 !== preg_match( '//u', $s ) ? (string) iconv( 'UTF-8', 'UTF-8//IGNORE', $s ) : $s; };
+	switch ( $option ) {
+		case 'page_on_front': case 'page_for_posts': case 'start_of_week': case 'users_can_register':
+			$value = absint( $value ); break;
+		case 'posts_per_page':
+			$value = (int) $value; if ( empty( $value ) ) { $value = 1; } if ( $value < -1 ) { $value = abs( $value ); } break;
+		case 'default_comment_status':
+			if ( '0' === (string) $value || '' === $value ) { $value = 'closed'; } break;
+		case 'blogname': case 'blogdescription':
+			$value = esc_html( $utf8( $value ) ); break;
+		case 'blog_public':
+			$value = null === $value ? 1 : (int) $value; break;
+		case 'date_format': case 'time_format':
+			$value = strip_tags( (string) $utf8( $value ) ); break;
+		case 'gmt_offset':
+			$value = is_numeric( $value ) ? preg_replace( '/[^0-9:.-]/', '', $value ) : ''; break;
+		case 'siteurl': case 'home':
+			if ( ! preg_match( '#http(s?)://(.+)#i', (string) $value ) ) { $error = 'The address you entered did not appear to be a valid URL. Please enter a valid URL.'; } break;
+		case 'WPLANG':
+			if ( ! in_array( $value, get_available_languages(), true ) && ! empty( $value ) ) { $value = get_option( $option ); } break;
+		case 'timezone_string':
+			if ( ! in_array( $value, timezone_identifiers_list( DateTimeZone::ALL_WITH_BC ), true ) && ! empty( $value ) ) { $error = 'The timezone you have entered is not valid. Please select a valid timezone.'; } break;
+		case 'permalink_structure':
+			$value = str_replace( 'http://', '', t_sanitize_url( $utf8( $value ) ) );
+			if ( '' !== $value && ! preg_match( '/%[^\/%]+%/', $value ) ) { $error = 'A structure tag is required when using custom permalinks. <a href="https://wordpress.org/documentation/article/customize-permalinks/#choosing-your-permalink-structure">Learn more</a>'; }
+			break;
+	}
+	if ( null !== $error ) {
+		$value = get_option( $option );
+		add_settings_error( $option, "invalid_{$option}", $error );
+	}
+	// apply_filters( "sanitize_option_{$option}", ... ): the callbacks added with add_filter run, as core's.
+	foreach ( $GLOBALS['T_filters'][ "sanitize_option_{$option}" ] ?? array() as $cb ) { $value = call_user_func( $cb, $value, $option, $original ); }
+	return $value;
+}
+
+// ---- appearance (2.3.0, write-appearance.php)
+// core 6.4.1: theme mods (T_theme_mods, shared with the menu stand-ins above), the Custom CSS post and its helpers.
+//   T_custom_css       the custom_css post of the active stylesheet (object: ID, post_content, post_modified_gmt) or unset
+//   T_css_error        a WP_Error wp_update_custom_css_post returns instead of writing
+//   T_css_calls        every css given to wp_update_custom_css_post
+//   T_css_rewrite      a callable the css passes through before it is stored (the update_custom_css_data filter)
+// edit_css is mapped as core maps it (to unfiltered_html), in current_user_can above.
+if ( ! function_exists( 'get_stylesheet' ) ) {
+	function get_stylesheet() { return isset( $GLOBALS['T_theme'] ) && is_object( $GLOBALS['T_theme'] ) ? $GLOBALS['T_theme']->get_stylesheet() : 'teststyle'; }
+}
+function get_theme_mods() { return $GLOBALS['T_theme_mods'] ?? array(); }
+function remove_theme_mod( $name ) {
+	if ( ! empty( $GLOBALS['T_theme_mod_fail'] ) ) { return; }
+	unset( $GLOBALS['T_theme_mods'][ $name ] );
+}
+function wp_get_custom_css_post( $stylesheet = '' ) { $p = $GLOBALS['T_custom_css'] ?? null; return is_object( $p ) ? $p : null; }
+// As core: the post's content through the wp_get_custom_css filter (T_custom_css_filter, a callable, stands for it).
+function wp_get_custom_css( $stylesheet = '' ) {
+	$p   = wp_get_custom_css_post( $stylesheet );
+	$css = is_object( $p ) ? (string) ( $p->post_content ?? '' ) : '';
+	return is_callable( $GLOBALS['T_custom_css_filter'] ?? null ) ? (string) call_user_func( $GLOBALS['T_custom_css_filter'], $css ) : $css;
+}
+function wp_update_custom_css_post( $css, $args = array() ) {
+	$GLOBALS['T_css_calls'][] = $css;
+	if ( ( $GLOBALS['T_css_error'] ?? null ) instanceof WP_Error ) { return $GLOBALS['T_css_error']; }
+	if ( is_callable( $GLOBALS['T_css_rewrite'] ?? null ) ) { $css = call_user_func( $GLOBALS['T_css_rewrite'], $css ); }
+	$p = wp_get_custom_css_post();
+	if ( null === $p ) {
+		$p = (object) array( 'ID' => $GLOBALS['T_next_id']++, 'post_type' => 'custom_css', 'post_title' => get_stylesheet(), 'post_status' => 'publish' );
+		set_theme_mod( 'custom_css_post_id', $p->ID );
+	}
+	$p->post_content = (string) $css; $p->post_modified_gmt = gmdate( 'Y-m-d H:i:s' );
+	$GLOBALS['T_custom_css'] = $p;
+	return $p;
+}
+
+// ---- widgets (2.3.0, write-widgets.php)
+// core 6.4.1 (widgets.php, class-wp-widget.php, class-wp-widget-factory.php, widgets/class-wp-widget-text.php,
+// widgets/class-wp-widget-block.php):
+//   the placement is the option sidebars_widgets (sidebar id => list of widget ids, plus array_version 3, which
+//   wp_get_sidebars_widgets leaves out and wp_set_sidebars_widgets adds); an instance is widget_<id_base>[<number>] with
+//   _multiwidget 1 in the same option; $wp_widget_factory->widgets holds the WP_Widget objects keyed by class name;
+//   $wp_registered_sidebars the theme's sidebars.
+//   T_frozen_options  option names update_option silently refuses (returns false, stores nothing), as a plugin's
+//                     pre_update_option filter can
+// Not core: wp_kses_post below removes only script/style/iframe tags (their text stays, as kses leaves it) and on*
+// attributes, and normalises a bare & to &amp; as core does; core's allow-list removes much more. Block comments such as
+// <!-- wp:paragraph --> survive it, as they survive core's kses. Enough to see that a widget's own update() ran.
+// widget_update_callback (apply_filters above) runs the callbacks added with add_filter, with all four arguments.
+// wp_get_sidebars_widgets: a test that defines its own (plugin-abilities-site-test.php, from T_sidebars) keeps it.
+if ( ! function_exists( 'wp_get_sidebars_widgets' ) ) {
+	function wp_get_sidebars_widgets( $deprecated = true ) {
+		$s = get_option( 'sidebars_widgets', array() );
+		if ( is_array( $s ) ) { unset( $s['array_version'] ); }
+		foreach ( $GLOBALS['T_filters']['sidebars_widgets'] ?? array() as $cb ) { $s = call_user_func( $cb, $s ); }
+		return $s;
+	}
+}
+function wp_set_sidebars_widgets( $sidebars_widgets ) {
+	if ( ! isset( $sidebars_widgets['array_version'] ) ) { $sidebars_widgets['array_version'] = 3; }
+	update_option( 'sidebars_widgets', $sidebars_widgets );
+}
+function wp_parse_args( $args, $defaults = array() ) {
+	if ( is_object( $args ) ) { $args = get_object_vars( $args ); }
+	return is_array( $args ) ? array_merge( (array) $defaults, $args ) : (array) $defaults;
+}
+if ( ! function_exists( 'wp_kses_post' ) ) {
+	function wp_kses_post( $s ) {
+		$s = preg_replace( '#</?(script|style|iframe)\b[^>]*>#i', '', (string) $s );
+		$s = preg_replace( '#\s+on[a-z]+\s*=\s*("[^"]*"|\'[^\']*\'|[^\s>]+)#i', '', $s );
+		// As core's wp_kses_normalize_entities: an & that does not start a valid entity becomes &amp;.
+		return preg_replace( '/&(?![A-Za-z][A-Za-z0-9]{1,31};|#\d{1,7};|#[xX][0-9A-Fa-f]{1,6};)/', '&amp;', $s );
+	}
+}
+if ( ! class_exists( 'WP_Widget' ) ) {
+	class WP_Widget {
+		public $id_base; public $name; public $option_name; public $widget_options; public $control_options;
+		public $number = false; public $id = false;
+		public function __construct( $id_base, $name, $widget_options = array(), $control_options = array() ) {
+			$this->id_base         = empty( $id_base ) ? preg_replace( '/(wp_)?widget_/', '', strtolower( get_class( $this ) ) ) : strtolower( $id_base );
+			$this->name            = $name;
+			$this->option_name     = 'widget_' . $this->id_base;
+			$this->widget_options  = wp_parse_args( $widget_options, array( 'classname' => str_replace( '\\', '_', $this->option_name ), 'customize_selective_refresh' => false ) );
+			$this->control_options = wp_parse_args( $control_options, array( 'id_base' => $this->id_base ) );
+		}
+		/** core: returns the new instance as given (a subclass sanitises). */
+		public function update( $new_instance, $old_instance ) { return $new_instance; }
+	}
+	class WP_Widget_Text extends WP_Widget {
+		public function __construct() { parent::__construct( 'text', 'Text', array( 'show_instance_in_rest' => true ) ); }
+		/** core 6.4.1, as is. */
+		public function update( $new_instance, $old_instance ) {
+			$new_instance = wp_parse_args( $new_instance, array( 'title' => '', 'text' => '', 'filter' => false, 'visual' => null ) );
+			$instance = $old_instance;
+			$instance['title'] = sanitize_text_field( $new_instance['title'] );
+			if ( current_user_can( 'unfiltered_html' ) ) { $instance['text'] = $new_instance['text']; } else { $instance['text'] = wp_kses_post( $new_instance['text'] ); }
+			$instance['filter'] = ! empty( $new_instance['filter'] );
+			if ( isset( $old_instance['filter'] ) && 'content' === $old_instance['filter'] ) { $instance['visual'] = true; }
+			if ( 'content' === $new_instance['filter'] ) { $instance['visual'] = true; }
+			if ( isset( $new_instance['visual'] ) ) { $instance['visual'] = ! empty( $new_instance['visual'] ); }
+			if ( ! empty( $instance['visual'] ) ) { $instance['filter'] = true; }
+			return $instance;
+		}
+	}
+	class WP_Widget_Block extends WP_Widget {
+		protected $default_instance = array( 'content' => '' );
+		public function __construct() { parent::__construct( 'block', 'Block', array( 'show_instance_in_rest' => true ) ); }
+		/** core 6.4.1, as is. */
+		public function update( $new_instance, $old_instance ) {
+			$instance = array_merge( $this->default_instance, $old_instance );
+			if ( current_user_can( 'unfiltered_html' ) ) { $instance['content'] = $new_instance['content']; } else { $instance['content'] = wp_kses_post( $new_instance['content'] ); }
+			return $instance;
+		}
+	}
+	class WP_Widget_Factory {
+		public $widgets = array();
+		/** core: a class name (keyed by it) or an instance (keyed by its object hash). */
+		public function register( $widget ) {
+			if ( $widget instanceof WP_Widget ) { $this->widgets[ spl_object_hash( $widget ) ] = $widget; } else { $this->widgets[ $widget ] = new $widget(); }
+		}
+		public function get_widget_object( $id_base ) {
+			foreach ( $this->widgets as $w ) { if ( $w->id_base === $id_base ) { return $w; } }
+			return null;
+		}
+	}
+}
+/** A fresh factory with core's text and block widgets, no sidebars. */
+function t_widgets_reset() {
+	$GLOBALS['wp_widget_factory'] = new WP_Widget_Factory();
+	$GLOBALS['wp_widget_factory']->register( 'WP_Widget_Text' );
+	$GLOBALS['wp_widget_factory']->register( 'WP_Widget_Block' );
+	$GLOBALS['wp_registered_sidebars'] = array();
+	$GLOBALS['T_frozen_options'] = array();
+}
+t_widgets_reset();
+
+// ---- WP-Cron (cron-list, cron-run). T_cron_array is core's cron array (timestamp => hook => key => event; a test may set
+// false). T_cron_ops records, in order, every reschedule, unschedule and hook run. T_cron_hooks: hook => list of callables
+// do_action_ref_array runs with the event's args. T_cron_fail: 'reschedule' / 'unschedule' => true makes that call fail
+// (WP_Error when $wp_error, as core).
+if ( ! defined( 'WP_CRON_LOCK_TIMEOUT' ) ) { define( 'WP_CRON_LOCK_TIMEOUT', 60 ); }
+function t_cron_reset() { $GLOBALS['T_cron_array'] = array(); $GLOBALS['T_cron_ops'] = array(); $GLOBALS['T_cron_hooks'] = array(); $GLOBALS['T_cron_fail'] = array(); $GLOBALS['T_do_actions'] = array(); $GLOBALS['T_ext_cache'] = false; $GLOBALS['T_object_cache'] = array(); $GLOBALS['T_cache_forced'] = array(); $GLOBALS['T_db_transients'] = array(); $GLOBALS['T_on_set'] = array(); unset( $GLOBALS['T_cron_request_copy'] ); $GLOBALS['T_cron_fresh_reads'] = 0; }
+// do_action records (T_do_actions: hook, args). The doing_cron lock as _get_cron_lock reads it, past the request's caches:
+// with T_ext_cache on, wp_cache_get( ..., force ) reads T_object_cache[ group ][ key ] (T_cache_forced records the force
+// flag); without it, $wpdb->get_row on the options table reads T_db_transients[ name ] when set (another process wrote the
+// database), else the request's own T_transients.
+function do_action( $hook, ...$args ) { $GLOBALS['T_do_actions'][] = array( $hook, $args ); }
+if ( ! function_exists( '__return_true' ) ) { function __return_true() { return true; } }
+function wp_using_ext_object_cache( $using = null ) { return ! empty( $GLOBALS['T_ext_cache'] ); }
+function wp_cache_get( $key, $group = '', $force = false, &$found = null ) { $GLOBALS['T_cache_forced'][] = $force; $found = isset( $GLOBALS['T_object_cache'][ $group ][ $key ] ); return $found ? $GLOBALS['T_object_cache'][ $group ][ $key ] : false; }
+function t_db_transient( string $name ) {
+	if ( array_key_exists( $name, $GLOBALS['T_db_transients'] ?? array() ) ) { return $GLOBALS['T_db_transients'][ $name ]; }
+	return isset( $GLOBALS['T_transients'][ $name ] ) ? $GLOBALS['T_transients'][ $name ][0] : null;
+}
+t_cron_reset();
+// T_cron_request_copy: when set, this request's cached copy of the cron option (alloptions), which another process may
+// have changed since: _get_cron_array() answers it, the direct option read (wpdb) answers T_cron_array.
+function _get_cron_array() { $c = array_key_exists( 'T_cron_request_copy', $GLOBALS ) ? $GLOBALS['T_cron_request_copy'] : ( $GLOBALS['T_cron_array'] ?? array() ); if ( ! is_array( $c ) ) { return array(); } unset( $c['version'] ); return $c; }
+function _set_cron_array( $cron, $wp_error = false ) { $GLOBALS['T_cron_array'] = $cron; return true; }
+function t_cron_intervals() { return array( 'hourly' => 3600, 'twicedaily' => 43200, 'daily' => 86400, 'weekly' => 604800 ); }
+/** As core: the next run is the first one after now, counted from $timestamp in steps of the interval. */
+function wp_reschedule_event( $timestamp, $recurrence, $hook, $args = array(), $wp_error = false ) {
+	$GLOBALS['T_cron_ops'][] = array( 'reschedule', $hook, (int) $timestamp, $recurrence );
+	$interval = t_cron_intervals()[ $recurrence ] ?? 0;
+	if ( ! empty( $GLOBALS['T_cron_fail']['reschedule'] ) || 0 === $interval ) { return $wp_error ? new WP_Error( 'invalid_schedule', 'Event schedule does not exist.' ) : false; }
+	$now  = time();
+	$next = (int) $timestamp >= $now ? $now + $interval : $now + ( $interval - ( ( $now - (int) $timestamp ) % $interval ) );
+	$cron = is_array( $GLOBALS['T_cron_array'] ) ? $GLOBALS['T_cron_array'] : array();
+	$cron[ $next ][ $hook ][ md5( serialize( $args ) ) ] = array( 'schedule' => $recurrence, 'args' => $args, 'interval' => $interval );
+	ksort( $cron );
+	$GLOBALS['T_cron_array'] = $cron;
+	return true;
+}
+function wp_unschedule_event( $timestamp, $hook, $args = array(), $wp_error = false ) {
+	$GLOBALS['T_cron_ops'][] = array( 'unschedule', $hook, (int) $timestamp );
+	if ( ! empty( $GLOBALS['T_cron_fail']['unschedule'] ) ) { return $wp_error ? new WP_Error( 'could_not_set', 'The cron event list could not be saved.' ) : false; }
+	$key  = md5( serialize( $args ) );
+	$cron = is_array( $GLOBALS['T_cron_array'] ) ? $GLOBALS['T_cron_array'] : array();
+	unset( $cron[ $timestamp ][ $hook ][ $key ] );
+	if ( empty( $cron[ $timestamp ][ $hook ] ) ) { unset( $cron[ $timestamp ][ $hook ] ); }
+	if ( empty( $cron[ $timestamp ] ) ) { unset( $cron[ $timestamp ] ); }
+	$GLOBALS['T_cron_array'] = $cron;
+	return true;
+}
+function do_action_ref_array( $hook, $args ) {
+	$GLOBALS['T_cron_ops'][] = array( 'run', $hook, $args );
+	foreach ( $GLOBALS['T_cron_hooks'][ $hook ] ?? array() as $cb ) { call_user_func_array( $cb, (array) $args ); }
+}
+/** Adds a scheduled event the way core stores it; returns its key. */
+function t_cron_add( int $ts, string $hook, $schedule = false, array $args = array() ) {
+	$key = md5( serialize( $args ) );
+	$GLOBALS['T_cron_array'][ $ts ][ $hook ][ $key ] = $schedule ? array( 'schedule' => $schedule, 'args' => $args, 'interval' => t_cron_intervals()[ $schedule ] ?? 3600 ) : array( 'schedule' => false, 'args' => $args );
+	ksort( $GLOBALS['T_cron_array'] );
+	return $key;
+}
+
+// ---- block themes (2.3.0 Task 6): templates and global styles, as core 6.4.1 has them.
+//   T_block_theme      wp_is_block_theme()
+//   T_block_templates  the theme's FILE templates and parts: objects as core's _build_block_template_result_from_file
+//                      builds them (id theme//slug, slug, theme, type, title, description, area, source 'theme', content ...)
+//   A customised template is a post of type wp_template / wp_template_part named after the slug, with the wp_theme term
+//   (by name) of its theme, as core's templates controller writes it; get_block_template(s) then answers source 'custom'
+//   with wp_id and the post's content (core's _build_block_template_result_from_post) and the file one is hidden. A post
+//   WITHOUT the wp_theme term is invisible, as in core.
+//   T_theme_json       the theme layer of the global styles (theme.json); get_merged_data() lays the user layer (the
+//                      wp_global_styles post of the active stylesheet) over it with array_replace_recursive.
+// WP_Theme_JSON::remove_insecure_properties is a MODEL, not core's code: core keeps only known styles and settings and
+// cleans each value through safecss_filter_attr. For styles the model keeps the structure and drops (1) any string value,
+// at any depth, holding expression( or javascript: (case-insensitive), (2) "css" keys unless the user has edit_css (core
+// keeps custom CSS only for edit_css). For settings it keeps what core's remove_insecure_settings keeps: the presets and
+// blockGap / layout sizes only (see t_settings). Then an empty styles or settings is removed, as core does. Other
+// top-level keys (version) pass through, as in core. Core runs it (through wp_filter_global_styles_post) only for users
+// without unfiltered_html.
+function t_templates_reset() {
+	$GLOBALS['T_block_theme'] = false; $GLOBALS['T_block_templates'] = array();
+	$GLOBALS['T_theme_json'] = array( 'version' => 2, 'settings' => array( 'color' => array( 'palette' => array( array( 'slug' => 'base', 'color' => '#ffffff' ) ) ) ), 'styles' => array( 'color' => array( 'text' => '#000000', 'background' => '#ffffff' ) ) );
+	if ( class_exists( 'WP_Theme_JSON_Resolver', false ) ) { WP_Theme_JSON_Resolver::$user_custom_post_type_id = null; }
+}
+if ( ! function_exists( 'wp_is_block_theme' ) ) { function wp_is_block_theme() { return ! empty( $GLOBALS['T_block_theme'] ); } }
+if ( ! defined( 'WP_TEMPLATE_PART_AREA_UNCATEGORIZED' ) ) { define( 'WP_TEMPLATE_PART_AREA_UNCATEGORIZED', 'uncategorized' ); }
+/** The theme names (wp_theme terms) of a post. */
+function t_post_themes( int $id ): array {
+	$out = array();
+	foreach ( (array) ( $GLOBALS['T_object_terms'][ $id ]['wp_theme'] ?? array() ) as $tid ) { $t = $GLOBALS['T_terms'][ (int) $tid ] ?? null; if ( $t ) { $out[] = (string) $t->name; } }
+	return $out;
+}
+/** The customised template post of theme + slug + type, or null. */
+function t_template_post( string $theme, string $slug, string $type ) {
+	foreach ( $GLOBALS['T_posts'] ?? array() as $p ) {
+		if ( $p->post_type === $type && (string) $p->post_name === $slug && 'trash' !== $p->post_status && in_array( $theme, t_post_themes( (int) $p->ID ), true ) ) { return $p; }
+	}
+	return null;
+}
+function t_template_from_post( $p, string $theme, $file ) {
+	return (object) array( 'id' => $theme . '//' . $p->post_name, 'slug' => (string) $p->post_name, 'theme' => $theme, 'type' => (string) $p->post_type, 'title' => (string) $p->post_title,
+		'description' => (string) $p->post_excerpt, 'source' => 'custom', 'origin' => (string) get_post_meta( (int) $p->ID, 'origin', true ), 'status' => (string) $p->post_status,
+		'wp_id' => (int) $p->ID, 'content' => (string) $p->post_content, 'has_theme_file' => null !== $file, 'is_custom' => null === $file, 'area' => is_object( $file ) ? ( $file->area ?? null ) : null );
+}
+if ( ! function_exists( 'get_block_templates' ) ) {
+	function get_block_templates( $q = array(), $type = 'wp_template' ) {
+		$out = array(); $seen = array();
+		foreach ( $GLOBALS['T_block_templates'] ?? array() as $t ) {
+			if ( $t->type !== $type ) { continue; }
+			$p = t_template_post( (string) $t->theme, (string) $t->slug, $type );
+			$out[] = null !== $p ? t_template_from_post( $p, (string) $t->theme, $t ) : $t;
+			if ( null !== $p ) { $seen[ (int) $p->ID ] = true; }
+		}
+		foreach ( $GLOBALS['T_posts'] ?? array() as $p ) {
+			if ( $p->post_type !== $type || isset( $seen[ (int) $p->ID ] ) || 'trash' === $p->post_status ) { continue; }
+			foreach ( t_post_themes( (int) $p->ID ) as $th ) { if ( $th === get_stylesheet() ) { $out[] = t_template_from_post( $p, $th, null ); } }
+		}
+		return $out;
+	}
+}
+if ( ! function_exists( 'get_block_template' ) ) {
+	function get_block_template( $id, $type = 'wp_template' ) {
+		foreach ( get_block_templates( array(), $type ) as $t ) { if ( $t->id === $id ) { return $t; } }
+		return null;
+	}
+}
+if ( ! class_exists( 'WP_Theme_JSON', false ) ) {
+	class WP_Theme_JSON {
+		const LATEST_SCHEMA = 2;
+		public static function remove_insecure_properties( $theme_json ) {
+			foreach ( array( 'styles', 'settings' ) as $k ) {
+				if ( ! isset( $theme_json[ $k ] ) ) { continue; }
+				$clean = ! is_array( $theme_json[ $k ] ) ? array() : ( 'styles' === $k ? self::t_clean( $theme_json[ $k ], true ) : self::t_settings( $theme_json[ $k ] ) );
+				if ( empty( $clean ) ) { unset( $theme_json[ $k ] ); } else { $theme_json[ $k ] = $clean; }
+			}
+			return $theme_json;
+		}
+		/**
+		 * Settings as core 6.4.1's remove_insecure_settings keeps them, per settings node (the root and each
+		 * settings.blocks.<name>): only the presets (PRESETS_METADATA paths, under an origin key default / blocks / theme /
+		 * custom, entries with an unsafe value dropped) and the indirect properties spacing.blockGap (and its left / top)
+		 * and layout.contentSize / wideSize, as strings. Everything else (custom, appearanceTools, color.custom,
+		 * typography.fluid, spacing.units ...) is removed.
+		 */
+		private static function t_settings( array $s ): array {
+			$out = self::t_settings_node( $s );
+			foreach ( (array) ( $s['blocks'] ?? array() ) as $name => $node ) {
+				if ( ! is_array( $node ) ) { continue; }
+				$n = self::t_settings_node( $node );
+				if ( ! empty( $n ) ) { $out['blocks'][ $name ] = $n; }
+			}
+			return $out;
+		}
+		private static function t_settings_node( array $s ): array {
+			$out = array();
+			foreach ( array( array( 'color', 'palette' ), array( 'color', 'gradients' ), array( 'color', 'duotone' ), array( 'typography', 'fontSizes' ), array( 'typography', 'fontFamilies' ), array( 'spacing', 'spacingSizes' ), array( 'shadow', 'presets' ) ) as $p ) {
+				foreach ( array( 'default', 'blocks', 'theme', 'custom' ) as $origin ) {
+					$list = $s[ $p[0] ][ $p[1] ][ $origin ] ?? null;
+					if ( ! is_array( $list ) ) { continue; }
+					$keep = array();
+					foreach ( $list as $preset ) { if ( is_array( $preset ) && ! preg_match( '/expression\s*\(|javascript\s*:/i', (string) json_encode( $preset ) ) ) { $keep[] = $preset; } }
+					if ( $keep ) { $out[ $p[0] ][ $p[1] ][ $origin ] = $keep; }
+				}
+			}
+			foreach ( array( array( 'spacing', 'blockGap' ), array( 'spacing', 'blockGap', 'left' ), array( 'spacing', 'blockGap', 'top' ), array( 'layout', 'contentSize' ), array( 'layout', 'wideSize' ) ) as $p ) {
+				$v = $s; foreach ( $p as $seg ) { $v = is_array( $v ) && array_key_exists( $seg, $v ) ? $v[ $seg ] : null; }
+				if ( ! is_string( $v ) || preg_match( '/expression\s*\(|javascript\s*:/i', $v ) ) { continue; }
+				if ( 3 === count( $p ) ) { $out[ $p[0] ][ $p[1] ][ $p[2] ] = $v; } else { $out[ $p[0] ][ $p[1] ] = $v; }
+			}
+			return $out;
+		}
+		private static function t_clean( array $a, bool $styles ): array {
+			$out = array();
+			foreach ( $a as $k => $v ) {
+				if ( $styles && 'css' === $k && ! current_user_can( 'edit_css' ) ) { continue; }
+				if ( is_array( $v ) ) { $v = self::t_clean( $v, $styles ); if ( empty( $v ) ) { continue; } }
+				elseif ( is_string( $v ) && 1 === preg_match( '/expression\s*\(|javascript\s*:/i', $v ) ) { continue; }
+				$out[ $k ] = $v;
+			}
+			return $out;
+		}
+	}
+}
+if ( ! class_exists( 'WP_Theme_JSON_Resolver', false ) ) {
+	class T_Merged_Theme_JSON { private $d; function __construct( array $d ) { $this->d = $d; } function get_raw_data() { return $this->d; } }
+	class WP_Theme_JSON_Resolver {
+		public static $user_custom_post_type_id = null;
+		/** The newest published wp_global_styles post of the active stylesheet as an array (get_object_vars); created when asked and absent. */
+		public static function get_user_data_from_wp_global_styles( $theme, $create_post = false, $post_status_filter = array( 'publish' ) ) {
+			$sheet = get_stylesheet();
+			$rows  = $GLOBALS['T_posts'] ?? array();
+			krsort( $rows );
+			foreach ( $rows as $p ) {
+				if ( 'wp_global_styles' === $p->post_type && in_array( $p->post_status, (array) $post_status_filter, true ) && in_array( $sheet, t_post_themes( (int) $p->ID ), true ) ) { return get_object_vars( $p ); }
+			}
+			if ( ! $create_post ) { return array(); }
+			$GLOBALS['T_global_styles_created'] = ( $GLOBALS['T_global_styles_created'] ?? 0 ) + 1;
+			$id = wp_insert_post( array( 'post_content' => '{"version": ' . WP_Theme_JSON::LATEST_SCHEMA . ', "isGlobalStylesUserThemeJSON": true }', 'post_status' => 'publish', 'post_title' => 'Custom Styles',
+				'post_type' => 'wp_global_styles', 'post_name' => 'wp-global-styles-' . urlencode( $sheet ), 'tax_input' => array( 'wp_theme' => array( $sheet ) ) ), true );
+			return is_wp_error( $id ) || ! $id ? array() : get_object_vars( get_post( $id ) );
+		}
+		public static function get_user_global_styles_post_id() {
+			if ( null !== static::$user_custom_post_type_id ) { return static::$user_custom_post_type_id; }
+			$cpt = static::get_user_data_from_wp_global_styles( null, true );
+			if ( array_key_exists( 'ID', $cpt ) ) { static::$user_custom_post_type_id = $cpt['ID']; }
+			return static::$user_custom_post_type_id;
+		}
+		public static function get_merged_data( $origin = 'custom' ) {
+			$data = $GLOBALS['T_theme_json'] ?? array();
+			$cpt  = static::get_user_data_from_wp_global_styles( null );
+			$user = isset( $cpt['post_content'] ) ? json_decode( (string) $cpt['post_content'], true ) : null;
+			if ( is_array( $user ) && ! empty( $user['isGlobalStylesUserThemeJSON'] ) ) { unset( $user['isGlobalStylesUserThemeJSON'] ); $data = array_replace_recursive( $data, $user ); }
+			return new T_Merged_Theme_JSON( $data );
+		}
+	}
 }

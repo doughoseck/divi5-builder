@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Divi 5 Builder
  * Description: Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.
- * Version: 2.2.0
+ * Version: 2.3.0
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: divi5-builder skill
@@ -26,7 +26,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 // Loaded twice (a must-use copy and a normal copy, or two folders): the first copy wins, the second does nothing.
 if ( defined( 'D5B_VERSION' ) ) { return; }
 
-define( 'D5B_VERSION', '2.2.0' );
+define( 'D5B_VERSION', '2.3.0' );
 define( 'D5B_FILE', __FILE__ );
 
 // An explicit list, not a directory scan: a file left behind by an older copy (copying over the folder by FTP does not
@@ -57,6 +57,11 @@ foreach ( array(
 	'inc/abilities/write-terms.php',
 	'inc/abilities/write-menus.php',
 	'inc/abilities/write-divi.php',
+	'inc/abilities/write-settings.php',
+	'inc/abilities/write-appearance.php',
+	'inc/abilities/write-widgets.php',
+	'inc/abilities/write-site.php',
+	'inc/abilities/write-templates.php',
 	'inc/settings.php',
 	'parts/page-building.php',
 	'parts/media-audit.php',

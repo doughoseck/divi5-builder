@@ -15,7 +15,7 @@
  * the plugin, theme and core abilities need the network capability too.
  */
 $dir = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
-define( 'D5B_VERSION', '2.2.0' );
+define( 'D5B_VERSION', '2.3.0' );
 require __DIR__ . '/plugin-test-stubs.php';
 $logdir = sys_get_temp_dir() . '/d5b-site-test-' . getmypid();
 @mkdir( $logdir, 0777, true );
@@ -57,14 +57,9 @@ function get_plugins() { return $GLOBALS['T_plugins']; }
 function get_site_transient( $n ) { return $GLOBALS['T_site_transients'][ $n ] ?? false; }
 function wp_get_theme() { return $GLOBALS['T_theme']; }
 function wp_get_themes() { return $GLOBALS['T_themes']; }
-function get_stylesheet() { return $GLOBALS['T_theme']->get_stylesheet(); }
-function get_theme_mods() { return $GLOBALS['T_theme_mods']; }
-function wp_get_custom_css_post( $s = '' ) { return $GLOBALS['T_custom_css']; }
-function _get_cron_array() { return $GLOBALS['T_cron_array']; }
+// _get_cron_array (T_cron_array) is in the shared stubs.
 function wp_get_sidebars_widgets() { return $GLOBALS['T_sidebars']; }
-function wp_is_block_theme() { return $GLOBALS['T_block_theme']; }
-function get_block_templates( $q = array(), $type = 'wp_template' ) { return array_values( array_filter( $GLOBALS['T_block_templates'], function ( $t ) use ( $type ) { return $t->type === $type; } ) ); }
-function get_block_template( $id, $type = 'wp_template' ) { foreach ( $GLOBALS['T_block_templates'] as $t ) { if ( $t->id === $id && $t->type === $type ) { return $t; } } return null; }
+// wp_is_block_theme, get_block_templates and get_block_template (T_block_theme, T_block_templates) are in the shared stubs.
 function get_bloginfo( $k = '' ) { return 'version' === $k ? $GLOBALS['T_wp_version'] : ''; }
 function wp_json_encode( $v ) { return json_encode( $v ); }
 
@@ -545,7 +540,7 @@ $GLOBALS['T_cron_array'] = array(
 	90000 => array( 'once_hook' => array( 'k2' => array( 'schedule' => false, 'args' => array() ) ) ),
 );
 $r = call( 'cron-list' );
-check( 'cron-list: hook, schedule, next run (UTC ISO 8601) and the argument COUNT', is_array( $r ) && 2 === $r['total'] && array( 'hook' => 'daily_hook', 'schedule' => 'daily', 'next_run' => '1970-01-02T00:00:00Z', 'arg_count' => 2 ) === $r['events'][0] && 'single' === $r['events'][1]['schedule'] && 0 === $r['events'][1]['arg_count'], $r );
+check( 'cron-list: hook, schedule, next run (UTC ISO 8601) and the argument COUNT', is_array( $r ) && 2 === $r['total'] && array( 'hook' => 'daily_hook', 'schedule' => 'daily', 'next_run' => '1970-01-02T00:00:00Z', 'arg_count' => 2, 'timestamp' => 86400, 'args_key' => 'k1' ) === $r['events'][0] && 'single' === $r['events'][1]['schedule'] && 0 === $r['events'][1]['arg_count'], $r );
 check( 'cron-list: no argument value anywhere in the output', false === strpos( json_encode( $r ), 'sv-cron-arg' ) && false === strpos( json_encode( $r ), 'tokenvalue' ), json_encode( $r ) );
 $big = array(); for ( $i = 0; $i < 600; $i++ ) { $big[ 1000 + $i ] = array( 'h' . $i => array( 'k' => array( 'schedule' => false, 'args' => array() ) ) ); }
 $GLOBALS['T_cron_array'] = $big;
@@ -699,10 +694,8 @@ check( 'templates-get: raw content and its hash', is_array( $t ) && '<p>Home</p>
 $t = call( 'templates-get', array( 'id' => 'theme//header', 'type' => 'wp_template_part' ) );
 check( 'templates-get: content over 256 KB is cut at 262144 bytes (whole characters) with a truncated flag', is_array( $t ) && true === $t['truncated'] && 262144 === strlen( $t['content'] ) && 400000 === $t['content_bytes'] && false !== json_encode( $t ), is_array( $t ) ? array( strlen( $t['content'] ), $t['truncated'] ) : $t );
 check( 'templates-get: unknown id is not_found; a bad id is invalid_input', 'not_found' === code( call( 'templates-get', array( 'id' => 'theme//nope' ) ) ) && 'invalid_input' === code( call( 'templates-get', array( 'id' => '../../etc/passwd' ) ) ) && 'invalid_input' === code( call( 'templates-get' ) ) );
-if ( ! class_exists( 'WP_Theme_JSON_Resolver' ) ) {
-	class T_ThemeJson { function get_raw_data() { return array( 'version' => 3, 'styles' => array( 'color' => array( 'text' => '#111' ), 'big' => str_repeat( 'a', 300000 ) ) ); } }
-	class WP_Theme_JSON_Resolver { static function get_merged_data() { return new T_ThemeJson(); } }
-}
+// The theme layer (WP_Theme_JSON_Resolver is in the shared stubs; there is no user layer here).
+$GLOBALS['T_theme_json'] = array( 'version' => 3, 'styles' => array( 'color' => array( 'text' => '#111' ), 'big' => str_repeat( 'a', 300000 ) ) );
 $g = call( 'global-styles-get' );
 check( 'global-styles-get: JSON text capped at 256 KB with a truncated flag', is_array( $g ) && true === $g['truncated'] && 262144 === strlen( $g['content'] ) && $g['content_bytes'] > 300000, is_array( $g ) ? array( $g['truncated'], strlen( $g['content'] ) ) : $g );
 $GLOBALS['T_theme'] = theme_row( 'child', 'Child', '1.0', theme_row( 'parent', 'Parent', '3.0' ), true );
@@ -810,9 +803,9 @@ $GLOBALS['T_options']['blogname'] = 'smtp_password'; $GLOBALS['T_options']['blog
 $r = call( 'settings-get' );
 check( 'settings-get declares its values raw; the settings map has 18 entries, so it is a record, not a pair (nothing redacted)', array( 'settings' ) === ( d5b_ability_defs()['divi5-builder/settings-get']['raw_paths'] ?? null ) && is_array( $r ) && 'Just another site' === $r['settings']['blogdescription'], $r );
 $raw_decl = array();
-foreach ( array( 'meta-get' => array( 'meta' ), 'appearance-get' => array( 'theme_mods' ), 'widgets-list' => array( 'sidebars.*.widgets.*.settings' ) ) as $ab => $want ) { if ( $want !== ( d5b_ability_defs()[ 'divi5-builder/' . $ab ]['raw_paths'] ?? null ) ) { $raw_decl[] = $ab; } }
+foreach ( array( 'meta-get' => array( 'meta' ), 'appearance-get' => array( 'theme_mods' ), 'widgets-list' => array( 'sidebars.*.widgets.*.settings' ), 'global-styles-get' => array( 'user' ) ) as $ab => $want ) { if ( $want !== ( d5b_ability_defs()[ 'divi5-builder/' . $ab ]['raw_paths'] ?? null ) ) { $raw_decl[] = $ab; } }
 $others = array_keys( array_filter( d5b_ability_defs(), function ( $x ) { return ! empty( $x['raw_paths'] ); } ) ); sort( $others );
-check( 'raw paths are declared exactly on meta-get, appearance-get, widgets-list and settings-get', array() === $raw_decl && array( 'divi5-builder/appearance-get', 'divi5-builder/meta-get', 'divi5-builder/settings-get', 'divi5-builder/widgets-list' ) === $others, array( $raw_decl, $others ) );
+check( 'raw paths are declared exactly on meta-get, appearance-get, widgets-list, settings-get and global-styles-get (user, 2.3.0)', array() === $raw_decl && array( 'divi5-builder/appearance-get', 'divi5-builder/global-styles-get', 'divi5-builder/meta-get', 'divi5-builder/settings-get', 'divi5-builder/widgets-list' ) === $others, array( $raw_decl, $others ) );
 
 // the scoping itself: the same a10 case in a raw path is redacted, in a path our handler built it is not
 $snapshot = d5b_ability_registry();
@@ -918,6 +911,10 @@ check( 'cookie / session / pin as the last token or before a qualifier, and otp 
 echo "round 5: declared raw paths match real output (a14 self-check)\n";
 function t_paths( $v, array $p, array &$into, int $d = 0 ) { if ( $d > 8 ) { return; } if ( is_object( $v ) ) { $v = get_object_vars( $v ); } if ( ! is_array( $v ) ) { return; } foreach ( $v as $k => $x ) { $q = array_merge( $p, array( $k ) ); $into[] = $q; t_paths( $x, $q, $into, $d + 1 ); } }
 $calls13 = a13_site();
+// global-styles-get's user layer exists only on a block theme with a stored layer: plant one for this check.
+$GLOBALS['T_block_theme'] = true;
+$gs_post = t_add_post( array( 'post_type' => 'wp_global_styles', 'post_name' => 'wp-global-styles-divi', 'post_content' => '{"version":2,"isGlobalStylesUserThemeJSON":true,"styles":{"color":{"text":"#111"}}}' ) );
+$GLOBALS['T_object_terms'][ $gs_post ]['wp_theme'] = array( t_add_term( 'wp_theme', get_stylesheet() ) );
 $unmatched = array();
 foreach ( d5b_ability_defs() as $full => $def ) {
 	if ( empty( $def['raw_paths'] ) ) { continue; }

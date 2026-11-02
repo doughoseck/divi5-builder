@@ -10,7 +10,7 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( ! defined( 'D5B_DB_VERSION' ) ) { define( 'D5B_DB_VERSION', '2' ); }
+if ( ! defined( 'D5B_DB_VERSION' ) ) { define( 'D5B_DB_VERSION', '3' ); }
 
 if ( ! function_exists( 'd5b_audit_table' ) ) {
 	function d5b_audit_table(): string {
@@ -110,8 +110,9 @@ CREATE TABLE {$history} (
 		if ( d5b_audit_table_exists() && d5b_history_table_exists() ) {
 			$was = get_option( 'd5b_db_version' );
 			update_option( 'd5b_db_version', D5B_DB_VERSION, false );
-			// From 2.1.x (schema 1) to 2.2.0 (schema 2): a master switch given for reads only is turned off.
-			if ( '1' === $was && '2' === D5B_DB_VERSION && function_exists( 'd5b_abilities_upgrade_consent' ) ) { d5b_abilities_upgrade_consent(); }
+			// From schema 1 (2.1.x) or 2 (2.2.x) to the current one: a master switch given before the abilities could do this
+			// much is turned off once (d5b_abilities_upgrade_consent decides which step and which text).
+			if ( in_array( $was, array( '1', '2' ), true ) && function_exists( 'd5b_abilities_upgrade_consent' ) ) { d5b_abilities_upgrade_consent( (string) $was, D5B_DB_VERSION ); }
 			if ( function_exists( 'delete_transient' ) ) { delete_transient( 'd5b_audit_install_failed' ); }
 		} elseif ( function_exists( 'set_transient' ) ) {
 			set_transient( 'd5b_audit_install_failed', 1, 3600 ); // CREATE denied: do not try again for an hour
@@ -122,7 +123,7 @@ CREATE TABLE {$history} (
 if ( ! function_exists( 'd5b_audit_forget_version' ) ) {
 	/**
 	 * Before a repair (a table found missing): forget the stored schema version so the install runs again, but only when it
-	 * is the current one. An older version ('1' after a failed upgrade CREATE) is kept, so the install that finally works
+	 * is the current one. An older version ('1' or '2' after a failed upgrade CREATE) is kept, so the install that finally works
 	 * still sees the upgrade and runs its consent step (d5b_abilities_upgrade_consent).
 	 */
 	function d5b_audit_forget_version(): void {

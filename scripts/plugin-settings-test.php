@@ -39,7 +39,9 @@ $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . ( is_string( $detail ) ? $detail : json_encode( $detail ) ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
 function fresh() { t_reset(); t_admin_reset(); t_set_caps( array() ); t_set_multisite( false ); $_POST = array(); $_GET = array(); $GLOBALS['T_exits'] = 0; }
 function post( array $on ) { $_POST = array( 'action' => 'd5b_save_switches', '_wpnonce' => 'x', 'd5b_on' => $on ); }
-function run_save() { try { d5b_settings_save(); return null; } catch ( Throwable $e ) { return $e; } }
+// A post without d5b_switch_rev is the form of a page loaded just now: it carries the current revision (the stale-page
+// refusal has its own checks in plugin-abilities-switches-test.php).
+function run_save() { if ( ! array_key_exists( 'd5b_switch_rev', $_POST ) ) { $_POST['d5b_switch_rev'] = d5b_abilities_switch_rev(); } try { d5b_settings_save(); return null; } catch ( Throwable $e ) { return $e; } }
 function html( $fn ) { ob_start(); $fn(); return ob_get_clean(); }
 function writes_of( $name ) { return count( array_filter( $GLOBALS['T_writes'], function ( $w ) use ( $name ) { return $w[1] === $name; } ) ); }
 function stored() { return is_multisite() ? get_site_option( 'd5b_switches', null ) : get_option( 'd5b_switches', null ); }

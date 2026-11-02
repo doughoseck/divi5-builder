@@ -126,6 +126,9 @@ if ( ! function_exists( 'd5b_settings_render_notices' ) ) {
 	/** The notices that show on every tab: saved, the change-history warning, the upgrade consent, the broken audit table. */
 	function d5b_settings_render_notices( string $action, string $tab ): void {
 		if ( isset( $_GET['updated'] ) ) { echo '<div class="notice notice-success"><p>Settings saved.</p></div>'; }
+		if ( isset( $_GET['d5b_stale'] ) ) {
+			echo '<div class="notice notice-error"><p>' . esc_html( 'The switches changed since this page was loaded (by another admin or an update). Reload and try again.' ) . '</p></div>';
+		}
 		if ( function_exists( 'd5b_history_notice_needed' ) && d5b_history_notice_needed() ) {
 			echo '<div class="notice notice-warning"><p>' . esc_html( 'A change was made in the last 24 hours that could not be recorded in the change history. Check the audit log rows marked ok_no_history.' ) . '</p></div>';
 		}
@@ -143,6 +146,19 @@ if ( ! function_exists( 'd5b_settings_render_notices' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_risky_note' ) ) {
+	/** The plain risk note shown under a category's "Also allow risky actions" box. */
+	function d5b_risky_note( string $slug ): string {
+		$notes = array(
+			'settings'   => 'Can change the homepage, permalinks, time zone, site language and whether search engines index the site. A wrong value is easy to put back from the change history, but visitors see it in the meantime.',
+			'templates'  => 'Changes the theme\'s templates and global styles on block themes. A broken template can blank a page until it is put back.',
+			'appearance' => 'Can change Custom CSS and theme settings. A wrong CSS rule can hide the whole page until it is put back.',
+			'health'     => 'Can run a scheduled task now. Tasks belong to plugins and may do real work (send emails, process orders, run migrations).',
+		);
+		return $notes[ $slug ] ?? '';
+	}
+}
+
 if ( ! function_exists( 'd5b_settings_render_abilities' ) ) {
 	/**
 	 * The "AI abilities" section, inside the page's form: the master box, and one box per category.
@@ -155,6 +171,8 @@ if ( ! function_exists( 'd5b_settings_render_abilities' ) ) {
 		$master = $a['master'];
 		$cats   = function_exists( 'd5b_ability_categories' ) ? d5b_ability_categories() : array();
 		echo '<h2>AI abilities</h2>';
+		// The state this page shows: a save from a page showing an older state is refused (d5b_settings_save).
+		echo '<input type="hidden" name="d5b_switch_rev" value="' . esc_attr( d5b_abilities_switch_rev() ) . '" />';
 		echo '<table class="form-table" role="presentation"><tr><th scope="row"><label for="d5b-abilities-master">AI abilities</label></th><td>';
 		echo '<label><input type="checkbox" id="d5b-abilities-master" name="d5b_abilities_master" value="1"' . ( $master['on'] ? ' checked="checked"' : '' ) . ' /> Switched on</label>';
 		echo '<p class="description">' . esc_html( 'Lets AI clients connected to this site (over the REST API) read site content and settings through this plugin. Nothing is shared until you switch this on. Every call is logged for 30 days. Secrets are filtered out by name and shape; the filter is careful but not perfect, so switch on only what you need. With this on, connected AI clients can also create and change content in the categories you tick. Every change is kept in the change history for 30 days.' ) . '</p>';
@@ -171,7 +189,14 @@ if ( ! function_exists( 'd5b_settings_render_abilities' ) ) {
 				$id = 'd5b-abilities-cat-' . $slug;
 				echo '<p><label for="' . esc_attr( $id ) . '"><input type="checkbox" id="' . esc_attr( $id ) . '" name="d5b_abilities_cat[' . esc_attr( $slug ) . ']" value="1"'
 					. ( $a['categories'][ $slug ]['on'] ? ' checked="checked"' : '' ) . ' /> ' . esc_html( $cat['label'] ) . '</label>'
-					. ' <span class="description">' . esc_html( $cat['description'] ) . '</span></p>';
+					. ' <span class="description">' . esc_html( $cat['description'] ) . '</span>';
+				if ( function_exists( 'd5b_category_has_risky' ) && d5b_category_has_risky( $slug ) ) {
+					$rid = 'd5b-abilities-risky-' . $slug;
+					echo '<br /><label for="' . esc_attr( $rid ) . '" style="margin-left:2em"><input type="checkbox" id="' . esc_attr( $rid ) . '" name="d5b_risky[' . esc_attr( $slug ) . ']" value="1"'
+						. ( $a['categories'][ $slug ]['risky_on'] ? ' checked="checked"' : '' ) . ' /> Also allow risky actions</label>'
+						. '<br /><span class="description" style="margin-left:2em">' . esc_html( d5b_risky_note( $slug ) ) . '</span>';
+				}
+				echo '</p>';
 			}
 			echo '</td></tr>';
 		}
@@ -292,9 +317,11 @@ if ( ! function_exists( 'd5b_settings_save_abilities' ) ) {
 		if ( $want !== $now['master']['on'] ) { d5b_abilities_set_master( $want, $login ); }
 		if ( ! isset( $_POST['d5b_abilities_cat_form'] ) ) { return; }
 		$posted = isset( $_POST['d5b_abilities_cat'] ) && is_array( $_POST['d5b_abilities_cat'] ) ? wp_unslash( $_POST['d5b_abilities_cat'] ) : array();
+		$risky = isset( $_POST['d5b_risky'] ) && is_array( $_POST['d5b_risky'] ) ? wp_unslash( $_POST['d5b_risky'] ) : array();
 		foreach ( $now['categories'] as $slug => $row ) {
-			$want = isset( $posted[ $slug ] );
-			if ( $want !== $row['on'] ) { d5b_abilities_set_category( $slug, $want, $row['risky_on'], $login ); }
+			$want       = isset( $posted[ $slug ] );
+			$want_risky = function_exists( 'd5b_category_has_risky' ) && d5b_category_has_risky( $slug ) ? isset( $risky[ $slug ] ) : $row['risky_on'];
+			if ( $want !== $row['on'] || $want_risky !== $row['risky_on'] ) { d5b_abilities_set_category( $slug, $want, $want_risky, $login ); }
 		}
 	}
 }
@@ -367,6 +394,14 @@ if ( ! function_exists( 'd5b_settings_save' ) ) {
 			if ( is_multisite() ) { delete_site_option( 'd5b_abilities_upgrade_notice' ); } else { delete_option( 'd5b_abilities_upgrade_notice' ); }
 			$back = isset( $_POST['d5b_tab'] ) && is_string( $_POST['d5b_tab'] ) ? sanitize_text_field( wp_unslash( $_POST['d5b_tab'] ) ) : 'settings';
 			wp_safe_redirect( $base . '?page=divi5-builder' . ( 'settings' !== $back && array_key_exists( $back, d5b_settings_tabs() ) ? '&tab=' . $back : '' ) );
+			d5b_settings_exit();
+			return;
+		}
+		// The page must show the abilities switches as they are stored now: another admin, or the update's consent step,
+		// may have changed them since it was loaded, and saving it would quietly undo that. Refused whole: nothing changes.
+		$rev = isset( $_POST['d5b_switch_rev'] ) && is_string( $_POST['d5b_switch_rev'] ) ? (string) wp_unslash( $_POST['d5b_switch_rev'] ) : '';
+		if ( ! hash_equals( d5b_abilities_switch_rev(), $rev ) ) {
+			wp_safe_redirect( $base . '?page=divi5-builder&d5b_stale=1' );
 			d5b_settings_exit();
 			return;
 		}
