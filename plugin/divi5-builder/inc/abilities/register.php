@@ -240,6 +240,9 @@ if ( ! function_exists( 'd5b_ability_http_status' ) ) {
 			'unavailable' => 503, 'audit_unavailable' => 503,
 			// A kept copy (2.4.0): too big for one copy, the store at its cap, or the copy could not be made.
 			'copy_too_big' => 413, 'store_full' => 507, 'copy_failed' => 503,
+			// Plugins (2.4.0): this plugin itself, a slug already installed, a download link not on downloads.wordpress.org, a
+			// check asked again too soon, a plugin that failed to activate, an install the upgrader did not finish.
+			'self' => 403, 'exists' => 409, 'bad_source' => 403, 'too_soon' => 429, 'activation_failed' => 409, 'install_failed' => 502,
 			'internal_error' => 500, 'write_failed' => 500,
 		);
 		return $map[ $code ] ?? $default;

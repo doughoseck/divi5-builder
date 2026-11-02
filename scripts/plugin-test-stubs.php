@@ -38,6 +38,7 @@ function t_reset() {
 	if ( function_exists( 't_widgets_reset' ) && class_exists( 'WP_Widget_Factory', false ) ) { t_widgets_reset(); }
 	if ( function_exists( 't_cron_reset' ) ) { t_cron_reset(); }
 	if ( function_exists( 't_templates_reset' ) ) { t_templates_reset(); }
+	if ( function_exists( 't_plugins_reset' ) ) { t_plugins_reset(); }
 }
 // A new request: WordPress starts a request with the gate not yet run.
 function t_new_request() { unset( $GLOBALS['d5b_gate_ran'] ); }
@@ -95,7 +96,8 @@ function register_rest_route( $ns, $path, $args ) {
 function register_setting( $group, $name, $args = array() ) { $GLOBALS['T_settings'][] = array( $group, $name, $args ); }
 // Set T_NO_DEACTIVATE in the environment to run without deactivate_plugins (as before wp-admin/includes/plugin.php is loaded).
 if ( ! getenv( 'T_NO_DEACTIVATE' ) ) {
-	function deactivate_plugins( $plugins, $silent = false, $network = null ) { $GLOBALS['T_deactivated'][] = $plugins; $GLOBALS['T_deactivate_calls'][] = array( $plugins, $silent, $network ); }
+	// With the plugin stand-ins (T_PLUGIN_STANDINS, at the end of this file) it also changes the active lists as core does.
+	function deactivate_plugins( $plugins, $silent = false, $network = null ) { $GLOBALS['T_deactivated'][] = $plugins; $GLOBALS['T_deactivate_calls'][] = array( $plugins, $silent, $network ); if ( function_exists( 't_plugins_deactivate' ) ) { t_plugins_deactivate( $plugins, $network ); } }
 }
 
 function get_option( $n, $d = false ) { return array_key_exists( $n, $GLOBALS['T_options'] ) ? $GLOBALS['T_options'][ $n ] : $d; }
@@ -1976,6 +1978,124 @@ if ( ! class_exists( 'WP_Theme_JSON_Resolver', false ) ) {
 			$user = isset( $cpt['post_content'] ) ? json_decode( (string) $cpt['post_content'], true ) : null;
 			if ( is_array( $user ) && ! empty( $user['isGlobalStylesUserThemeJSON'] ) ) { unset( $user['isGlobalStylesUserThemeJSON'] ); $data = array_replace_recursive( $data, $user ); }
 			return new T_Merged_Theme_JSON( $data );
+		}
+	}
+}
+
+// ---- plugins and the update list (2.4.0, write-plugins.php). OPT-IN: define T_PLUGIN_STANDINS before requiring this file
+// (other suites declare their own get_plugins, get_site_transient and the like). t_reset() clears them.
+// core 6.4.1 wp-admin/includes/plugin.php, plugin-install.php, class-plugin-upgrader.php and update.php, reduced:
+//   T_plugin_table        file => headers (Name, Version, Network): the fake plugins folder get_plugins() reads
+//   active_plugins (option) and active_sitewide_plugins (network option): the active lists, kept as core keeps them
+//   T_activate_fail       file => 'fatal' (the sandbox include throws an Error with core's output buffer still open: nothing
+//                         activated) | 'output' (activated, THEN core's WP_Error unexpected_output) | 'requirements'
+//                         (WP_Error plugin_php_incompatible before anything changes)
+//   T_activate_calls      every array( plugin, redirect, network_wide, silent );  T_traps  the order of the named calls
+//   T_plugins_api         slug => the object (or WP_Error) plugins_api returns; missing: core's WP_Error plugins_api_failed
+//   T_install_result      what Plugin_Upgrader::install returns (default true); T_install_adds  file => headers added on success
+//   T_install_calls       every package given to install();  T_plugins_cache_cleans  wp_clean_plugins_cache calls
+//   T_site_transients     name => value;  T_site_transient_deletes  every name deleted;  T_update_checks  the update calls
+//   T_fresh               name => what wp_version_check / wp_update_plugins / wp_update_themes store (the fresh answer)
+//   T_file_mods_off       wp_is_file_mod_allowed() answers false (DISALLOW_FILE_MODS)
+if ( defined( 'T_PLUGIN_STANDINS' ) ) {
+	function t_plugins_reset() {
+		$GLOBALS['T_plugin_table'] = array(); $GLOBALS['T_activate_fail'] = array(); $GLOBALS['T_activate_calls'] = array(); $GLOBALS['T_traps'] = array();
+		$GLOBALS['T_plugins_api'] = array(); $GLOBALS['T_plugins_api_calls'] = array(); $GLOBALS['T_install_adds'] = array(); $GLOBALS['T_install_calls'] = array();
+		unset( $GLOBALS['T_install_result'] );
+		$GLOBALS['T_plugins_cache_cleans'] = 0; $GLOBALS['T_site_transients'] = array(); $GLOBALS['T_site_transient_deletes'] = array();
+		$GLOBALS['T_update_checks'] = array(); $GLOBALS['T_fresh'] = array(); $GLOBALS['T_file_mods_off'] = false;
+	}
+	t_plugins_reset();
+	function get_plugins( $plugin_folder = '' ) {
+		$out = array();
+		foreach ( $GLOBALS['T_plugin_table'] as $f => $h ) { $out[ $f ] = array_merge( array( 'Name' => $f, 'Version' => '', 'Network' => false ), $h ); }
+		return $out;
+	}
+	function is_plugin_active_for_network( $plugin ) {
+		if ( ! is_multisite() ) { return false; }
+		return isset( ( (array) get_site_option( 'active_sitewide_plugins', array() ) )[ $plugin ] );
+	}
+	function is_plugin_active( $plugin ) { return in_array( $plugin, (array) get_option( 'active_plugins', array() ), true ) || is_plugin_active_for_network( $plugin ); }
+	function is_plugin_inactive( $plugin ) { return ! is_plugin_active( $plugin ); }
+	function is_network_only_plugin( $plugin ) { return ! empty( $GLOBALS['T_plugin_table'][ $plugin ]['Network'] ); }
+	// As core: a network activation on a multisite (asked for, or a Network: true plugin) goes to the network list; the plugin
+	// must be in get_plugins(); an active plugin is left as it is (null); the sandbox include runs inside ob_start(), and a
+	// plugin that throws leaves that buffer open (core does not catch); output after activating is WP_Error unexpected_output
+	// with the plugin ALREADY active.
+	function activate_plugin( $plugin, $redirect = '', $network_wide = false, $silent = false ) {
+		$GLOBALS['T_traps'][] = 'activate_plugin';
+		$GLOBALS['T_activate_calls'][] = array( $plugin, $redirect, $network_wide, $silent );
+		$plugin = trim( $plugin );
+		if ( is_multisite() && ( $network_wide || is_network_only_plugin( $plugin ) ) ) { $network_wide = true; $current = (array) get_site_option( 'active_sitewide_plugins', array() ); }
+		else { $current = (array) get_option( 'active_plugins', array() ); }
+		if ( ! isset( $GLOBALS['T_plugin_table'][ $plugin ] ) ) { return new WP_Error( 'plugin_not_found', 'Plugin file does not exist.' ); }
+		$fail = $GLOBALS['T_activate_fail'][ $plugin ] ?? '';
+		if ( 'requirements' === $fail ) { return new WP_Error( 'plugin_php_incompatible', '<p><strong>Error:</strong> Current PHP version does not meet minimum requirements for Test Plugin.</p>' ); }
+		if ( ( $network_wide && ! isset( $current[ $plugin ] ) ) || ( ! $network_wide && ! in_array( $plugin, $current, true ) ) ) {
+			ob_start();
+			if ( 'fatal' === $fail ) { echo 'Fatal output'; throw new Error( 'Call to undefined function t_missing_function()' ); }
+			if ( ! $silent ) { do_action( 'activate_plugin', $plugin, $network_wide ); }
+			if ( $network_wide ) { $c = (array) get_site_option( 'active_sitewide_plugins', array() ); $c[ $plugin ] = time(); update_site_option( 'active_sitewide_plugins', $c ); }
+			else { $c = (array) get_option( 'active_plugins', array() ); $c[] = $plugin; sort( $c ); update_option( 'active_plugins', $c ); }
+			if ( 'output' === $fail ) { echo 'Notice: something printed'; }
+			if ( ob_get_length() > 0 ) { $output = ob_get_clean(); return new WP_Error( 'unexpected_output', 'The plugin generated unexpected output.', $output ); }
+			ob_end_clean();
+		}
+		return null;
+	}
+	// The option changes of core's deactivate_plugins (the stand-in above records the call, then calls this).
+	function t_plugins_deactivate( $plugins, $network_wide ) {
+		foreach ( (array) $plugins as $p ) {
+			$p = trim( $p );
+			if ( ! is_plugin_active( $p ) ) { continue; }
+			if ( false !== $network_wide && is_plugin_active_for_network( $p ) ) { $s = (array) get_site_option( 'active_sitewide_plugins', array() ); unset( $s[ $p ] ); update_site_option( 'active_sitewide_plugins', $s ); }
+			if ( true !== $network_wide ) { $c = (array) get_option( 'active_plugins', array() ); $k = array_search( $p, $c, true ); if ( false !== $k ) { unset( $c[ $k ] ); update_option( 'active_plugins', array_values( $c ) ); } }
+		}
+	}
+	function plugins_api( $action, $args = array() ) {
+		$GLOBALS['T_traps'][] = 'plugins_api';
+		$GLOBALS['T_plugins_api_calls'][] = array( $action, $args );
+		if ( is_array( $args ) ) { $args = (object) $args; }
+		$slug = (string) ( $args->slug ?? '' );
+		return $GLOBALS['T_plugins_api'][ $slug ] ?? new WP_Error( 'plugins_api_failed', 'Plugin not found.' );
+	}
+	function wp_clean_plugins_cache( $clear_update_cache = true ) { $GLOBALS['T_plugins_cache_cleans']++; if ( $clear_update_cache ) { delete_site_transient( 'update_plugins' ); } }
+	function wp_clean_themes_cache( $clear_update_cache = true ) { if ( $clear_update_cache ) { delete_site_transient( 'update_themes' ); } }
+	// As core's wp_clean_update_cache (update.php): the three update transients.
+	function wp_clean_update_cache() { $GLOBALS['T_traps'][] = 'wp_clean_update_cache'; wp_clean_plugins_cache(); wp_clean_themes_cache(); delete_site_transient( 'update_core' ); }
+	function get_site_transient( $n ) { return $GLOBALS['T_site_transients'][ $n ] ?? false; }
+	function set_site_transient( $n, $v, $ttl = 0 ) { $GLOBALS['T_site_transients'][ $n ] = $v; return true; }
+	function delete_site_transient( $n ) { $GLOBALS['T_site_transient_deletes'][] = $n; $had = isset( $GLOBALS['T_site_transients'][ $n ] ); unset( $GLOBALS['T_site_transients'][ $n ] ); return $had; }
+	// The update checks store what wordpress.org would answer (T_fresh), as core stores the transient after asking.
+	function wp_version_check() { $GLOBALS['T_update_checks'][] = 'wp_version_check'; if ( isset( $GLOBALS['T_fresh']['update_core'] ) ) { set_site_transient( 'update_core', $GLOBALS['T_fresh']['update_core'] ); } }
+	function wp_update_plugins() { $GLOBALS['T_update_checks'][] = 'wp_update_plugins'; if ( isset( $GLOBALS['T_fresh']['update_plugins'] ) ) { set_site_transient( 'update_plugins', $GLOBALS['T_fresh']['update_plugins'] ); } }
+	function wp_update_themes() { $GLOBALS['T_update_checks'][] = 'wp_update_themes'; if ( isset( $GLOBALS['T_fresh']['update_themes'] ) ) { set_site_transient( 'update_themes', $GLOBALS['T_fresh']['update_themes'] ); } }
+	function get_core_updates( $options = array() ) { $t = get_site_transient( 'update_core' ); return is_object( $t ) && isset( $t->updates ) ? (array) $t->updates : array(); }
+	function wp_get_translation_updates() { return array(); }
+	if ( ! function_exists( 'get_bloginfo' ) ) { function get_bloginfo( $k = '' ) { return 'version' === $k ? '6.9' : ''; } }
+	if ( ! function_exists( 'get_template' ) ) { function get_template() { return 'teststyle'; } }
+	if ( ! function_exists( 'wp_get_themes' ) ) { function wp_get_themes( $args = array() ) { return array(); } }
+	function wp_is_file_mod_allowed( $context ) { return empty( $GLOBALS['T_file_mods_off'] ); }
+	if ( ! class_exists( 'Automatic_Upgrader_Skin', false ) ) {
+		class Automatic_Upgrader_Skin { function get_upgrade_messages() { return array(); } function get_errors() { return new WP_Error(); } }
+	}
+	// As core's Plugin_Upgrader::install( $package ): true on success (the new plugin in the folder, the plugins cache cleaned),
+	// else what the run left in ->result (false, or a WP_Error such as folder_exists). plugin_info() names the new plugin file.
+	if ( ! class_exists( 'Plugin_Upgrader', false ) ) {
+		class Plugin_Upgrader {
+			public $skin; public $result = array(); private $t_file = '';
+			function __construct( $skin = null ) { $this->skin = $skin; }
+			function install( $package, $args = array() ) {
+				$GLOBALS['T_traps'][] = 'install';
+				$GLOBALS['T_install_calls'][] = $package;
+				$r = array_key_exists( 'T_install_result', $GLOBALS ) ? $GLOBALS['T_install_result'] : true;
+				if ( true !== $r ) { $this->result = $r; return $r; }
+				foreach ( $GLOBALS['T_install_adds'] as $f => $h ) { $GLOBALS['T_plugin_table'][ $f ] = $h; $this->t_file = $f; }
+				$this->result = array( 'destination_name' => dirname( $this->t_file ) );
+				wp_clean_plugins_cache( true );
+				return true;
+			}
+			function plugin_info() { return '' === $this->t_file ? false : $this->t_file; }
 		}
 	}
 }
