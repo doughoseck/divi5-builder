@@ -3,7 +3,7 @@ Contributors: doughoseck
 Tags: divi, rest api
 Requires at least: 6.0
 Requires PHP: 7.4
-Stable tag: 2.3.0
+Stable tag: 2.4.0
 License: MIT
 
 Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.
@@ -12,7 +12,7 @@ Build and edit Divi 5 pages over the REST API, plus optional media audit, media 
 
 One plugin for the divi5-builder skill.
 
-Use at your own risk. With the AI abilities switched on, this plugin lets connected AI clients create, change, trash and (after a preview and a confirmation code) permanently delete content on your site. Its change history is a 30-day safety net for mistakes, not a backup. Keep your normal backups, test on a staging site first, and switch on only the categories you need. The software is provided as is, without warranty of any kind (MIT licence).
+Use at your own risk. With the AI abilities switched on, this plugin lets connected AI clients create, change, trash and (after a preview and a confirmation code) permanently delete content on your site, and (with the risky switches) install, update, roll back and delete plugins and themes, update WordPress and manage users. Its change history is a 30-day safety net for mistakes, not a backup. Keep your normal backups, test on a staging site first, and switch on only the categories you need. The software is provided as is, without warranty of any kind (MIT licence).
 
 * Page building is always on: REST routes to build and edit Divi 5 pages, popups, Theme Builder, Custom CSS and the design system. Only signed-in editors and administrators can use them.
 * Media audit, media clean-up and updates are off until an administrator turns them on in Settings > Divi 5 Builder (on a multisite network: Network Admin > Settings). While a part is off its routes do not exist.
@@ -26,6 +26,16 @@ Use at your own risk. With the AI abilities switched on, this plugin lets connec
 2. as a must-use plugin: copy the folder divi5-builder/ into wp-content/mu-plugins/ and the one file divi5-builder-loader.php next to it (it is published next to divi5-builder.zip in each release).
 
 == Changelog ==
+
+= 2.4.0 =
+* New: AI abilities for site maintenance, behind the same master switch and the category switches. AI tools can now see what is out of date, check for updates now, install plugins and themes from wordpress.org, activate and deactivate plugins, switch the theme, update plugins, themes, WordPress and translations, roll a plugin or theme back to its previous version, and delete plugins and themes. Around that, the small user and email tasks: create a user, change a user's details or role, send a password reset link, delete a user, and send a test email.
+* The old version is kept. Before a plugin or theme is updated, rolled back or deleted, a copy of its folder is kept for 30 days in wp-content/uploads/d5b-history, so the previous version can be put back with one call, premium plugins included (the ones you cannot download again). If the copy cannot be made the change does not happen. One copy can be at most 512 MB and all kept copies together 2 GB; at the cap the change is refused, and old copies are never deleted early to make room. The settings page shows how much the store holds.
+* The human check. Every update, rollback, activation, deactivation and theme switch checks the home page and the recently changed pages before and after (status, error text, size), and a plugin activation or theme switch that makes them worse is switched back at once. That check cannot see layout breaks, missing images, errors in the browser console, broken forms or raw shortcodes, so every result also asks you to look at the site yourself, in a browser and on a phone. There is no substitute for the human check and it only takes a few seconds.
+* Risky switches: Users, Plugins, Themes and WordPress core each have "Also allow risky actions", off by default, with a plain note about what it allows. Of the changes, only sending a password reset link, sending a test email, updating translations and checking for updates work without it.
+* New category Email, off by default: a test email goes only to you, to the site's admin address or to an existing user, never to an address an AI tool makes up.
+* Updating from 2.3.x: if the AI abilities master switch was on, the update turns it off and the settings page says so, because 2.4.0 abilities manage users, plugins, themes, WordPress updates and email. Review the switches and turn it on again when you are ready.
+* Change history: every one of these changes keeps what is needed to put it back for 30 days: the previous version and its files for an update, rollback or delete, the previous active plugins or theme for an activation or switch, and for a user delete the user's record (without secrets) and the items given to another author. Two exceptions: WordPress itself is never copied (there is no rollback for a core update; keep a backup) and translations are not copied. A plugin delete runs the plugin's own uninstall routine, as on the Plugins screen, so its data goes for good; the preview says so, and keep_data deletes only the files.
+* Safe by construction: this plugin never deactivates, updates, rolls back or deletes itself. No password is ever set or shown: a new user gets WordPress's own email to set one, and a reset is WordPress's own link. You cannot change your own role, email or password through the abilities, delete yourself, or leave the site without an administrator. Another administrator's email is never changed, and no reset link goes out for 24 hours after a user's email or role was changed through the abilities. Plugins and themes come only from downloads.wordpress.org, and a plugin or theme folder that is a link is never changed. Deletes take a preview and a confirmation code.
 
 = 2.3.0 =
 * New: AI abilities for site management, behind the same master switch and the category switches. AI tools can now change site settings (title, tagline, date and time formats, posts per page, comment default), set the homepage, set theme settings and the Custom CSS, add, change, move and remove widgets, flush the caches, run one scheduled task now, and on block themes change templates and global styles.

@@ -20,8 +20,9 @@ must use Divi 5 [will not work with Divi 4 sites].
 
 > **Use at your own risk.** With the AI abilities switched on, this plugin lets connected
 > AI clients create, change, trash and (after a preview and a confirmation code) permanently
-> delete content on your site. Its change history is a 30-day safety net for mistakes, not a
-> backup. Keep your normal backups, test on a staging site first, and switch on only the
+> delete content on your site, and (with the risky switches) install, update, roll back and
+> delete plugins and themes, update WordPress and manage users. Its change history is a
+> 30-day safety net for mistakes, not a backup. Keep your normal backups, test on a staging site first, and switch on only the
 > categories you need. The software is provided as is, without warranty of any kind (see
 > LICENSE).
 
@@ -241,6 +242,29 @@ media clean-up (never deletes), a plugin/theme/WordPress updater with page check
 profiler. The first three need their switch on in Settings > Divi 5 Builder (off by default). Start at
 [`references/site-care/README.md`](references/site-care/README.md).
 
+## AI abilities (WordPress 6.9+)
+
+The plugin also offers named, permission-checked actions to AI clients through the WordPress Abilities API, so a phone or
+an AI tool can do what the scripts do. A master switch in Settings > Divi 5 Builder is **off by default**, each category
+has its own switch, and the riskiest actions need a third one, "Also allow risky actions" (off by default). Every call is
+audited, every change is kept in a 30-day change history with what is needed to put it back, and permanent deletes take a
+preview and a confirmation code. Details and limits: [SECURITY.md](SECURITY.md); how the skill uses them: [SKILL.md](SKILL.md).
+
+- **Reads (2.1.0):** posts, pages, custom post types, media, terms, menus, comments, users (no secrets), safe settings, Divi
+  data, plugins, themes, the WordPress version, Site Health, scheduled tasks, the debug log, the audit log and the change history.
+- **Content (2.2.0):** create, update, trash and restore posts, pages and custom post types; media, terms, comments, custom
+  fields and menus; restore a revision; edit one Divi section or one piece of text.
+- **Site management (2.3.0):** site settings and the homepage, theme settings and the Custom CSS, widgets, cache flush, run
+  one scheduled task, and templates and global styles on block themes.
+- **Maintenance (2.4.0):** `plugins-status`, `themes-status`, `core-status`; `updates-check`; `plugins-install`,
+  `plugins-activate`, `plugins-deactivate`, `plugins-update`, `plugins-rollback`, `plugins-delete-preview` / `plugins-delete`;
+  `themes-install`, `themes-switch`, `themes-update`, `themes-rollback`, `themes-delete-preview` / `themes-delete`;
+  `core-update`, `translations-update`; `users-create`, `users-update`, `users-password-reset`, `users-meta-set`,
+  `users-meta-delete`, `users-delete-preview` / `users-delete`; `email-send-test`. A plugin or theme is copied before it is
+  updated, rolled back or deleted (kept 30 days in `wp-content/uploads/d5b-history`), so the old version can be put back,
+  premium plugins included. Activations, updates and theme switches check the pages before and after and end with a request
+  for the human check: look at the site in a browser and on a phone. No ability ever sets or shows a password.
+
 ## Extending it to new modules
 
 The reliable loop (no guessing):
@@ -317,12 +341,19 @@ php  scripts/plugin-abilities-write-appearance-test.php # theme mods and the Cus
 php  scripts/plugin-abilities-write-widgets-test.php    # widgets: add, update, move, remove, the layout kept in the history
 php  scripts/plugin-abilities-write-site-test.php       # cache flush and the cron run (lock, order, lifecycle deny-list)
 php  scripts/plugin-abilities-write-templates-test.php  # templates and global styles on block themes
+php  scripts/plugin-abilities-maint-test.php            # page checks, kept copies, the store caps, the recursive prune, the rate limit
+php  scripts/plugin-abilities-write-plugins-test.php    # plugins: status, install source, checked activate, update, rollback, delete with preview and code
+php  scripts/plugin-abilities-write-themes-test.php     # themes: install, checked switch, update, rollback, delete (the active theme refused)
+php  scripts/plugin-abilities-write-core-test.php       # WordPress core (offered versions only, no copy) and translations
+php  scripts/plugin-abilities-write-users-test.php      # users: last admin, own account, takeover guard, the 24 h reset block, no passwords
+php  scripts/plugin-abilities-write-email-test.php      # the test email: me, admin or a user only, never an address; the rate limit
 php  scripts/plugin-abilities-registry-test.php         # the annotations of every ability, over the whole registry
 node scripts/switch-advice-test.js    # what the scripts say when a switch is off
 node scripts/plugin-live-check-test.js  # the read-only live check (plugin-live-check.js <site>): GET only, exit 0/1/2
 node scripts/abilities-live-check-test.js  # the read-only abilities check (abilities-live-check.js <site>): GET only, exit 0/1/2
 node scripts/abilities-live-write-test.js  # the live write script (abilities-live-write.js <site> <step>) against the fake site: only d5b-live- items, previews then --confirm, exit 0/1/2/3
 node scripts/abilities-live-site-test.js  # the live site script (abilities-live-site.js <site> <step>) against the fake site: changes and puts back, homepage needs --confirm go, exit 0/1/2/3
+node scripts/abilities-live-maint-test.js  # the live maintenance script (abilities-live-maint.js <site> <step>) against the fake site: hello-dolly and d5b-live-user only, kept copies asserted, deletes and the theme switch need --confirm go, exit 0/1/2/3
 node scripts/build-plugin-zips-test.js  # the zip build and the must-use loader next to it
 php  scripts/ds-write-test.php "<path to a Divi 5 theme folder>"   # the plugin's design-system writes, nested variables included: run it against a 5.18 AND a 5.15 copy
 node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts every store back (plugin >= 2.0.1; the "nested" part needs Divi 5.18)
@@ -331,7 +362,7 @@ node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts
 ## Security
 
 - **Found a vulnerability? Report it privately** - see [SECURITY.md](SECURITY.md).
-  Run the latest plugin (**divi5-builder 2.3.0**; the old single-file 1.8.3 and newer already fixed a Contributor-level option read).
+  Run the latest plugin (**divi5-builder 2.4.0**; the old single-file 1.8.3 and newer already fixed a Contributor-level option read).
 - Use the lowest role that works: page building needs an **Editor** Application Password.
 - Never commit `~/.web-creds.txt` or any Application Password.
 - The plugin exposes existing Divi meta keys, the global colour palette and (1.5+)
