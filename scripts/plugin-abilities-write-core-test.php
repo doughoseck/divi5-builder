@@ -68,11 +68,15 @@ function site( array $caps = ADMIN, bool $multi = false, bool $risky = true ) {
 	$GLOBALS['T_upload_basedir'] = $T_BASE . '/uploads';
 	// The file system ready, as it is on an admin request: a copy_dir (the one thing that must NOT happen) is then recorded in T_copy_calls instead of stopping the run.
 	WP_Filesystem();
+	unset( $GLOBALS['T_core_upgrade_hook'] );
+	set_disk_version( '6.9' );
 	$GLOBALS['T_plugin_table'] = array();
 	$GLOBALS['T_breaks_at'] = array();
 	offer( array( '6.9.1' ) );
 	serve_site();
 }
+// wp-includes/version.php as the engine reads it back after an update (the file, never get_bloginfo).
+function set_disk_version( $v ) { @mkdir( ABSPATH . 'wp-includes', 0777, true ); file_put_contents( ABSPATH . 'wp-includes/version.php', '<?php' . "\n" . '$wp_version = \'' . $v . '\';' . "\n" ); }
 function call( $name, $in = array() ) {
 	$p = d5b_ability_permit( 'divi5-builder/' . $name, $in );
 	return true === $p ? d5b_ability_run( 'divi5-builder/' . $name, $in ) : 'FORBIDDEN';
@@ -169,6 +173,29 @@ check( 'update: the upgrader fails -> update_failed (502) with the reason, rollb
 check( '... the row says failed and keeps the pages; the error says restore a backup', false !== strpos( (string) ( hlast()['after']['failed'] ?? '' ), 'Download failed' ) && isset( hlast()['after']['pages'] ) && false !== strpos( msg( $r ), 'restore a backup' ) );
 site(); $GLOBALS['T_core_upgrade_result'] = false;
 check( 'update: the upgrader answers false -> update_failed', 'update_failed' === code( call( 'core-update', array( 'version' => '6.9.1' ) ) ) );
+// Fix round 1: the interim row, the version read from the file, the race between the dry run and the run.
+site(); $GLOBALS['T_core_upgrade_hook'] = function () { $GLOBALS['T_interim'] = hlast(); };
+call( 'core-update', array( 'version' => '6.9.1' ) );
+check( 'update: the interim row (read inside the upgrader) is { version: from, to, running: true }, before { version }', array( 'version' => '6.9', 'to' => '6.9.1', 'running' => true ) === $GLOBALS['T_interim']['after'] && array( 'version' => '6.9' ) === $GLOBALS['T_interim']['before'], $GLOBALS['T_interim'] ?? null );
+site(); set_disk_version( '6.9.1' ); $GLOBALS['T_core_upgrade_result'] = new RuntimeException( 'boom' );
+$r = call( 'core-update', array( 'version' => '6.9.1' ) );
+check( 'update: the updater throws after the files changed (version.php says 6.9.1) -> update_failed, the result and the row say 6.9.1, not the stale 6.9', 'update_failed' === code( $r ) && '6.9.1' === ( edata( $r )['version'] ?? null ) && '6.9.1' === hlast()['after']['version'] && '6.9' === get_bloginfo( 'version' ), array( edata( $r )['version'] ?? null, hlast()['after'] ?? null ) );
+site(); set_disk_version( '6.9.1' ); $GLOBALS['T_core_upgrade_result'] = new WP_Error( 'copy_failed', 'Could not copy file.' );
+$r = call( 'core-update', array( 'version' => '6.9.1' ) );
+check( 'update: the updater answers a WP_Error after the files changed -> the file version in the result and the row', '6.9.1' === ( edata( $r )['version'] ?? null ) && '6.9.1' === hlast()['after']['version'] );
+site(); $GLOBALS['T_core_upgrade_result'] = new WP_Error( 'copy_failed', 'Could not copy file.' );
+$r = call( 'core-update', array( 'version' => '6.9.1' ) );
+check( 'update: the updater fails and the files did not change -> version 6.9 (from the file)', '6.9' === ( edata( $r )['version'] ?? null ) && '6.9' === hlast()['after']['version'] );
+// The offer changes between the dry run and the run: the page round before the run is the moment in between.
+site(); $first = true; $base = $GLOBALS['T_http_fn'];
+$GLOBALS['T_http_fn'] = function ( $url, $args ) use ( &$first, $base ) { if ( $first ) { $first = false; offer( array( '6.9.2' ) ); } return $base( $url, $args ); };
+$GLOBALS['T_fresh']['update_core'] = core_offers( array( '6.9.1' ) );
+$r = call( 'core-update', array( 'version' => '6.9.1' ) );
+check( 'update: the offer flipped between the dry run and the run -> invalid_input, status 409 (as d5b_ability_run returns it), the row deleted, no upgrade call', 'invalid_input' === code( $r ) && 409 === ( edata( $r )['status'] ?? null ) && array() === hrows() && array() === $GLOBALS['T_core_upgrade_calls'] && '6.9' === get_bloginfo( 'version' ), array( code( $r ), edata( $r ), count( hrows() ) ) );
+site(); $first = true; $base = $GLOBALS['T_http_fn'];
+$GLOBALS['T_http_fn'] = function ( $url, $args ) use ( &$first, $base ) { if ( $first ) { $first = false; offer( array() ); } return $base( $url, $args ); };
+$r = call( 'core-update', array( 'version' => '6.9.1' ) );
+check( 'update: the offer vanished between the dry run and the run -> already_up_to_date, row deleted, nothing upgraded', is_array( $r ) && true === ( $r['already_up_to_date'] ?? null ) && array() === hrows() && array() === $GLOBALS['T_core_upgrade_calls'], $r );
 site(); $GLOBALS['T_core_upgrade_result'] = new RuntimeException( 'secret: sk_' . 'live_abc' ); $level = ob_get_level();
 $r = call( 'core-update', array( 'version' => '6.9.1' ) );
 check( 'update: an upgrader that prints and throws -> update_failed, output swallowed, buffers closed, the exception message not shown', 'update_failed' === code( $r ) && $level === ob_get_level() && false === strpos( json_encode( array( msg( $r ), edata( $r ) ) ), 'printed by the upgrader' ) && false === strpos( json_encode( array( msg( $r ), edata( $r ) ) ), 'sk_live' ), array( code( $r ), msg( $r ) ) );

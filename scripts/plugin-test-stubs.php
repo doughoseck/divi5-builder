@@ -2544,7 +2544,7 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 	if ( ! class_exists( 'Core_Upgrader', false ) ) {
 		class Core_Upgrader extends WP_Upgrader {
 			function upgrade( $current, $args = array() ) {
-				$GLOBALS['T_traps'][] = 'core_upgrade'; $GLOBALS['T_core_upgrade_calls'][] = $current;
+				$GLOBALS['T_traps'][] = 'core_upgrade'; $GLOBALS['T_core_upgrade_calls'][] = $current; if ( is_callable( $GLOBALS['T_core_upgrade_hook'] ?? null ) ) { call_user_func( $GLOBALS['T_core_upgrade_hook'], $current ); }
 				if ( $GLOBALS['T_core_upgrade_result'] instanceof Throwable ) { echo 'printed by the upgrader'; throw $GLOBALS['T_core_upgrade_result']; }
 				if ( null !== $GLOBALS['T_core_upgrade_result'] ) { return $GLOBALS['T_core_upgrade_result']; }
 				$GLOBALS['T_wp_version'] = (string) $current->current;

@@ -37,6 +37,12 @@ if ( ! function_exists( 'd5b_wcore_h_status' ) ) {
 		return function ( array $in = array() ) use ( $cap, $network_admin ) { return d5b_wcore_ok( $cap, $network_admin ); };
 	}
 
+	/** The WordPress version in ABSPATH/wp-includes/version.php, read from the file now ('' when it cannot be read). */
+	function d5b_wcore_disk_version(): string {
+		$c = is_readable( ABSPATH . 'wp-includes/version.php' ) ? (string) @file_get_contents( ABSPATH . 'wp-includes/version.php' ) : '';
+		return 1 === preg_match( '/\$wp_version\s*=\s*[\'"]([^\'"]+)[\'"]/', $c, $m ) ? $m[1] : '';
+	}
+
 	// ---- core-status (read)
 
 	function d5b_wcore_h_status( array $in ) {
@@ -76,14 +82,9 @@ if ( ! function_exists( 'd5b_wcore_h_status' ) ) {
 		if ( empty( $dry['dry_run'] ) ) {
 			return array( 'updated' => false, 'already_up_to_date' => true, 'version' => (string) ( $dry['from'] ?? '' ) );
 		}
-		// The same check again, here, on the list the dry run just stored: whatever the engine does, only an offered version goes on.
-		$now_list = (array) ( ( (array) wpsu_status( false ) )['wordpress']['offered'] ?? array() );
-		if ( ! in_array( $version, array_map( 'strval', $now_list ), true ) ) {
-			return new WP_Error( 'invalid_input', 'WordPress ' . $version . ' is not on offer; offered now: ' . implode( ', ', array_map( 'strval', $now_list ) ) . '.', array( 'status' => 409 ) );
-		}
 		$from = (string) ( $dry['from'] ?? '' ); $to = (string) ( $dry['to'] ?? '' );
 
-		$hid = d5b_wc_history_row( 'divi5-builder/core-update', 'core', 0, 'update', array( 'version' => $from ), array( 'running' => true, 'to' => $to ), 'Updated WordPress from ' . $from . ' to ' . $to );
+		$hid = d5b_wc_history_row( 'divi5-builder/core-update', 'core', 0, 'update', array( 'version' => $from ), array( 'version' => $from, 'to' => $to, 'running' => true ), 'Updated WordPress from ' . $from . ' to ' . $to );
 		if ( $hid < 1 ) { return new WP_Error( 'history_unavailable', 'The change history row could not be written, so WordPress was not updated.' ); }
 
 		// No copy: WordPress replaces its own files and cannot be copied by a plugin. The update runs inside the page checks.
@@ -101,8 +102,21 @@ if ( ! function_exists( 'd5b_wcore_h_status' ) ) {
 			}
 		} );
 		$done  = is_array( $res ) && ! empty( $res['done'] );
+		// The offer changed between the dry run and the run (a newer release, or none left): the engine refused before touching
+		// anything, so the row is removed and the call is refused like the dry run would have refused it.
+		if ( is_wp_error( $res ) && 'wpsu_core_version' === $res->get_error_code() ) {
+			d5b_history_delete( $hid );
+			return new WP_Error( 'invalid_input', d5b_maint_err_text( $res ), array( 'status' => 409 ) );
+		}
+		if ( is_array( $res ) && ! $done && '' === (string) ( $res['error'] ?? '' ) && 'already up to date' === ( $res['note'] ?? '' ) ) {
+			d5b_history_delete( $hid );
+			return array( 'updated' => false, 'already_up_to_date' => true, 'version' => $from );
+		}
 		$error = is_wp_error( $res ) ? d5b_maint_err_text( $res ) : ( is_array( $res ) ? (string) ( $res['error'] ?? '' ) : 'the updater gave no answer' );
-		$now   = is_array( $res ) && '' !== (string) ( $res['now'] ?? '' ) ? (string) $res['now'] : ( $done ? $to : $from );
+		// The version now: what the updater reports when it finished; otherwise (and when it reports nothing) read fresh from
+		// wp-includes/version.php, as the engine does (get_bloginfo is stale for the rest of this request).
+		$disk  = d5b_wcore_disk_version();
+		$now   = $done && is_array( $res ) && '' !== (string) ( $res['now'] ?? '' ) ? (string) $res['now'] : ( '' !== $disk ? $disk : ( $done ? $to : $from ) );
 		$problems = (array) $pages['problems'];
 		$after = array( 'version' => $now, 'pages' => $pages );
 		if ( ! $done ) { $after['failed'] = '' === $error ? 'unknown' : $error; }
