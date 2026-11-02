@@ -260,6 +260,8 @@ class T_Wpdb {
 	// Like wpdb::delete: false on an error (no such table, empty where), else the number of rows deleted.
 	function delete( $table, $where, $where_format = null ) {
 		if ( ! isset( $this->tables[ $table ] ) || ! is_array( $where ) || array() === $where ) { return false; }
+		// T_db_delete_fail: table names whose deletes fail (a database error: false, nothing removed), as wpdb answers then.
+		if ( in_array( $table, (array) ( $GLOBALS['T_db_delete_fail'] ?? array() ), true ) ) { return false; }
 		$keep = array();
 		foreach ( $this->tables[ $table ] as $row ) {
 			foreach ( $where as $k => $v ) { if ( ! array_key_exists( $k, $row ) || (string) $row[ $k ] !== (string) $v ) { $keep[] = $row; continue 2; } }
@@ -2308,7 +2310,18 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 				$GLOBALS['T_install_calls'][] = $package;
 				$r = array_key_exists( 'T_install_result', $GLOBALS ) ? $GLOBALS['T_install_result'] : true;
 				if ( true !== $r ) { $this->result = $r; return $r; }
-				foreach ( $GLOBALS['T_install_adds'] as $f => $h ) { $GLOBALS['T_plugin_table'][ $f ] = $h; $this->t_file = $f; }
+				foreach ( $GLOBALS['T_install_adds'] as $f => $h ) {
+					// With a real plugins folder (T_plugins_disk), as core: the zip's folder written there, never over one that is there.
+					if ( ! empty( $GLOBALS['T_plugins_disk'] ) ) {
+						$p = WP_PLUGIN_DIR . '/' . $f;
+						if ( file_exists( dirname( $p ) ) && dirname( $p ) !== WP_PLUGIN_DIR ) { $this->result = new WP_Error( 'folder_exists', 'Destination folder already exists.' ); return $this->result; }
+						if ( ! is_dir( dirname( $p ) ) ) { mkdir( dirname( $p ), 0777, true ); }
+						file_put_contents( $p, "<?php\n/*\nPlugin Name: " . ( $h['Name'] ?? $f ) . "\nVersion: " . ( $h['Version'] ?? '1.0' ) . "\n*/\n" );
+					} else {
+						$GLOBALS['T_plugin_table'][ $f ] = $h;
+					}
+					$this->t_file = $f;
+				}
 				$this->result = array( 'destination_name' => dirname( $this->t_file ) );
 				wp_clean_plugins_cache( true );
 				return true;

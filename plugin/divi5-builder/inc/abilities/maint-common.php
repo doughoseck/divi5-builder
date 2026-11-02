@@ -162,8 +162,9 @@ if ( ! function_exists( 'd5b_pages_check' ) ) {
 	/**
 	 * A before round, $change(), an after round, compared. When every page failed to fetch before (the loopback does not
 	 * work), the result is unavailable: $change() still runs, there is no after round and the human check is the whole check.
-	 * $change's own return value is not kept here: a caller that needs it captures it by reference.
-	 * @return array{before:array,after:array,problems:string[],unavailable:bool}
+	 * $change's own return value is not kept here: a caller that needs it captures it by reference. skipped: the urls a round
+	 * ran out of time for (before or after), which were therefore not compared (d5b_pages_warnings says so).
+	 * @return array{before:array,after:array,problems:string[],unavailable:bool,skipped:string[]}
 	 */
 	function d5b_pages_check( callable $change ): array {
 		$urls   = d5b_pages_watched();
@@ -171,9 +172,13 @@ if ( ! function_exists( 'd5b_pages_check' ) ) {
 		$unavailable = true;
 		foreach ( $before as $p ) { if ( 0 !== (int) $p['status'] ) { $unavailable = false; break; } }
 		$change();
-		if ( $unavailable ) { return array( 'before' => $before, 'after' => array(), 'problems' => array(), 'unavailable' => true ); }
-		$after = d5b_pages_round( $urls, 60, true );
-		return array( 'before' => $before, 'after' => $after, 'problems' => d5b_pages_compare( $before, $after ), 'unavailable' => false );
+		if ( $unavailable ) { return array( 'before' => $before, 'after' => array(), 'problems' => array(), 'unavailable' => true, 'skipped' => array() ); }
+		$after   = d5b_pages_round( $urls, 60, true );
+		$skipped = array();
+		foreach ( array_merge( $before, $after ) as $p ) {
+			if ( is_array( $p ) && ! empty( $p['skipped'] ) ) { $skipped[ (string) preg_replace( '/[?&]d5b=[0-9]*$/', '', (string) $p['url'] ) ] = true; }
+		}
+		return array( 'before' => $before, 'after' => $after, 'problems' => d5b_pages_compare( $before, $after ), 'unavailable' => false, 'skipped' => array_keys( $skipped ) );
 	}
 }
 
@@ -246,8 +251,10 @@ if ( ! function_exists( 'd5b_keep_copy' ) ) {
 	 * The size is measured before anything is written. Errors: linked (the plugin or theme is a link or holds one: never
 	 * copied, and a caller must not change it either, whatever without_copy says, because core's delete and the upgrader's
 	 * clear_destination follow links), copy_too_big (over 512 MB), store_full (the store plus this copy over 2 GB; nothing is
-	 * ever deleted early to make room), copy_failed (with the reason; a part-made copy is removed).
-	 * @return array{path:string,bytes:int,files:int}|WP_Error
+	 * ever deleted early to make room), copy_failed (with the reason; a part-made copy is removed). manifest_sha1: the
+	 * fingerprint of the copy's file list (d5b_maint_manifest_keep), stored in the row; a restore refuses a copy that no
+	 * longer matches it.
+	 * @return array{path:string,bytes:int,files:int,manifest_sha1:string}|WP_Error
 	 */
 	function d5b_keep_copy( string $kind, string $dir_name, int $row_id ) {
 		$fail = function ( string $why ) { return new WP_Error( 'copy_failed', 'No copy could be kept: ' . $why . '.', array( 'status' => 503 ) ); };
@@ -298,7 +305,13 @@ if ( ! function_exists( 'd5b_keep_copy' ) ) {
 			d5b_history_files_remove( $row_id, $name );
 			return $fail( $done ? 'the copy is not complete' : 'copying the files failed' );
 		}
-		return array( 'path' => $dest, 'bytes' => $size['bytes'], 'files' => $size['files'] );
+		// Its file list, fingerprinted for the row: a restore refuses a copy that no longer matches (copy_tampered).
+		$sha = d5b_maint_manifest_keep( $dest );
+		if ( '' === $sha ) {
+			d5b_history_files_remove( $row_id, $name );
+			return $fail( 'the copy could not be listed' );
+		}
+		return array( 'path' => $dest, 'bytes' => $size['bytes'], 'files' => $size['files'], 'manifest_sha1' => $sha );
 	}
 }
 
@@ -490,11 +503,27 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 	 * rollback_on_failure): when the replaced files are too big or the store is full, the restore still runs, the replaced
 	 * files are removed instead of kept (kept null) and a warning says so. A live folder that is or holds a link is refused
 	 * (linked) whatever the options.
-	 * Errors: invalid_input, not_found (no such row, no copy recorded), copy_missing, linked, copy_too_big, store_full,
-	 * copy_failed, history_unavailable.
+	 * The copy must still match the file list fingerprinted in its row (kept.manifest_sha1), else copy_tampered. The whole
+	 * restore holds the item's lock (d5b_maint_item_lock, 120 s, read fresh): a second update or rollback of the same folder
+	 * meanwhile is busy and touches nothing. The rollback row is written before the renames with the two folder names
+	 * (aside, staging), so a request that dies between them leaves a row that says where the files are.
+	 * Errors: invalid_input, not_found (no such row, no copy recorded), copy_missing, copy_tampered, busy, linked,
+	 * copy_too_big, store_full, copy_failed, history_unavailable.
 	 * @return array{history_id:int,version:string,replaced_version:string,kept:?array,warnings:string[]}|WP_Error
 	 */
 	function d5b_maint_restore( string $kind, string $dir, int $history_id, array $opts = array() ) {
+		$lock  = d5b_maint_item_lock( $kind, $dir );
+		$token = d5b_maint_lock_take( $lock, 120, 'An update or rollback of this ' . ( 'theme' === $kind ? 'theme' : 'plugin' ) );
+		if ( is_wp_error( $token ) ) { return $token; }
+		try {
+			return d5b_maint_restore_run( $kind, $dir, $history_id, $opts );
+		} finally {
+			d5b_maint_lock_release( $lock, $token );
+		}
+	}
+
+	/** The restore itself, under the item's lock (d5b_maint_restore). */
+	function d5b_maint_restore_run( string $kind, string $dir, int $history_id, array $opts ) {
 		$fail = function ( string $why ) { return new WP_Error( 'copy_failed', 'The kept copy could not be put back: ' . $why . '.', array( 'status' => 503 ) ); };
 		if ( ( 'plugin' !== $kind && 'theme' !== $kind ) || '' === $dir || '.' === $dir[0] || 1 === preg_match( '#[/\\\\\x00]#', $dir ) ) {
 			return new WP_Error( 'invalid_input', 'Not a plugin or theme folder name: ' . substr( preg_replace( '/[^A-Za-z0-9._\- ]/', '?', $dir ), 0, 100 ) . '.' );
@@ -523,6 +552,9 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 		if ( d5b_maint_is_link( $target ) ) { return d5b_maint_linked_error( $kind, 'is a link' ); }
 		$cur = file_exists( $target ) ? d5b_maint_tree_size( $target ) : null;
 		if ( null !== $cur && $cur['links'] > 0 ) { return d5b_maint_linked_error( $kind, 'contains a link' ); }
+		// The copy must be exactly what was kept (its file list against the row's fingerprint).
+		$ok = d5b_maint_manifest_check( $src, $kept );
+		if ( true !== $ok ) { return $ok; }
 		// Keeping the files being replaced: refused for space, unless $opts['keep_optional'] (an automatic restore after a
 		// broken update: the broken site matters more than the version the update just downloaded).
 		$no_keep = '';
@@ -542,10 +574,6 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 
 		$replaced = '' === $item ? '' : d5b_maint_version( $kind, $item );
 		$to       = (string) ( $row['before']['version'] ?? '' );
-		$new      = d5b_wc_history_row( 'divi5-builder/' . $kind . 's-rollback', $kind, 0, 'rollback',
-			array( $key => $item, 'version' => $replaced, 'from_history_id' => $history_id ), array( 'running' => true ),
-			'Rolled back ' . $kind . ' ' . ( '' === $item ? $dir : $item ) . ( '' === $to ? '' : ' to ' . $to ) );
-		if ( $new < 1 ) { return new WP_Error( 'history_unavailable', 'The change history row could not be written, so nothing was put back.' ); }
 
 		// Two names beside the live folder (a rename there does not cross a disk), both starting with a dot: WordPress skips
 		// those when it lists plugins, so a leftover never shows up as a second plugin.
@@ -554,6 +582,14 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 		$staging = $free( $parent . '/.d5b-new-' . $dir . '-' . $t );
 		$aside   = null === $cur ? '' : $free( $parent . '/.d5b-old-' . $dir . '-' . $t );
 		$where   = 'the ' . $kind . 's folder';
+
+		// The row first, naming both folders (names only, in the plugins or themes folder): a request that dies between the
+		// renames leaves a row that says where the files are.
+		$new = d5b_wc_history_row( 'divi5-builder/' . $kind . 's-rollback', $kind, 0, 'rollback',
+			array( $key => $item, 'version' => $replaced, 'from_history_id' => $history_id ),
+			array( 'running' => true, 'staging' => basename( $staging ), 'aside' => '' === $aside ? null : basename( $aside ), 'folder' => $where ),
+			'Rolled back ' . $kind . ' ' . ( '' === $item ? $dir : $item ) . ( '' === $to ? '' : ' to ' . $to ) );
+		if ( $new < 1 ) { return new WP_Error( 'history_unavailable', 'The change history row could not be written, so nothing was put back.' ); }
 
 		// 1. the kept copy into the staging folder, compared file by file: a copy that is not whole never touches the live one
 		if ( file_exists( $staging ) || ( '' !== $aside && file_exists( $aside ) ) || ! d5b_maint_copy_in( $src, $staging ) ) {
@@ -603,7 +639,7 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 			$mv     = @mkdir( $folder . '/' . $kind, 0755, true ) ? d5b_maint_move( $aside, $dest ) : array( 'moved' => false, 'leftover' => false );
 			if ( $mv['moved'] ) {
 				// A whole copy is in the store: it is the record, kept whatever happened to the files beside the live folder.
-				$kept_new = array( 'path' => $dest, 'bytes' => $cur['bytes'], 'files' => $cur['files'] );
+				$kept_new = array( 'path' => $dest, 'bytes' => $cur['bytes'], 'files' => $cur['files'], 'manifest_sha1' => d5b_maint_manifest_keep( $dest ) );
 				if ( $mv['leftover'] ) {
 					$warn[] = 'The files that were replaced are kept in the change history store, but a leftover of them could not be removed from ' . $where . ': delete ' . basename( $aside ) . ' there by hand (WordPress does not list it).';
 				}
@@ -641,6 +677,20 @@ if ( ! function_exists( 'd5b_maint_update_sequence' ) ) {
 	function d5b_maint_update_sequence( string $kind, string $item, string $dir, array $opts ) {
 		if ( 'plugin' !== $kind && 'theme' !== $kind ) { return new WP_Error( 'invalid_input', 'kind must be plugin or theme.' ); }
 		if ( ! function_exists( 'wpsu_update' ) ) { return new WP_Error( 'unavailable', 'The update code is not loaded on this site, so nothing was updated.' ); }
+		// The item's lock (120 s, read fresh) for the whole update: a rollback or another update of the same folder meanwhile is
+		// busy. The automatic restore below runs under the same lock (a nested take).
+		$lock  = d5b_maint_item_lock( $kind, $dir );
+		$token = d5b_maint_lock_take( $lock, 120, 'An update or rollback of this ' . $kind );
+		if ( is_wp_error( $token ) ) { return $token; }
+		try {
+			return d5b_maint_update_run( $kind, $item, $dir, $opts );
+		} finally {
+			d5b_maint_lock_release( $lock, $token );
+		}
+	}
+
+	/** The update itself, under the item's lock (d5b_maint_update_sequence). */
+	function d5b_maint_update_run( string $kind, string $item, string $dir, array $opts ) {
 		$key = d5b_maint_item_key( $kind );
 		$dry = wpsu_update( $kind, $item, true );
 		if ( is_wp_error( $dry ) ) { return d5b_maint_wpsu_error( $dry ); }
@@ -704,7 +754,7 @@ if ( ! function_exists( 'd5b_maint_update_sequence' ) ) {
 		if ( null !== $copy_error ) {
 			$warn[] = 'No copy of the previous version was kept (' . $copy_error->get_error_code() . ': ' . d5b_maint_err_text( $copy_error ) . '), as without_copy allowed: this plugin cannot put the previous version back.';
 		}
-		if ( ! empty( $pages['unavailable'] ) ) { $warn[] = 'The site could not fetch its own pages before the change, so there was no page check: only the human check can tell.'; }
+		$warn = array_merge( $warn, d5b_pages_warnings( $pages, ! empty( $opts['rollback_on_failure'] ) ) );
 
 		$out = array(
 			$key => $item, 'from' => $from, 'to' => $to, 'version' => $version, 'updated' => $done,
@@ -738,6 +788,15 @@ if ( ! function_exists( 'd5b_maint_self' ) ) {
 			foreach ( array_keys( d5b_parts() ) as $part ) { $own = array_merge( $own, d5b_legacy_basenames( $part ) ); }
 		}
 		foreach ( $own as $o ) { if ( strtolower( str_replace( '\\', '/', $o ) ) === $f ) { return true; } }
+		// Another name for this plugin's own folder: a link (or junction) to it, or the folder reached another way. The real
+		// path of the named plugin's folder is compared with this plugin's folder.
+		if ( defined( 'D5B_FILE' ) && defined( 'WP_PLUGIN_DIR' ) && false !== strpos( $f, '/' ) && false === strpos( $f, "\0" ) ) {
+			$mine = realpath( dirname( (string) D5B_FILE ) );
+			$dir  = (string) WP_PLUGIN_DIR . '/' . dirname( ltrim( str_replace( '\\', '/', trim( $plugin_file ) ), '/' ) );
+			$real = file_exists( $dir ) ? realpath( $dir ) : false;
+			$norm = function ( string $p ): string { return strtolower( rtrim( str_replace( '\\', '/', $p ), '/' ) ); };
+			if ( is_string( $mine ) && is_string( $real ) && $norm( $mine ) === $norm( $real ) ) { return true; }
+		}
 		return false;
 	}
 }
@@ -766,5 +825,194 @@ if ( ! function_exists( 'd5b_maint_rate' ) ) {
 		$v['count'] = (int) $v['count'] + 1;
 		set_transient( $name, $v, (int) max( 1, ceil( $w - ( $now - (float) $v['start'] ) ) ) );
 		return true;
+	}
+}
+
+if ( ! function_exists( 'd5b_maint_ok' ) ) {
+	/** True when the current user has $cap and, with $network_admin on a network, is a network administrator. */
+	function d5b_maint_ok( string $cap, bool $network_admin = false ): bool {
+		return current_user_can( $cap ) && ( ! $network_admin || ! is_multisite() || is_super_admin() );
+	}
+
+	/** The permission callback for $cap (d5b_maint_ok). */
+	function d5b_maint_can( string $cap, bool $network_admin = false ): callable {
+		return function ( array $in = array() ) use ( $cap, $network_admin ) { return d5b_maint_ok( $cap, $network_admin ); };
+	}
+}
+
+if ( ! function_exists( 'd5b_maint_lock_fresh' ) ) {
+	/**
+	 * A lock transient read past this request's caches, as d5b_wsite_cron_lock_fresh reads doing_cron (wp-cron.php's
+	 * _get_cron_lock): with a persistent object cache the shared copy read with force, else the option row itself. '' when
+	 * there is none.
+	 */
+	function d5b_maint_lock_fresh( string $name ): string {
+		global $wpdb;
+		if ( function_exists( 'wp_using_ext_object_cache' ) && wp_using_ext_object_cache() ) {
+			$v = function_exists( 'wp_cache_get' ) ? wp_cache_get( $name, 'transient', true ) : false;
+			return is_string( $v ) ? $v : '';
+		}
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return ''; }
+		$row = $wpdb->get_row( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", '_transient_' . $name ) );
+		return is_object( $row ) ? (string) $row->option_value : '';
+	}
+
+	/**
+	 * Takes the lock $name for $ttl seconds. Read fresh before it is taken (a lock of another request that has not run out
+	 * is busy, 409) and again right after (it must read back as ours, else busy: two requests in the same instant cannot both
+	 * pass). The value is "<expires at>|<random>"; a lock past its time (a request that died) is taken over. A lock this
+	 * request already holds is taken again at once (a nested call: an update that puts its copy back holds that item's lock).
+	 * Released with d5b_maint_lock_release, in finally. $what names the work in the busy message.
+	 * @return string|WP_Error the token, or busy
+	 */
+	function d5b_maint_lock_take( string $name, int $ttl, string $what ) {
+		$mine = $GLOBALS['d5b_maint_locks'][ $name ] ?? null;
+		if ( is_array( $mine ) ) { $GLOBALS['d5b_maint_locks'][ $name ][1]++; return (string) $mine[0]; }
+		$busy = new WP_Error( 'busy', $what . ' is already running in another request. Wait until it has finished (at most ' . $ttl . ' seconds), read the change history, then decide whether to try again.', array( 'status' => 409 ) );
+		$now  = (int) floor( d5b_maint_now() );
+		$held = d5b_maint_lock_fresh( $name );
+		if ( '' !== $held && (int) strtok( $held, '|' ) > $now ) { return $busy; }
+		$token = ( $now + $ttl ) . '|' . bin2hex( random_bytes( 8 ) );
+		set_transient( $name, $token, $ttl );
+		if ( d5b_maint_lock_fresh( $name ) !== $token ) { return $busy; }
+		$GLOBALS['d5b_maint_locks'][ $name ] = array( $token, 1 );
+		return $token;
+	}
+
+	/** Releases the lock $name when it is still $token (read fresh); a nested take only counts down. @return bool released */
+	function d5b_maint_lock_release( string $name, string $token ): bool {
+		$mine = $GLOBALS['d5b_maint_locks'][ $name ] ?? null;
+		if ( is_array( $mine ) && $token === $mine[0] && $mine[1] > 1 ) { $GLOBALS['d5b_maint_locks'][ $name ][1]--; return true; }
+		unset( $GLOBALS['d5b_maint_locks'][ $name ] );
+		if ( d5b_maint_lock_fresh( $name ) !== $token ) { return false; }
+		delete_transient( $name );
+		return true;
+	}
+
+	/** The lock name of one plugin or theme folder: the update, rollback and automatic restore of it never overlap. */
+	function d5b_maint_item_lock( string $kind, string $dir ): string {
+		return 'd5b_maint_lock_' . $kind . '_' . md5( strtolower( $dir ) );
+	}
+}
+
+if ( ! function_exists( 'd5b_maint_manifest' ) ) {
+	/**
+	 * The file list of a copy: relative path => sha1 of the bytes, files only, sorted (a single file: '' => its sha1). null
+	 * when it holds a link (never followed) or is not there.
+	 * @return array<string,string>|null
+	 */
+	function d5b_maint_manifest( string $path ): ?array {
+		$sig = d5b_maint_tree_sig( $path );
+		if ( null === $sig ) { return null; }
+		$out = array();
+		foreach ( $sig as $rel => $v ) {
+			$v = (string) $v;
+			if ( 'dir' === $v ) { continue; }
+			$out[ (string) $rel ] = (string) substr( $v, (int) strpos( $v, ':' ) + 1 );
+		}
+		return $out;
+	}
+
+	/** The fingerprint of a file list: sha1 of the "path\0sha1\n" lines sorted by path. */
+	function d5b_maint_manifest_sha1( array $m ): string {
+		$lines = array();
+		foreach ( $m as $p => $s ) { $lines[ (string) $p ] = (string) $p . "\0" . (string) $s . "\n"; }
+		ksort( $lines, SORT_STRING );
+		return sha1( implode( '', $lines ) );
+	}
+
+	/**
+	 * Records the file list of a kept copy at <store>/<row>-<hex>/manifest.json (beside <kind>/<dir>), so a refusal can say what
+	 * changed; the fingerprint goes into the history row (kept.manifest_sha1), which is what a restore trusts. The file is a
+	 * convenience: a restore never trusts it unless its own fingerprint matches the row's.
+	 * @return string the fingerprint, '' when the copy cannot be listed
+	 */
+	function d5b_maint_manifest_keep( string $copy ): string {
+		$m = d5b_maint_manifest( $copy );
+		if ( null === $m ) { return ''; }
+		$json = function_exists( 'wp_json_encode' ) ? wp_json_encode( (object) $m ) : json_encode( (object) $m );
+		if ( is_string( $json ) ) { @file_put_contents( dirname( $copy, 2 ) . '/manifest.json', $json ); }
+		return d5b_maint_manifest_sha1( $m );
+	}
+
+	/**
+	 * Whether the kept copy at $src is still exactly what was kept: its file list, re-computed now, against the fingerprint in
+	 * the row ($kept['manifest_sha1']). Anything that can write in uploads (a plugin's uninstall routine, another plugin, a
+	 * person) could otherwise turn a planted file into code in wp-content on the next rollback.
+	 * @return true|WP_Error copy_tampered (409), naming how many files changed, were added or were removed when it can tell
+	 */
+	function d5b_maint_manifest_check( string $src, array $kept ) {
+		$bad = function ( string $why, array $counts = array() ) {
+			return new WP_Error( 'copy_tampered', 'The kept copy was changed after it was made (' . $why . '), so it was not put back: it could hold files that were never part of the plugin or theme. Update or reinstall from wordpress.org instead, and check what can write to the uploads folder.', array( 'status' => 409 ) + $counts );
+		};
+		$want = (string) ( $kept['manifest_sha1'] ?? '' );
+		if ( 1 !== preg_match( '/^[0-9a-f]{40}$/D', $want ) ) { return $bad( 'its history row records no file list to check it against' ); }
+		$now = d5b_maint_manifest( $src );
+		if ( null === $now ) { return $bad( 'it now holds a link' ); }
+		if ( hash_equals( $want, d5b_maint_manifest_sha1( $now ) ) ) { return true; }
+		$file = dirname( $src, 2 ) . '/manifest.json';
+		$list = is_file( $file ) && ! d5b_maint_is_link( $file ) ? json_decode( (string) @file_get_contents( $file ), true ) : null;
+		if ( ! is_array( $list ) || ! hash_equals( $want, d5b_maint_manifest_sha1( $list ) ) ) { return $bad( 'its file list was changed as well' ); }
+		$was = array(); foreach ( $list as $p => $s ) { $was[ (string) $p ] = (string) $s; }
+		$changed = 0;
+		foreach ( $now as $p => $s ) { if ( isset( $was[ $p ] ) && $was[ $p ] !== $s ) { $changed++; } }
+		$added   = count( array_diff_key( $now, $was ) );
+		$removed = count( array_diff_key( $was, $now ) );
+		return $bad( $changed . ' file(s) changed, ' . $added . ' added, ' . $removed . ' removed', array( 'changed' => $changed, 'added' => $added, 'removed' => $removed ) );
+	}
+}
+
+if ( ! function_exists( 'd5b_maint_kept_copies' ) ) {
+	/**
+	 * The plugins (kind plugin) or themes (kind theme) with a kept copy: the update, rollback and delete rows of that object
+	 * type whose kept is recorded (not null), newest first: the plugin file or stylesheet and the version kept (the row's
+	 * before), the row id and when it was kept. Never the copy's path. Rows of a rollback undone because the copy did not
+	 * hold the plugin or theme (after.restore_mismatch) are left out: they are not a copy anyone should go back to.
+	 */
+	function d5b_maint_kept_copies( string $kind ): array {
+		$out = array();
+		if ( ( 'plugin' !== $kind && 'theme' !== $kind ) || ! function_exists( 'd5b_history_list' ) ) { return $out; }
+		$key = d5b_maint_item_key( $kind );
+		foreach ( d5b_history_list( array( 'object_type' => $kind ), 500 ) as $r ) {
+			if ( ! in_array( (string) ( $r['action'] ?? '' ), array( 'update', 'rollback', 'delete' ), true ) ) { continue; } // only these keep a copy
+			$row = d5b_history_get( (int) $r['id'] );
+			if ( null === $row || ! empty( $row['after']['restore_mismatch'] ) ) { continue; }
+			$kept = $row['after']['kept'] ?? ( $row['before']['kept'] ?? null );
+			if ( ! is_array( $kept ) ) { continue; }
+			$item = (string) ( $row['before'][ $key ] ?? ( $row['after'][ $key ] ?? '' ) );
+			if ( '' === $item ) { continue; }
+			$out[] = array( $key => $item, 'version' => (string) ( $row['before']['version'] ?? '' ), 'history_id' => (int) $row['id'], 'kept_at' => d5b_wc_iso( (string) $row['created_at'] ) );
+		}
+		return $out;
+	}
+
+	/** Flags rows of a rollback that was undone for restore_mismatch (after.restore_mismatch true). @return bool all flagged */
+	function d5b_maint_mark_mismatch( array $ids ): bool {
+		$ok = true;
+		foreach ( $ids as $id ) {
+			$row = d5b_history_get( (int) $id );
+			if ( null === $row ) { $ok = false; continue; }
+			$ok = d5b_history_set_after( (int) $id, array( 'restore_mismatch' => true ) + (array) $row['after'] ) && $ok;
+		}
+		return $ok;
+	}
+}
+
+if ( ! function_exists( 'd5b_pages_warnings' ) ) {
+	/**
+	 * The warnings a page check gives: no check at all (the site could not fetch its own pages), and pages that were not
+	 * checked in time (skipped in either round, so never compared). With $judging (rollback_on_failure), a line that the
+	 * automatic restore could not judge the skipped pages.
+	 * @return string[]
+	 */
+	function d5b_pages_warnings( array $pages, bool $judging = false ): array {
+		$warn = array();
+		if ( ! empty( $pages['unavailable'] ) ) { $warn[] = 'The site could not fetch its own pages before the change, so there was no page check: only the human check can tell.'; }
+		$skipped = array_values( array_map( 'strval', (array) ( $pages['skipped'] ?? array() ) ) );
+		if ( $skipped ) {
+			$warn[] = count( $skipped ) . ' page(s) were not re-checked in time: ' . implode( ', ', $skipped ) . '. They were not compared, so check them yourself.';
+			if ( $judging ) { $warn[] = 'rollback_on_failure could not judge the page(s) that were not re-checked: it acted on the pages it did check only.'; }
+		}
+		return $warn;
 	}
 }

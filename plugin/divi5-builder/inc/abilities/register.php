@@ -248,6 +248,9 @@ if ( ! function_exists( 'd5b_ability_http_status' ) ) {
 			'active' => 409, 'newer_copy_exists' => 409, 'copy_missing' => 410, 'restore_mismatch' => 409, 'update_failed' => 502, 'delete_failed' => 502,
 			// A plugin or theme that is (or holds) a link: never copied, updated, swapped or deleted (without_copy does not lift it).
 			'linked' => 409,
+			// Fix wave (2.4.0): a kept copy that no longer matches the file list in its row; the same item (or the administrators)
+			// being changed by another request right now; no email address to send to.
+			'copy_tampered' => 409, 'busy' => 409, 'no_email' => 409,
 			// Themes (2.4.0): the active theme or its parent (or a network-enabled theme) not deleted; a switch that stopped with an error.
 			'in_use' => 409, 'switch_failed' => 409,
 			// Users (2.4.0): the caller's own account, another administrator's email, the last administrator, a reset link right after

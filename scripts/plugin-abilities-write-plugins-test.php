@@ -51,6 +51,8 @@ $GLOBALS['d5b_maint_seams'] = array(
 	// T_rename_refuse_re is refused, as a host can refuse a rename.
 	'rename' => function ( $from, $to ) {
 		$GLOBALS['T_mrenames'][] = array( basename( $from ), basename( $to ), ! empty( $GLOBALS['T_in_maintenance'] ), count( $GLOBALS['T_copy_calls'] ?? array() ) );
+		// T_rename_hook: called first (another request acting between the renames); a non-null answer is the rename's.
+		if ( is_callable( $GLOBALS['T_rename_hook'] ?? null ) ) { $h = $GLOBALS['T_rename_hook']; $x = $h( $from, $to ); if ( null !== $x ) { return $x; } }
 		if ( '' !== ( $GLOBALS['T_rename_refuse_re'] ?? '' ) && 1 === preg_match( $GLOBALS['T_rename_refuse_re'], str_replace( '\\', '/', $from ) ) ) { return false; }
 		return @rename( $from, $to );
 	},
@@ -104,7 +106,7 @@ $defs = d5b_ability_defs();
 $st = $defs['divi5-builder/plugins-status'] ?? null; $uc = $defs['divi5-builder/updates-check'] ?? null;
 $in = $defs['divi5-builder/plugins-install'] ?? null; $ac = $defs['divi5-builder/plugins-activate'] ?? null; $de = $defs['divi5-builder/plugins-deactivate'] ?? null;
 check( 'all five exist', null !== $st && null !== $uc && null !== $in && null !== $ac && null !== $de );
-check( 'plugins-status: a read in plugins (no risky key, read-only annotations as every read)', 'plugins' === ( $st['category'] ?? '' ) && ! array_key_exists( 'risky', (array) $st ) && false !== ( $st['annotations']['readonly'] ?? true ), $st );
+check( 'plugins-status: a read in plugins (no risky key, no annotations of its own, so readonly true at registration)', 'plugins' === ( $st['category'] ?? '' ) && ! array_key_exists( 'risky', (array) $st ) && ! array_key_exists( 'annotations', (array) $st ), $st );
 check( 'updates-check: a normal write in core (no risky), readonly false', 'core' === ( $uc['category'] ?? '' ) && ! array_key_exists( 'risky', (array) $uc ) && false === ( $uc['annotations']['readonly'] ?? null ), $uc );
 check( 'install, activate, deactivate: risky in plugins, readonly false', array( true, true, true ) === array( $in['risky'] ?? null, $ac['risky'] ?? null, $de['risky'] ?? null ) && 'plugins' === $in['category'] && 'plugins' === $ac['category'] && 'plugins' === $de['category'] && false === $ac['annotations']['readonly'] );
 check( 'install: slug required, nothing else', array( 'slug' ) === $in['input_schema']['required'] && array( 'slug' ) === array_keys( $in['input_schema']['properties'] ) );
@@ -415,6 +417,9 @@ function disk_site( array $caps = ADMIN_ALL, bool $multi = false, bool $risky = 
 function version_of( $f ) { $all = get_plugins(); return $all[ $f ]['Version'] ?? null; }
 function row( $id ) { return d5b_history_get( (int) $id ); }
 function kept_path( $id ) { return (string) ( row( $id )['after']['kept']['path'] ?? '' ); }
+// A kept copy as if it had been kept the way it is now: its file list and fingerprint made again from the files (a copy
+// that was MADE without the main file, not changed afterwards).
+function reseal( $id ) { $a = row( $id )['after']; $a['kept']['manifest_sha1'] = d5b_maint_manifest_keep( $a['kept']['path'] ); d5b_history_set_after( (int) $id, $a ); }
 
 echo "update, rollback, delete: registration\n";
 site();
@@ -548,7 +553,30 @@ $ua = (int) call( 'plugins-update', array( 'plugin' => ACME ) )['history_id'];
 rename( kept_path( $ua ) . '/acme.php', kept_path( $ua ) . '/acme-main.php' );
 $now = tree( WP_PLUGIN_DIR . '/acme-pro-folder' );
 $r = call( 'plugins-rollback', array( 'plugin' => ACME, 'history_id' => $ua ) );
+check( 'M1 a kept copy changed after it was made (a file renamed) -> copy_tampered (409), nothing touched, no row', 'copy_tampered' === code( $r ) && 1 === ( edata( $r )['added'] ?? null ) && 1 === ( edata( $r )['removed'] ?? null ) && $now === tree( WP_PLUGIN_DIR . '/acme-pro-folder' ) && 1 === count( hrows() ) && array() === preg_grep( '/\.d5b-/', scandir( WP_PLUGIN_DIR ) ), array( code( $r ), edata( $r ) ) );
+// The same copy as if it had been KEPT that way (its fingerprint made from it): the plugin file does not resolve after the swap.
+reseal( $ua );
+$r = call( 'plugins-rollback', array( 'plugin' => ACME, 'history_id' => $ua ) );
 check( 'rollback: the plugin file does not resolve after the swap -> restore_mismatch, the swap undone (3.1 files back)', 'restore_mismatch' === code( $r ) && $now === tree( WP_PLUGIN_DIR . '/acme-pro-folder' ) && '3.1' === version_of( ACME ) && array() === preg_grep( '/\.d5b-/', scandir( WP_PLUGIN_DIR ) ), array( code( $r ), is_wp_error( $r ) ? $r->get_error_message() : $r ) );
+// M8: the two rows of the undone rollback are flagged and left out of kept_copies and the newer-copy check.
+$mm = array_values( array_filter( hrows(), function ( $h ) { return 'rollback' === $h['action']; } ) );
+$flags = array_map( function ( $h ) { return ! empty( row( $h['id'] )['after']['restore_mismatch'] ); }, $mm );
+check( 'M8 restore_mismatch: both rollback rows (the swap and its undo) are flagged after.restore_mismatch', 2 === count( $mm ) && array( true, true ) === $flags, $flags );
+$kc = call( 'plugins-status' )['kept_copies'] ?? null;
+check( 'M8 ... kept_copies lists the update row only (the flagged rows are not offered)', is_array( $kc ) && 1 === count( $kc ) && $ua === (int) $kc[0]['history_id'], $kc );
+$r = call( 'plugins-rollback', array( 'plugin' => ACME, 'history_id' => $ua ) );
+check( 'M8 ... a retry of that row is not refused newer_copy_exists (it is judged on its own copy again: restore_mismatch)', 'restore_mismatch' === code( $r ) && '3.1' === version_of( ACME ), array( code( $r ), edata( $r ) ) );
+disk_site();
+$ua = (int) call( 'plugins-update', array( 'plugin' => ACME ) )['history_id'];
+rename( kept_path( $ua ) . '/acme.php', kept_path( $ua ) . '/acme-main.php' ); reseal( $ua );
+$calls = 0;
+// the undo's own swap refused (the 4th rename: its staging copy into place): nothing is flagged, as the first rollback row
+// holds the only copy of the 3.1 files
+$GLOBALS['T_rename_hook'] = function ( $from, $to ) use ( &$calls ) { $calls++; return 4 === $calls ? false : null; };
+$r = call( 'plugins-rollback', array( 'plugin' => ACME, 'history_id' => $ua ) );
+$GLOBALS['T_rename_hook'] = null;
+$mm = array_values( array_filter( hrows(), function ( $h ) { return 'rollback' === $h['action'] && ! empty( row( $h['id'] )['after']['restore_mismatch'] ); } ) );
+check( 'M8 when the undo itself fails, nothing is flagged: the first rollback row stays offered (it holds the files that were live)', 'restore_mismatch' === code( $r ) && array() === $mm, array( code( $r ), is_wp_error( $r ) ? $r->get_error_message() : null ) );
 
 echo "plugins-delete\n";
 disk_site();
@@ -782,6 +810,98 @@ $r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 )
 $left = array_values( preg_grep( '/^\.d5b-old-akismet-/', scandir( WP_PLUGIN_DIR ) ) );
 check( 'the second rename AND the put-back refused: the live folder is missing, its files whole in .d5b-old-*, the message names it (no "nothing was changed"), staging removed', 'copy_failed' === code( $r ) && ! file_exists( WP_PLUGIN_DIR . '/akismet' ) && 1 === count( $left ) && $v51 === tree( WP_PLUGIN_DIR . '/' . $left[0] ) && false !== strpos( $r->get_error_message(), $left[0] ) && false === strpos( $r->get_error_message(), 'nothing was changed' ) && array() === preg_grep( '/^\.d5b-new-/', scandir( WP_PLUGIN_DIR ) ), array( is_wp_error( $r ) ? $r->get_error_message() : $r, $left ) );
 $GLOBALS['T_rename_refuse_re'] = '';
+
+echo "fix wave M1: a kept copy changed by the plugin's own uninstall routine\n";
+disk_site();
+update_option( 'active_plugins', array( SELF_FILE ) );
+// The uninstall routine writes a file into the kept copy (anything that can write in uploads can): never put in place.
+t_put( WP_PLUGIN_DIR . '/hello-dolly/uninstall.php', '<?php foreach ( glob( "' . $T_BASE . '/uploads/d5b-history/*/plugin/hello-dolly", GLOB_ONLYDIR ) as $d ) { file_put_contents( $d . "/planted.php", "<?php // planted" ); }' );
+$p = call( 'plugins-delete-preview', array( 'plugin' => HELLO ) );
+$d = call( 'plugins-delete', array( 'plugin' => HELLO, 'confirmation' => $p['confirmation'] ?? '' ) );
+check( 'M1 the delete answer says the files come back from the kept copy only if it is unchanged', is_array( $d ) && false !== strpos( (string) $d['note'], 'from the kept copy if it is unchanged' ) && is_file( kept_path( $d['history_id'] ) . '/planted.php' ), $d );
+$nrows = count( hrows() );
+$r = call( 'plugins-rollback', array( 'plugin' => HELLO, 'history_id' => $d['history_id'] ) );
+check( 'M1 ... the rollback refuses copy_tampered (1 added): the planted file never reaches wp-content/plugins, no row', 'copy_tampered' === code( $r ) && 1 === ( edata( $r )['added'] ?? null ) && ! file_exists( WP_PLUGIN_DIR . '/hello-dolly' ) && $nrows === count( hrows() ), array( code( $r ), edata( $r ) ) );
+disk_site();
+$u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
+file_put_contents( kept_path( $u1 ) . '/readme.txt', 'akismet readme 5.0 CHANGED' );
+$r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
+check( 'M1 a file of the kept copy changed -> copy_tampered (1 changed), 5.1 stays', 'copy_tampered' === code( $r ) && 1 === ( edata( $r )['changed'] ?? null ) && '5.1' === version_of( AKISMET ), array( code( $r ), edata( $r ) ) );
+file_put_contents( kept_path( $u1 ) . '/readme.txt', 'akismet readme 5.0' );
+$r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
+$rk = row( $r['history_id'] ?? 0 )['after']['kept'] ?? null;
+check( 'M1 put back as it was: restores; the rollback row\'s own copy of the 5.1 files carries its fingerprint too', is_array( $r ) && '5.0' === version_of( AKISMET ) && is_array( $rk ) && 1 === preg_match( '/^[0-9a-f]{40}$/', (string) ( $rk['manifest_sha1'] ?? '' ) ) && true === d5b_maint_manifest_check( $rk['path'], $rk ), array( $r, $rk ) );
+$g = d5b_history_public_side( row( $u1 )['after'] );
+check( 'M1 the fingerprint is not in what the history reads show (kept: bytes, files)', array( 'bytes', 'files' ) === array_keys( (array) $g['kept'] ) );
+
+echo "fix wave M2: one update or rollback of an item at a time\n";
+disk_site();
+$u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
+$v51 = tree( WP_PLUGIN_DIR . '/akismet' );
+$inner = null; $mid = null; $calls = 0;
+$GLOBALS['T_rename_hook'] = function ( $from, $to ) use ( &$inner, &$mid, &$calls, $u1 ) {
+	if ( 1 !== ++$calls ) { return null; }
+	$mid = hlast(); // the rollback row, read between the renames
+	// Another request (none of this request's memory) asks for the same rollback, and for an update, meanwhile.
+	$saved = $GLOBALS['d5b_maint_locks'] ?? array(); $GLOBALS['d5b_maint_locks'] = array();
+	$n0 = count( hrows() ); $dots0 = preg_grep( '/^\.d5b-/', scandir( WP_PLUGIN_DIR ) );
+	$inner = array( call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1, 'force_older' => true ) ), call( 'plugins-update', array( 'plugin' => AKISMET ) ), $n0 === count( hrows() ) && $dots0 === preg_grep( '/^\.d5b-/', scandir( WP_PLUGIN_DIR ) ) );
+	$GLOBALS['d5b_maint_locks'] = $saved;
+	return null;
+};
+$GLOBALS['T_fresh']['update_plugins'] = offers( array( AKISMET => '5.2' ) );
+$r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
+$GLOBALS['T_rename_hook'] = null;
+check( 'M2 a second rollback and an update of the same plugin while the first rollback is between its renames: busy (409), nothing touched, no row', is_array( $inner ) && 'busy' === code( $inner[0] ) && 'busy' === code( $inner[1] ) && true === $inner[2] && 409 === d5b_ability_http_status( 'busy' ), array( code( $inner[0] ?? null ), code( $inner[1] ?? null ), $inner[2] ?? null ) );
+check( 'M2 ... the first rollback finished normally (5.0 back, no dot folder), and the lock is gone', is_array( $r ) && '5.0' === version_of( AKISMET ) && array() === preg_grep( '/\.d5b-/', scandir( WP_PLUGIN_DIR ) ) && '' === d5b_maint_lock_fresh( d5b_maint_item_lock( 'plugin', 'akismet' ) ), $r );
+check( 'M2 the rollback row written before the renames names both folders (staging, aside), names only', is_array( $mid ) && 'rollback' === $mid['action'] && true === ( $mid['after']['running'] ?? null ) && 1 === preg_match( '/^\.d5b-new-akismet-\d+$/', (string) ( $mid['after']['staging'] ?? '' ) ) && 1 === preg_match( '/^\.d5b-old-akismet-\d+$/', (string) ( $mid['after']['aside'] ?? '' ) ), $mid['after'] ?? null );
+check( 'M2 another plugin is not held up by that lock', d5b_maint_item_lock( 'plugin', 'akismet' ) !== d5b_maint_item_lock( 'plugin', 'acme-pro-folder' ) );
+// The lock held by a request that died: past its 120 s it is taken over.
+disk_site();
+$u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
+set_transient( d5b_maint_item_lock( 'plugin', 'akismet' ), ( (int) $GLOBALS['T_clock'] + 30 ) . '|' . str_repeat( 'e', 16 ), 120 );
+check( 'M2 a lock another request holds: plugins-rollback busy, nothing changed', 'busy' === code( call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) ) ) && '5.1' === version_of( AKISMET ) );
+$GLOBALS['T_clock'] += 31;
+check( 'M2 ... once it has run out, it is taken over and the rollback runs', is_array( call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) ) ) && '5.0' === version_of( AKISMET ) );
+// The automatic restore of rollback_on_failure runs under the update's own lock (a nested take), and releases it.
+disk_site(); $GLOBALS['T_breaks_at'] = array( AKISMET => '5.1' );
+$r = call( 'plugins-update', array( 'plugin' => AKISMET, 'rollback_on_failure' => true ) );
+check( 'M2 rollback_on_failure: the restore inside the update is not refused by the update\'s own lock; the lock is released after', is_array( $r ) && true === $r['rolled_back'] && '5.0' === version_of( AKISMET ) && '' === d5b_maint_lock_fresh( d5b_maint_item_lock( 'plugin', 'akismet' ) ) && array() === ( $GLOBALS['d5b_maint_locks'] ?? array() ), $r );
+
+echo "fix wave M6: the installed folder must be the slug asked for\n";
+disk_site();
+$GLOBALS['T_plugins_api']['contact-form-7'] = (object) array( 'slug' => 'contact-form-7', 'name' => 'Contact Form 7', 'version' => '5.9', 'download_link' => 'https://downloads.wordpress.org/plugin/some-other-plugin.1.0.zip' );
+$GLOBALS['T_install_adds'] = array( 'some-other-plugin/some-other-plugin.php' => array( 'Name' => 'Some Other', 'Version' => '1.0' ) );
+$r = call( 'plugins-install', array( 'slug' => 'contact-form-7' ) );
+check( 'M6 plugins_api (a filter) gives another plugin\'s zip for the slug: bad_source, what was installed is removed again', 'bad_source' === code( $r ) && false !== strpos( $r->get_error_message(), '"some-other-plugin"' ) && false !== strpos( $r->get_error_message(), 'removed again' ) && ! file_exists( WP_PLUGIN_DIR . '/some-other-plugin' ) && ! isset( get_plugins()['some-other-plugin/some-other-plugin.php'] ), array( code( $r ), is_wp_error( $r ) ? $r->get_error_message() : $r ) );
+$h = hlast();
+check( 'M6 ... the install row says failed, what was installed instead, and that it was removed', 'install' === $h['action'] && true === ( $h['after']['failed'] ?? null ) && 'some-other-plugin' === ( $h['after']['installed_instead'] ?? null ) && true === ( $h['after']['removed'] ?? null ), $h['after'] );
+$GLOBALS['T_plugins_api']['contact-form-7']->download_link = 'https://downloads.wordpress.org/plugin/contact-form-7.5.9.zip';
+$GLOBALS['T_install_adds'] = array( 'contact-form-7/wp-contact-form-7.php' => array( 'Name' => 'Contact Form 7', 'Version' => '5.9' ) );
+$r = call( 'plugins-install', array( 'slug' => 'contact-form-7' ) );
+check( 'M6 ... the right zip installs as before', is_array( $r ) && 'contact-form-7/wp-contact-form-7.php' === $r['plugin'] && '5.9' === $r['version'] && is_file( WP_PLUGIN_DIR . '/contact-form-7/wp-contact-form-7.php' ), $r );
+
+echo "fix wave M7: pages not re-checked in time are warned about\n";
+disk_site();
+foreach ( array( 601, 602, 603 ) as $pid ) { t_add_post( array( 'ID' => $pid, 'post_type' => 'page' ) ); }
+// Once akismet 5.1 is installed every page answers in 25 s: the after round (60 s) cannot fetch them all.
+$GLOBALS['T_http_fn'] = function ( $url, $args ) { if ( '5.1' === ( get_plugins()[ AKISMET ]['Version'] ?? '' ) ) { $GLOBALS['T_clock'] += 25; } return array( 'code' => 200, 'body' => page() ); };
+$r = call( 'plugins-update', array( 'plugin' => AKISMET, 'rollback_on_failure' => true ) );
+$w = (array) ( $r['warnings'] ?? array() );
+check( 'M7 an update whose after round runs out of time: pages.skipped lists the pages, a warning names them, another says rollback_on_failure could not judge them', is_array( $r ) && 1 <= count( $r['pages']['skipped'] ?? array() ) && 1 === count( preg_grep( '/^\d+ page\(s\) were not re-checked in time: https:\/\/x\.example\//', $w ) ) && 1 === count( preg_grep( '/rollback_on_failure could not judge/', $w ) ) && false === $r['rolled_back'], is_array( $r ) ? array( $r['pages']['skipped'] ?? null, $w ) : code( $r ) );
+serve_site();
+
+echo "fix wave M10: a link to this plugin's own folder\n";
+disk_site();
+$linked = t_link_dir( WP_PLUGIN_DIR . '/divi5-builder', WP_PLUGIN_DIR . '/d5b-alias' );
+wp_clean_plugins_cache( false );
+$listed = isset( get_plugins()['d5b-alias/divi5-builder.php'] );
+$p = call( 'plugins-delete-preview', array( 'plugin' => 'd5b-alias/divi5-builder.php' ) );
+check( 'M10 plugins-delete-preview of an alias folder of this plugin: self, no code issued', $linked && $listed && 'self' === code( $p ), array( $linked, $listed, code( $p ) ) );
+$a = call( 'plugins-activate', array( 'plugin' => 'd5b-alias/divi5-builder.php' ) );
+check( 'M10 plugins-activate of it: self, not activated', 'self' === code( $a ) && ! in_array( 'd5b-alias/divi5-builder.php', active(), true ), code( $a ) );
+check( 'M10 plugins-update and plugins-deactivate of it: self', 'self' === code( call( 'plugins-update', array( 'plugin' => 'd5b-alias/divi5-builder.php' ) ) ) && 'self' === code( call( 'plugins-deactivate', array( 'plugin' => 'd5b-alias/divi5-builder.php' ) ) ) );
+t_rm( WP_PLUGIN_DIR . '/d5b-alias' );
 
 echo "history reads: a kept copy shows as its size\n";
 disk_site(); d5b_abilities_set_category( 'history', true, false, 'tester' );

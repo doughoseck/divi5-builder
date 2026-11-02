@@ -127,6 +127,8 @@ function hrows() { global $wpdb; return array_values( $wpdb->tables[ d5b_history
 function hlast() { $r = hrows(); return $r ? d5b_history_get( (int) end( $r )['id'] ) : null; }
 function row( $id ) { return d5b_history_get( (int) $id ); }
 function kept_path( $id ) { return (string) ( row( $id )['after']['kept']['path'] ?? '' ); }
+// A kept copy as if it had been kept the way it is now (its file list and fingerprint made again from the files).
+function reseal( $id ) { $a = row( $id )['after']; $a['kept']['manifest_sha1'] = d5b_maint_manifest_keep( $a['kept']['path'] ); d5b_history_set_after( (int) $id, $a ); }
 function traps( $name ) { return count( array_filter( $GLOBALS['T_traps'], function ( $t ) use ( $name ) { return $t === $name; } ) ); }
 function dots() { return array_values( preg_grep( '/^\.d5b-/', (array) scandir( troot() ) ) ); }
 function store_dirs() { global $T_BASE; return array_values( array_diff( (array) @scandir( $T_BASE . '/uploads/d5b-history' ), array( '.', '..', '.htaccess', 'index.html' ) ) ); }
@@ -138,7 +140,8 @@ $defs = d5b_ability_defs();
 $names = array( 'themes-status', 'themes-install', 'themes-switch', 'themes-update', 'themes-rollback', 'themes-delete-preview', 'themes-delete' );
 $d = array(); foreach ( $names as $nm ) { $d[ $nm ] = $defs[ 'divi5-builder/' . $nm ] ?? null; }
 check( 'all seven exist, in the themes category', ! in_array( null, $d, true ) && array( 'themes' ) === array_values( array_unique( array_map( function ( $x ) { return $x['category'] ?? ''; }, $d ) ) ) );
-check( 'themes-status: a read (no risky key, read-only as every read)', ! array_key_exists( 'risky', (array) $d['themes-status'] ) && false !== ( $d['themes-status']['annotations']['readonly'] ?? true ) );
+// A read carries no annotations of its own: the registration gives every definition without them readonly true.
+check( 'themes-status: a read (no risky key, no annotations of its own, so readonly true at registration)', ! array_key_exists( 'risky', (array) $d['themes-status'] ) && ! array_key_exists( 'annotations', (array) $d['themes-status'] ) && false === ( $d['themes-update']['annotations']['readonly'] ?? null ), $d['themes-status'] );
 check( 'the six writes are risky', array( true, true, true, true, true, true ) === array_map( function ( $nm ) use ( $d ) { return $d[ $nm ]['risky'] ?? null; }, array_slice( $names, 1 ) ) );
 check( 'inputs: install slug; switch stylesheet; update stylesheet, rollback_on_failure, without_copy; rollback stylesheet, history_id, force_older; delete(-preview) stylesheet, without_copy (+ confirmation); no keep_data',
 	array( 'slug' ) === array_keys( $d['themes-install']['input_schema']['properties'] ) && array( 'stylesheet' ) === array_keys( $d['themes-switch']['input_schema']['properties'] )
@@ -371,7 +374,23 @@ $u1 = (int) call( 'themes-update', array( 'stylesheet' => TWENTY ) )['history_id
 unlink( kept_path( $u1 ) . '/style.css' ); // the kept copy no longer holds the theme's style.css
 $now = tree( troot() . '/' . TWENTY );
 $r = call( 'themes-rollback', array( 'stylesheet' => TWENTY, 'history_id' => $u1 ) );
+check( 'M1 a kept copy changed after it was made (style.css removed) -> copy_tampered, nothing touched', 'copy_tampered' === code( $r ) && 1 === ( edata( $r )['removed'] ?? null ) && $now === tree( troot() . '/' . TWENTY ) && 1 === count( hrows() ), array( code( $r ), edata( $r ) ) );
+reseal( $u1 ); // as if it had been kept that way
+$r = call( 'themes-rollback', array( 'stylesheet' => TWENTY, 'history_id' => $u1 ) );
 check( 'rollback: the theme does not resolve after the swap -> restore_mismatch, the swap undone (1.1 files back)', 'restore_mismatch' === code( $r ) && $now === tree( troot() . '/' . TWENTY ) && '1.1' === disk_version( TWENTY ) && array() === dots(), array( code( $r ), msg( $r ) ) );
+$flags = array_map( function ( $h ) { return ! empty( row( $h['id'] )['after']['restore_mismatch'] ); }, array_values( array_filter( hrows(), function ( $h ) { return 'rollback' === $h['action']; } ) ) );
+$kc = call( 'themes-status' )['kept_copies'] ?? null;
+check( 'M8 themes: both rollback rows flagged; kept_copies offers the update row only; a retry is not newer_copy_exists', array( true, true ) === $flags && is_array( $kc ) && 1 === count( $kc ) && $u1 === (int) $kc[0]['history_id'] && 'restore_mismatch' === code( call( 'themes-rollback', array( 'stylesheet' => TWENTY, 'history_id' => $u1 ) ) ), array( $flags, $kc ) );
+// Readable is as WordPress reads the theme (WP_Theme::errors), not "has a version".
+site();
+@mkdir( troot() . '/noversion', 0777, true ); file_put_contents( troot() . '/noversion/style.css', "/*\nTheme Name: No Version\n*/\n" ); file_put_contents( troot() . '/noversion/index.php', '<?php' );
+t_theme_write( 'orphan', array( 'Name' => 'Orphan', 'Version' => '1.0', 'Template' => 'gone' ) );
+@mkdir( troot() . '/nostyle', 0777, true ); file_put_contents( troot() . '/nostyle/index.php', '<?php' );
+check( 'readable theme check: a style.css without a Version is readable, a missing parent is not the copy\'s fault, no style.css is unreadable, no folder is unreadable', '' === d5b_wthm_unreadable( 'noversion' ) && '' === d5b_wthm_unreadable( 'orphan' ) && '' !== d5b_wthm_unreadable( 'nostyle' ) && '' !== d5b_wthm_unreadable( 'nosuchtheme' ), array( d5b_wthm_unreadable( 'noversion' ), d5b_wthm_unreadable( 'nostyle' ) ) );
+$GLOBALS['T_fresh']['update_themes'] = theme_offers( array( 'noversion' => '2.0' ) );
+$un = call( 'themes-update', array( 'stylesheet' => 'noversion' ) );
+$r  = is_array( $un ) ? call( 'themes-rollback', array( 'stylesheet' => 'noversion', 'history_id' => $un['history_id'] ) ) : $un;
+check( '... so a theme without a Version header rolls back (no restore_mismatch): its files are back', is_array( $r ) && null === disk_version( 'noversion' ) && is_file( troot() . '/noversion/style.css' ), array( code( $un ), code( $r ), is_wp_error( $r ) ? msg( $r ) : null ) );
 site();
 $u1 = (int) call( 'themes-update', array( 'stylesheet' => TWENTY ) )['history_id'];
 t_theme_write( TWENTY, array( 'Name' => 'Twenty X', 'Version' => '1.3' ) ); // updated since, outside the abilities (another request:
@@ -436,10 +455,37 @@ $p = call( 'themes-delete-preview', array( 'stylesheet' => 'linkt', 'without_cop
 $r = call( 'themes-delete', array( 'stylesheet' => 'linkt', 'without_copy' => true, 'confirmation' => $p['confirmation'] ?? '' ) );
 check( 'delete it, without_copy: linked; delete_theme never called, the link and what it points to untouched', 'linked' === code( $r ) && array() === $GLOBALS['T_theme_delete_calls'] && array() === hrows() && $out0 === tree( $T_BASE . '/outside/linkt' ), array( code( $p ), code( $r ) ) );
 
+echo "fix wave: rollback of a deleted theme needs install_themes; the parent of the active theme updated\n";
+site();
+$p = call( 'themes-delete-preview', array( 'stylesheet' => TWENTY ) );
+$d = call( 'themes-delete', array( 'stylesheet' => TWENTY, 'confirmation' => $p['confirmation'] ?? '' ) );
+t_set_caps( array( 'read', 'manage_options', 'update_themes', 'switch_themes', 'delete_themes' ) );
+$nrows = count( hrows() );
+$r = call( 'themes-rollback', array( 'stylesheet' => TWENTY, 'history_id' => $d['history_id'] ?? 0 ) );
+check( 'restoring a deleted theme is an install: without install_themes it is refused (forbidden), nothing put back, no row', is_array( $d ) && 'forbidden' === code( $r ) && ! file_exists( troot() . '/' . TWENTY ) && $nrows === count( hrows() ), array( code( $d ), code( $r ) ) );
+t_set_caps( ADMIN );
+check( '... with install_themes it is put back', is_array( call( 'themes-rollback', array( 'stylesheet' => TWENTY, 'history_id' => $d['history_id'] ) ) ) && '1.0' === disk_version( TWENTY ) );
+site();
+$p0 = tree( troot() . '/' . PARENT_T );
+$r = call( 'themes-update', array( 'stylesheet' => PARENT_T ) );
+check( 'update the parent of the active child theme: updated (3.0 -> 3.1), the child stays active, the copy holds the old parent, pages checked', is_array( $r ) && true === $r['updated'] && '3.1' === disk_version( PARENT_T ) && CHILD === get_stylesheet() && PARENT_T === get_template() && $p0 === tree( kept_path( $r['history_id'] ) ) && isset( $r['pages']['after'] ), $r );
+$r2 = call( 'themes-rollback', array( 'stylesheet' => PARENT_T, 'history_id' => $r['history_id'] ?? 0 ) );
+check( '... and rolled back: the parent 3.0 byte for byte, the child still active, active true (the parent is in use)', is_array( $r2 ) && $p0 === tree( troot() . '/' . PARENT_T ) && CHILD === get_stylesheet() && true === $r2['active'], $r2 );
+
+echo "fix wave M6: the installed folder must be the slug asked for\n";
+site();
+$GLOBALS['T_themes_api']['astra'] = (object) array( 'slug' => 'astra', 'version' => '4.6', 'download_link' => 'https://downloads.wordpress.org/theme/othertheme.1.0.zip' );
+$GLOBALS['T_theme_install_adds'] = array( 'othertheme' => array( 'Name' => 'Other', 'Version' => '1.0' ) );
+$r = call( 'themes-install', array( 'slug' => 'astra' ) );
+check( 'M6 themes_api (a filter) gives another theme\'s zip for the slug: bad_source, what was installed is removed again, the row says so', 'bad_source' === code( $r ) && false !== strpos( msg( $r ), '"othertheme"' ) && ! file_exists( troot() . '/othertheme' ) && ! isset( wp_get_themes()['othertheme'] ) && true === ( hlast()['after']['failed'] ?? null ) && 'othertheme' === ( hlast()['after']['installed_instead'] ?? null ) && true === ( hlast()['after']['removed'] ?? null ), array( code( $r ), msg( $r ), hlast()['after'] ?? null ) );
+
 echo "no secrets\n";
 site(); astra();
-$all = json_encode( array( call( 'themes-install', array( 'slug' => 'astra' ) ), call( 'themes-switch', array( 'stylesheet' => 'astra' ) ), call( 'themes-status' ), hrows() ) );
-check( 'no password, key or token, no store path in the results or the rows', 1 !== preg_match( '/password|api_key|token|secret|d5b-history/i', $all ), $all );
+$u = call( 'themes-update', array( 'stylesheet' => TWENTY ) );
+$all = json_encode( array( call( 'themes-install', array( 'slug' => 'astra' ) ), call( 'themes-switch', array( 'stylesheet' => 'astra' ) ), $u, call( 'themes-status' ), call( 'themes-rollback', array( 'stylesheet' => TWENTY, 'history_id' => $u['history_id'] ?? 0 ) ) ) );
+check( 'no password, key or token, no store path in the results (an update and a rollback with kept copies among them)', is_array( $u ) && is_array( $u['kept'] ) && 1 !== preg_match( '/password|api_key|token|secret|d5b-history|manifest/i', $all ) && 1 === count( json_decode( $all, true )[3]['kept_copies'] ?? array() ), $all );
+$rows = json_encode( hrows() );
+check( '... and the rows hold the store path only inside kept (the history reads drop it), never a password, key or token', 1 !== preg_match( '/password|api_key|token|secret/i', $rows ), $rows );
 
 echo "\n" . ( $failed ? "$failed of $n FAILED\n" : "all $n passed\n" );
 exit( $failed ? 1 : 0 );

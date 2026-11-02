@@ -158,7 +158,26 @@ fresh(); serve( array() );
 $ran = 0;
 $c = d5b_pages_check( function () use ( &$ran ) { $ran++; } );
 check( 'check: before all failed -> unavailable true, change still ran, after empty', true === $c['unavailable'] && 1 === $ran && array() === $c['after'] && array() === $c['problems'] && 1 === count( $c['before'] ) && 1 === count( $GLOBALS['T_http_calls'] ), array( $c, $ran ) );
-check( '... the result has exactly before, after, problems, unavailable', array( 'before', 'after', 'problems', 'unavailable' ) === array_keys( $c ) );
+check( '... the result has exactly before, after, problems, unavailable, skipped', array( 'before', 'after', 'problems', 'unavailable', 'skipped' ) === array_keys( $c ) && array() === $c['skipped'] );
+
+echo "fix wave M7: pages skipped for time are listed and warned about\n";
+fresh();
+t_add_post( array( 'ID' => 501, 'post_type' => 'page' ) ); t_add_post( array( 'ID' => 502, 'post_type' => 'page' ) );
+$slow = 0.0;
+serve( array(
+	'https://x.example/'       => function () use ( &$slow ) { $GLOBALS['T_clock'] += $slow; return array( 200, page() ); },
+	'https://x.example/?p=501' => function () use ( &$slow ) { $GLOBALS['T_clock'] += $slow; return array( 200, page() ); },
+	'https://x.example/?p=502' => function () use ( &$slow ) { $GLOBALS['T_clock'] += $slow; return array( 200, page() ); },
+) );
+// The change makes every fetch take 40 s: the after round fetches the home page, then runs out of its 60 s for the rest.
+$c = d5b_pages_check( function () use ( &$slow ) { $slow = 40.0; } );
+$sk = $c['skipped'] ?? null;
+check( 'M7 the after round out of time: the pages it did not fetch are in pages.skipped (without the cache-buster), no problem blamed', is_array( $sk ) && 1 <= count( $sk ) && array() === preg_grep( '/d5b=/', $sk ) && in_array( 'https://x.example/?p=501', $sk, true ) && ! in_array( 'https://x.example/', $sk, true ) && array() === $c['problems'], $c );
+$w = d5b_pages_warnings( $c );
+check( 'M7 ... and a warning names how many and which', 1 === count( $w ) && 0 === strpos( $w[0], count( $sk ) . ' page(s) were not re-checked in time: ' ) && false !== strpos( $w[0], 'https://x.example/?p=501' ), $w );
+$w2 = d5b_pages_warnings( $c, true );
+check( 'M7 ... with rollback_on_failure a second line says it could not judge them', 2 === count( $w2 ) && false !== strpos( $w2[1], 'rollback_on_failure could not judge' ), $w2 );
+check( 'M7 nothing skipped: no warning; unavailable: the no-check warning only', array() === d5b_pages_warnings( array( 'skipped' => array(), 'unavailable' => false ), true ) && 1 === count( d5b_pages_warnings( array( 'skipped' => array(), 'unavailable' => true ), true ) ) );
 fresh();
 t_add_post( array( 'ID' => 501, 'post_type' => 'page' ) );
 $broken = false; $order = array();
@@ -195,7 +214,12 @@ t_put( WP_PLUGIN_DIR . '/my-folder/sub/inner.txt', 'inner text' );
 $k = d5b_keep_copy( 'plugin', 'my-folder', 41 );
 check( 'keep_copy: a plugin whose folder differs from its slug copies the folder', is_array( $k ) && 1 === preg_match( '#^' . preg_quote( store(), '#' ) . '/41-[0-9a-f]{32}/plugin/my-folder$#', $k['path'] ) && is_dir( $k['path'] ), $k );
 check( '... byte-identical files, nested ones included', is_array( $k ) && '<?php // Plugin Name: Slug' === @file_get_contents( $k['path'] . '/plugin-slug.php' ) && 'inner text' === @file_get_contents( $k['path'] . '/sub/inner.txt' ) );
-check( '... bytes and files counted', is_array( $k ) && 2 === $k['files'] && strlen( '<?php // Plugin Name: Slug' ) + strlen( 'inner text' ) === $k['bytes'] && array( 'path', 'bytes', 'files' ) === array_keys( $k ), $k );
+check( '... bytes and files counted', is_array( $k ) && 2 === $k['files'] && strlen( '<?php // Plugin Name: Slug' ) + strlen( 'inner text' ) === $k['bytes'] && array( 'path', 'bytes', 'files', 'manifest_sha1' ) === array_keys( $k ), $k );
+// M1: the fingerprint is sha1 of the sorted "path\0sha1\n" lines of the files kept, computed here independently.
+$want = sha1( "plugin-slug.php\0" . sha1( '<?php // Plugin Name: Slug' ) . "\nsub/inner.txt\0" . sha1( 'inner text' ) . "\n" );
+check( 'M1 ... the kept copy carries manifest_sha1: sha1 of the sorted "path\\0sha1\\n" list of its files', is_array( $k ) && $want === $k['manifest_sha1'], array( $k['manifest_sha1'] ?? null, $want ) );
+check( 'M1 ... and its file list beside it (<row>-<hex>/manifest.json), outside the copy itself', is_array( $k ) && is_file( dirname( $k['path'], 2 ) . '/manifest.json' ) && ! file_exists( $k['path'] . '/manifest.json' ) && array( 'plugin-slug.php' => sha1( '<?php // Plugin Name: Slug' ), 'sub/inner.txt' => sha1( 'inner text' ) ) === json_decode( (string) file_get_contents( dirname( $k['path'], 2 ) . '/manifest.json' ), true ) );
+$k41 = $k;
 check( '... made with copy_dir, the file system set up', array( 'copy_dir' ) === array_unique( array_column( $GLOBALS['T_copy_calls'], 0 ) ) );
 check( '... the store is closed to the web', is_file( store() . '/.htaccess' ) && is_file( store() . '/index.html' ) );
 t_put( WP_PLUGIN_DIR . '/hello.php', '<?php // Plugin Name: Hello' );
@@ -204,7 +228,27 @@ check( 'a single-file plugin copies the file (path is the copy of that file)', i
 t_put( $T_BASE . '/themes/my-theme/style.css', '/* Theme Name: Mine */' );
 $k = d5b_keep_copy( 'theme', 'my-theme', 43 );
 check( 'a theme folder is copied from the theme root', is_array( $k ) && 1 === preg_match( '#/43-[0-9a-f]{32}/theme/my-theme$#', $k['path'] ) && '/* Theme Name: Mine */' === @file_get_contents( $k['path'] . '/style.css' ), $k );
-check( 'the store size is the sum of the kept files (and the store\'s own two files)', d5b_history_store_bytes() === 26 + 10 + 27 + 22 + (int) filesize( store() . '/.htaccess' ), d5b_history_store_bytes() );
+$manifests = 0; foreach ( glob( store() . '/*/manifest.json' ) as $mf ) { $manifests += (int) filesize( $mf ); }
+check( 'the store size is the sum of the kept files (and the store\'s own two files, and each copy\'s file list)', 3 === count( glob( store() . '/*/manifest.json' ) ) && d5b_history_store_bytes() === 26 + 10 + 27 + 22 + (int) filesize( store() . '/.htaccess' ) + $manifests, d5b_history_store_bytes() );
+// M1: the check against the row's fingerprint.
+check( 'M1 manifest check: an untouched copy passes', true === d5b_maint_manifest_check( $k41['path'], $k41 ) );
+t_put( $k41['path'] . '/sub/inner.txt', 'inner TEXT' );
+$e = d5b_maint_manifest_check( $k41['path'], $k41 );
+check( 'M1 ... a changed file: copy_tampered naming 1 changed', 'copy_tampered' === code( $e ) && array( 1, 0, 0 ) === array( $e->get_error_data()['changed'] ?? -1, $e->get_error_data()['added'] ?? -1, $e->get_error_data()['removed'] ?? -1 ) && false !== strpos( $e->get_error_message(), '1 file(s) changed, 0 added, 0 removed' ), is_wp_error( $e ) ? $e->get_error_message() : $e );
+t_put( $k41['path'] . '/sub/inner.txt', 'inner text' ); t_put( $k41['path'] . '/planted.php', '<?php // planted' );
+$e = d5b_maint_manifest_check( $k41['path'], $k41 );
+check( 'M1 ... a file added: copy_tampered naming 1 added', 'copy_tampered' === code( $e ) && 1 === ( $e->get_error_data()['added'] ?? -1 ) && 0 === ( $e->get_error_data()['changed'] ?? -1 ), is_wp_error( $e ) ? $e->get_error_message() : $e );
+unlink( $k41['path'] . '/planted.php' ); unlink( $k41['path'] . '/sub/inner.txt' );
+$e = d5b_maint_manifest_check( $k41['path'], $k41 );
+check( 'M1 ... a file removed: copy_tampered naming 1 removed', 'copy_tampered' === code( $e ) && 1 === ( $e->get_error_data()['removed'] ?? -1 ), is_wp_error( $e ) ? $e->get_error_message() : $e );
+t_put( $k41['path'] . '/sub/inner.txt', 'inner text' );
+check( 'M1 ... put back as it was: passes again', true === d5b_maint_manifest_check( $k41['path'], $k41 ) );
+file_put_contents( dirname( $k41['path'], 2 ) . '/manifest.json', json_encode( array( 'plugin-slug.php' => sha1( '<?php // Plugin Name: Slug' ), 'sub/inner.txt' => sha1( 'inner text' ), 'planted.php' => sha1( 'x' ) ) ) );
+t_put( $k41['path'] . '/planted.php', 'x' );
+$e = d5b_maint_manifest_check( $k41['path'], $k41 );
+check( 'M1 ... a file added AND written into the file list beside it: still refused (the row\'s fingerprint is what counts)', 'copy_tampered' === code( $e ) && false !== strpos( $e->get_error_message(), 'file list was changed' ), is_wp_error( $e ) ? $e->get_error_message() : $e );
+check( 'M1 ... a row with no fingerprint: refused', 'copy_tampered' === code( d5b_maint_manifest_check( $k41['path'], array( 'path' => $k41['path'] ) ) ) );
+check( 'M1 copy_tampered has its own status (409)', 409 === d5b_ability_http_status( 'copy_tampered' ) && 409 === d5b_ability_http_status( 'busy' ) );
 
 fresh();
 t_big( WP_PLUGIN_DIR . '/huge/huge.bin', 536870913 );
@@ -295,6 +339,47 @@ check( 'self: divi5-builder/divi5-builder.php and each legacy file true; others 
 	&& ! d5b_maint_self( 'hello.php' ) && ! d5b_maint_self( 'akismet/akismet.php' ) && ! d5b_maint_self( 'divi5-builder/other.php' ) && ! d5b_maint_self( '' ) );
 check( '... this copy where it is installed (a renamed folder) is self too', d5b_maint_self( 'divi5-builder-copy/divi5-builder.php' ) );
 check( '... a different case or a backslash is still self', d5b_maint_self( 'Divi5-Builder\\divi5-builder.php' ) && d5b_maint_self( '/divi5-builder/divi5-builder.php' ) );
+// M10: another name for this plugin's own folder (a link or junction to it) is self; a link elsewhere is not.
+fresh();
+t_put( WP_PLUGIN_DIR . '/divi5-builder-copy/divi5-builder.php', '<?php // Plugin Name: Divi 5 Builder' );
+t_put( WP_PLUGIN_DIR . '/other/other.php', '<?php // Plugin Name: Other' );
+$l1 = t_link_dir( WP_PLUGIN_DIR . '/divi5-builder-copy', WP_PLUGIN_DIR . '/d5b-alias' );
+$l2 = t_link_dir( WP_PLUGIN_DIR . '/other', WP_PLUGIN_DIR . '/other-alias' );
+check( 'M10 a folder link to this plugin\'s own folder is self (realpath compared), in any case', $l1 && d5b_maint_self( 'd5b-alias/divi5-builder.php' ) && d5b_maint_self( 'D5B-Alias/divi5-builder.php' ), array( $l1 ) );
+check( 'M10 ... a link to another plugin\'s folder, and a plain other plugin, are not', $l2 && ! d5b_maint_self( 'other-alias/other.php' ) && ! d5b_maint_self( 'other/other.php' ) && ! d5b_maint_self( 'nope/nope.php' ) && ! d5b_maint_self( 'hello.php' ), array( $l2 ) );
+
+echo "fix wave M2/M4: the fresh-read transient lock\n";
+fresh(); $GLOBALS['d5b_maint_locks'] = array();
+$t1 = d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' );
+check( 'lock: taken, the value is "<expires>|<random>" (now + 120)', is_string( $t1 ) && 1 === preg_match( '/^' . ( (int) floor( $GLOBALS['T_clock'] ) + 120 ) . '\|[0-9a-f]{16}$/D', $t1 ), $t1 );
+$t1b = d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' );
+check( 'lock: taken again in the same request (nested) -> the same token, counted', $t1 === $t1b );
+check( '... the inner release only counts down (the lock stays)', true === d5b_maint_lock_release( 'd5b_maint_lock_test', $t1b ) && $t1 === d5b_maint_lock_fresh( 'd5b_maint_lock_test' ) );
+$saved = $GLOBALS['d5b_maint_locks']; $GLOBALS['d5b_maint_locks'] = array(); // another request: none of this request's memory
+$o = d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' );
+check( 'lock: another request while it is held -> busy (409) naming the work', 'busy' === code( $o ) && 0 === strpos( $o->get_error_message(), 'The test is already running' ) && $t1 === d5b_maint_lock_fresh( 'd5b_maint_lock_test' ), is_wp_error( $o ) ? $o->get_error_message() : $o );
+$GLOBALS['d5b_maint_locks'] = $saved;
+check( '... the outer release deletes it', true === d5b_maint_lock_release( 'd5b_maint_lock_test', $t1 ) && '' === d5b_maint_lock_fresh( 'd5b_maint_lock_test' ) );
+// Read fresh: this request's copy says free, the database holds another request's lock.
+$GLOBALS['T_db_transients']['d5b_maint_lock_test'] = ( (int) $GLOBALS['T_clock'] + 60 ) . '|' . str_repeat( 'a', 16 );
+check( 'lock: read past this request\'s copy (the database row): held -> busy', 'busy' === code( d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' ) ) && false === get_transient( 'd5b_maint_lock_test' ) );
+$GLOBALS['T_db_transients']['d5b_maint_lock_test'] = ( (int) $GLOBALS['T_clock'] - 1 ) . '|' . str_repeat( 'a', 16 );
+$t2 = d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' );
+check( 'lock: one past its time (a request that died) is taken over', is_string( $t2 ) && $t2 === d5b_maint_lock_fresh( 'd5b_maint_lock_test' ), $t2 );
+// Another request takes it over (its stale-lock rule) before this one releases: this one leaves it alone.
+$GLOBALS['T_db_transients']['d5b_maint_lock_test'] = 'theirs';
+check( 'lock: released only while still ours (read fresh)', false === d5b_maint_lock_release( 'd5b_maint_lock_test', $t2 ) && 'theirs' === d5b_maint_lock_fresh( 'd5b_maint_lock_test' ) && array() === ( $GLOBALS['d5b_maint_locks'] ?? array() ) );
+unset( $GLOBALS['T_db_transients']['d5b_maint_lock_test'] ); delete_transient( 'd5b_maint_lock_test' );
+// Two requests in the same instant: the read-back after the write is not ours -> busy.
+$GLOBALS['T_on_set']['d5b_maint_lock_test'] = function () { $GLOBALS['T_db_transients']['d5b_maint_lock_test'] = ( (int) $GLOBALS['T_clock'] + 120 ) . '|' . str_repeat( 'b', 16 ); };
+check( 'lock: the read-back is another request\'s value -> busy, not held by this request', 'busy' === code( d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' ) ) && array() === ( $GLOBALS['d5b_maint_locks'] ?? array() ) );
+unset( $GLOBALS['T_db_transients']['d5b_maint_lock_test'] ); delete_transient( 'd5b_maint_lock_test' );
+// A persistent object cache: the shared copy read with force.
+$GLOBALS['T_ext_cache'] = true; $GLOBALS['T_cache_forced'] = array();
+$GLOBALS['T_object_cache']['transient']['d5b_maint_lock_test'] = ( (int) $GLOBALS['T_clock'] + 60 ) . '|' . str_repeat( 'c', 16 );
+check( 'lock: with a persistent object cache the shared copy is read with force', 'busy' === code( d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' ) ) && in_array( true, $GLOBALS['T_cache_forced'], true ) );
+$GLOBALS['T_ext_cache'] = false; unset( $GLOBALS['T_object_cache']['transient']['d5b_maint_lock_test'] );
+check( 'lock: one name per plugin or theme folder (kind + md5 of the folder, any case)', d5b_maint_item_lock( 'plugin', 'Akismet' ) === 'd5b_maint_lock_plugin_' . md5( 'akismet' ) && d5b_maint_item_lock( 'theme', 'akismet' ) !== d5b_maint_item_lock( 'plugin', 'akismet' ) );
 
 echo "the is_super_admin stand-in (as core)\n";
 fresh();

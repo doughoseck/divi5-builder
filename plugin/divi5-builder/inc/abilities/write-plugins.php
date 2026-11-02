@@ -38,17 +38,9 @@
  */
 if ( ! defined( 'ABSPATH' ) ) { exit; }
 
-if ( ! function_exists( 'd5b_wplug_ok' ) ) {
+if ( ! function_exists( 'd5b_wplug_load' ) ) {
 
-	/** True when the current user has $cap and, with $network_admin on a network, is a network administrator. */
-	function d5b_wplug_ok( string $cap, bool $network_admin = false ): bool {
-		return current_user_can( $cap ) && ( ! $network_admin || ! is_multisite() || is_super_admin() );
-	}
-
-	/** The permission callback for $cap. */
-	function d5b_wplug_can( string $cap, bool $network_admin = false ): callable {
-		return function ( array $in = array() ) use ( $cap, $network_admin ) { return d5b_wplug_ok( $cap, $network_admin ); };
-	}
+	// The capability helpers are maint-common.php's d5b_maint_ok / d5b_maint_can, shared with themes and core.
 
 	/** Core's admin functions (get_plugins, activate_plugin, plugins_api, the upgrader) when they are not loaded yet. */
 	function d5b_wplug_load(): void {
@@ -132,26 +124,6 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 	}
 
 	/**
-	 * The plugins with a kept copy: the update, rollback and delete rows of object_type plugin whose kept is recorded (not null), newest first:
-	 * the plugin file and the version kept (the row's before), the row id and when it was kept. Never the copy's path.
-	 */
-	function d5b_wplug_kept_copies(): array {
-		$out = array();
-		if ( ! function_exists( 'd5b_history_list' ) ) { return $out; }
-		foreach ( d5b_history_list( array( 'object_type' => 'plugin' ), 500 ) as $r ) {
-			if ( ! in_array( (string) ( $r['action'] ?? '' ), array( 'update', 'rollback', 'delete' ), true ) ) { continue; } // only these keep a copy
-			$row = d5b_history_get( (int) $r['id'] );
-			if ( null === $row ) { continue; }
-			$kept = $row['after']['kept'] ?? ( $row['before']['kept'] ?? null );
-			if ( ! is_array( $kept ) ) { continue; }
-			$plugin = (string) ( $row['before']['plugin'] ?? ( $row['after']['plugin'] ?? '' ) );
-			if ( '' === $plugin ) { continue; }
-			$out[] = array( 'plugin' => $plugin, 'version' => (string) ( $row['before']['version'] ?? '' ), 'history_id' => (int) $row['id'], 'kept_at' => d5b_wc_iso( (string) $row['created_at'] ) );
-		}
-		return $out;
-	}
-
-	/**
 	 * The status as an answer: each plugin and theme row keeps only its known fields (item, name, version, active,
 	 * new_version, kind, blocked). An offer's package url can carry a licence key in its query (premium plugins); the engine
 	 * does not copy it today and the secret filter does not look inside urls, so it is dropped here by construction.
@@ -168,18 +140,18 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 	// ---- plugins-status (read)
 
 	function d5b_wplug_h_status( array $in ) {
-		if ( ! d5b_wplug_ok( 'update_plugins' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to read the update list.' ); }
+		if ( ! d5b_maint_ok( 'update_plugins' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to read the update list.' ); }
 		$a = d5b_rc_args( $in, array() ); if ( is_wp_error( $a ) ) { return $a; }
 		if ( ! function_exists( 'wpsu_status' ) ) { return new WP_Error( 'unavailable', 'The update code is not loaded on this site.' ); }
 		$s = d5b_wplug_safe_status( (array) wpsu_status( false ) ); // the stored list: nothing cleared, nothing asked
-		$s['kept_copies'] = d5b_wplug_kept_copies();
+		$s['kept_copies'] = d5b_maint_kept_copies( 'plugin' );
 		return $s;
 	}
 
 	// ---- updates-check
 
 	function d5b_wplug_h_updates_check( array $in ) {
-		if ( ! d5b_wplug_ok( 'update_plugins' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to check for updates.' ); }
+		if ( ! d5b_maint_ok( 'update_plugins' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to check for updates.' ); }
 		$a = d5b_rc_args( $in, array() ); if ( is_wp_error( $a ) ) { return $a; }
 		if ( ! function_exists( 'wpsu_status' ) ) { return new WP_Error( 'unavailable', 'The update code is not loaded on this site, so nothing was checked.' ); }
 		if ( ! d5b_maint_rate( 'updates-check', 1, 300 ) ) {
@@ -202,7 +174,7 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 	// ---- plugins-install
 
 	function d5b_wplug_h_install( array $in ) {
-		if ( ! d5b_wplug_ok( 'install_plugins', true ) ) { return new WP_Error( 'forbidden', 'You do not have permission to install plugins.' ); }
+		if ( ! d5b_maint_ok( 'install_plugins', true ) ) { return new WP_Error( 'forbidden', 'You do not have permission to install plugins.' ); }
 		$a = d5b_rc_args( $in, array( 'slug' => 'key' ), array( 'slug' ) ); if ( is_wp_error( $a ) ) { return $a; }
 		if ( ! d5b_abilities_risky_on( 'plugins' ) ) { return new WP_Error( 'not_allowed', 'Installing a plugin is a risky action and the Plugins risky switch is off.' ); }
 		$slug = (string) $a['slug'];
@@ -253,6 +225,18 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 		}
 		if ( function_exists( 'wp_clean_plugins_cache' ) ) { wp_clean_plugins_cache( false ); }
 		$file = is_object( $up ) && method_exists( $up, 'plugin_info' ) ? $up->plugin_info() : false;
+		// What was installed must be the plugin asked for: its folder (the upgrader's destination) equal to the slug. A
+		// plugins_api answer changed by another plugin can name another wordpress.org plugin's zip; that one is removed again.
+		$dest = is_object( $up ) && is_array( $up->result ?? null ) ? (string) ( $up->result['destination_name'] ?? '' ) : '';
+		if ( '' === $dest && is_string( $file ) && '' !== $file ) { $dest = false !== strpos( $file, '/' ) ? (string) strtok( $file, '/' ) : (string) preg_replace( '/\.php$/', '', $file ); }
+		if ( $dest !== $slug ) {
+			$named   = 1 === preg_match( '/^[A-Za-z0-9._\- ]{1,100}$/D', $dest ) && '.' !== $dest && '..' !== $dest;
+			$removed = $named && defined( 'WP_PLUGIN_DIR' ) && d5b_maint_remove_tree( WP_PLUGIN_DIR . '/' . $dest ) && ! file_exists( WP_PLUGIN_DIR . '/' . $dest . '.php' );
+			if ( function_exists( 'wp_clean_plugins_cache' ) ) { wp_clean_plugins_cache( false ); }
+			d5b_history_set_after( $hid, array( 'slug' => $slug, 'failed' => true, 'installed_instead' => $named ? $dest : '', 'removed' => $removed ) );
+			return new WP_Error( 'bad_source', 'The download given for "' . $slug . '" installed ' . ( $named ? '"' . $dest . '"' : 'another plugin' ) . ' instead (a filter of another plugin may have changed the answer), so it '
+				. ( $removed ? 'was removed again. Nothing is installed.' : 'could not be removed: delete it on the Plugins screen now. It is not active.' ) );
+		}
 		if ( ! is_string( $file ) || '' === $file ) { $file = (string) d5b_wplug_installed_slug( $slug ); }
 		$all     = (array) get_plugins();
 		$version = isset( $all[ $file ]['Version'] ) ? (string) $all[ $file ]['Version'] : '';
@@ -267,7 +251,7 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 
 	/** The common start of activate and deactivate: capability, input, the risky switch, the target. */
 	function d5b_wplug_start( array $in, string $verb ) {
-		if ( ! d5b_wplug_ok( 'activate_plugins' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to ' . $verb . ' plugins.' ); }
+		if ( ! d5b_maint_ok( 'activate_plugins' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to ' . $verb . ' plugins.' ); }
 		$a = d5b_rc_args( $in, array( 'plugin' => 'key', 'network' => 'bool' ), array( 'plugin' ) ); if ( is_wp_error( $a ) ) { return $a; }
 		if ( ! d5b_abilities_risky_on( 'plugins' ) ) { return new WP_Error( 'not_allowed', 'To ' . $verb . ' a plugin is a risky action and the Plugins risky switch is off.' ); }
 		return d5b_wplug_target( $a, $verb );
@@ -358,7 +342,7 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 		if ( $rv['thrown'] ) { $warn[] = 'The plugin\'s deactivation routine stopped with an error, so it was switched off without it; what its activation routine made may still be there.'; }
 		if ( $reverted && $active ) { $warn[] = 'The pages got worse but the plugin could not be switched off again: deactivate it on the Plugins screen.'; }
 		if ( ! $reverted && ! $active ) { $warn[] = 'WordPress reported no error, but the plugin is not active.'; }
-		if ( ! empty( $pages['unavailable'] ) ) { $warn[] = 'The site could not fetch its own pages before the change, so there was no page check: only the human check can tell.'; }
+		$warn = array_merge( $warn, d5b_pages_warnings( $pages ) );
 		if ( ! d5b_history_set_after( $hid, array( 'active' => d5b_wplug_active_list( $net ), 'pages' => $pages, 'reverted' => $reverted ) ) ) { $warn[] = 'The change history row could not be completed.'; }
 		if ( $warn ) { $out['warnings'] = $warn; }
 		return $out;
@@ -381,7 +365,7 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 		$warn   = array();
 		if ( $rv['thrown'] ) { $warn[] = 'The plugin\'s deactivation routine stopped with an error, so it was switched off without it.'; }
 		if ( $active ) { $warn[] = 'The plugin is still active.'; }
-		if ( ! empty( $pages['unavailable'] ) ) { $warn[] = 'The site could not fetch its own pages before the change, so there was no page check: only the human check can tell.'; }
+		$warn = array_merge( $warn, d5b_pages_warnings( $pages ) );
 		if ( ! d5b_history_set_after( $hid, array( 'active' => d5b_wplug_active_list( $net ), 'pages' => $pages, 'reverted' => false ) ) ) { $warn[] = 'The change history row could not be completed.'; }
 		if ( $warn ) { $out['warnings'] = $warn; }
 		return $out;
@@ -401,7 +385,7 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 	 * @return array|WP_Error the input, with plugin checked
 	 */
 	function d5b_wplug_maint_start( array $in, string $cap, string $verb, array $spec, array $required, bool $installed ) {
-		if ( ! d5b_wplug_ok( $cap, true ) ) { return new WP_Error( 'forbidden', 'You do not have permission to ' . $verb . ' plugins.' ); }
+		if ( ! d5b_maint_ok( $cap, true ) ) { return new WP_Error( 'forbidden', 'You do not have permission to ' . $verb . ' plugins.' ); }
 		$a = d5b_rc_args( $in, $spec, $required ); if ( is_wp_error( $a ) ) { return $a; }
 		if ( ! d5b_abilities_risky_on( 'plugins' ) ) { return new WP_Error( 'not_allowed', 'To ' . $verb . ' a plugin is a risky action and the Plugins risky switch is off.' ); }
 		if ( $installed ) {
@@ -442,11 +426,11 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 			return new WP_Error( 'copy_missing', 'The copy kept by history row ' . $hid . ' is no longer there (copies are removed with their row after 30 days).' );
 		}
 		// Putting back a plugin that is not there (deleted) is an install: it needs install_plugins as well.
-		if ( ! file_exists( d5b_maint_parent( 'plugin', $dir ) . '/' . $dir ) && ! d5b_wplug_ok( 'install_plugins', true ) ) {
+		if ( ! file_exists( d5b_maint_parent( 'plugin', $dir ) . '/' . $dir ) && ! d5b_maint_ok( 'install_plugins', true ) ) {
 			return new WP_Error( 'forbidden', '"' . $plugin . '" is not installed, so putting it back is an install: you do not have permission to install plugins.' );
 		}
 		if ( empty( $a['force_older'] ) ) {
-			foreach ( d5b_wplug_kept_copies() as $k ) {
+			foreach ( d5b_maint_kept_copies( 'plugin' ) as $k ) {
 				if ( $plugin === $k['plugin'] && (int) $k['history_id'] > $hid ) {
 					return new WP_Error( 'newer_copy_exists', 'A newer copy of "' . $plugin . '" is kept (history row ' . (int) $k['history_id'] . ', version ' . $k['version'] . '). Roll back to that one, or pass force_older: true to put back the older copy of row ' . $hid . '.', array( 'newer_history_id' => (int) $k['history_id'], 'newer_version' => (string) $k['version'] ) );
 				}
@@ -469,6 +453,9 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 		// plugin (an active one is switched off on the next admin page). Then the swap is undone at once.
 		if ( '' === d5b_maint_version( 'plugin', $plugin ) && is_array( $res['kept'] ) ) {
 			$back = d5b_maint_restore( 'plugin', $dir, $new );
+			// Once undone, both rows of this rollback are flagged: their copies are not offered as kept copies and do not count
+			// as newer than the copy that was asked for. (Not undone: row $new holds the only copy of the files that were live.)
+			if ( ! is_wp_error( $back ) ) { d5b_maint_mark_mismatch( array( $new, (int) $back['history_id'] ) ); }
 			return new WP_Error( 'restore_mismatch', 'The copy kept by history row ' . $hid . ' does not hold the plugin file "' . $plugin . '" (the plugin may have renamed its main file), so '
 				. ( is_wp_error( $back ) ? 'WordPress cannot find the plugin now and the files could not be put back: ' . d5b_maint_err_text( $back ) . '. Roll back to history row ' . $new . '.' : 'the files that were there are back (history row ' . (int) $back['history_id'] . ').' ),
 				array( 'history_id' => $new, 'human_check' => d5b_human_check() ) );
@@ -481,7 +468,7 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 		$after  = ( null === $done ? array() : (array) $done['after'] );
 		$after['pages'] = $pages;
 		if ( ! d5b_history_set_after( $new, $after ) ) { $warn[] = 'The change history row could not be completed.'; }
-		if ( ! empty( $pages['unavailable'] ) ) { $warn[] = 'The site could not fetch its own pages before the change, so there was no page check: only the human check can tell.'; }
+		$warn = array_merge( $warn, d5b_pages_warnings( $pages ) );
 		$out = array(
 			'plugin' => $plugin, 'restored_from' => $hid, 'history_id' => $new, 'version' => (string) $res['version'], 'replaced_version' => (string) $res['replaced_version'],
 			'kept' => d5b_maint_kept_public( $res['kept'] ), 'active' => $active, 'problems' => (array) $pages['problems'], 'pages' => $pages, 'human_check' => d5b_human_check(),
@@ -612,7 +599,7 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 			'kept' => d5b_maint_kept_public( $kept ), 'history_id' => $hid,
 			'note' => null === $kept
 				? 'No copy of the files was kept, so this plugin cannot put it back' . ( $ran ? ', and the data its uninstall routine removed is gone for good.' : '; reinstall it to have it again.' )
-				: 'plugins-rollback with history_id ' . $hid . ' puts the files back for 30 days (not its translation files)' . ( $ran ? '; the data its uninstall routine removed is gone for good.' : '.' ),
+				: 'The files can be put back from the kept copy if it is unchanged: plugins-rollback with history_id ' . $hid . ', for 30 days (not its translation files)' . ( $ran ? '; the data its uninstall routine removed is gone for good.' : '.' ),
 		);
 		if ( null !== $copy_error ) {
 			$out['copy_error'] = $copy_error->get_error_code();
@@ -630,57 +617,57 @@ if ( ! function_exists( 'd5b_wplug_ok' ) ) {
 
 	d5b_rc_def( 'plugins-status', 'plugins', 'Plugin, theme and WordPress updates',
 		'Returns the installed plugins and themes and WordPress itself with the versions on offer from the stored update list (never asking wordpress.org; updates-check refreshes it), why an offered update cannot run (blocked: no download, PHP or WordPress too old), the PHP version and whether file changes are switched off on the site. kept_copies lists the plugins with a copy kept by an update, rollback or delete in the last 30 days: plugin, version, history_id and kept_at. Refuses callers without update_plugins.',
-		array(), array(), 'd5b_wplug_h_status', d5b_wplug_can( 'update_plugins' ) );
+		array(), array(), 'd5b_wplug_h_status', d5b_maint_can( 'update_plugins' ) );
 
 	d5b_wc_def( 'updates-check', 'core', 'Check for updates now',
 		'Clears the stored update list and asks wordpress.org (and the vendors of premium plugins) again for plugins, themes and WordPress, then returns the fresh list as plugins-status does. At most once per 5 minutes (too_soon). The Updates switch is not needed. Refuses callers without update_plugins. One change-history row records the counts; there is nothing to put back.',
-		array(), array(), 'd5b_wplug_h_updates_check', d5b_wplug_can( 'update_plugins' ),
+		array(), array(), 'd5b_wplug_h_updates_check', d5b_maint_can( 'update_plugins' ),
 		array( 'idempotent' => false ) );
 
 	d5b_wc_def( 'plugins-install', 'plugins', 'Install a plugin from wordpress.org',
-		'Installs a plugin from wordpress.org by its slug (as in wordpress.org/plugins/<slug>/), never activates it. A risky action: needs the Plugins risky switch. Only the download link wordpress.org returns for that slug, on https://downloads.wordpress.org/, is used (bad_source otherwise; nothing is downloaded); premium zips are uploaded on the Plugins screen. A slug that is already installed is refused (exists); not_found when wordpress.org does not know it; install_failed with the reason when the installer fails. Needs install_plugins, and on a network a network administrator. Returns installed, slug, plugin (the file), version and active (false). One change-history row records the plugin and version (undo = delete it).',
+		'Installs a plugin from wordpress.org by its slug (as in wordpress.org/plugins/<slug>/), never activates it. A risky action: needs the Plugins risky switch. Only the download link wordpress.org returns for that slug, on https://downloads.wordpress.org/, is used (bad_source otherwise; nothing is downloaded); premium zips are uploaded on the Plugins screen. What was installed must be that slug\'s folder: anything else is removed again and refused (bad_source). A slug that is already installed is refused (exists); not_found when wordpress.org does not know it; install_failed with the reason when the installer fails. Needs install_plugins, and on a network a network administrator. Returns installed, slug, plugin (the file), version and active (false). One change-history row records the plugin and version (undo = delete it).',
 		array( 'slug' => array( 'type' => 'string', 'minLength' => 1, 'maxLength' => 100, 'description' => 'The wordpress.org slug, for example contact-form-7.' ) ),
-		array( 'slug' ), 'd5b_wplug_h_install', d5b_wplug_can( 'install_plugins', true ),
+		array( 'slug' ), 'd5b_wplug_h_install', d5b_maint_can( 'install_plugins', true ),
 		array( 'idempotent' => false ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'plugins-activate', 'plugins', 'Activate a plugin (checked)',
 		'Activates an installed plugin as the Plugins screen does (its own activation routine runs), with a page check around it (the home page and the recently changed pages, fetched before and after). When the pages got worse the plugin is deactivated again at once (its deactivation routine runs, to clean up) and the answer says reverted true with the problems. A plugin that fails to load, throws, prints, or that WordPress refuses answers activation_failed (and is left, or put back, inactive). An uncatchable PHP fatal while the plugin loads (a compile error, a function declared twice) ends the request with no answer at all; the Plugins screen avoids that with a redirect sandbox this call cannot use. When there is no answer, read plugins-status (is it active?) and the change history row of this call, and check the site. A risky action: needs the Plugins risky switch and activate_plugins; network true (multisite) needs a network administrator. This plugin itself is refused (self). Returns plugin, network, active, reverted, problems, pages (before, after, problems, unavailable) and human_check; already_active when it was.' . $d5b_wplug_human . ' One change-history row records the active list before and after, the pages and reverted.',
-		array( 'plugin' => $d5b_wplug_plugin, 'network' => $d5b_wplug_network ), array( 'plugin' ), 'd5b_wplug_h_activate', d5b_wplug_can( 'activate_plugins' ),
+		array( 'plugin' => $d5b_wplug_plugin, 'network' => $d5b_wplug_network ), array( 'plugin' ), 'd5b_wplug_h_activate', d5b_maint_can( 'activate_plugins' ),
 		array( 'idempotent' => false ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'plugins-deactivate', 'plugins', 'Deactivate a plugin (checked)',
 		'Deactivates an active plugin (its own deactivation routine runs, as on the Plugins screen), then checks the pages. Never switched back on by itself: problems are reported (raw shortcodes left behind are for the human check). A risky action: needs the Plugins risky switch and activate_plugins; network true (multisite) needs a network administrator, and a network-active plugin is only deactivated that way. This plugin itself is refused (self). Returns plugin, network, active, reverted (always false), problems, pages and human_check; already_inactive when it was.' . $d5b_wplug_human . ' One change-history row records the active list before and after and the pages.',
-		array( 'plugin' => $d5b_wplug_plugin, 'network' => $d5b_wplug_network ), array( 'plugin' ), 'd5b_wplug_h_deactivate', d5b_wplug_can( 'activate_plugins' ),
+		array( 'plugin' => $d5b_wplug_plugin, 'network' => $d5b_wplug_network ), array( 'plugin' ), 'd5b_wplug_h_deactivate', d5b_maint_can( 'activate_plugins' ),
 		array( 'idempotent' => false ), array( 'risky' => true ) );
 
 	$d5b_wplug_keep = array( 'type' => 'boolean', 'default' => false, 'description' => 'true: remove the files without the plugin\'s uninstall routine, so its data stays (fully undoable). The same value on the preview and the delete: the code is for one of the two.' );
 	$d5b_wplug_nocopy = array( 'type' => 'boolean', 'default' => false, 'description' => 'Delete even when no copy of the files can be kept (then this plugin cannot put it back). The same value on the preview and the delete.' );
 
 	d5b_wc_def( 'plugins-update', 'plugins', 'Update a plugin (checked, with a kept copy)',
-		'Updates an installed plugin to the version on offer (plugins-status shows it; updates-check refreshes the list). First a copy of the plugin\'s folder (or its single file) is kept in the change history store for 30 days, then WordPress updates it, with a page check around the update (the home page and the recently changed pages, fetched before and after). When the copy cannot be made the update is refused (copy_too_big over 512 MB, store_full when the store would pass 2 GB, copy_failed) unless without_copy is true: then the update runs with kept null and this plugin cannot put the previous version back. A plugin that is a link or holds one is always refused (linked), without_copy or not. rollback_on_failure (default false): when the pages got worse (or the update failed) the kept copy is put back at once, rolled_back is true and one more page round after the restore is returned as pages_after_restore (after, problems). By default a worse page is only reported (problems), so the maintainer can fix things on the new version or call plugins-rollback. Nothing on offer: already_up_to_date (nothing changed). A failed update is update_failed with the same fields in its data. A risky action: needs the Plugins risky switch and update_plugins (on a network, a network administrator). This plugin itself is refused (self). Returns plugin, from, to, version (installed now), updated, kept (bytes, files), history_id, rolled_back (and rollback_history_id), problems, pages and human_check.' . $d5b_wplug_human . ' One change-history row records the version before, the copy and the pages.',
+		'Updates an installed plugin to the version on offer (plugins-status shows it; updates-check refreshes the list). First a copy of the plugin\'s folder (or its single file) is kept in the change history store for 30 days, then WordPress updates it, with a page check around the update (the home page and the recently changed pages, fetched before and after). When the copy cannot be made the update is refused (copy_too_big over 512 MB, store_full when the store would pass 2 GB, copy_failed) unless without_copy is true: then the update runs with kept null and this plugin cannot put the previous version back. A plugin that is a link or holds one is always refused (linked), without_copy or not. rollback_on_failure (default false): when the pages got worse (or the update failed) the kept copy is put back at once, rolled_back is true and one more page round after the restore is returned as pages_after_restore (after, problems). By default a worse page is only reported (problems), so the maintainer can fix things on the new version or call plugins-rollback. Nothing on offer: already_up_to_date (nothing changed). A failed update is update_failed with the same fields in its data (and history_id). An update or rollback of the same item already running in another request: busy (409), nothing changed. A risky action: needs the Plugins risky switch and update_plugins (on a network, a network administrator). This plugin itself is refused (self). Returns plugin, from, to, version (installed now), updated, kept (bytes, files), history_id, rolled_back (and rollback_history_id), problems, pages and human_check.' . $d5b_wplug_human . ' One change-history row records the version before, the copy and the pages.',
 		array( 'plugin' => $d5b_wplug_plugin,
 			'rollback_on_failure' => array( 'type' => 'boolean', 'default' => false, 'description' => 'Put the kept copy back at once when the pages got worse after the update.' ),
 			'without_copy' => array( 'type' => 'boolean', 'default' => false, 'description' => 'Update even when no copy can be kept (no undo by this plugin). Only for a host without the disk space.' ) ),
-		array( 'plugin' ), 'd5b_wplug_h_update', d5b_wplug_can( 'update_plugins', true ),
+		array( 'plugin' ), 'd5b_wplug_h_update', d5b_maint_can( 'update_plugins', true ),
 		array( 'idempotent' => false ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'plugins-rollback', 'plugins', 'Roll a plugin back to a kept copy (checked)',
-		'Puts back the copy of a plugin kept by an update, rollback or delete, named by its change-history row (history_id; plugins-status lists them under kept_copies). The files there now are kept in turn (a rollback is itself undoable), an active plugin stays active, and the pages are checked around the swap. Refuses a row of another plugin or without a copy (not_found), a copy that is gone (copy_missing), and a row older than the newest kept copy of that plugin (newer_copy_exists) unless force_older is true. warnings when the installed version is newer than the one that row left. A copy that does not hold the plugin file is put back out again (restore_mismatch). Also puts back a deleted plugin (from its delete row; it stays inactive; that is an install, so it needs install_plugins too). The swap is made in a staging folder first and switched in with WordPress\'s maintenance mode on for the moment of two renames. A risky action: needs the Plugins risky switch and update_plugins (on a network, a network administrator). This plugin itself is refused (self). Returns plugin, restored_from, history_id (the rollback row), version, replaced_version, kept, active, problems, pages and human_check.' . $d5b_wplug_human,
+		'Puts back the copy of a plugin kept by an update, rollback or delete, named by its change-history row (history_id; plugins-status lists them under kept_copies). The files there now are kept in turn (a rollback is itself undoable), an active plugin stays active, and the pages are checked around the swap. Refuses a row of another plugin or without a copy (not_found), a copy that is gone (copy_missing), a copy whose files no longer match the list recorded when it was kept (copy_tampered: a file changed, added or removed since), an update or rollback of the same plugin running in another request (busy), and a row older than the newest kept copy of that plugin (newer_copy_exists) unless force_older is true. warnings when the installed version is newer than the one that row left. A copy that does not hold the plugin file is put back out again (restore_mismatch). Also puts back a deleted plugin (from its delete row; it stays inactive; that is an install, so it needs install_plugins too). The swap is made in a staging folder first and switched in with WordPress\'s maintenance mode on for the moment of two renames. A risky action: needs the Plugins risky switch and update_plugins (on a network, a network administrator). This plugin itself is refused (self). Returns plugin, restored_from, history_id (the rollback row), version, replaced_version, kept, active, problems, pages and human_check.' . $d5b_wplug_human,
 		array( 'plugin' => $d5b_wplug_plugin,
 			'history_id' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The change-history row whose copy is put back (kept_copies in plugins-status).' ),
 			'force_older' => array( 'type' => 'boolean', 'default' => false, 'description' => 'Put back this copy although a newer copy of the plugin is kept.' ) ),
-		array( 'plugin', 'history_id' ), 'd5b_wplug_h_rollback', d5b_wplug_can( 'update_plugins', true ),
+		array( 'plugin', 'history_id' ), 'd5b_wplug_h_rollback', d5b_maint_can( 'update_plugins', true ),
 		array( 'idempotent' => false ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'plugins-delete-preview', 'plugins', 'Preview a plugin delete',
 		'Step one of a plugin delete. Changes nothing. Returns the plugin, its version and size, has_uninstall (WordPress will run its uninstall routine, which usually removes its tables and settings for good) and a note saying what goes for good, with a confirmation code valid for 10 minutes for this user, this plugin, this keep_data and this without_copy. Show the preview to the user and wait for their explicit OK before calling divi5-builder/plugins-delete with the code and the same keep_data and without_copy. The plugin\'s translation files are not copied and a rollback of the delete does not put them back. An active plugin is refused (active): deactivate it first, on purpose, so the pages are checked; a site that refuses file changes is refused (not_allowed) and gets no code. A risky action: needs the Plugins risky switch and delete_plugins (on a network, a network administrator). This plugin itself is refused (self).',
-		array( 'plugin' => $d5b_wplug_plugin, 'keep_data' => $d5b_wplug_keep, 'without_copy' => $d5b_wplug_nocopy ), array( 'plugin' ), 'd5b_wplug_h_delete_preview', d5b_wplug_can( 'delete_plugins', true ),
+		array( 'plugin' => $d5b_wplug_plugin, 'keep_data' => $d5b_wplug_keep, 'without_copy' => $d5b_wplug_nocopy ), array( 'plugin' ), 'd5b_wplug_h_delete_preview', d5b_maint_can( 'delete_plugins', true ),
 		array( 'readonly' => true ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'plugins-delete', 'plugins', 'Delete a plugin',
-		'Step two of a plugin delete: only with the confirmation code from plugins-delete-preview, by the same user, for the same plugin and version and the same keep_data and without_copy, used once, within 10 minutes (confirmation_invalid with data.reason otherwise; nothing is deleted). The change-history row is written first and a copy of the files is kept for 30 days (refused when it cannot be: copy_too_big, store_full, copy_failed; unless without_copy, then kept is null and this plugin cannot put it back; a plugin that is a link or holds one is always refused: linked). The translation files are not copied and a rollback does not put them back. Then WordPress deletes the plugin, running its uninstall routine (its data goes for good), or with keep_data true the files are removed without it (the delete_plugin / deleted_plugin hooks still fire). An active plugin is refused (active), and so is a site that refuses file changes (not_allowed, before the code is used). A risky action: needs the Plugins risky switch and delete_plugins (on a network, a network administrator). This plugin itself is refused (self). Returns plugin, version, deleted, keep_data, uninstall_ran, kept (bytes, files) and history_id: plugins-rollback with it puts the files back.',
+		'Step two of a plugin delete: only with the confirmation code from plugins-delete-preview, by the same user, for the same plugin and version and the same keep_data and without_copy, used once, within 10 minutes (confirmation_invalid with data.reason otherwise; nothing is deleted). The change-history row is written first and a copy of the files is kept for 30 days (refused when it cannot be: copy_too_big, store_full, copy_failed; unless without_copy, then kept is null and this plugin cannot put it back; a plugin that is a link or holds one is always refused: linked). The translation files are not copied and a rollback does not put them back. Then WordPress deletes the plugin, running its uninstall routine (its data goes for good), or with keep_data true the files are removed without it (the delete_plugin / deleted_plugin hooks still fire). An active plugin is refused (active), and so is a site that refuses file changes (not_allowed, before the code is used). A risky action: needs the Plugins risky switch and delete_plugins (on a network, a network administrator). This plugin itself is refused (self). Returns plugin, version, deleted, keep_data, uninstall_ran, kept (bytes, files) and history_id: plugins-rollback with it puts the files back from the kept copy if it is unchanged.',
 		array( 'plugin' => $d5b_wplug_plugin, 'keep_data' => $d5b_wplug_keep, 'without_copy' => $d5b_wplug_nocopy, 'confirmation' => array( 'type' => 'string', 'description' => 'The confirmation code from the preview, after the user said OK.' ) ),
-		array( 'plugin' ), 'd5b_wplug_h_delete', d5b_wplug_can( 'delete_plugins', true ),
+		array( 'plugin' ), 'd5b_wplug_h_delete', d5b_maint_can( 'delete_plugins', true ),
 		array( 'destructive' => true ), array( 'risky' => true ) );
 
 	unset( $d5b_wplug_human, $d5b_wplug_plugin, $d5b_wplug_network, $d5b_wplug_keep, $d5b_wplug_nocopy );

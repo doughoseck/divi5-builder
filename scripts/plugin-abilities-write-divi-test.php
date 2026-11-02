@@ -159,7 +159,9 @@ if ( isset( $argv[1] ) && '--snapshot' === $argv[1] ) {
 }
 
 // ---- the plugin, as the loader loads it (write-common.php first among the write files)
-foreach ( array( 'parts', 'switches', 'abilities/categories', 'abilities/register', 'abilities/secrets', 'abilities/audit', 'abilities/scrub', 'abilities/history', 'abilities/confirm', 'blocks-text-fields', 'blocks' ) as $f ) { require $dir . '/inc/' . $f . '.php'; }
+// maint-common.php before the write files, as the loader has it (the maintenance files build their definitions with its
+// d5b_maint_can when they are included).
+foreach ( array( 'parts', 'switches', 'abilities/categories', 'abilities/register', 'abilities/secrets', 'abilities/audit', 'abilities/scrub', 'abilities/history', 'abilities/confirm', 'abilities/maint-common', 'blocks-text-fields', 'blocks' ) as $f ) { require $dir . '/inc/' . $f . '.php'; }
 $d5b_files = array_values( array_filter( glob( $dir . '/inc/abilities/*.php' ), function ( $p ) { return 1 === preg_match( '/^(read|write)-/', basename( $p ) ); } ) );
 usort( $d5b_files, function ( $a, $b ) { $w = function ( $p ) { return 'write-common.php' === basename( $p ) ? 1 : ( 0 === strpos( basename( $p ), 'read-' ) ? 0 : 2 ); }; return $w( $a ) <=> $w( $b ) ?: strcmp( $a, $b ); } );
 foreach ( $d5b_files as $f ) { require $f; }

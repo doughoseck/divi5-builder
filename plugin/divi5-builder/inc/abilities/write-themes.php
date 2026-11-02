@@ -5,8 +5,8 @@
  *
  * This file only defines functions. The definitions are added to the registry when the file is included (register.php
  * collects them); nothing is registered with WordPress from here. It uses the Updates part's engine (wpsu_status,
- * wpsu_update), the maintenance helpers of maint-common.php and the capability, source and status helpers of
- * write-plugins.php (d5b_wplug_ok, d5b_wplug_can, d5b_wplug_source_ok, d5b_wplug_msg, d5b_wplug_safe_status).
+ * wpsu_update), the maintenance helpers of maint-common.php (d5b_maint_ok, d5b_maint_can, d5b_maint_kept_copies) and the
+ * source and status helpers of write-plugins.php (d5b_wplug_source_ok, d5b_wplug_msg, d5b_wplug_safe_status).
  *
  * Rules (design 2026-11-02, "Abilities > Themes", "Keeping a copy" and guardrails 21, 22, 23):
  *  - A theme is named by its stylesheet: the folder name exactly as WordPress lists it (search_theme_directories). Another
@@ -63,23 +63,18 @@ if ( ! function_exists( 'd5b_wthm_load' ) ) {
 	}
 
 	/**
-	 * The theme rows with a kept copy: the update, rollback and delete rows of object_type theme whose kept is recorded (not
-	 * null), newest first: the stylesheet and the version kept (the row's before), the row id and when. Never the copy's path.
+	 * Why WordPress cannot use the theme in folder $s now, read from disk (the theme cache dropped first): '' when it is
+	 * there and WP_Theme::errors() has nothing, else the error's text. A missing parent theme does not count (the folder
+	 * itself is fine; installing the parent fixes it).
 	 */
-	function d5b_wthm_kept_copies(): array {
-		$out = array();
-		if ( ! function_exists( 'd5b_history_list' ) ) { return $out; }
-		foreach ( d5b_history_list( array( 'object_type' => 'theme' ), 500 ) as $r ) {
-			if ( ! in_array( (string) ( $r['action'] ?? '' ), array( 'update', 'rollback', 'delete' ), true ) ) { continue; }
-			$row = d5b_history_get( (int) $r['id'] );
-			if ( null === $row ) { continue; }
-			$kept = $row['after']['kept'] ?? ( $row['before']['kept'] ?? null );
-			if ( ! is_array( $kept ) ) { continue; }
-			$s = (string) ( $row['before']['stylesheet'] ?? ( $row['after']['stylesheet'] ?? '' ) );
-			if ( '' === $s ) { continue; }
-			$out[] = array( 'stylesheet' => $s, 'version' => (string) ( $row['before']['version'] ?? '' ), 'history_id' => (int) $row['id'], 'kept_at' => d5b_wc_iso( (string) $row['created_at'] ) );
-		}
-		return $out;
+	function d5b_wthm_unreadable( string $s ): string {
+		if ( ! function_exists( 'wp_get_theme' ) ) { return 'the theme functions of WordPress are not loaded'; }
+		$t = wp_get_theme( $s );
+		if ( is_object( $t ) && method_exists( $t, 'cache_delete' ) ) { $t->cache_delete(); $t = wp_get_theme( $s ); }
+		if ( ! is_object( $t ) || ! $t->exists() ) { return 'the folder is not there'; }
+		$e = $t->errors();
+		if ( ! is_wp_error( $e ) || 'theme_no_parent' === $e->get_error_code() ) { return ''; }
+		return d5b_wplug_msg( $e );
 	}
 
 	/** Runs switch_theme( $s ) with anything printed swallowed. @return Throwable|null what it threw */
@@ -99,19 +94,19 @@ if ( ! function_exists( 'd5b_wthm_load' ) ) {
 	// ---- themes-status (read)
 
 	function d5b_wthm_h_status( array $in ) {
-		if ( ! d5b_wplug_ok( 'update_themes' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to read the update list.' ); }
+		if ( ! d5b_maint_ok( 'update_themes' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to read the update list.' ); }
 		$a = d5b_rc_args( $in, array() ); if ( is_wp_error( $a ) ) { return $a; }
 		if ( ! function_exists( 'wpsu_status' ) ) { return new WP_Error( 'unavailable', 'The update code is not loaded on this site.' ); }
 		$s = d5b_wplug_safe_status( (array) wpsu_status( false ) ); // the stored list: nothing cleared, nothing asked
 		unset( $s['plugins'] );
-		$s['kept_copies'] = d5b_wthm_kept_copies();
+		$s['kept_copies'] = d5b_maint_kept_copies( 'theme' );
 		return $s;
 	}
 
 	// ---- themes-install
 
 	function d5b_wthm_h_install( array $in ) {
-		if ( ! d5b_wplug_ok( 'install_themes', true ) ) { return new WP_Error( 'forbidden', 'You do not have permission to install themes.' ); }
+		if ( ! d5b_maint_ok( 'install_themes', true ) ) { return new WP_Error( 'forbidden', 'You do not have permission to install themes.' ); }
 		$a = d5b_rc_args( $in, array( 'slug' => 'key' ), array( 'slug' ) ); if ( is_wp_error( $a ) ) { return $a; }
 		if ( ! d5b_abilities_risky_on( 'themes' ) ) { return new WP_Error( 'not_allowed', 'Installing a theme is a risky action and the Themes risky switch is off.' ); }
 		$slug = (string) $a['slug'];
@@ -172,6 +167,19 @@ if ( ! function_exists( 'd5b_wthm_load' ) ) {
 		}
 		if ( function_exists( 'wp_clean_themes_cache' ) ) { wp_clean_themes_cache( false ); }
 		$theme = is_object( $up ) && method_exists( $up, 'theme_info' ) ? $up->theme_info() : false;
+		// What was installed must be the theme asked for: its folder (the upgrader's destination, the stylesheet) equal to the
+		// slug. A themes_api answer changed by another plugin can name another wordpress.org theme's zip; that one is removed.
+		$dest = is_object( $up ) && is_array( $up->result ?? null ) ? (string) ( $up->result['destination_name'] ?? '' ) : '';
+		if ( '' === $dest && is_object( $theme ) ) { $dest = (string) $theme->get_stylesheet(); }
+		if ( $dest !== $slug ) {
+			$named   = d5b_wthm_name_ok( $dest );
+			$root    = d5b_maint_parent( 'theme', $dest );
+			$removed = $named && '' !== $root && d5b_maint_remove_tree( $root . '/' . $dest );
+			if ( function_exists( 'wp_clean_themes_cache' ) ) { wp_clean_themes_cache( false ); }
+			d5b_history_set_after( $hid, array( 'slug' => $slug, 'failed' => true, 'installed_instead' => $named ? $dest : '', 'removed' => $removed ) );
+			return new WP_Error( 'bad_source', 'The download given for "' . $slug . '" installed ' . ( $named ? '"' . $dest . '"' : 'another theme' ) . ' instead (a filter of another plugin may have changed the answer), so it '
+				. ( $removed ? 'was removed again. Nothing is installed.' : 'could not be removed: delete it on the Themes screen now. It is not active.' ) );
+		}
 		$s     = is_object( $theme ) ? (string) $theme->get_stylesheet() : $slug;
 		$out   = array( 'installed' => true, 'slug' => $slug, 'stylesheet' => $s, 'version' => d5b_maint_version( 'theme', $s ), 'active' => false );
 		$warn  = array();
@@ -191,7 +199,7 @@ if ( ! function_exists( 'd5b_wthm_load' ) ) {
 	// ---- themes-switch
 
 	function d5b_wthm_h_switch( array $in ) {
-		if ( ! d5b_wplug_ok( 'switch_themes' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to switch themes.' ); }
+		if ( ! d5b_maint_ok( 'switch_themes' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to switch themes.' ); }
 		$a = d5b_rc_args( $in, array( 'stylesheet' => 'key' ), array( 'stylesheet' ) ); if ( is_wp_error( $a ) ) { return $a; }
 		if ( ! d5b_abilities_risky_on( 'themes' ) ) { return new WP_Error( 'not_allowed', 'Switching the theme is a risky action and the Themes risky switch is off.' ); }
 		$s = (string) $a['stylesheet'];
@@ -247,7 +255,7 @@ if ( ! function_exists( 'd5b_wthm_load' ) ) {
 		$warn = array();
 		if ( $reverted && $now !== $prev ) { $warn[] = 'The pages got worse but the previous theme "' . $prev['stylesheet'] . '" could not be switched back' . ( null !== $back_err ? ' (an error stopped it)' : '' ) . ': switch to it on the Themes screen.'; }
 		if ( ! $reverted && $now['stylesheet'] !== $s ) { $warn[] = 'WordPress reported no error, but "' . $s . '" is not the active theme.'; }
-		if ( ! empty( $pages['unavailable'] ) ) { $warn[] = 'The site could not fetch its own pages before the change, so there was no page check: only the human check can tell.'; }
+		$warn = array_merge( $warn, d5b_pages_warnings( $pages ) );
 		if ( ! d5b_history_set_after( $hid, $now + array( 'pages' => $pages, 'reverted' => $reverted ) ) ) { $warn[] = 'The change history row could not be completed.'; }
 		if ( $warn ) { $out['warnings'] = $warn; }
 		return $out;
@@ -262,7 +270,7 @@ if ( ! function_exists( 'd5b_wthm_load' ) ) {
 	 * @return array|WP_Error the input, with stylesheet checked
 	 */
 	function d5b_wthm_maint_start( array $in, string $cap, string $verb, array $spec, array $required, bool $installed ) {
-		if ( ! d5b_wplug_ok( $cap, true ) ) { return new WP_Error( 'forbidden', 'You do not have permission to ' . $verb . ' themes.' ); }
+		if ( ! d5b_maint_ok( $cap, true ) ) { return new WP_Error( 'forbidden', 'You do not have permission to ' . $verb . ' themes.' ); }
 		$a = d5b_rc_args( $in, $spec, $required ); if ( is_wp_error( $a ) ) { return $a; }
 		if ( ! d5b_abilities_risky_on( 'themes' ) ) { return new WP_Error( 'not_allowed', 'To ' . $verb . ' a theme is a risky action and the Themes risky switch is off.' ); }
 		$s = (string) $a['stylesheet'];
@@ -298,11 +306,11 @@ if ( ! function_exists( 'd5b_wthm_load' ) ) {
 			return new WP_Error( 'copy_missing', 'The copy kept by history row ' . $hid . ' is no longer there (copies are removed with their row after 30 days).' );
 		}
 		// Putting back a theme that is not there (deleted) is an install: it needs install_themes as well.
-		if ( ! file_exists( d5b_maint_parent( 'theme', $s ) . '/' . $s ) && ! d5b_wplug_ok( 'install_themes', true ) ) {
+		if ( ! file_exists( d5b_maint_parent( 'theme', $s ) . '/' . $s ) && ! d5b_maint_ok( 'install_themes', true ) ) {
 			return new WP_Error( 'forbidden', '"' . $s . '" is not installed, so putting it back is an install: you do not have permission to install themes.' );
 		}
 		if ( empty( $a['force_older'] ) ) {
-			foreach ( d5b_wthm_kept_copies() as $k ) {
+			foreach ( d5b_maint_kept_copies( 'theme' ) as $k ) {
 				if ( $s === $k['stylesheet'] && (int) $k['history_id'] > $hid ) {
 					return new WP_Error( 'newer_copy_exists', 'A newer copy of "' . $s . '" is kept (history row ' . (int) $k['history_id'] . ', version ' . $k['version'] . '). Roll back to that one, or pass force_older: true to put back the older copy of row ' . $hid . '.', array( 'newer_history_id' => (int) $k['history_id'], 'newer_version' => (string) $k['version'] ) );
 				}
@@ -321,11 +329,14 @@ if ( ! function_exists( 'd5b_wthm_load' ) ) {
 		$warn = array_merge( $warn, (array) $res['warnings'] );
 		$new  = (int) $res['history_id'];
 
-		// The theme must be readable afterwards (a style.css with its version): a copy without it would leave WordPress with
-		// a broken theme (the active one falls back to the default theme on the next page). Then the swap is undone at once.
-		if ( '' === d5b_maint_version( 'theme', $s ) && is_array( $res['kept'] ) ) {
+		// The theme must be readable afterwards (as WordPress reads it: there, and no error of its own; a missing parent is not
+		// the copy's fault): a copy without it would leave WordPress with a broken theme (the active one falls back to the
+		// default theme on the next page). Then the swap is undone at once.
+		$bad = d5b_wthm_unreadable( $s );
+		if ( '' !== $bad && is_array( $res['kept'] ) ) {
 			$back = d5b_maint_restore( 'theme', $s, $new );
-			return new WP_Error( 'restore_mismatch', 'The copy kept by history row ' . $hid . ' does not hold a readable theme "' . $s . '" (no style.css with a version), so '
+			if ( ! is_wp_error( $back ) ) { d5b_maint_mark_mismatch( array( $new, (int) $back['history_id'] ) ); }
+			return new WP_Error( 'restore_mismatch', 'The copy kept by history row ' . $hid . ' does not hold a readable theme "' . $s . '" (' . $bad . '), so '
 				. ( is_wp_error( $back ) ? 'WordPress cannot read the theme now and the files could not be put back: ' . d5b_maint_err_text( $back ) . '. Roll back to history row ' . $new . '.' : 'the files that were there are back (history row ' . (int) $back['history_id'] . ').' ),
 				array( 'history_id' => $new, 'human_check' => d5b_human_check() ) );
 		}
@@ -335,7 +346,7 @@ if ( ! function_exists( 'd5b_wthm_load' ) ) {
 		$after  = ( null === $done ? array() : (array) $done['after'] );
 		$after['pages'] = $pages;
 		if ( ! d5b_history_set_after( $new, $after ) ) { $warn[] = 'The change history row could not be completed.'; }
-		if ( ! empty( $pages['unavailable'] ) ) { $warn[] = 'The site could not fetch its own pages before the change, so there was no page check: only the human check can tell.'; }
+		$warn = array_merge( $warn, d5b_pages_warnings( $pages ) );
 		if ( 'delete' === $row['action'] && is_multisite() ) { $warn[] = 'On a network, deleting the theme also disabled it for the network; putting the files back does not enable it again.'; }
 		$out = array(
 			'stylesheet' => $s, 'restored_from' => $hid, 'history_id' => $new, 'version' => (string) $res['version'], 'replaced_version' => (string) $res['replaced_version'],
@@ -447,7 +458,7 @@ if ( ! function_exists( 'd5b_wthm_load' ) ) {
 			'stylesheet' => $s, 'version' => $version, 'deleted' => true, 'kept' => d5b_maint_kept_public( $kept ), 'history_id' => $hid,
 			'note' => null === $kept
 				? 'No copy of the files was kept, so this plugin cannot put it back; reinstall it to have it again.'
-				: 'themes-rollback with history_id ' . $hid . ' puts the files back for 30 days (not its translation files).',
+				: 'The files can be put back from the kept copy if it is unchanged: themes-rollback with history_id ' . $hid . ', for 30 days (not its translation files).',
 		);
 		if ( null !== $copy_error ) {
 			$out['copy_error'] = $copy_error->get_error_code();
@@ -465,44 +476,44 @@ if ( ! function_exists( 'd5b_wthm_load' ) ) {
 
 	d5b_rc_def( 'themes-status', 'themes', 'Theme updates',
 		'Returns the installed themes (active true for the active theme and its parent) with the versions on offer from the stored update list (never asking wordpress.org; updates-check refreshes it), why an offered update cannot run (blocked), WordPress itself, the PHP version and whether file changes are switched off on the site. kept_copies lists the themes with a copy kept by an update, rollback or delete in the last 30 days: stylesheet, version, history_id and kept_at. Refuses callers without update_themes.',
-		array(), array(), 'd5b_wthm_h_status', d5b_wplug_can( 'update_themes' ) );
+		array(), array(), 'd5b_wthm_h_status', d5b_maint_can( 'update_themes' ) );
 
 	d5b_wc_def( 'themes-install', 'themes', 'Install a theme from wordpress.org',
-		'Installs a theme from wordpress.org by its slug (as in wordpress.org/themes/<slug>/), never switches to it. A risky action: needs the Themes risky switch. Only the download link wordpress.org returns for that slug, on https://downloads.wordpress.org/, is used (bad_source otherwise; nothing is downloaded); a parent theme WordPress fetches for a child theme must come from there too, else it is left out and the result says parent_installed false. A slug that is already installed is refused (exists); not_found when wordpress.org does not know it; install_failed with the reason when the installer fails. Needs install_themes, and on a network a network administrator. Returns installed, slug, stylesheet, version, active (false), and parent / parent_installed for a child theme. One change-history row records the theme and version (undo = delete it).',
+		'Installs a theme from wordpress.org by its slug (as in wordpress.org/themes/<slug>/), never switches to it. A risky action: needs the Themes risky switch. Only the download link wordpress.org returns for that slug, on https://downloads.wordpress.org/, is used (bad_source otherwise; nothing is downloaded), and what was installed must be that slug\'s folder (anything else is removed again: bad_source); a parent theme WordPress fetches for a child theme must come from there too, else it is left out and the result says parent_installed false. A slug that is already installed is refused (exists); not_found when wordpress.org does not know it; install_failed with the reason when the installer fails. Needs install_themes, and on a network a network administrator. Returns installed, slug, stylesheet, version, active (false), and parent / parent_installed for a child theme. One change-history row records the theme and version (undo = delete it).',
 		array( 'slug' => array( 'type' => 'string', 'minLength' => 1, 'maxLength' => 100, 'description' => 'The wordpress.org slug, for example astra.' ) ),
-		array( 'slug' ), 'd5b_wthm_h_install', d5b_wplug_can( 'install_themes', true ),
+		array( 'slug' ), 'd5b_wthm_h_install', d5b_maint_can( 'install_themes', true ),
 		array( 'idempotent' => false ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'themes-switch', 'themes', 'Switch the theme (checked)',
 		'Switches this site to an installed theme, with a page check around it (the home page and the recently changed pages, fetched before and after). When the pages got worse the previous theme is switched back at once and the answer says reverted true with the problems. Refused: a theme that is not installed (not_found; the name must be as listed, also in case), not enabled for this site on a network, broken (its parent theme missing) or whose PHP or WordPress requirements are not met (not_allowed). A switch that stops with an error is switch_failed, with the previous theme back. Widgets and menus are remapped by WordPress on the next admin page, as after a switch on the Themes screen. A risky action: needs the Themes risky switch and switch_themes. Returns stylesheet and template (active now), previous { stylesheet, template }, active, reverted, problems, pages and human_check; already_active when it was.' . $d5b_wthm_human . ' One change-history row records the previous stylesheet and template, the theme after, the pages and reverted.',
-		array( 'stylesheet' => $d5b_wthm_sheet ), array( 'stylesheet' ), 'd5b_wthm_h_switch', d5b_wplug_can( 'switch_themes' ),
+		array( 'stylesheet' => $d5b_wthm_sheet ), array( 'stylesheet' ), 'd5b_wthm_h_switch', d5b_maint_can( 'switch_themes' ),
 		array( 'idempotent' => false ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'themes-update', 'themes', 'Update a theme (checked, with a kept copy)',
-		'Updates an installed theme to the version on offer (themes-status shows it; updates-check refreshes the list). First a copy of the theme folder is kept in the change history store for 30 days, then WordPress updates it, with a page check around the update. When the copy cannot be made the update is refused (copy_too_big over 512 MB, store_full when the store would pass 2 GB, copy_failed) unless without_copy is true: then the update runs with kept null and this plugin cannot put the previous version back. A theme that is a link or holds one is always refused (linked). rollback_on_failure (default false): when the pages got worse (or the update failed) the kept copy is put back at once, rolled_back is true and one more page round after the restore is returned as pages_after_restore. By default a worse page is only reported (problems). Nothing on offer: already_up_to_date. A failed update is update_failed with the same fields in its data. A risky action: needs the Themes risky switch and update_themes (on a network, a network administrator). Returns stylesheet, from, to, version, updated, kept (bytes, files), history_id, rolled_back (and rollback_history_id), problems, pages and human_check.' . $d5b_wthm_human . ' One change-history row records the version before, the copy and the pages.',
+		'Updates an installed theme to the version on offer (themes-status shows it; updates-check refreshes the list). First a copy of the theme folder is kept in the change history store for 30 days, then WordPress updates it, with a page check around the update. When the copy cannot be made the update is refused (copy_too_big over 512 MB, store_full when the store would pass 2 GB, copy_failed) unless without_copy is true: then the update runs with kept null and this plugin cannot put the previous version back. A theme that is a link or holds one is always refused (linked). rollback_on_failure (default false): when the pages got worse (or the update failed) the kept copy is put back at once, rolled_back is true and one more page round after the restore is returned as pages_after_restore. By default a worse page is only reported (problems). Nothing on offer: already_up_to_date. A failed update is update_failed with the same fields in its data (and history_id). An update or rollback of the same item already running in another request: busy (409), nothing changed. A risky action: needs the Themes risky switch and update_themes (on a network, a network administrator). Returns stylesheet, from, to, version, updated, kept (bytes, files), history_id, rolled_back (and rollback_history_id), problems, pages and human_check.' . $d5b_wthm_human . ' One change-history row records the version before, the copy and the pages.',
 		array( 'stylesheet' => $d5b_wthm_sheet,
 			'rollback_on_failure' => array( 'type' => 'boolean', 'default' => false, 'description' => 'Put the kept copy back at once when the pages got worse after the update.' ),
 			'without_copy' => array( 'type' => 'boolean', 'default' => false, 'description' => 'Update even when no copy can be kept (no undo by this plugin). Only for a host without the disk space.' ) ),
-		array( 'stylesheet' ), 'd5b_wthm_h_update', d5b_wplug_can( 'update_themes', true ),
+		array( 'stylesheet' ), 'd5b_wthm_h_update', d5b_maint_can( 'update_themes', true ),
 		array( 'idempotent' => false ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'themes-rollback', 'themes', 'Roll a theme back to a kept copy (checked)',
-		'Puts back the copy of a theme kept by an update, rollback or delete, named by its change-history row (history_id; themes-status lists them under kept_copies). The files there now are kept in turn (a rollback is itself undoable), the active theme stays active, and the pages are checked around the swap. Refuses a row of another theme or without a copy (not_found), a copy that is gone (copy_missing), and a row older than the newest kept copy of that theme (newer_copy_exists) unless force_older is true. A copy without a readable style.css is put back out again (restore_mismatch). Also puts back a deleted theme (that is an install, so it needs install_themes too). The swap is made in a staging folder first and switched in with WordPress\'s maintenance mode on for the moment of two renames. A risky action: needs the Themes risky switch and update_themes (on a network, a network administrator). Returns stylesheet, restored_from, history_id (the rollback row), version, replaced_version, kept, active, problems, pages and human_check.' . $d5b_wthm_human,
+		'Puts back the copy of a theme kept by an update, rollback or delete, named by its change-history row (history_id; themes-status lists them under kept_copies). The files there now are kept in turn (a rollback is itself undoable), the active theme stays active, and the pages are checked around the swap. Refuses a row of another theme or without a copy (not_found), a copy that is gone (copy_missing), a copy whose files no longer match the list recorded when it was kept (copy_tampered), an update or rollback of the same theme running in another request (busy), and a row older than the newest kept copy of that theme (newer_copy_exists) unless force_older is true. A copy without a readable style.css is put back out again (restore_mismatch). Also puts back a deleted theme (that is an install, so it needs install_themes too). The swap is made in a staging folder first and switched in with WordPress\'s maintenance mode on for the moment of two renames. A risky action: needs the Themes risky switch and update_themes (on a network, a network administrator). Returns stylesheet, restored_from, history_id (the rollback row), version, replaced_version, kept, active, problems, pages and human_check.' . $d5b_wthm_human,
 		array( 'stylesheet' => $d5b_wthm_sheet,
 			'history_id' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The change-history row whose copy is put back (kept_copies in themes-status).' ),
 			'force_older' => array( 'type' => 'boolean', 'default' => false, 'description' => 'Put back this copy although a newer copy of the theme is kept.' ) ),
-		array( 'stylesheet', 'history_id' ), 'd5b_wthm_h_rollback', d5b_wplug_can( 'update_themes', true ),
+		array( 'stylesheet', 'history_id' ), 'd5b_wthm_h_rollback', d5b_maint_can( 'update_themes', true ),
 		array( 'idempotent' => false ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'themes-delete-preview', 'themes', 'Preview a theme delete',
-		'Step one of a theme delete. Changes nothing. Returns the theme, its version and size, children (installed child themes that need it as their parent) and a note saying what goes, with a confirmation code valid for 10 minutes for this user, this theme and this without_copy. Show the preview to the user and wait for their explicit OK before calling divi5-builder/themes-delete with the code and the same without_copy. The active theme and its parent are refused (in_use), and on a network a theme enabled for the whole network; a site that refuses file changes gets no code (not_allowed). A risky action: needs the Themes risky switch and delete_themes (on a network, a network administrator).',
-		array( 'stylesheet' => $d5b_wthm_sheet, 'without_copy' => $d5b_wthm_nocopy ), array( 'stylesheet' ), 'd5b_wthm_h_delete_preview', d5b_wplug_can( 'delete_themes', true ),
+		'Step one of a theme delete. Changes nothing. Returns the theme, its version and size, children (installed child themes that need it as their parent) and a note saying what goes, with a confirmation code valid for 10 minutes for this user, this theme and this without_copy. Show the preview to the user and wait for their explicit OK before calling divi5-builder/themes-delete with the code and the same without_copy. The active theme and its parent are refused (in_use), and on a network a theme enabled for the whole network (the active themes of the other sites are not checked, as on the network Themes screen of WordPress); a site that refuses file changes gets no code (not_allowed). A risky action: needs the Themes risky switch and delete_themes (on a network, a network administrator).',
+		array( 'stylesheet' => $d5b_wthm_sheet, 'without_copy' => $d5b_wthm_nocopy ), array( 'stylesheet' ), 'd5b_wthm_h_delete_preview', d5b_maint_can( 'delete_themes', true ),
 		array( 'readonly' => true ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'themes-delete', 'themes', 'Delete a theme',
-		'Step two of a theme delete: only with the confirmation code from themes-delete-preview, by the same user, for the same theme and version and the same without_copy, used once, within 10 minutes (confirmation_invalid with data.reason otherwise; nothing is deleted). The change-history row is written first and a copy of the files is kept for 30 days (refused when it cannot be: copy_too_big, store_full, copy_failed; unless without_copy, then kept is null and this plugin cannot put it back; a theme that is a link or holds one is always refused: linked). Then WordPress deletes the theme and its translation files (not copied, not put back by a rollback). The active theme and its parent are refused (in_use), and so is a site that refuses file changes (not_allowed, before the code is used). A risky action: needs the Themes risky switch and delete_themes (on a network, a network administrator). Returns stylesheet, version, deleted, kept (bytes, files) and history_id: themes-rollback with it puts the files back.',
+		'Step two of a theme delete: only with the confirmation code from themes-delete-preview, by the same user, for the same theme and version and the same without_copy, used once, within 10 minutes (confirmation_invalid with data.reason otherwise; nothing is deleted). The change-history row is written first and a copy of the files is kept for 30 days (refused when it cannot be: copy_too_big, store_full, copy_failed; unless without_copy, then kept is null and this plugin cannot put it back; a theme that is a link or holds one is always refused: linked). Then WordPress deletes the theme and its translation files (not copied, not put back by a rollback). The active theme and its parent are refused (in_use), and so is a site that refuses file changes (not_allowed, before the code is used). A risky action: needs the Themes risky switch and delete_themes (on a network, a network administrator). Returns stylesheet, version, deleted, kept (bytes, files) and history_id: themes-rollback with it puts the files back from the kept copy if it is unchanged.',
 		array( 'stylesheet' => $d5b_wthm_sheet, 'without_copy' => $d5b_wthm_nocopy, 'confirmation' => array( 'type' => 'string', 'description' => 'The confirmation code from the preview, after the user said OK.' ) ),
-		array( 'stylesheet' ), 'd5b_wthm_h_delete', d5b_wplug_can( 'delete_themes', true ),
+		array( 'stylesheet' ), 'd5b_wthm_h_delete', d5b_maint_can( 'delete_themes', true ),
 		array( 'destructive' => true ), array( 'risky' => true ) );
 
 	unset( $d5b_wthm_human, $d5b_wthm_sheet, $d5b_wthm_nocopy );

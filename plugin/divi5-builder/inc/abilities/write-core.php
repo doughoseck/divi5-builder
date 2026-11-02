@@ -23,19 +23,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 
 if ( ! function_exists( 'd5b_wcore_h_status' ) ) {
 
-	// The capability helpers are this file's own (as write-plugins.php's d5b_wplug_ok / d5b_wplug_can): the definitions below are
-	// built when the file is included, and files that sort before write-plugins.php (the suites load abilities/*.php in
-	// alphabetical order) must not need it yet.
-
-	/** True when the current user has $cap and, with $network_admin on a network, is a network administrator. */
-	function d5b_wcore_ok( string $cap, bool $network_admin = false ): bool {
-		return current_user_can( $cap ) && ( ! $network_admin || ! is_multisite() || is_super_admin() );
-	}
-
-	/** The permission callback for $cap. */
-	function d5b_wcore_can( string $cap, bool $network_admin = false ): callable {
-		return function ( array $in = array() ) use ( $cap, $network_admin ) { return d5b_wcore_ok( $cap, $network_admin ); };
-	}
+	// The capability helpers are maint-common.php's d5b_maint_ok / d5b_maint_can (maint-common sorts before this file).
 
 	/** The WordPress version in ABSPATH/wp-includes/version.php, read from the file now ('' when it cannot be read). */
 	function d5b_wcore_disk_version(): string {
@@ -46,7 +34,7 @@ if ( ! function_exists( 'd5b_wcore_h_status' ) ) {
 	// ---- core-status (read)
 
 	function d5b_wcore_h_status( array $in ) {
-		if ( ! d5b_wcore_ok( 'update_core' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to read the WordPress update status.' ); }
+		if ( ! d5b_maint_ok( 'update_core' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to read the WordPress update status.' ); }
 		$a = d5b_rc_args( $in, array() ); if ( is_wp_error( $a ) ) { return $a; }
 		if ( ! function_exists( 'wpsu_status' ) ) { return new WP_Error( 'unavailable', 'The update code is not loaded on this site.' ); }
 		$s  = (array) wpsu_status( false ); // the stored list: nothing cleared, nothing asked
@@ -63,7 +51,7 @@ if ( ! function_exists( 'd5b_wcore_h_status' ) ) {
 	// ---- core-update
 
 	function d5b_wcore_h_update( array $in ) {
-		if ( ! d5b_wcore_ok( 'update_core', true ) ) { return new WP_Error( 'forbidden', 'You do not have permission to update WordPress.' ); }
+		if ( ! d5b_maint_ok( 'update_core', true ) ) { return new WP_Error( 'forbidden', 'You do not have permission to update WordPress.' ); }
 		$a = d5b_rc_args( $in, array( 'version' => 'str' ), array( 'version' ) ); if ( is_wp_error( $a ) ) { return $a; }
 		if ( ! d5b_abilities_risky_on( 'core' ) ) { return new WP_Error( 'not_allowed', 'Updating WordPress is a risky action and the WordPress core risky switch is off.' ); }
 		$version = (string) $a['version'];
@@ -104,13 +92,19 @@ if ( ! function_exists( 'd5b_wcore_h_status' ) ) {
 		$done  = is_array( $res ) && ! empty( $res['done'] );
 		// The offer changed between the dry run and the run (a newer release, or none left): the engine refused before touching
 		// anything, so the row is removed and the call is refused like the dry run would have refused it.
+		// A row that cannot be deleted is completed instead (nothing installed), so it never stays "running", and the answer says so.
+		$drop = function () use ( $hid, $from ): ?string {
+			if ( d5b_history_delete( $hid ) ) { return null; }
+			d5b_history_set_after( $hid, array( 'version' => $from, 'aborted' => 'the offer changed before the run; nothing was installed' ) );
+			return 'Its change history row ' . $hid . ' could not be removed; it now says nothing was installed.';
+		};
 		if ( is_wp_error( $res ) && 'wpsu_core_version' === $res->get_error_code() ) {
-			d5b_history_delete( $hid );
-			return new WP_Error( 'invalid_input', d5b_maint_err_text( $res ), array( 'status' => 409 ) );
+			$kept = $drop();
+			return new WP_Error( 'invalid_input', d5b_maint_err_text( $res ) . ( null === $kept ? '' : ' ' . $kept ), array( 'status' => 409 ) + ( null === $kept ? array() : array( 'history_id' => $hid ) ) );
 		}
 		if ( is_array( $res ) && ! $done && '' === (string) ( $res['error'] ?? '' ) && 'already up to date' === ( $res['note'] ?? '' ) ) {
-			d5b_history_delete( $hid );
-			return array( 'updated' => false, 'already_up_to_date' => true, 'version' => $from );
+			$kept = $drop();
+			return array( 'updated' => false, 'already_up_to_date' => true, 'version' => $from ) + ( null === $kept ? array() : array( 'history_id' => $hid, 'warnings' => array( $kept ) ) );
 		}
 		$error = is_wp_error( $res ) ? d5b_maint_err_text( $res ) : ( is_array( $res ) ? (string) ( $res['error'] ?? '' ) : 'the updater gave no answer' );
 		// The version now: what the updater reports when it finished; otherwise (and when it reports nothing) read fresh from
@@ -123,7 +117,7 @@ if ( ! function_exists( 'd5b_wcore_h_status' ) ) {
 		$warn = array();
 		if ( ! d5b_history_set_after( $hid, $after ) ) { $warn[] = 'The change history row could not be completed.'; }
 		if ( array() !== $problems ) { $warn[] = 'The pages got worse. This plugin keeps no copy of WordPress and cannot put the previous version back: restore a backup.'; }
-		if ( ! empty( $pages['unavailable'] ) ) { $warn[] = 'The site could not fetch its own pages before the change, so there was no page check: only the human check can tell.'; }
+		$warn = array_merge( $warn, d5b_pages_warnings( $pages ) );
 		if ( $done ) { $warn[] = 'WordPress may ask for a database update the next time an administrator opens the dashboard; do that, then look at the site.'; }
 
 		$out = array(
@@ -141,7 +135,7 @@ if ( ! function_exists( 'd5b_wcore_h_status' ) ) {
 	// ---- translations-update
 
 	function d5b_wcore_h_translations( array $in ) {
-		if ( ! d5b_wcore_ok( 'update_core' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to update translations.' ); }
+		if ( ! d5b_maint_ok( 'update_core' ) ) { return new WP_Error( 'forbidden', 'You do not have permission to update translations.' ); }
 		$a = d5b_rc_args( $in, array() ); if ( is_wp_error( $a ) ) { return $a; }
 		if ( ! function_exists( 'wpsu_update' ) ) { return new WP_Error( 'unavailable', 'The update code is not loaded on this site, so nothing was updated.' ); }
 		$dry = wpsu_update( 'translations', '', true );
@@ -179,16 +173,16 @@ if ( ! function_exists( 'd5b_wcore_h_status' ) ) {
 
 	d5b_rc_def( 'core-status', 'core', 'WordPress update status',
 		'Returns the WordPress version, the versions on offer (offered, from the stored update list: nothing is cleared and wordpress.org is not asked; updates-check refreshes it), kind of the newest one (minor = a maintenance release such as 6.9.1, major = a new release such as 7.0, as WordPress counts), blocked (why this site refuses updates, empty when it does not) and update_available. Refuses callers without update_core.',
-		array(), array(), 'd5b_wcore_h_status', d5b_wcore_can( 'update_core' ) );
+		array(), array(), 'd5b_wcore_h_status', d5b_maint_can( 'update_core' ) );
 
 	d5b_wc_def( 'core-update', 'core', 'Update WordPress (checked, no copy)',
 		'Updates WordPress itself to a version that is on offer right now (core-status lists offered; updates-check refreshes the list); any other version is refused (invalid_input, 409) and nothing is changed. A risky action: needs the WordPress core risky switch and update_core (on a network, a network administrator). NO COPY is kept: WordPress replaces its own files and this plugin cannot put the previous version back. The answer says rollback "none, restore a backup": take a backup first. The update runs inside a page check (the home page and the recently changed pages, fetched before and after); problems are reported, never undone. Nothing on offer: already_up_to_date (nothing changed). A failed update is update_failed with the same fields in its data. WordPress may ask for a database update the next time an administrator opens the dashboard. An uncatchable PHP fatal during the update ends the request with no answer at all: then read core-status and the change history row, and check the site. Returns from, to, version (installed now), updated, kind, history_id, rollback, problems, pages (before, after, problems, unavailable), human_check and caches_cleared. Pass the human_check sentence on to the user after the run: the page check compares status, error text and size only, so never report the site as fine. One change-history row records the versions only.',
 		array( 'version' => array( 'type' => 'string', 'minLength' => 3, 'maxLength' => 40, 'description' => 'The WordPress version to go to, one of offered in core-status, for example 6.9.1.' ) ),
-		array( 'version' ), 'd5b_wcore_h_update', d5b_wcore_can( 'update_core', true ),
+		array( 'version' ), 'd5b_wcore_h_update', d5b_maint_can( 'update_core', true ),
 		array( 'idempotent' => false ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'translations-update', 'core', 'Update translations',
 		'Installs the language packs on offer for WordPress, plugins and themes (the stored list is refreshed first). A normal write: no copy is kept and no page check is made (language files do not change what a page renders by themselves, and WordPress fetches the next pack itself, so there is nothing to put back). Nothing on offer: already_up_to_date. Refuses callers without update_core and a site that does not allow file changes (not_allowed). Returns updated, count, history_id and caches_cleared; one change-history row records the count.',
-		array(), array(), 'd5b_wcore_h_translations', d5b_wcore_can( 'update_core' ),
+		array(), array(), 'd5b_wcore_h_translations', d5b_maint_can( 'update_core' ),
 		array( 'idempotent' => false ) );
 }
