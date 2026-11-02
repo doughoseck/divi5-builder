@@ -554,6 +554,8 @@ function apply_filters( $tag, $value, ...$args ) {
 	if ( 'wp_delete_file' === $tag ) { foreach ( $GLOBALS['T_filters']['wp_delete_file'] ?? array() as $cb ) { $value = call_user_func( $cb, $value ); } return $value; }
 	// widget_update_callback (core's WP_Widget::update_callback): the callbacks added with add_filter run, as core's.
 	if ( 'widget_update_callback' === $tag ) { foreach ( $GLOBALS['T_filters']['widget_update_callback'] ?? array() as $cb ) { $value = call_user_func( $cb, $value, ...$args ); } return $value; }
+	// upgrader_pre_download (core's WP_Upgrader::download_package): the callbacks added with add_filter run, as core's.
+	if ( 'upgrader_pre_download' === $tag ) { foreach ( $GLOBALS['T_filters']['upgrader_pre_download'] ?? array() as $cb ) { $value = call_user_func( $cb, $value, ...$args ); } return $value; }
 	return 'the_content' === $tag ? '<div class="filtered">' . $value . '</div>' : $value;
 }
 function wp_strip_all_tags( $s ) { return trim( strip_tags( (string) $s ) ); }
@@ -1665,7 +1667,8 @@ function sanitize_option( $option, $value ) {
 //   T_css_rewrite      a callable the css passes through before it is stored (the update_custom_css_data filter)
 // edit_css is mapped as core maps it (to unfiltered_html), in current_user_can above.
 if ( ! function_exists( 'get_stylesheet' ) ) {
-	function get_stylesheet() { return isset( $GLOBALS['T_theme'] ) && is_object( $GLOBALS['T_theme'] ) ? $GLOBALS['T_theme']->get_stylesheet() : 'teststyle'; }
+	// As core: the stylesheet option (switch_theme writes it); 'teststyle' when it was never set.
+	function get_stylesheet() { return isset( $GLOBALS['T_theme'] ) && is_object( $GLOBALS['T_theme'] ) ? $GLOBALS['T_theme']->get_stylesheet() : (string) get_option( 'stylesheet', 'teststyle' ); }
 }
 function get_theme_mods() { return $GLOBALS['T_theme_mods'] ?? array(); }
 function remove_theme_mod( $name ) {
@@ -2043,8 +2046,8 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		$GLOBALS['T_plugins_disk'] = false; $GLOBALS['T_plugins_cache'] = null; $GLOBALS['T_upgrade_result'] = array(); $GLOBALS['T_upgrade_calls'] = array();
 		$GLOBALS['T_copies_at_upgrade'] = null; $GLOBALS['T_uninstalls'] = array(); $GLOBALS['T_delete_calls'] = array(); $GLOBALS['T_fs_deletes'] = array();
 		$GLOBALS['T_maintenance'] = array(); $GLOBALS['T_in_maintenance'] = false; $GLOBALS['T_opcache'] = array();
+		t_themes_reset();
 	}
-	t_plugins_reset();
 	// The headers core's get_plugin_data reads (the first 8 KB, "Plugin Name:" etc. at the start of a comment line); null without a name.
 	function t_plugin_headers( $file ) {
 		$h = (string) @file_get_contents( $file, false, null, 0, 8192 );
@@ -2212,7 +2215,13 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		file_put_contents( $path, "<?php\n/*\nPlugin Name: " . $name . "\nVersion: " . $version . "\n*/\n// the new code of " . $version . "\n" );
 		return array( 'destination_name' => dirname( $plugin ) );
 	}
-	function wp_clean_themes_cache( $clear_update_cache = true ) { if ( $clear_update_cache ) { delete_site_transient( 'update_themes' ); } }
+	// As core (theme.php): the update list (when asked), the theme folders read again, every theme's cache dropped.
+	function wp_clean_themes_cache( $clear_update_cache = true ) {
+		$GLOBALS['T_themes_cache_cleans'] = ( $GLOBALS['T_themes_cache_cleans'] ?? 0 ) + 1;
+		if ( $clear_update_cache ) { delete_site_transient( 'update_themes' ); }
+		search_theme_directories( true );
+		foreach ( wp_get_themes( array( 'errors' => null ) ) as $theme ) { $theme->cache_delete(); }
+	}
 	// As core's wp_clean_update_cache (update.php): the three update transients.
 	function wp_clean_update_cache() { $GLOBALS['T_traps'][] = 'wp_clean_update_cache'; wp_clean_plugins_cache(); wp_clean_themes_cache(); delete_site_transient( 'update_core' ); }
 	function get_site_transient( $n ) { return $GLOBALS['T_site_transients'][ $n ] ?? false; }
@@ -2225,8 +2234,8 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 	function get_core_updates( $options = array() ) { $t = get_site_transient( 'update_core' ); return is_object( $t ) && isset( $t->updates ) ? (array) $t->updates : array(); }
 	function wp_get_translation_updates() { return array(); }
 	if ( ! function_exists( 'get_bloginfo' ) ) { function get_bloginfo( $k = '' ) { return 'version' === $k ? '6.9' : ''; } }
-	if ( ! function_exists( 'get_template' ) ) { function get_template() { return 'teststyle'; } }
-	if ( ! function_exists( 'wp_get_themes' ) ) { function wp_get_themes( $args = array() ) { return array(); } }
+	// As core: the template option (switch_theme writes it); 'teststyle' when it was never set.
+	if ( ! function_exists( 'get_template' ) ) { function get_template() { return (string) get_option( 'template', 'teststyle' ); } }
 	function wp_is_file_mod_allowed( $context ) { return empty( $GLOBALS['T_file_mods_off'] ); }
 	if ( ! class_exists( 'Automatic_Upgrader_Skin', false ) ) {
 		class Automatic_Upgrader_Skin { function get_upgrade_messages() { return array(); } function get_errors() { return new WP_Error(); } }
@@ -2287,4 +2296,232 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 			}
 		}
 	}
+
+	// ---- themes (2.4.0 Task 4, write-themes.php), in the same opt-in block. core 6.4.1 wp-includes/theme.php,
+	// class-wp-theme.php, wp-admin/includes/theme.php and class-theme-upgrader.php, reduced:
+	//   T_themes_disk         wp_get_themes / wp_get_theme read the theme root (get_theme_root(): T_theme_root) as core does:
+	//                         each folder not starting with a dot that holds a style.css; off: no themes at all
+	//   the options stylesheet / template / current_theme: what get_stylesheet / get_template answer (switch_theme writes them)
+	//   T_theme_cache         stylesheet => what WP_Theme read (core's per-request 'themes' cache group): kept until
+	//                         cache_delete / wp_clean_themes_cache, so a caller that forgets to clean it reads the old headers
+	//   T_theme_dirs          search_theme_directories' list (null: read the folder again)
+	//   allowedthemes         the network option (network-enabled) and the site option, as WP_Theme::is_allowed reads them
+	//   T_themes_api          slug => what themes_api returns (missing: core's WP_Error themes_api_failed); T_themes_api_calls
+	//   T_theme_install_result  what Theme_Upgrader::install returns instead of installing (false, WP_Error)
+	//   T_theme_install_adds  stylesheet => style.css headers (Theme Name, Version, Template, Requires PHP) written on install
+	//   T_theme_parent_adds   stylesheet => headers of a parent theme the install fetches (check_parent_theme_filter)
+	//   T_theme_install_calls every package given to install();  T_theme_downloads every package that passed upgrader_pre_download
+	//   T_theme_upgrade_result  stylesheet => what Theme_Upgrader::bulk_upgrade gives instead of updating (false, WP_Error, 'wipe')
+	//   T_theme_upgrade_calls every list given to bulk_upgrade (T_copies_at_upgrade as for plugins)
+	//   T_switch_calls        every stylesheet given to switch_theme;  T_theme_delete_calls every stylesheet given to delete_theme
+	//   T_theme_translations  stylesheet => locales installed; delete_theme removes them (T_theme_translation_deletes)
+	function t_themes_reset() {
+		$GLOBALS['T_themes_disk'] = false; $GLOBALS['T_theme_cache'] = array(); $GLOBALS['T_theme_dirs'] = null;
+		$GLOBALS['T_themes_api'] = array(); $GLOBALS['T_themes_api_calls'] = array(); unset( $GLOBALS['T_theme_install_result'] );
+		$GLOBALS['T_theme_install_adds'] = array(); $GLOBALS['T_theme_parent_adds'] = array(); $GLOBALS['T_theme_install_calls'] = array(); $GLOBALS['T_theme_downloads'] = array();
+		$GLOBALS['T_theme_upgrade_result'] = array(); $GLOBALS['T_theme_upgrade_calls'] = array(); $GLOBALS['T_switch_calls'] = array(); $GLOBALS['T_theme_delete_calls'] = array();
+		$GLOBALS['T_theme_translations'] = array(); $GLOBALS['T_theme_translation_deletes'] = array(); $GLOBALS['T_themes_cache_cleans'] = 0;
+	}
+	function t_theme_root() { return rtrim( str_replace( '\\', '/', get_theme_root() ), '/' ); }
+	// What WP_Theme reads for $stylesheet, from the cache or the folder: null when the folder is not there (theme_not_found,
+	// cached as such, as core caches the error), else the headers with error '' or theme_no_stylesheet (folder, no style.css).
+	function t_theme_read( $stylesheet ) {
+		if ( array_key_exists( $stylesheet, $GLOBALS['T_theme_cache'] ) ) { return $GLOBALS['T_theme_cache'][ $stylesheet ]; }
+		$dir = t_theme_root() . '/' . $stylesheet;
+		$r   = null;
+		if ( ! empty( $GLOBALS['T_themes_disk'] ) && '' !== (string) $stylesheet && is_dir( $dir ) ) {
+			$css = (string) @file_get_contents( $dir . '/style.css', false, null, 0, 8192 );
+			$get = function ( $k ) use ( $css ) { return preg_match( '/^[ \t\/*#@]*' . preg_quote( $k, '/' ) . ':(.*)$/mi', $css, $m ) ? trim( $m[1] ) : ''; };
+			$r = array( 'Name' => $get( 'Theme Name' ), 'Version' => $get( 'Version' ), 'Template' => $get( 'Template' ), 'RequiresPHP' => $get( 'Requires PHP' ), 'error' => '' );
+			if ( ! is_file( $dir . '/style.css' ) ) { $r = array( 'Name' => '', 'Version' => '', 'Template' => '', 'RequiresPHP' => '', 'error' => 'theme_no_stylesheet' ); }
+		}
+		return $GLOBALS['T_theme_cache'][ $stylesheet ] = $r;
+	}
+	if ( ! class_exists( 'WP_Theme', false ) ) {
+		class WP_Theme {
+			private $s; private $d;
+			function __construct( $stylesheet ) { $this->s = (string) $stylesheet; $this->d = t_theme_read( $this->s ); }
+			// As core: false only for theme_not_found (no folder); a folder without style.css "exists" with an error.
+			function exists() { return null !== $this->d; }
+			function get( $k ) { return null === $this->d ? false : (string) ( $this->d[ $k ] ?? '' ); }
+			function display( $k ) { return $this->get( $k ); }
+			function get_stylesheet() { return $this->s; }
+			function get_template() { return null !== $this->d && '' !== $this->d['Template'] ? $this->d['Template'] : $this->s; }
+			function parent() { return null !== $this->d && '' !== $this->d['Template'] ? new WP_Theme( $this->d['Template'] ) : false; }
+			function errors() {
+				if ( null === $this->d ) { return new WP_Error( 'theme_not_found', 'The theme directory "' . $this->s . '" does not exist.' ); }
+				if ( '' !== $this->d['error'] ) { return new WP_Error( $this->d['error'], 'Stylesheet is missing.' ); }
+				if ( '' !== $this->d['Template'] && ! ( new WP_Theme( $this->d['Template'] ) )->exists() ) { return new WP_Error( 'theme_no_parent', 'The parent theme is missing. Please install the "' . $this->d['Template'] . '" parent theme.' ); }
+				return false;
+			}
+			// As core: true on a single site; on a network, enabled for the network or for this site.
+			function is_allowed( $check = 'both', $blog_id = null ) {
+				if ( ! is_multisite() ) { return true; }
+				if ( ( 'both' === $check || 'network' === $check ) && ! empty( self::get_allowed_on_network()[ $this->s ] ) ) { return true; }
+				if ( ( 'both' === $check || 'site' === $check ) && ! empty( self::get_allowed_on_site( $blog_id )[ $this->s ] ) ) { return true; }
+				return false;
+			}
+			static function get_allowed_on_network() { return (array) get_site_option( 'allowedthemes', array() ); }
+			static function get_allowed_on_site( $blog_id = null ) { return (array) get_option( 'allowedthemes', array() ); }
+			static function network_disable_theme( $stylesheets ) {
+				$allowed = (array) get_site_option( 'allowedthemes', array() );
+				foreach ( (array) $stylesheets as $s ) { unset( $allowed[ $s ] ); }
+				update_site_option( 'allowedthemes', $allowed );
+			}
+			function cache_delete() { unset( $GLOBALS['T_theme_cache'][ $this->s ] ); }
+			function is_block_theme() { return false; }
+			function delete_pattern_cache() {}
+		}
+	}
+	// As core: no name = the active theme.
+	function wp_get_theme( $stylesheet = '', $theme_root = '' ) { return new WP_Theme( '' === (string) $stylesheet ? get_stylesheet() : $stylesheet ); }
+	// As core (one level, the usual layout): the folders of the theme root that hold a style.css, skipping names that start
+	// with a dot; kept until asked with $force.
+	function search_theme_directories( $force = false ) {
+		if ( is_array( $GLOBALS['T_theme_dirs'] ) && ! $force ) { return $GLOBALS['T_theme_dirs']; }
+		$out = array();
+		if ( ! empty( $GLOBALS['T_themes_disk'] ) ) {
+			$root = t_theme_root();
+			foreach ( (array) @scandir( $root ) as $d ) {
+				if ( ! is_string( $d ) || '' === $d || '.' === $d[0] || ! is_dir( $root . '/' . $d ) || ! is_file( $root . '/' . $d . '/style.css' ) ) { continue; }
+				$out[ $d ] = array( 'theme_file' => $d . '/style.css', 'theme_root' => $root );
+			}
+		}
+		return $GLOBALS['T_theme_dirs'] = $out;
+	}
+	// As core: errors false (default) = the themes without errors, null = all, true = only the broken ones.
+	function wp_get_themes( $args = array() ) {
+		$errors = array_key_exists( 'errors', (array) $args ) ? $args['errors'] : false;
+		$out = array();
+		foreach ( array_keys( search_theme_directories() ) as $s ) {
+			$t = new WP_Theme( $s );
+			if ( null !== $errors && (bool) $errors !== (bool) $t->errors() ) { continue; }
+			$out[ $s ] = $t;
+		}
+		return $out;
+	}
+	// As core (theme.php): the theme's Requires PHP against this PHP.
+	function validate_theme_requirements( $stylesheet ) {
+		$req = (string) wp_get_theme( $stylesheet )->get( 'RequiresPHP' );
+		if ( '' !== $req && version_compare( PHP_VERSION, $req, '<' ) ) { return new WP_Error( 'theme_php_incompatible', '<strong>Error:</strong> Current PHP version does not meet minimum requirements for ' . wp_get_theme( $stylesheet )->display( 'Name' ) . '.' ); }
+		return true;
+	}
+	// As core's switch_theme: requirements not met -> wp_die (the request ends: here an Error after the stub's record); no
+	// check that the theme exists or is allowed (the caller's job); the options written, then the switch_theme action
+	// (T_plugin_hooks callbacks run, so a test can make it throw).
+	function switch_theme( $stylesheet ) {
+		$GLOBALS['T_traps'][] = 'switch_theme'; $GLOBALS['T_switch_calls'][] = $stylesheet;
+		$req = validate_theme_requirements( $stylesheet );
+		if ( is_wp_error( $req ) ) { wp_die( $req ); throw new Error( 'wp_die ended the request' ); }
+		update_option( 'theme_switch_menu_locations', get_theme_mod( 'nav_menu_locations' ) );
+		$old = wp_get_theme(); $new = wp_get_theme( $stylesheet );
+		update_option( 'template', $new->get_template() );
+		update_option( 'stylesheet', $stylesheet );
+		update_option( 'current_theme', $new->get( 'Name' ) );
+		update_option( 'theme_switched', $old->get_stylesheet() );
+		t_plugins_fire( 'switch_theme', $new->get( 'Name' ), $new, $old );
+	}
+	// As core's delete_theme (wp-admin/includes/theme.php), reduced: the file system (none: null, core prints a form), the
+	// delete_theme action, the folder removed with $wp_filesystem->delete, deleted_theme, then (deleted) its translations
+	// removed, on a network the theme disabled for the network, its cache and the update list dropped. Never refuses the
+	// active theme itself (the callers do).
+	function delete_theme( $stylesheet, $redirect = '' ) {
+		$GLOBALS['T_traps'][] = 'delete_theme'; $GLOBALS['T_theme_delete_calls'][] = $stylesheet;
+		if ( empty( $stylesheet ) ) { return false; }
+		if ( ! WP_Filesystem() ) { return null; }
+		$fs = $GLOBALS['wp_filesystem'];
+		do_action( 'delete_theme', $stylesheet );
+		$theme   = wp_get_theme( $stylesheet );
+		$deleted = $fs->delete( t_theme_root() . '/' . $stylesheet . '/', true );
+		do_action( 'deleted_theme', $stylesheet, $deleted );
+		if ( ! $deleted ) { return new WP_Error( 'could_not_remove_theme', 'Could not fully remove the theme ' . $stylesheet . '.' ); }
+		foreach ( (array) ( $GLOBALS['T_theme_translations'][ $stylesheet ] ?? array() ) as $loc ) { $GLOBALS['T_theme_translation_deletes'][] = $stylesheet . '-' . $loc; }
+		unset( $GLOBALS['T_theme_translations'][ $stylesheet ] );
+		if ( is_multisite() ) { WP_Theme::network_disable_theme( $stylesheet ); }
+		$theme->cache_delete();
+		delete_site_transient( 'update_themes' );
+		return true;
+	}
+	function themes_api( $action, $args = array() ) {
+		$GLOBALS['T_traps'][] = 'themes_api';
+		$GLOBALS['T_themes_api_calls'][] = array( $action, $args );
+		if ( is_array( $args ) ) { $args = (object) $args; }
+		return $GLOBALS['T_themes_api'][ (string) ( $args->slug ?? '' ) ] ?? new WP_Error( 'themes_api_failed', 'Theme not found.' );
+	}
+	// A theme on disk: style.css with the headers, index.php, and the extra files (path in its folder => content).
+	function t_theme_write( $stylesheet, array $h, array $extra = array() ) {
+		$dir = t_theme_root() . '/' . $stylesheet;
+		if ( ! is_dir( $dir ) ) { mkdir( $dir, 0777, true ); }
+		$css = "/*\nTheme Name: " . ( $h['Name'] ?? $stylesheet ) . "\nVersion: " . ( $h['Version'] ?? '1.0' ) . "\n" . ( isset( $h['Template'] ) ? 'Template: ' . $h['Template'] . "\n" : '' ) . ( isset( $h['RequiresPHP'] ) ? 'Requires PHP: ' . $h['RequiresPHP'] . "\n" : '' ) . "*/\n";
+		file_put_contents( $dir . '/style.css', $css );
+		file_put_contents( $dir . '/index.php', "<?php // " . $stylesheet . ' ' . ( $h['Version'] ?? '1.0' ) . "\n" );
+		foreach ( $extra as $rel => $body ) { if ( ! is_dir( dirname( $dir . '/' . $rel ) ) ) { mkdir( dirname( $dir . '/' . $rel ), 0777, true ); } file_put_contents( $dir . '/' . $rel, $body ); }
+	}
+	// As WP_Upgrader::download_package: the upgrader_pre_download filter first; a WP_Error from it stops the run.
+	function t_theme_download( $package ) {
+		$reply = apply_filters( 'upgrader_pre_download', false, $package, null, array( 'type' => 'theme', 'action' => 'install' ) );
+		if ( is_wp_error( $reply ) ) { return $reply; }
+		$GLOBALS['T_theme_downloads'][] = $package;
+		return true;
+	}
+	if ( ! class_exists( 'Theme_Upgrader', false ) ) {
+		class Theme_Upgrader extends WP_Upgrader {
+			public $result = array();
+			// As core: the package downloaded (upgrader_pre_download), the theme written into the theme root (never over a
+			// folder that is there: folder_exists), then check_parent_theme_filter: a child whose parent is missing gets the
+			// parent from themes_api's download_link (through the same filter); the themes cache cleaned. true or the error.
+			function install( $package, $args = array() ) {
+				$GLOBALS['T_traps'][] = 'theme_install'; $GLOBALS['T_theme_install_calls'][] = $package;
+				$d = t_theme_download( $package );
+				if ( is_wp_error( $d ) ) { return $this->result = $d; }
+				if ( array_key_exists( 'T_theme_install_result', $GLOBALS ) ) { return $this->result = $GLOBALS['T_theme_install_result']; }
+				foreach ( $GLOBALS['T_theme_install_adds'] as $s => $h ) {
+					if ( file_exists( t_theme_root() . '/' . $s ) ) { return $this->result = new WP_Error( 'folder_exists', 'Destination folder already exists.' ); }
+					t_theme_write( $s, $h ); $this->result = array( 'destination_name' => $s );
+				}
+				$info = $this->theme_info();
+				if ( $info && $info->parent() && ! $info->parent()->exists() ) {
+					$p   = $info->get( 'Template' );
+					$api = themes_api( 'theme_information', array( 'slug' => $p, 'fields' => array( 'sections' => false, 'tags' => false ) ) );
+					if ( is_object( $api ) && ! is_wp_error( $api ) && ! is_wp_error( t_theme_download( $api->download_link ?? '' ) ) && isset( $GLOBALS['T_theme_parent_adds'][ $p ] ) ) { t_theme_write( $p, $GLOBALS['T_theme_parent_adds'][ $p ] ); }
+				}
+				wp_clean_themes_cache( $args['clear_update_cache'] ?? true );
+				return true;
+			}
+			function theme_info( $theme = null ) {
+				if ( empty( $theme ) ) { if ( empty( $this->result['destination_name'] ) ) { return false; } $theme = $this->result['destination_name']; }
+				$t = wp_get_theme( $theme ); $t->cache_delete();
+				return wp_get_theme( $theme );
+			}
+			// As core's bulk_upgrade for themes: per theme, true when the update list has no offer, else the run's result
+			// (T_theme_upgrade_result, or the new version written by t_theme_replace); a false stops the loop; the themes cache cleaned.
+			function bulk_upgrade( $themes, $args = array() ) {
+				$GLOBALS['T_traps'][] = 'theme_bulk_upgrade'; $GLOBALS['T_theme_upgrade_calls'][] = $themes;
+				$GLOBALS['T_copies_at_upgrade'] = count( $GLOBALS['T_copy_calls'] ?? array() );
+				$current = get_site_transient( 'update_themes' );
+				$results = array();
+				foreach ( $themes as $s ) {
+					if ( ! is_object( $current ) || ! isset( $current->response[ $s ] ) ) { $results[ $s ] = true; continue; }
+					$o = (array) $current->response[ $s ];
+					$result = array_key_exists( $s, $GLOBALS['T_theme_upgrade_result'] ) ? $GLOBALS['T_theme_upgrade_result'][ $s ] : t_theme_replace( $s, (string) $o['new_version'] );
+					if ( 'wipe' === $result ) { t_plugins_rmtree( t_theme_root() . '/' . $s ); $result = new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.' ); }
+					$results[ $s ] = $result;
+					if ( false === $result ) { break; }
+				}
+				wp_clean_themes_cache( $args['clear_update_cache'] ?? true );
+				return $results;
+			}
+		}
+	}
+	// The new version an update writes: the old folder removed (clear_destination), then style.css with the new Version (same
+	// name and parent) and a changelog.txt saying so.
+	function t_theme_replace( $stylesheet, $version ) {
+		$old = t_theme_read( $stylesheet );
+		t_plugins_rmtree( t_theme_root() . '/' . $stylesheet );
+		$h = array( 'Name' => (string) ( $old['Name'] ?? $stylesheet ), 'Version' => $version );
+		if ( '' !== (string) ( $old['Template'] ?? '' ) ) { $h['Template'] = $old['Template']; }
+		t_theme_write( $stylesheet, $h, array( 'changelog.txt' => $h['Name'] . ' ' . $version . ' changes' ) );
+		return array( 'destination_name' => $stylesheet );
+	}
+	t_plugins_reset();
 }

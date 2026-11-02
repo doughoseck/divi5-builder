@@ -328,7 +328,10 @@ if ( ! function_exists( 'd5b_maint_version' ) ) {
 			return isset( $all[ $item ]['Version'] ) ? (string) $all[ $item ]['Version'] : '';
 		}
 		if ( ! function_exists( 'wp_get_theme' ) ) { return ''; }
+		// WordPress keeps each theme's headers for the whole request, and wp_clean_themes_cache only drops the themes it still
+		// lists (a folder that lost its style.css is not listed): read this one from disk, as Theme_Upgrader::theme_info does.
 		$t = wp_get_theme( $item );
+		if ( is_object( $t ) && method_exists( $t, 'cache_delete' ) ) { $t->cache_delete(); $t = wp_get_theme( $item ); }
 		return is_object( $t ) && $t->exists() ? (string) $t->get( 'Version' ) : '';
 	}
 }
