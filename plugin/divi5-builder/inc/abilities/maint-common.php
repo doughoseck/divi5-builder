@@ -513,12 +513,12 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 	 */
 	function d5b_maint_restore( string $kind, string $dir, int $history_id, array $opts = array() ) {
 		$lock  = d5b_maint_item_lock( $kind, $dir );
-		$token = d5b_maint_lock_take( $lock, d5b_maint_item_lock_ttl(), 'An update or rollback of this ' . ( 'theme' === $kind ? 'theme' : 'plugin' ) );
+		$token = d5b_maint_lock_take( $lock, d5b_maint_item_lock_ttl(), 'An update or rollback of this ' . ( 'theme' === $kind ? 'theme' : 'plugin' ), true ); // network-wide on a network: the folders are shared
 		if ( is_wp_error( $token ) ) { return $token; }
 		try {
 			return d5b_maint_restore_run( $kind, $dir, $history_id, $opts );
 		} finally {
-			d5b_maint_lock_release( $lock, $token );
+			d5b_maint_lock_release( $lock, $token, true );
 		}
 	}
 
@@ -618,19 +618,28 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 			if ( $mm ) { d5b_maint_maintenance( false ); }
 		}
 		if ( ! $swapped ) {
-			$clean = d5b_maint_remove_tree( $staging );
-			d5b_history_delete( $new );
+			$clean    = d5b_maint_remove_tree( $staging );
+			$stranded = false !== strpos( $err, ' AND ' ); // the live files are in the aside folder, the live folder is gone
+			if ( $stranded ) {
+				// Never deleted: the row is the record of where the live files are.
+				d5b_history_set_after( $new, array( 'running' => false, 'failed' => 'the copy could not be moved into place and the live files could not be put back', 'aside' => basename( $aside ), 'staging' => $clean ? null : basename( $staging ), 'folder' => $where ) );
+			} else {
+				d5b_history_delete( $new );
+			}
 			d5b_maint_clean_cache( $kind );
-			return $fail( $err . ( false === strpos( $err, ' AND ' ) ? '; nothing was changed' : '' ) . ( $clean ? '' : '. The staging copy ' . basename( $staging ) . ' in ' . $where . ' could not be removed; delete it by hand' ) );
+			$e = $fail( $err . ( $stranded ? '' : '; nothing was changed' ) . ( $clean ? '' : '. The staging copy ' . basename( $staging ) . ' in ' . $where . ' could not be removed; delete it by hand' ) . ( $stranded ? '. History row ' . $new . ' names the folder' : '' ) );
+			if ( $stranded ) { $e->add_data( array( 'status' => 503, 'history_id' => $new ) ); }
+			return $e;
 		}
 		if ( function_exists( 'wp_opcache_invalidate_directory' ) && is_dir( $target ) ) { wp_opcache_invalidate_directory( $target ); }
 		elseif ( function_exists( 'wp_opcache_invalidate' ) && is_file( $target ) ) { wp_opcache_invalidate( $target, true ); }
 
 		// 3. the replaced files into the new row's store folder: the rollback is itself undoable
-		$warn = array(); $kept_new = null;
+		$warn = array(); $kept_new = null; $left_aside = null; // $left_aside: the dot folder still holding replaced files
 		if ( '' !== $aside && '' !== $no_keep ) {
 			// keep_optional and no room: the replaced (just-downloaded) files are removed instead of kept.
 			$gone   = d5b_maint_remove_tree( $aside );
+			if ( ! $gone ) { $left_aside = basename( $aside ); }
 			$warn[] = 'The version that was replaced was not kept, because ' . $no_keep . ': this rollback itself cannot be undone from the change history (update again to get that version back).'
 				. ( $gone ? '' : ' Its files could not be removed either: delete ' . basename( $aside ) . ' in ' . $where . ' by hand (WordPress does not list it).' );
 		} elseif ( '' !== $aside ) {
@@ -645,12 +654,15 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 				}
 			} else {
 				d5b_history_files_remove( $new ); // only the empty (or part-made, already removed) store folder of this row
+				$left_aside = basename( $aside ); // the only copy of the replaced files: the row keeps naming it
 				$warn[] = 'The files that were replaced could not be moved into the change history store: they are still in ' . basename( $aside ) . ' in ' . $where . ' (WordPress does not list it). Keep that folder until the site is fine; it is the only copy of them.';
 			}
 		}
 		d5b_maint_clean_cache( $kind );
 		$version = '' === $item ? '' : d5b_maint_version( $kind, $item );
-		if ( ! d5b_history_set_after( $new, array( 'version' => $version, 'kept' => $kept_new, 'from_history_id' => $history_id ) ) ) {
+		$final = array( 'version' => $version, 'kept' => $kept_new, 'from_history_id' => $history_id );
+		if ( null !== $left_aside ) { $final += array( 'aside' => $left_aside, 'staging' => null, 'folder' => $where ); }
+		if ( ! d5b_history_set_after( $new, $final ) ) {
 			$warn[] = 'The change history row of the rollback could not be completed.';
 		}
 		return array( 'history_id' => $new, 'version' => $version, 'replaced_version' => $replaced, 'kept' => $kept_new, 'warnings' => $warn );
@@ -680,12 +692,12 @@ if ( ! function_exists( 'd5b_maint_update_sequence' ) ) {
 		// The item's lock (600 s, read fresh) for the whole update: a rollback or another update of the same folder meanwhile is
 		// busy. The automatic restore below runs under the same lock (a nested take).
 		$lock  = d5b_maint_item_lock( $kind, $dir );
-		$token = d5b_maint_lock_take( $lock, d5b_maint_item_lock_ttl(), 'An update or rollback of this ' . $kind );
+		$token = d5b_maint_lock_take( $lock, d5b_maint_item_lock_ttl(), 'An update or rollback of this ' . $kind, true ); // network-wide on a network
 		if ( is_wp_error( $token ) ) { return $token; }
 		try {
 			return d5b_maint_update_run( $kind, $item, $dir, $opts );
 		} finally {
-			d5b_maint_lock_release( $lock, $token );
+			d5b_maint_lock_release( $lock, $token, true );
 		}
 	}
 
@@ -844,48 +856,61 @@ if ( ! function_exists( 'd5b_maint_lock_fresh' ) ) {
 	/**
 	 * A lock transient read past this request's caches, as d5b_wsite_cron_lock_fresh reads doing_cron (wp-cron.php's
 	 * _get_cron_lock): with a persistent object cache the shared copy read with force, else the option row itself. '' when
-	 * there is none.
+	 * there is none. $network (a multisite network): a site transient, read from the network's sitemeta row (or the
+	 * site-transient cache group), shared by every site of the network.
 	 */
-	function d5b_maint_lock_fresh( string $name ): string {
+	function d5b_maint_lock_fresh( string $name, bool $network = false ): string {
 		global $wpdb;
+		$network = $network && is_multisite();
 		if ( function_exists( 'wp_using_ext_object_cache' ) && wp_using_ext_object_cache() ) {
-			$v = function_exists( 'wp_cache_get' ) ? wp_cache_get( $name, 'transient', true ) : false;
+			$v = function_exists( 'wp_cache_get' ) ? wp_cache_get( $name, $network ? 'site-transient' : 'transient', true ) : false;
 			return is_string( $v ) ? $v : '';
 		}
 		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return ''; }
+		if ( $network ) {
+			$net = function_exists( 'get_current_network_id' ) ? (int) get_current_network_id() : 1;
+			$row = $wpdb->get_row( $wpdb->prepare( "SELECT meta_value FROM {$wpdb->sitemeta} WHERE meta_key = %s AND site_id = %d LIMIT 1", '_site_transient_' . $name, $net ) );
+			return is_object( $row ) ? (string) $row->meta_value : '';
+		}
 		$row = $wpdb->get_row( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", '_transient_' . $name ) );
 		return is_object( $row ) ? (string) $row->option_value : '';
 	}
 
 	/**
 	 * Takes the lock $name for $ttl seconds. Read fresh before it is taken (a lock of another request that has not run out
-	 * is busy, 409) and again right after (it must read back as ours, else busy: two requests in the same instant cannot both
-	 * pass). The value is "<expires at>|<random>"; a lock past its time (a request that died) is taken over. A lock this
-	 * request already holds is taken again at once (a nested call: an update that puts its copy back holds that item's lock).
-	 * Released with d5b_maint_lock_release, in finally. $what names the work in the busy message.
+	 * is busy, 409) and again right after (it must read back as ours, else busy). The write and its read-back are not one
+	 * atomic step: two requests in the same few milliseconds could still both pass, so this narrows the window to that, as
+	 * wp-cron.php's own lock does. The value is "<expires at>|<random>"; a lock past its time (a request that died) is taken
+	 * over. A lock this request already holds is taken again at once (a nested call: an update that puts its copy back holds
+	 * that item's lock). Released with d5b_maint_lock_release, in finally. $what names the work in the busy message.
+	 * $network: a site transient on a multisite network (the plugins and themes folders are shared by every site).
 	 * @return string|WP_Error the token, or busy
 	 */
-	function d5b_maint_lock_take( string $name, int $ttl, string $what ) {
-		$mine = $GLOBALS['d5b_maint_locks'][ $name ] ?? null;
-		if ( is_array( $mine ) ) { $GLOBALS['d5b_maint_locks'][ $name ][1]++; return (string) $mine[0]; }
+	function d5b_maint_lock_take( string $name, int $ttl, string $what, bool $network = false ) {
+		$network = $network && is_multisite();
+		$key  = ( $network ? 'net:' : '' ) . $name;
+		$mine = $GLOBALS['d5b_maint_locks'][ $key ] ?? null;
+		if ( is_array( $mine ) ) { $GLOBALS['d5b_maint_locks'][ $key ][1]++; return (string) $mine[0]; }
 		$busy = new WP_Error( 'busy', $what . ' is already running in another request. Wait until it has finished (at most ' . $ttl . ' seconds), read the change history, then decide whether to try again.', array( 'status' => 409 ) );
 		$now  = (int) floor( d5b_maint_now() );
-		$held = d5b_maint_lock_fresh( $name );
+		$held = d5b_maint_lock_fresh( $name, $network );
 		if ( '' !== $held && (int) strtok( $held, '|' ) > $now ) { return $busy; }
 		$token = ( $now + $ttl ) . '|' . bin2hex( random_bytes( 8 ) );
-		set_transient( $name, $token, $ttl );
-		if ( d5b_maint_lock_fresh( $name ) !== $token ) { return $busy; }
-		$GLOBALS['d5b_maint_locks'][ $name ] = array( $token, 1 );
+		if ( $network ) { set_site_transient( $name, $token, $ttl ); } else { set_transient( $name, $token, $ttl ); }
+		if ( d5b_maint_lock_fresh( $name, $network ) !== $token ) { return $busy; }
+		$GLOBALS['d5b_maint_locks'][ $key ] = array( $token, 1 );
 		return $token;
 	}
 
 	/** Releases the lock $name when it is still $token (read fresh); a nested take only counts down. @return bool released */
-	function d5b_maint_lock_release( string $name, string $token ): bool {
-		$mine = $GLOBALS['d5b_maint_locks'][ $name ] ?? null;
-		if ( is_array( $mine ) && $token === $mine[0] && $mine[1] > 1 ) { $GLOBALS['d5b_maint_locks'][ $name ][1]--; return true; }
-		unset( $GLOBALS['d5b_maint_locks'][ $name ] );
-		if ( d5b_maint_lock_fresh( $name ) !== $token ) { return false; }
-		delete_transient( $name );
+	function d5b_maint_lock_release( string $name, string $token, bool $network = false ): bool {
+		$network = $network && is_multisite();
+		$key  = ( $network ? 'net:' : '' ) . $name;
+		$mine = $GLOBALS['d5b_maint_locks'][ $key ] ?? null;
+		if ( is_array( $mine ) && $token === $mine[0] && $mine[1] > 1 ) { $GLOBALS['d5b_maint_locks'][ $key ][1]--; return true; }
+		unset( $GLOBALS['d5b_maint_locks'][ $key ] );
+		if ( d5b_maint_lock_fresh( $name, $network ) !== $token ) { return false; }
+		if ( $network ) { delete_site_transient( $name ); } else { delete_transient( $name ); }
 		return true;
 	}
 

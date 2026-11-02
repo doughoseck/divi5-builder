@@ -382,6 +382,14 @@ site();
 set_transient( 'd5b_users_admin_lock', ( (int) $GLOBALS['T_clock'] + 20 ) . '|' . str_repeat( 'f', 16 ), 30 );
 check( 'M4 the lock held by another request: a role change and a delete are busy; a change without a role is not held up', 'busy' === code( call( 'users-update', array( 'id' => 3, 'role' => 'author' ) ) ) && 'busy' === code( call( 'users-delete', array( 'id' => 3, 'reassign_to' => 1, 'confirmation' => 'x' ) ) ) && is_array( call( 'users-update', array( 'id' => 3, 'display_name' => 'Ed' ) ) ) && array( 'editor' ) === get_userdata( 3 )->roles );
 $GLOBALS['T_clock'] += 21;
+// F2: on a network the administrators lock stays per site (each site counts its own administrators): a site transient.
+site( NET_ADMIN, true );
+$token = d5b_wu_admin_lock();
+check( 'F2 network: the administrators lock is this site\'s transient (not a network one)', is_string( $token ) && $token === ( $GLOBALS['T_transients']['d5b_users_admin_lock'][0] ?? null ) && $token === d5b_maint_lock_fresh( 'd5b_users_admin_lock' ), $token );
+d5b_maint_lock_release( 'd5b_users_admin_lock', $token );
+site();
+set_transient( 'd5b_users_admin_lock', ( (int) $GLOBALS['T_clock'] + 20 ) . '|' . str_repeat( 'f', 16 ), 30 );
+$GLOBALS['T_clock'] += 21;
 check( 'M4 ... past its 30 s it is taken over', is_array( call( 'users-update', array( 'id' => 3, 'role' => 'author' ) ) ) && array( 'author' ) === get_userdata( 3 )->roles );
 check( 'meta-set: a value that is an object -> invalid_input', 'invalid_input' === code( d5b_wu_meta_set( array( 'id' => 4, 'key' => 'k1', 'value' => new ArrayObject( array() ) ) ) ) );
 

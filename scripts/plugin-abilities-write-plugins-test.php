@@ -694,6 +694,8 @@ $r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 )
 $left = array_values( preg_grep( '/^\.d5b-old-akismet-/', scandir( WP_PLUGIN_DIR ) ) );
 $store_dirs = array_values( preg_grep( '/^' . (int) ( $r['history_id'] ?? 0 ) . '-/', (array) @scandir( $T_BASE . '/uploads/d5b-history' ) ) );
 check( 'swap: the move into the store fails whole (rename refused, copy fails): kept null, the replaced files stay WHOLE in the leftover, which the warning names as the only copy; live is 5.0', is_array( $r ) && null === $r['kept'] && null === row( $r['history_id'] )['after']['kept'] && 1 === count( $left ) && $v51 === tree( WP_PLUGIN_DIR . '/' . $left[0] ) && array() === $store_dirs && 1 === count( preg_grep( '/' . preg_quote( $left[0], '/' ) . '.*only copy/', (array) ( $r['warnings'] ?? array() ) ) ) && $v50 === tree( WP_PLUGIN_DIR . '/akismet' ), array( $r, $left, $store_dirs ) );
+$fr = row( $r['history_id'] ?? 0 );
+check( 'F1b ... the completed rollback row still names the dot folder holding the only copy (aside), staging null, kept null', is_array( $fr ) && $left[0] === ( $fr['after']['aside'] ?? null ) && array_key_exists( 'staging', $fr['after'] ) && null === $fr['after']['staging'] && null === $fr['after']['kept'] && '5.0' === ( $fr['after']['version'] ?? null ), $fr['after'] ?? null );
 
 function t_big( $path, $bytes ) { if ( ! is_dir( dirname( $path ) ) ) { mkdir( dirname( $path ), 0777, true ); } $h = fopen( $path, 'w' ); ftruncate( $h, $bytes ); fclose( $h ); clearstatcache(); }
 disk_site();
@@ -809,6 +811,8 @@ $GLOBALS['T_rename_refuse_re'] = '#/\.d5b-(new|old)-#';
 $r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
 $left = array_values( preg_grep( '/^\.d5b-old-akismet-/', scandir( WP_PLUGIN_DIR ) ) );
 check( 'the second rename AND the put-back refused: the live folder is missing, its files whole in .d5b-old-*, the message names it (no "nothing was changed"), staging removed', 'copy_failed' === code( $r ) && ! file_exists( WP_PLUGIN_DIR . '/akismet' ) && 1 === count( $left ) && $v51 === tree( WP_PLUGIN_DIR . '/' . $left[0] ) && false !== strpos( $r->get_error_message(), $left[0] ) && false === strpos( $r->get_error_message(), 'nothing was changed' ) && array() === preg_grep( '/^\.d5b-new-/', scandir( WP_PLUGIN_DIR ) ), array( is_wp_error( $r ) ? $r->get_error_message() : $r, $left ) );
+$sr = row( edata( $r )['history_id'] ?? 0 );
+check( 'F1a ... its rollback row is kept and completed as failed: running false, a plain failed reason, aside = the dot folder, staging null; the error names the row', is_array( $sr ) && 'rollback' === $sr['action'] && false === ( $sr['after']['running'] ?? null ) && '' !== (string) ( $sr['after']['failed'] ?? '' ) && $left[0] === ( $sr['after']['aside'] ?? null ) && array_key_exists( 'staging', $sr['after'] ) && null === $sr['after']['staging'] && false !== strpos( $r->get_error_message(), 'History row ' . $sr['id'] ), array( edata( $r ), $sr ) );
 $GLOBALS['T_rename_refuse_re'] = '';
 
 echo "fix wave M1: a kept copy changed by the plugin's own uninstall routine\n";
@@ -875,6 +879,40 @@ check( 'M2 ... once it has run out, it is taken over and the rollback runs', is_
 disk_site(); $GLOBALS['T_breaks_at'] = array( AKISMET => '5.1' );
 $r = call( 'plugins-update', array( 'plugin' => AKISMET, 'rollback_on_failure' => true ) );
 check( 'M2 rollback_on_failure: the restore inside the update is not refused by the update\'s own lock; the lock is released after', is_array( $r ) && true === $r['rolled_back'] && '5.0' === version_of( AKISMET ) && '' === d5b_maint_lock_fresh( d5b_maint_item_lock( 'plugin', 'akismet' ) ) && array() === ( $GLOBALS['d5b_maint_locks'] ?? array() ), $r );
+
+echo "final review F2: on a network the item lock is one network-wide site transient\n";
+disk_site( ADMIN_ALL, true );
+$u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
+$ln = d5b_maint_item_lock( 'plugin', 'akismet' ); $where = null;
+$GLOBALS['T_rename_hook'] = function ( $from, $to ) use ( &$where, $ln ) { if ( null === $where ) { $where = array( 'site' => is_string( $GLOBALS['T_site_transients'][ $ln ] ?? null ), 'blog' => isset( $GLOBALS['T_transients'][ $ln ] ), 'fresh' => '' !== d5b_maint_lock_fresh( $ln, true ) ); } return null; };
+$r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
+$GLOBALS['T_rename_hook'] = null;
+check( 'F2 network: the rollback holds the lock as a site transient (read fresh from sitemeta), not as this site\'s transient; released after', is_array( $r ) && array( 'site' => true, 'blog' => false, 'fresh' => true ) === $where && ! isset( $GLOBALS['T_site_transients'][ $ln ] ), array( $where, code( $r ) ) );
+$u2 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
+// Another site of the network holds it: its sitemeta row (another request's write, not this request's copy).
+$GLOBALS['T_db_site_transients'][ $ln ] = ( (int) $GLOBALS['T_clock'] + 60 ) . '|' . str_repeat( 'd', 16 );
+check( 'F2 ... a lock another site of the network holds (sitemeta): busy, nothing changed', 'busy' === code( call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u2 ) ) ) && '5.1' === version_of( AKISMET ) );
+unset( $GLOBALS['T_db_site_transients'][ $ln ] );
+set_transient( $ln, ( (int) $GLOBALS['T_clock'] + 60 ) . '|' . str_repeat( 'd', 16 ), 600 );
+check( 'F2 ... a per-site transient of that name does not hold the network up', is_array( call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u2 ) ) ) && '5.0' === version_of( AKISMET ) );
+delete_transient( $ln );
+$GLOBALS['T_db_site_transients'] = array();
+
+echo "final review F4: two plugins in one folder\n";
+disk_site();
+plug_write( 'akismet/akismet-extra.php', 'Akismet Extra', '1.0' );
+$p = call( 'plugins-delete-preview', array( 'plugin' => HELLO ) );
+check( 'F4 preview of a plugin alone in its folder: siblings empty', is_array( $p ) && array() === $p['siblings'], $p );
+update_option( 'active_plugins', array( SELF_FILE ) ); // akismet inactive; its sibling active next
+update_option( 'active_plugins', array( SELF_FILE, 'akismet/akismet-extra.php' ) );
+$p = call( 'plugins-delete-preview', array( 'plugin' => AKISMET ) );
+$d = call( 'plugins-delete', array( 'plugin' => AKISMET, 'confirmation' => 'ABCDEFGHJKLM' ) );
+check( 'F4 an active sibling in the same folder refuses preview and delete (active, naming it); nothing removed', 'active' === code( $p ) && 'akismet/akismet-extra.php' === ( edata( $p )['sibling'] ?? null ) && 'active' === code( $d ) && is_file( WP_PLUGIN_DIR . '/akismet/akismet-extra.php' ) && is_file( WP_PLUGIN_DIR . '/akismet/akismet.php' ) && array() === hrows(), array( code( $p ), code( $d ) ) );
+update_option( 'active_plugins', array( SELF_FILE ) );
+$p = call( 'plugins-delete-preview', array( 'plugin' => AKISMET ) );
+check( 'F4 inactive sibling: the preview lists it in siblings and the note says it goes too', is_array( $p ) && array( 'akismet/akismet-extra.php' ) === $p['siblings'] && false !== strpos( (string) $p['note'], 'akismet/akismet-extra.php' ), $p );
+$d = call( 'plugins-delete', array( 'plugin' => AKISMET, 'confirmation' => $p['confirmation'] ?? '' ) );
+check( 'F4 ... and the delete then removes the folder with both files (as previewed)', is_array( $d ) && true === $d['deleted'] && ! file_exists( WP_PLUGIN_DIR . '/akismet' ), $d );
 
 echo "fix wave M6: the installed folder must be the slug asked for\n";
 disk_site();

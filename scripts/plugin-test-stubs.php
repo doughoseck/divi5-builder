@@ -215,7 +215,7 @@ function wp_slash( $v ) { if ( is_array( $v ) ) { return array_map( 'wp_slash', 
 //   T_user_id          what get_current_user_id returns
 if ( ! defined( 'ARRAY_A' ) ) { define( 'ARRAY_A', 'ARRAY_A' ); }
 class T_Wpdb {
-	public $posts = 'wp_posts'; public $postmeta = 'wp_postmeta'; public $options = 'wp_options';
+	public $posts = 'wp_posts'; public $postmeta = 'wp_postmeta'; public $options = 'wp_options'; public $sitemeta = 'wp_sitemeta';
 	public $users = 'wp_users'; public $usermeta = 'wp_usermeta'; public $comments = 'wp_comments'; public $links = 'wp_links';
 	public $prefix = 'wp_'; public $tables = array(); public $queries = array(); public $unprepared = array(); public $fail_insert = false; public $fail_update = false; public $insert_id = 0; public $suppress_now = false; public $suppress_log = array();
 	private $prepared = array(); private $next_id = 1;
@@ -332,6 +332,13 @@ class T_Wpdb {
 		if ( preg_match( "/^SELECT option_value FROM wp_options WHERE option_name = '_transient_([^']+)' LIMIT 1$/", $sql, $m ) && function_exists( 't_db_transient' ) ) {
 			$v = t_db_transient( stripslashes( $m[1] ) );
 			return null === $v ? null : (object) array( 'option_value' => $v );
+		}
+		// A site transient as the network's sitemeta row holds it (T_db_site_transients when a test models another request's
+		// write, else T_site_transients), as core stores set_site_transient on a multisite network.
+		if ( preg_match( "/^SELECT meta_value FROM wp_sitemeta WHERE meta_key = '_site_transient_([^']+)' AND site_id = \\d+ LIMIT 1$/", $sql, $m ) ) {
+			$k = stripslashes( $m[1] );
+			$v = array_key_exists( $k, $GLOBALS['T_db_site_transients'] ?? array() ) ? $GLOBALS['T_db_site_transients'][ $k ] : ( $GLOBALS['T_site_transients'][ $k ] ?? null );
+			return null === $v ? null : (object) array( 'meta_value' => $v );
 		}
 		// The cron option as the database holds it (T_cron_array, serialized with its version), read past the request's
 		// own copy (T_cron_request_copy, when a test models one, is what _get_cron_array() answers in this request).
@@ -2258,8 +2265,8 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 	// As core's wp_clean_update_cache (update.php): the three update transients.
 	function wp_clean_update_cache() { $GLOBALS['T_traps'][] = 'wp_clean_update_cache'; wp_clean_plugins_cache(); wp_clean_themes_cache(); delete_site_transient( 'update_core' ); }
 	function get_site_transient( $n ) { return $GLOBALS['T_site_transients'][ $n ] ?? false; }
-	function set_site_transient( $n, $v, $ttl = 0 ) { $GLOBALS['T_site_transients'][ $n ] = $v; return true; }
-	function delete_site_transient( $n ) { $GLOBALS['T_site_transient_deletes'][] = $n; $had = isset( $GLOBALS['T_site_transients'][ $n ] ); unset( $GLOBALS['T_site_transients'][ $n ] ); return $had; }
+	function set_site_transient( $n, $v, $ttl = 0 ) { $GLOBALS['T_site_transients'][ $n ] = $v; unset( $GLOBALS['T_db_site_transients'][ $n ] ); if ( isset( $GLOBALS['T_on_set_site'][ $n ] ) ) { $cb = $GLOBALS['T_on_set_site'][ $n ]; unset( $GLOBALS['T_on_set_site'][ $n ] ); $cb(); } return true; }
+	function delete_site_transient( $n ) { $GLOBALS['T_site_transient_deletes'][] = $n; $had = isset( $GLOBALS['T_site_transients'][ $n ] ); unset( $GLOBALS['T_site_transients'][ $n ], $GLOBALS['T_db_site_transients'][ $n ] ); return $had; }
 	// The update checks store what wordpress.org would answer (T_fresh), as core stores the transient after asking.
 	function wp_version_check() { $GLOBALS['T_update_checks'][] = 'wp_version_check'; if ( isset( $GLOBALS['T_fresh']['update_core'] ) ) { set_site_transient( 'update_core', $GLOBALS['T_fresh']['update_core'] ); } }
 	function wp_update_plugins() { $GLOBALS['T_update_checks'][] = 'wp_update_plugins'; if ( isset( $GLOBALS['T_fresh']['update_plugins'] ) ) { set_site_transient( 'update_plugins', $GLOBALS['T_fresh']['update_plugins'] ); } }

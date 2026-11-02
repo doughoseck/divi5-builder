@@ -477,6 +477,19 @@ if ( ! function_exists( 'd5b_wplug_load' ) ) {
 		return $out;
 	}
 
+	/** The other plugin files WordPress lists in the same folder as $plugin (a single-file plugin has none), sorted. */
+	function d5b_wplug_siblings( string $plugin ): array {
+		if ( false === strpos( $plugin, '/' ) || ! function_exists( 'get_plugins' ) ) { return array(); }
+		$dir = dirname( $plugin ) . '/';
+		$out = array();
+		foreach ( array_keys( (array) get_plugins() ) as $f ) {
+			$f = (string) $f;
+			if ( $f !== $plugin && 0 === strpos( $f, $dir ) ) { $out[] = $f; }
+		}
+		sort( $out );
+		return $out;
+	}
+
 	/** Whether deleting $plugin runs an uninstall routine: uninstall.php in its folder, or one registered in uninstall_plugins (as core). */
 	function d5b_wplug_has_uninstall( string $plugin ): bool {
 		if ( function_exists( 'is_uninstallable_plugin' ) ) { return (bool) is_uninstallable_plugin( $plugin ); }
@@ -502,6 +515,12 @@ if ( ! function_exists( 'd5b_wplug_load' ) ) {
 		if ( function_exists( 'is_plugin_active' ) && is_plugin_active( $a['plugin'] ) ) {
 			return new WP_Error( 'active', '"' . $a['plugin'] . '" is active. Deactivate it first (plugins-deactivate, which checks the pages), then delete it.' );
 		}
+		// The delete removes the whole folder: another plugin file in it (two plugins, one folder) goes too.
+		foreach ( d5b_wplug_siblings( $a['plugin'] ) as $sib ) {
+			if ( function_exists( 'is_plugin_active' ) && is_plugin_active( $sib ) ) {
+				return new WP_Error( 'active', '"' . $sib . '" is in the same folder and is active; the delete would remove its files too. Deactivate it first (plugins-deactivate), then delete.', array( 'sibling' => $sib ) );
+			}
+		}
 		$blocked = function_exists( 'wpsu_site_blocked' ) ? (string) wpsu_site_blocked() : '';
 		if ( '' !== $blocked ) { return new WP_Error( 'not_allowed', 'This site refuses plugin deletes: ' . $blocked . '.' ); }
 		return $a;
@@ -524,10 +543,12 @@ if ( ! function_exists( 'd5b_wplug_load' ) ) {
 			$note = 'The plugin has no uninstall routine, so its data (if any) stays in the database. A copy of the files is kept for 30 days: plugins-rollback with the history row puts the plugin back.';
 		}
 		$note .= ' Its translation files (wp-content/languages/plugins) are not copied and are not put back by a rollback; WordPress fetches them again.';
+		$sibs = d5b_wplug_siblings( $plugin );
+		if ( $sibs ) { $note .= ' The folder also holds ' . implode( ', ', $sibs ) . ' (siblings): the delete removes the whole folder, so they go too.'; }
 		if ( $nocopy ) { $note .= ' without_copy: when no copy can be kept the plugin is deleted anyway, and this plugin cannot put it back.'; }
 		return array(
 			'plugin' => $plugin, 'name' => (string) ( $all[ $plugin ]['Name'] ?? $plugin ), 'version' => d5b_maint_version( 'plugin', $plugin ),
-			'keep_data' => $keep, 'without_copy' => $nocopy, 'has_uninstall' => $un, 'bytes' => $size['bytes'], 'files' => $size['files'], 'note' => $note,
+			'keep_data' => $keep, 'without_copy' => $nocopy, 'has_uninstall' => $un, 'siblings' => $sibs, 'bytes' => $size['bytes'], 'files' => $size['files'], 'note' => $note,
 		) + $code;
 	}
 
@@ -660,7 +681,7 @@ if ( ! function_exists( 'd5b_wplug_load' ) ) {
 		array( 'idempotent' => false ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'plugins-delete-preview', 'plugins', 'Preview a plugin delete',
-		'Step one of a plugin delete. Changes nothing. Returns the plugin, its version and size, has_uninstall (WordPress will run its uninstall routine, which usually removes its tables and settings for good) and a note saying what goes for good, with a confirmation code valid for 10 minutes for this user, this plugin, this keep_data and this without_copy. Show the preview to the user and wait for their explicit OK before calling divi5-builder/plugins-delete with the code and the same keep_data and without_copy. The plugin\'s translation files are not copied and a rollback of the delete does not put them back. An active plugin is refused (active): deactivate it first, on purpose, so the pages are checked; a site that refuses file changes is refused (not_allowed) and gets no code. A risky action: needs the Plugins risky switch and delete_plugins (on a network, a network administrator). This plugin itself is refused (self).',
+		'Step one of a plugin delete. Changes nothing. Returns the plugin, its version and size, siblings (other plugin files in the same folder: the delete removes the whole folder, so they go too; an active sibling refuses the delete with active), has_uninstall (WordPress will run its uninstall routine, which usually removes its tables and settings for good) and a note saying what goes for good, with a confirmation code valid for 10 minutes for this user, this plugin, this keep_data and this without_copy. Show the preview to the user and wait for their explicit OK before calling divi5-builder/plugins-delete with the code and the same keep_data and without_copy. The plugin\'s translation files are not copied and a rollback of the delete does not put them back. An active plugin is refused (active): deactivate it first, on purpose, so the pages are checked; a site that refuses file changes is refused (not_allowed) and gets no code. A risky action: needs the Plugins risky switch and delete_plugins (on a network, a network administrator). This plugin itself is refused (self).',
 		array( 'plugin' => $d5b_wplug_plugin, 'keep_data' => $d5b_wplug_keep, 'without_copy' => $d5b_wplug_nocopy ), array( 'plugin' ), 'd5b_wplug_h_delete_preview', d5b_maint_can( 'delete_plugins', true ),
 		array( 'readonly' => true ), array( 'risky' => true ) );
 
