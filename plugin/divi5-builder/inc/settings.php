@@ -280,9 +280,14 @@ if ( ! function_exists( 'd5b_settings_render_history' ) ) {
 				. '</td><td>' . esc_html( $r['summary'] ) . '</td><td>' . esc_html( $r['object_type'] . ' #' . (int) $r['object_id'] ) . '</td><td>' . $rev . '</td><td>';
 			$full = function_exists( 'd5b_history_get' ) ? d5b_history_get( (int) $r['id'] ) : null;
 			if ( is_array( $full ) ) {
+				// A kept plugin or theme copy (2.4.0): its folder in the uploads folder, for a restore by hand; the copies below
+				// show it as { bytes, files } only, as the history abilities do.
+				$folder = function_exists( 'd5b_history_kept_folder' ) ? d5b_history_kept_folder( $full ) : '';
+				if ( '' !== $folder ) { echo '<p>' . esc_html( 'Kept copy: uploads/' . $folder ) . '</p>'; }
 				echo '<details><summary>' . esc_html( 'Before and after' ) . '</summary>';
 				foreach ( array( 'before' => 'Before', 'after' => 'After' ) as $side => $label ) {
-					$json = json_encode( $full[ $side ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR );
+					$shown = function_exists( 'd5b_history_public_side' ) ? d5b_history_public_side( $full[ $side ] ) : $full[ $side ];
+					$json = json_encode( $shown, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR );
 					$json = is_string( $json ) ? $json : '{}';
 					// At most 64 KB per side on the page (a side can be MBs); the full copy is one history-change-get away. The text
 					// is cut with 8 KB to spare BEFORE the masker (a secret across the 64 KB line is still seen whole), then at 64 KB.

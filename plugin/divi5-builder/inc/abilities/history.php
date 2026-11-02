@@ -312,6 +312,40 @@ if ( ! function_exists( 'd5b_history_files_root' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_history_public_side' ) ) {
+	/**
+	 * A before or after side as the history reads return it: every kept copy ({ path, bytes, files }, under a key "kept" at
+	 * any depth) shown as { bytes, files } only, never the store path or its <id>-<hex> folder name (2.4.0). The settings
+	 * page shows the folder next to the row instead (d5b_history_kept_folder), for a restore by hand.
+	 */
+	function d5b_history_public_side( $side ) {
+		if ( ! is_array( $side ) ) { return $side; }
+		foreach ( $side as $k => $v ) {
+			if ( 'kept' === $k && is_array( $v ) && array_key_exists( 'path', $v ) ) {
+				$side[ $k ] = array( 'bytes' => (int) ( $v['bytes'] ?? 0 ), 'files' => (int) ( $v['files'] ?? 0 ) );
+			} elseif ( is_array( $v ) ) {
+				$side[ $k ] = d5b_history_public_side( $v );
+			}
+		}
+		return $side;
+	}
+}
+
+if ( ! function_exists( 'd5b_history_kept_folder' ) ) {
+	/**
+	 * Where the kept copy of a row is, for a person restoring it by hand: "d5b-history/<row id>-<hex>/<kind>/<name>" in the
+	 * uploads folder (never the server's full path), from after.kept; '' when the row kept no copy in the store.
+	 */
+	function d5b_history_kept_folder( array $row ): string {
+		$kept = $row['after']['kept'] ?? null;
+		if ( ! is_array( $kept ) || ! is_string( $kept['path'] ?? null ) ) { return ''; }
+		$root = d5b_history_files_root();
+		$p    = str_replace( '\\', '/', $kept['path'] );
+		if ( '' === $root || 0 !== strpos( $p, $root . '/' ) ) { return ''; }
+		return 'd5b-history/' . substr( $p, strlen( $root ) + 1 );
+	}
+}
+
 if ( ! function_exists( 'd5b_history_files_prepare' ) ) {
 	/**
 	 * Makes the d5b-history folder and closes it to the web (an Apache rule for both 2.2 and 2.4, and an empty index.html so

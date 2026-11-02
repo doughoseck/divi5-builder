@@ -646,6 +646,18 @@ check( 'no match shows the empty line', false !== strpos( html( 'd5b_settings_re
 $_GET = array();
 for ( $i = 0; $i < 70; $i++ ) { put_change( 'bulk/' . $i, 1, 10 + $i ); }
 check( 'the screen shows the newest 50 changes only', 50 === substr_count( html( 'd5b_settings_render_history' ), '<details>' ) );
+// 2.4.0: a kept plugin copy. The page names its folder in the uploads folder (a restore by hand); the copies show it as
+// { bytes, files } only, as the history abilities do; the server's full path is never printed.
+installed(); t_set_caps( array( 'manage_options' ) ); $_GET = array();
+$kroot = d5b_history_files_root();
+$kname = '41-' . str_repeat( 'c', 32 );
+put_change( 'divi5-builder/plugins-update', 1, 30, array( 'object_type' => 'plugin', 'object_id' => 0, 'after' => json_encode( array( 'version' => '5.1', 'kept' => array( 'path' => $kroot . '/' . $kname . '/plugin/akismet', 'bytes' => 88, 'files' => 3 ) ) ) ) );
+$out = html( 'd5b_settings_render_history' );
+check( 'a kept copy: "Kept copy: uploads/d5b-history/<id>-<hex>/plugin/akismet" next to the row; the JSON shows bytes and files, never the path', false !== strpos( $out, 'Kept copy: uploads/d5b-history/' . $kname . '/plugin/akismet' ) && false === strpos( $out, $kroot ) && false !== strpos( $out, '&quot;bytes&quot;: 88' ) && 1 === substr_count( $out, $kname ), $out );
+put_change( 'divi5-builder/plugins-update', 1, 20, array( 'after' => json_encode( array( 'kept' => array( 'path' => '/somewhere/else/akismet', 'bytes' => 1, 'files' => 1 ) ) ) ) );
+$out = html( 'd5b_settings_render_history' );
+check( '... a kept path outside the store is not named (and not printed)', 1 === substr_count( $out, 'Kept copy:' ) && false === strpos( $out, '/somewhere/else' ), $out );
+
 // Final wave D1: at most 64 KB per side on the page, with how much more and where to get it.
 installed(); t_set_caps( array( 'manage_options' ) ); $_GET = array();
 $big = str_repeat( 'é', 60000 ) . 'TAIL-MARKER' . ' api_key=SECRETVALUE77 ';

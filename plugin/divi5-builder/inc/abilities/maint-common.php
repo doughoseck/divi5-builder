@@ -342,19 +342,89 @@ if ( ! function_exists( 'd5b_maint_remove_tree' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_maint_rename' ) ) {
+	/** rename( $from, $to ); a test replaces it with $GLOBALS['d5b_maint_seams']['rename'] (to refuse one, as a host can). */
+	function d5b_maint_rename( string $from, string $to ): bool {
+		$f = $GLOBALS['d5b_maint_seams']['rename'] ?? null;
+		if ( is_callable( $f ) ) { return (bool) $f( $from, $to ); }
+		return @rename( $from, $to );
+	}
+}
+
+if ( ! function_exists( 'd5b_maint_tree_sig' ) ) {
+	/**
+	 * What a folder (or a file) holds, to compare two trees: relative path => size and sha1 of the bytes (a folder: 'dir'),
+	 * sorted. null when it holds a link (never followed) or is not there.
+	 * @return array<string,string>|null
+	 */
+	function d5b_maint_tree_sig( string $path ): ?array {
+		if ( d5b_maint_is_link( $path ) ) { return null; }
+		if ( is_file( $path ) ) { return array( '' => (int) @filesize( $path ) . ':' . (string) @sha1_file( $path ) ); }
+		if ( ! is_dir( $path ) ) { return null; }
+		$out  = array();
+		$walk = function ( string $dir, string $rel ) use ( &$walk, &$out ): bool {
+			foreach ( (array) @scandir( $dir ) as $f ) {
+				if ( '.' === $f || '..' === $f || ! is_string( $f ) ) { continue; }
+				$p = $dir . '/' . $f;
+				$r = '' === $rel ? $f : $rel . '/' . $f;
+				if ( d5b_maint_is_link( $p ) ) { return false; }
+				if ( is_dir( $p ) ) { $out[ $r . '/' ] = 'dir'; if ( ! $walk( $p, $r ) ) { return false; } continue; }
+				$out[ $r ] = (int) @filesize( $p ) . ':' . (string) @sha1_file( $p );
+			}
+			return true;
+		};
+		if ( ! $walk( rtrim( $path, '/' ), '' ) ) { return null; }
+		ksort( $out, SORT_STRING );
+		return $out;
+	}
+}
+
+if ( ! function_exists( 'd5b_maint_copy_in' ) ) {
+	/** Copies a folder (copy_dir) or a single file ($wp_filesystem->copy) to $to, which must not exist yet. @return bool true when $to is a whole copy (tree compare) */
+	function d5b_maint_copy_in( string $from, string $to ): bool {
+		if ( file_exists( $to ) || ! d5b_maint_filesystem() ) { return false; }
+		global $wp_filesystem;
+		$want = d5b_maint_tree_sig( $from );
+		if ( null === $want ) { return false; }
+		$ok = is_dir( $from ) ? true === copy_dir( $from, $to ) : (bool) $wp_filesystem->copy( $from, $to, false, defined( 'FS_CHMOD_FILE' ) ? FS_CHMOD_FILE : 0644 );
+		clearstatcache();
+		return $ok && d5b_maint_tree_sig( $to ) === $want;
+	}
+}
+
 if ( ! function_exists( 'd5b_maint_move' ) ) {
 	/**
-	 * Moves a folder or file: a rename, or (another disk, a host that refuses the rename) a copy that must be whole, then the
-	 * original removed. A part-made copy is removed again. @return bool true when $to holds it and $from is gone
+	 * Moves a folder or a file: a rename, or (another disk, a host that refuses the rename) a whole copy, then the original
+	 * removed. Once the copy at $to is whole it is KEPT whatever happens to $from: when $from cannot be removed after that,
+	 * the answer is moved with a leftover. A part-made copy is removed again and $from is left as it was (not moved).
+	 * @return array{moved:bool,leftover:bool}
 	 */
-	function d5b_maint_move( string $from, string $to ): bool {
-		if ( @rename( $from, $to ) ) { return true; }
-		if ( ! d5b_maint_filesystem() || file_exists( $to ) ) { return false; }
-		global $wp_filesystem;
-		$size = d5b_maint_tree_size( $from );
-		$ok   = is_dir( $from ) ? true === copy_dir( $from, $to ) : (bool) $wp_filesystem->copy( $from, $to, false, defined( 'FS_CHMOD_FILE' ) ? FS_CHMOD_FILE : 0644 );
-		if ( ! $ok || d5b_maint_tree_size( $to ) !== $size ) { d5b_maint_remove_tree( $to ); return false; }
-		return d5b_maint_remove_tree( $from );
+	function d5b_maint_move( string $from, string $to ): array {
+		if ( d5b_maint_rename( $from, $to ) ) { return array( 'moved' => true, 'leftover' => false ); }
+		if ( ! d5b_maint_copy_in( $from, $to ) ) {
+			d5b_maint_remove_tree( $to );
+			return array( 'moved' => false, 'leftover' => false );
+		}
+		return array( 'moved' => true, 'leftover' => ! d5b_maint_remove_tree( $from ) );
+	}
+}
+
+if ( ! function_exists( 'd5b_maint_maintenance' ) ) {
+	/**
+	 * WordPress's maintenance mode on or off, as core's upgraders switch it around a swap (WP_Upgrader::maintenance_mode
+	 * writes or removes ABSPATH/.maintenance): visitors get "Briefly unavailable" for the moment the files change. false when
+	 * the upgrader class or the file system cannot be had (the swap still runs: it is two renames).
+	 */
+	function d5b_maint_maintenance( bool $on ): bool {
+		if ( ! class_exists( 'WP_Upgrader' ) && function_exists( 'wpsu_load_admin' ) ) { wpsu_load_admin(); }
+		if ( ! class_exists( 'WP_Upgrader' ) || ! class_exists( 'Automatic_Upgrader_Skin' ) || ! d5b_maint_filesystem() ) { return false; }
+		try {
+			$u = new WP_Upgrader( new Automatic_Upgrader_Skin() );
+			$u->maintenance_mode( $on );
+			return true;
+		} catch ( Throwable $e ) {
+			return false;
+		}
 	}
 }
 
@@ -385,19 +455,28 @@ if ( ! function_exists( 'd5b_maint_kept_public' ) ) {
 if ( ! function_exists( 'd5b_maint_restore' ) ) {
 	/**
 	 * Puts back the copy kept by history row $history_id (an update, rollback or delete of the plugin or theme in folder
-	 * $dir, or the single-file plugin $dir): a new rollback row is written FIRST (before: the version being replaced), the
-	 * current folder is renamed to <dir>.d5b-<time> beside it, the kept copy is copied in with copy_dir (it stays in the
-	 * store, so a copy can be put back twice), and the renamed folder is moved into the new row's store folder: the new row's
-	 * kept. When the copy cannot be put back whole, the half-made folder is removed and the current one renamed back
-	 * (nothing changed, the new row removed). Never acts on a copy outside the store: the kept path must be
+	 * $dir, or the single-file plugin $dir). Never acts on a copy outside the store: the kept path must be
 	 * <store>/<history_id>-<32 hex>/<kind>/<dir>. The caller checks the row belongs to the item and runs the page checks.
-	 * Errors: not_found (no such row, no copy recorded), copy_missing (the copy is gone or not where a copy is kept),
-	 * store_full, copy_failed, history_unavailable.
+	 *  1. the checks: the copy (copy_missing), the files being replaced against the 512 MB per-copy cap (copy_too_big) and the
+	 *     2 GB store cap (store_full);
+	 *  2. a new rollback row FIRST (before: the version being replaced);
+	 *  3. the kept copy is copied into a staging folder beside the live one, .d5b-new-<dir>-<time>, and compared file by file
+	 *     with the kept copy: a copy that is not whole never touches the live folder (copy_failed; the row removed);
+	 *  4. maintenance mode on; the live folder renamed to .d5b-old-<dir>-<time>, the staging one renamed to <dir>;
+	 *     maintenance mode off; the PHP opcode cache of the folder invalidated. Both names start with a dot, so WordPress
+	 *     never lists a leftover as a plugin;
+	 *  5. the replaced files moved into the new row's store folder: the rollback row's kept (a rollback is undoable). Once a
+	 *     whole copy is in the store it is kept; a leftover is named in the warnings.
+	 * The kept copy stays in the store (it can be put back twice).
+	 * Errors: invalid_input, not_found (no such row, no copy recorded), copy_missing, copy_too_big, store_full, copy_failed,
+	 * history_unavailable.
 	 * @return array{history_id:int,version:string,replaced_version:string,kept:?array,warnings:string[]}|WP_Error
 	 */
 	function d5b_maint_restore( string $kind, string $dir, int $history_id ) {
 		$fail = function ( string $why ) { return new WP_Error( 'copy_failed', 'The kept copy could not be put back: ' . $why . '.', array( 'status' => 503 ) ); };
-		if ( ( 'plugin' !== $kind && 'theme' !== $kind ) || '' === $dir || '.' === $dir || '..' === $dir || 1 === preg_match( '#[/\\\\\x00]#', $dir ) ) { return $fail( 'not a plugin or theme folder' ); }
+		if ( ( 'plugin' !== $kind && 'theme' !== $kind ) || '' === $dir || '.' === $dir[0] || 1 === preg_match( '#[/\\\\\x00]#', $dir ) ) {
+			return new WP_Error( 'invalid_input', 'Not a plugin or theme folder name: ' . substr( preg_replace( '/[^A-Za-z0-9._\- ]/', '?', $dir ), 0, 100 ) . '.' );
+		}
 		$row  = d5b_history_get( $history_id );
 		$kept = is_array( $row ) ? ( $row['after']['kept'] ?? null ) : null;
 		if ( ! is_array( $kept ) || ! is_string( $kept['path'] ?? null ) ) { return new WP_Error( 'not_found', 'History row ' . $history_id . ' kept no copy.' ); }
@@ -420,6 +499,10 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 		$target = $parent . '/' . $dir;
 		if ( d5b_maint_is_link( $target ) ) { return $fail( 'the ' . $kind . ' is a link' ); }
 		$cur = file_exists( $target ) ? d5b_maint_tree_size( $target ) : null;
+		if ( null !== $cur && $cur['links'] > 0 ) { return $fail( 'the ' . $kind . ' contains a link, which is not kept' ); }
+		if ( null !== $cur && $cur['bytes'] > d5b_maint_copy_cap() ) {
+			return new WP_Error( 'copy_too_big', 'The files being replaced are ' . $cur['bytes'] . ' bytes, over the 512 MB a kept copy may take, so nothing was put back.', array( 'status' => 413, 'bytes' => $cur['bytes'], 'cap' => d5b_maint_copy_cap() ) );
+		}
 		$store = d5b_history_store_bytes();
 		if ( null !== $cur && $store + $cur['bytes'] > d5b_maint_store_cap() ) {
 			$oldest = d5b_maint_oldest_row_at();
@@ -427,7 +510,6 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 		}
 		if ( ! d5b_history_files_prepare() ) { return $fail( 'the store folder could not be made' ); }
 		if ( ! d5b_maint_filesystem() ) { return $fail( 'no file system access (copy_dir)' ); }
-		global $wp_filesystem;
 
 		$replaced = '' === $item ? '' : d5b_maint_version( $kind, $item );
 		$to       = (string) ( $row['before']['version'] ?? '' );
@@ -436,37 +518,64 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 			'Rolled back ' . $kind . ' ' . ( '' === $item ? $dir : $item ) . ( '' === $to ? '' : ' to ' . $to ) );
 		if ( $new < 1 ) { return new WP_Error( 'history_unavailable', 'The change history row could not be written, so nothing was put back.' ); }
 
-		// 1. the current files aside, in the same folder (a rename there does not cross a disk)
-		$aside = '';
-		if ( null !== $cur ) {
-			$base = $target . '.d5b-' . (int) d5b_maint_now();
-			$aside = $base;
-			for ( $i = 2; file_exists( $aside ) && $i < 100; $i++ ) { $aside = $base . '-' . $i; }
-			if ( file_exists( $aside ) || ! @rename( $target, $aside ) ) {
-				d5b_history_delete( $new );
-				return $fail( 'the current files could not be moved aside; nothing was changed' );
-			}
+		// Two names beside the live folder (a rename there does not cross a disk), both starting with a dot: WordPress skips
+		// those when it lists plugins, so a leftover never shows up as a second plugin.
+		$free = function ( string $base ): string { $p = $base; for ( $i = 2; file_exists( $p ) && $i < 100; $i++ ) { $p = $base . '-' . $i; } return $p; };
+		$t       = (string) (int) d5b_maint_now();
+		$staging = $free( $parent . '/.d5b-new-' . $dir . '-' . $t );
+		$aside   = null === $cur ? '' : $free( $parent . '/.d5b-old-' . $dir . '-' . $t );
+		$where   = 'the ' . $kind . 's folder';
+
+		// 1. the kept copy into the staging folder, compared file by file: a copy that is not whole never touches the live one
+		if ( file_exists( $staging ) || ( '' !== $aside && file_exists( $aside ) ) || ! d5b_maint_copy_in( $src, $staging ) ) {
+			$clean = d5b_maint_remove_tree( $staging );
+			d5b_history_delete( $new );
+			return $fail( $clean
+				? 'copying the files failed; nothing was changed'
+				: 'copying the files failed; the ' . $kind . ' itself was not changed, but the part-made copy could not be removed: delete ' . basename( $staging ) . ' in ' . $where . ' by hand' );
 		}
-		// 2. the kept copy in, whole, or everything as it was
-		$ok = $single ? (bool) $wp_filesystem->copy( $src, $target, false, defined( 'FS_CHMOD_FILE' ) ? FS_CHMOD_FILE : 0644 ) : true === copy_dir( $src, $target );
-		if ( $ok ) { clearstatcache(); $ok = d5b_maint_tree_size( $target ) === $size; }
-		if ( ! $ok ) {
-			$clean = d5b_maint_remove_tree( $target );
-			$back  = '' === $aside || ( $clean && @rename( $aside, $target ) );
+
+		// 2. the swap: two renames, in maintenance mode as core's upgrader does it
+		$swapped = false; $err = '';
+		$mm = d5b_maint_maintenance( true );
+		try {
+			if ( '' !== $aside && ! d5b_maint_rename( $target, $aside ) ) {
+				$err = 'the live files could not be moved aside';
+			} elseif ( ! d5b_maint_rename( $staging, $target ) ) {
+				$err = 'the copy could not be moved into place';
+				if ( '' !== $aside && ! d5b_maint_rename( $aside, $target ) ) {
+					$err .= ' AND the live files could not be put back: they are in ' . basename( $aside ) . ' in ' . $where . '; rename it to ' . $dir . ' at once';
+				}
+			} else {
+				$swapped = true;
+			}
+		} finally {
+			if ( $mm ) { d5b_maint_maintenance( false ); }
+		}
+		if ( ! $swapped ) {
+			$clean = d5b_maint_remove_tree( $staging );
 			d5b_history_delete( $new );
 			d5b_maint_clean_cache( $kind );
-			return $fail( $back ? 'copying the files failed; the ' . $kind . ' is as it was' : 'copying the files failed AND the current files could not be put back: they are in ' . basename( $aside ) . ' beside the ' . $kind . 's folder\'s other entries; rename it to ' . $dir );
+			return $fail( $err . ( false === strpos( $err, ' AND ' ) ? '; nothing was changed' : '' ) . ( $clean ? '' : '. The staging copy ' . basename( $staging ) . ' in ' . $where . ' could not be removed; delete it by hand' ) );
 		}
+		if ( function_exists( 'wp_opcache_invalidate_directory' ) && is_dir( $target ) ) { wp_opcache_invalidate_directory( $target ); }
+		elseif ( function_exists( 'wp_opcache_invalidate' ) && is_file( $target ) ) { wp_opcache_invalidate( $target, true ); }
+
 		// 3. the replaced files into the new row's store folder: the rollback is itself undoable
 		$warn = array(); $kept_new = null;
 		if ( '' !== $aside ) {
 			$folder = d5b_history_files_root() . '/' . $new . '-' . bin2hex( random_bytes( 16 ) );
 			$dest   = $folder . '/' . $kind . '/' . $dir;
-			if ( @mkdir( $folder . '/' . $kind, 0755, true ) && d5b_maint_move( $aside, $dest ) ) {
+			$mv     = @mkdir( $folder . '/' . $kind, 0755, true ) ? d5b_maint_move( $aside, $dest ) : array( 'moved' => false, 'leftover' => false );
+			if ( $mv['moved'] ) {
+				// A whole copy is in the store: it is the record, kept whatever happened to the files beside the live folder.
 				$kept_new = array( 'path' => $dest, 'bytes' => $cur['bytes'], 'files' => $cur['files'] );
+				if ( $mv['leftover'] ) {
+					$warn[] = 'The files that were replaced are kept in the change history store, but a leftover of them could not be removed from ' . $where . ': delete ' . basename( $aside ) . ' there by hand (WordPress does not list it).';
+				}
 			} else {
-				d5b_history_files_remove( $new );
-				$warn[] = 'The files that were replaced could not be moved into the change history store; they are still in ' . basename( $aside ) . ' in the ' . $kind . 's folder. Remove that folder by hand once the site is fine.';
+				d5b_history_files_remove( $new ); // only the empty (or part-made, already removed) store folder of this row
+				$warn[] = 'The files that were replaced could not be moved into the change history store: they are still in ' . basename( $aside ) . ' in ' . $where . ' (WordPress does not list it). Keep that folder until the site is fine; it is the only copy of them.';
 			}
 		}
 		d5b_maint_clean_cache( $kind );
@@ -489,7 +598,9 @@ if ( ! function_exists( 'd5b_maint_update_sequence' ) ) {
 	 *     $opts['without_copy']: then kept is null and the result says the update cannot be put back by this plugin;
 	 *  4. wpsu_update( kind, item, false ) inside d5b_pages_check (output swallowed, a throw caught);
 	 *  5. d5b_history_set_after: { version (read from disk), kept, pages, rolled_back } (+ failed);
-	 *  6. $opts['rollback_on_failure'] and (the pages got worse or the update failed) with a copy: d5b_maint_restore at once.
+	 *  6. $opts['rollback_on_failure'] and (the pages got worse or the update failed) with a copy: d5b_maint_restore at once,
+	 *     then one more page round, compared with the round from before: pages_after_restore { after, problems } in the
+	 *     row and the result.
 	 * A failed update is the error update_failed whose data carries the same fields as a result.
 	 * @return array|WP_Error
 	 */
@@ -546,7 +657,11 @@ if ( ! function_exists( 'd5b_maint_update_sequence' ) ) {
 				} else {
 					$rolled = true; $rb_id = (int) $rb['history_id']; $version = (string) $rb['version'];
 					$warn   = array_merge( $warn, (array) $rb['warnings'] );
-					$after['rolled_back'] = true; $after['rollback_history_id'] = $rb_id;
+					// One more page round after the restore, compared with the round from before the update.
+					$urls   = array_values( array_map( function ( $p ) { return (string) $p['url']; }, array_filter( (array) $pages['before'], 'is_array' ) ) );
+					$round  = d5b_pages_round( $urls, 60, true );
+					$after_restore = array( 'after' => $round, 'problems' => d5b_pages_compare( (array) $pages['before'], $round ) );
+					$after['rolled_back'] = true; $after['rollback_history_id'] = $rb_id; $after['pages_after_restore'] = $after_restore;
 					if ( ! d5b_history_set_after( $hid, $after ) ) { $warn[] = 'The change history row could not be completed.'; }
 				}
 			}
@@ -560,7 +675,7 @@ if ( ! function_exists( 'd5b_maint_update_sequence' ) ) {
 			$key => $item, 'from' => $from, 'to' => $to, 'version' => $version, 'updated' => $done,
 			'kept' => d5b_maint_kept_public( $kept ), 'history_id' => $hid, 'rolled_back' => $rolled,
 		);
-		if ( $rb_id > 0 ) { $out['rollback_history_id'] = $rb_id; }
+		if ( $rb_id > 0 ) { $out['rollback_history_id'] = $rb_id; $out['pages_after_restore'] = $after_restore; }
 		if ( null !== $copy_error ) { $out['copy_error'] = $copy_error->get_error_code(); }
 		$out += array(
 			'problems' => $problems, 'pages' => $pages, 'human_check' => d5b_human_check(),

@@ -1022,6 +1022,7 @@ function t_media_reset() {
 	$GLOBALS['T_files_unlinked'] = array(); $GLOBALS['T_rename_fail'] = array(); $GLOBALS['T_rename_fail_re'] = ''; $GLOBALS['T_renames'] = array();
 	unset( $GLOBALS['T_http_fn'], $GLOBALS['T_theme_root'], $GLOBALS['wp_filesystem'], $GLOBALS['T_copy_done'] );
 	$GLOBALS['T_user_caps'] = array(); $GLOBALS['T_fs_fail'] = false; $GLOBALS['T_copy_fail'] = false; $GLOBALS['T_fs_copy_fail'] = false; $GLOBALS['T_copy_calls'] = array();
+	$GLOBALS['T_copy_fail_to_re'] = ''; $GLOBALS['T_fs_delete_fail_re'] = ''; unset( $GLOBALS['T_copy_re_done'] );
 }
 // The media delete's file move, plugged here: a REAL rename (the tests use a real temporary uploads folder,
 // T_upload_basedir), except that a source path listed in T_rename_fail fails as a refused rename would (false, nothing
@@ -1127,6 +1128,8 @@ class T_Filesystem {
 		$GLOBALS['T_fs_deletes'][] = array( $file, $recursive );
 		if ( empty( $file ) ) { return false; }
 		$file = str_replace( '\\', '/', $file );
+		// T_fs_delete_fail_re: a file whose path matches cannot be removed (a host's permissions): false, it stays.
+		if ( '' !== ( $GLOBALS['T_fs_delete_fail_re'] ?? '' ) && is_file( $file ) && 1 === preg_match( $GLOBALS['T_fs_delete_fail_re'], $file ) ) { return false; }
 		if ( 'f' === $type || is_file( $file ) ) { return @unlink( $file ); }
 		if ( ! $recursive && is_dir( $file ) ) { return @rmdir( $file ); }
 		$file = rtrim( $file, '/' ) . '/';
@@ -1164,6 +1167,8 @@ function copy_dir( $from, $to, $skip_list = array() ) {
 			$r = copy_dir( $from . $f, $to . $f ); if ( is_wp_error( $r ) ) { return $r; }
 		} else {
 			if ( ! empty( $GLOBALS['T_copy_fail'] ) && ( $GLOBALS['T_copy_done'] = ( $GLOBALS['T_copy_done'] ?? 0 ) + 1 ) > 1 ) { return new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.', $to . $f ); }
+			// T_copy_fail_to_re: a copy whose destination matches fails the same way, after its first file (one copy of several).
+			if ( '' !== ( $GLOBALS['T_copy_fail_to_re'] ?? '' ) && 1 === preg_match( $GLOBALS['T_copy_fail_to_re'], str_replace( '\\', '/', $to . $f ) ) && ( $GLOBALS['T_copy_re_done'] = ( $GLOBALS['T_copy_re_done'] ?? 0 ) + 1 ) > 1 ) { return new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.', $to . $f ); }
 			if ( ! @copy( $from . $f, $to . $f ) ) { return new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.', $to . $f ); }
 		}
 	}
@@ -2037,6 +2042,7 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		$GLOBALS['T_plugin_hooks'] = array(); $GLOBALS['T_hook_log'] = array();
 		$GLOBALS['T_plugins_disk'] = false; $GLOBALS['T_plugins_cache'] = null; $GLOBALS['T_upgrade_result'] = array(); $GLOBALS['T_upgrade_calls'] = array();
 		$GLOBALS['T_copies_at_upgrade'] = null; $GLOBALS['T_uninstalls'] = array(); $GLOBALS['T_delete_calls'] = array(); $GLOBALS['T_fs_deletes'] = array();
+		$GLOBALS['T_maintenance'] = array(); $GLOBALS['T_in_maintenance'] = false; $GLOBALS['T_opcache'] = array();
 	}
 	t_plugins_reset();
 	// The headers core's get_plugin_data reads (the first 8 KB, "Plugin Name:" etc. at the start of a comment line); null without a name.
@@ -2227,8 +2233,25 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 	}
 	// As core's Plugin_Upgrader::install( $package ): true on success (the new plugin in the folder, the plugins cache cleaned),
 	// else what the run left in ->result (false, or a WP_Error such as folder_exists). plugin_info() names the new plugin file.
+	// As core's WP_Upgrader, reduced to maintenance_mode( $enable ): it writes or removes ABSPATH/.maintenance through the global
+	// $wp_filesystem (an Error without it, as core's call on null). Recorded: T_maintenance (each true / false), T_traps
+	// (maintenance_on / maintenance_off), T_in_maintenance (whether it is on now).
+	if ( ! class_exists( 'WP_Upgrader', false ) ) {
+		class WP_Upgrader {
+			public $skin;
+			function __construct( $skin = null ) { $this->skin = $skin; }
+			function maintenance_mode( $enable = false ) {
+				if ( ! is_object( $GLOBALS['wp_filesystem'] ?? null ) ) { throw new Error( 'Call to a member function abspath() on null' ); }
+				$GLOBALS['T_maintenance'][] = (bool) $enable; $GLOBALS['T_traps'][] = $enable ? 'maintenance_on' : 'maintenance_off';
+				$GLOBALS['T_in_maintenance'] = (bool) $enable;
+			}
+		}
+	}
+	// As core (functions.php, 6.2+): the opcode cache of every .php file in a folder; recorded in T_opcache.
+	function wp_opcache_invalidate_directory( $dir ) { $GLOBALS['T_opcache'][] = str_replace( '\\', '/', $dir ); }
+	function wp_opcache_invalidate( $filepath, $force = false ) { $GLOBALS['T_opcache'][] = str_replace( '\\', '/', $filepath ); return true; }
 	if ( ! class_exists( 'Plugin_Upgrader', false ) ) {
-		class Plugin_Upgrader {
+		class Plugin_Upgrader extends WP_Upgrader {
 			public $skin; public $result = array(); private $t_file = '';
 			function __construct( $skin = null ) { $this->skin = $skin; }
 			function install( $package, $args = array() ) {
@@ -2254,6 +2277,8 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 					if ( ! is_object( $current ) || ! isset( $current->response[ $plugin ] ) ) { $results[ $plugin ] = true; continue; }
 					$r = $current->response[ $plugin ];
 					$result = array_key_exists( $plugin, $GLOBALS['T_upgrade_result'] ) ? $GLOBALS['T_upgrade_result'][ $plugin ] : t_plugins_replace( $plugin, (string) $r->new_version );
+					// 'wipe': the run cleared the old folder (clear_destination) and then failed to install the new one.
+					if ( 'wipe' === $result ) { t_plugins_rmtree( WP_PLUGIN_DIR . '/' . ( false !== strpos( $plugin, '/' ) ? dirname( $plugin ) : $plugin ) ); $result = new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.' ); }
 					$results[ $plugin ] = $result;
 					if ( false === $result ) { break; }
 				}
