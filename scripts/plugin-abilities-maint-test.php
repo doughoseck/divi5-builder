@@ -53,9 +53,14 @@ function fresh() {
 	t_reset(); t_set_caps( array( 'read', 'manage_options' ) ); t_set_multisite( false ); $GLOBALS['T_user_id'] = 1;
 	t_rm( $T_BASE ); mkdir( $T_BASE . '/plugins', 0777, true ); mkdir( $T_BASE . '/themes', 0777, true ); mkdir( $T_BASE . '/uploads', 0777, true );
 	$GLOBALS['T_upload_basedir'] = $T_BASE . '/uploads'; $GLOBALS['T_theme_root'] = $T_BASE . '/themes';
-	$GLOBALS['T_clock'] = 1700000000.5;
+	$GLOBALS['T_clock'] = 1700000000.5; $GLOBALS['T_sleeps'] = array();
 }
-$GLOBALS['d5b_maint_seams'] = array( 'now' => function () { return $GLOBALS['T_clock']; } );
+// The clock, and the sleep between retries (recorded, moves the clock, never waits).
+$GLOBALS['d5b_maint_seams'] = array(
+	'now'   => function () { return $GLOBALS['T_clock']; },
+	'sleep' => function ( $s ) { $GLOBALS['T_sleeps'][] = $s; $GLOBALS['T_clock'] += $s; },
+);
+$GLOBALS['T_sleeps'] = array();
 function store() { return $GLOBALS['T_BASE'] . '/uploads/d5b-history'; }
 function row_dirs( $id ) { return array_values( array_filter( (array) @scandir( store() ), function ( $f ) use ( $id ) { return 1 === preg_match( '/^' . $id . '(-[0-9a-f]{32})?$/D', (string) $f ); } ) ); }
 function code( $r ) { return is_wp_error( $r ) ? $r->get_error_code() : null; }
@@ -77,14 +82,17 @@ function ok( $u, $bytes = 50000 ) { return array( 'url' => $u, 'status' => 200, 
 echo "watched pages\n";
 fresh();
 foreach ( array( 1 => '2026-10-01', 2 => '2026-10-09', 3 => '2026-10-03', 4 => '2026-10-08', 5 => '2026-10-05', 6 => '2026-10-07', 7 => '2026-10-02' ) as $i => $d ) {
-	t_add_post( array( 'ID' => 200 + $i, 'post_type' => 'page', 'post_modified_gmt' => $d . ' 10:00:00' ) );
+	// core's column post_modified; the _gmt default is the same for all, so id order would not pass.
+	t_add_post( array( 'ID' => 200 + $i, 'post_type' => 'page', 'post_modified' => $d . ' 10:00:00' ) );
 }
-t_add_post( array( 'ID' => 300, 'post_type' => 'page', 'post_status' => 'draft', 'post_modified_gmt' => '2026-10-30 10:00:00' ) );
-t_add_post( array( 'ID' => 310, 'post_type' => 'post' ) ); t_add_post( array( 'ID' => 311, 'post_type' => 'post' ) ); t_add_post( array( 'ID' => 312, 'post_type' => 'post', 'post_status' => 'draft' ) );
+t_add_post( array( 'ID' => 300, 'post_type' => 'page', 'post_status' => 'draft', 'post_modified' => '2026-10-30 10:00:00' ) );
+// The newest post by post_date is 310, not the higher id 311.
+t_add_post( array( 'ID' => 310, 'post_type' => 'post', 'post_date' => '2026-10-20 10:00:00' ) ); t_add_post( array( 'ID' => 311, 'post_type' => 'post', 'post_date' => '2026-10-05 10:00:00' ) );
+t_add_post( array( 'ID' => 312, 'post_type' => 'post', 'post_status' => 'draft', 'post_date' => '2026-10-30 10:00:00' ) );
 $w = d5b_pages_watched();
 $plain = array_map( function ( $u ) { return preg_replace( '/[?&]d5b=[0-9]+$/', '', $u ); }, $w );
 check( 'watched pages: home + 5 pages + 1 post, at most 7, cache-buster present: home, the five most recently modified published pages, the newest published post',
-	array( 'https://x.example/', 'https://x.example/?p=202', 'https://x.example/?p=204', 'https://x.example/?p=206', 'https://x.example/?p=205', 'https://x.example/?p=203', 'https://x.example/?p=311' ) === $plain, $plain );
+	array( 'https://x.example/', 'https://x.example/?p=202', 'https://x.example/?p=204', 'https://x.example/?p=206', 'https://x.example/?p=205', 'https://x.example/?p=203', 'https://x.example/?p=310' ) === $plain, $plain );
 check( '... every url carries d5b=<time> (the clock, in milliseconds)', 7 === count( array_filter( $w, function ( $u ) { return 1 === preg_match( '/[?&]d5b=1700000000500$/', $u ); } ) ), $w );
 check( '... the home page gets ?d5b=', 'https://x.example/?d5b=1700000000500' === $w[0], $w[0] );
 fresh();
@@ -160,8 +168,25 @@ serve( array(
 ) );
 $c = d5b_pages_check( function () use ( &$broken, &$order ) { $order[] = 'change'; $broken = true; } );
 check( 'a home page that breaks during the change: one problem, not unavailable (one page answered before)', false === $c['unavailable'] && array( 'https://x.example/?d5b=1700000000500: answered 500 (was 200)' ) === $c['problems'] && 2 === count( $c['after'] ), $c['problems'] );
-check( '... the change ran between the two rounds', array( 'fetch', 'change', 'fetch' ) === $order, $order );
+check( '... the change ran between the two rounds; the before round did not retry, the after round asked the broken page 3 times', array( 'fetch', 'change', 'fetch', 'fetch', 'fetch' ) === $order, $order );
 check( '... the page that never answered is not blamed', 1 === count( $c['problems'] ) );
+
+echo "pages, the after round retries\n";
+// A page answering 503 then 200: asked again after 6 s, not a problem.
+fresh(); $seq = array( array( 200, page() ), array( 503, 'busy' ), array( 200, page() ) ); $calls = 0;
+serve( array( 'https://x.example/' => function () use ( &$seq, &$calls ) { return $seq[ min( $calls++, count( $seq ) - 1 ) ]; } ) );
+$c = d5b_pages_check( function () {} );
+check( 'a page answering 503 then 200 on the retry is not a problem (one wait of 6 s)', array() === $c['problems'] && 200 === $c['after'][0]['status'] && array( 6 ) === $GLOBALS['T_sleeps'] && 3 === $calls, array( $c['problems'], $GLOBALS['T_sleeps'], $calls ) );
+fresh(); $seq = array( array( 200, page() ), array( 503, 'busy' ), array( 503, 'busy' ), array( 503, 'busy' ), array( 200, page() ) ); $calls = 0;
+serve( array( 'https://x.example/' => function () use ( &$seq, &$calls ) { return $seq[ min( $calls++, count( $seq ) - 1 ) ]; } ) );
+$c = d5b_pages_check( function () {} );
+check( 'a page answering 503 three times is a problem (asked 3 times in the after round, 2 waits of 6 s, never a fourth)', array( 'https://x.example/?d5b=1700000000500: answered 503 (was 200)' ) === $c['problems'] && array( 6, 6 ) === $GLOBALS['T_sleeps'] && 4 === $calls, array( $c['problems'], $GLOBALS['T_sleeps'], $calls ) );
+fresh(); serve( array( 'https://x.example/a' => array( 503, 'busy' ) ) );
+d5b_pages_round( array( 'https://x.example/a' ) );
+check( 'a round without retry (the before round) asks once and never waits', 1 === count( $GLOBALS['T_http_calls'] ) && array() === $GLOBALS['T_sleeps'] );
+fresh(); serve( array( 'https://x.example/a' => array( 503, 'busy' ), 'https://x.example/b' => array( 200, page() ) ), 30.0 );
+$r = d5b_pages_round( array( 'https://x.example/a', 'https://x.example/b' ), 60, true );
+check( 'the retries count against the budget (30 s a fetch: a, wait, a again, then no time for a third try; b skipped)', array( 6 ) === $GLOBALS['T_sleeps'] && 2 === count( $GLOBALS['T_http_calls'] ) && true === $r[1]['skipped'] && 503 === $r[0]['status'], array( $GLOBALS['T_sleeps'], count( $GLOBALS['T_http_calls'] ), $r ) );
 
 echo "keep a copy\n";
 fresh();
@@ -194,9 +219,15 @@ t_big( store() . '/7-' . str_repeat( 'a', 32 ) . '/plugin/old/big.bin', 21474836
 t_put( WP_PLUGIN_DIR . '/p150/p.php', str_repeat( 'x', 150 ) );
 t_put( WP_PLUGIN_DIR . '/p50/p.php', str_repeat( 'x', 50 ) );
 $store_seen = d5b_history_store_bytes();
+$k_none = d5b_keep_copy( 'plugin', 'p150', 45 );   // no history table rows yet: oldest_row_at null
+global $wpdb; $wpdb->tables[ d5b_history_table() ] = array(
+	array( 'id' => 9, 'created_at' => '2026-10-20 08:00:00' ), array( 'id' => 7, 'created_at' => '2026-10-04 09:30:00' ), array( 'id' => 12, 'created_at' => '2026-10-30 10:00:00' ),
+);
 $k150 = d5b_keep_copy( 'plugin', 'p150', 45 );
 $k50  = d5b_keep_copy( 'plugin', 'p50', 46 );
 t_rm( store() . '/7-' . str_repeat( 'a', 32 ) );
+check( 'store_full carries the store size and the OLDEST history row\'s date (oldest_row_at), in the data and the message', is_wp_error( $k150 ) && '2026-10-04 09:30:00' === ( $k150->get_error_data()['oldest_row_at'] ?? null ) && false !== strpos( $k150->get_error_message(), '2026-10-04 09:30:00' ), is_wp_error( $k150 ) ? $k150->get_error_data() : $k150 );
+check( '... and oldest_row_at null when there is no history row', 'store_full' === code( $k_none ) && array_key_exists( 'oldest_row_at', $k_none->get_error_data() ) && null === $k_none->get_error_data()['oldest_row_at'], is_wp_error( $k_none ) ? $k_none->get_error_data() : $k_none );
 check( 'store full -> store_full (the store plus the new copy over 2 GB), nothing written', 'store_full' === code( $k150 ) && array() === row_dirs( 45 ) && ( $k150->get_error_data()['store_bytes'] ?? null ) === $store_seen, is_wp_error( $k150 ) ? $k150->get_error_data() : $k150 );
 check( '... a copy that still fits is kept (the store counts nested folders: ' . $store_seen . ' bytes)', is_array( $k50 ) && $store_seen >= 2147483648 - 100, $k50 );
 
@@ -262,6 +293,18 @@ check( 'self: divi5-builder/divi5-builder.php and each legacy file true; others 
 	&& ! d5b_maint_self( 'hello.php' ) && ! d5b_maint_self( 'akismet/akismet.php' ) && ! d5b_maint_self( 'divi5-builder/other.php' ) && ! d5b_maint_self( '' ) );
 check( '... this copy where it is installed (a renamed folder) is self too', d5b_maint_self( 'divi5-builder-copy/divi5-builder.php' ) );
 check( '... a different case or a backslash is still self', d5b_maint_self( 'Divi5-Builder\\divi5-builder.php' ) && d5b_maint_self( '/divi5-builder/divi5-builder.php' ) );
+
+echo "the is_super_admin stand-in (as core)\n";
+fresh();
+$GLOBALS['T_users'][5] = (object) array( 'ID' => 5, 'user_login' => 'editor5' ); $GLOBALS['T_users'][6] = (object) array( 'ID' => 6, 'user_login' => 'boss6' );
+t_set_caps( array( 'read', 'delete_users' ) ); $GLOBALS['T_user_id'] = 6; $GLOBALS['T_user_caps'][5] = array( 'read' );
+check( 'single site: the current user with delete_users is; user 5 (the target, without it) is not, whatever the current user has', true === is_super_admin() && false === is_super_admin( 5 ) && true === is_super_admin( 6 ) );
+t_set_caps( array( 'read' ) ); $GLOBALS['T_user_caps'][5] = array( 'read', 'delete_users' );
+check( '... and the other way round: the target has it, the current user has not', false === is_super_admin() && true === is_super_admin( 5 ) );
+check( '... an unknown user and nobody signed in: false', false === is_super_admin( 99 ) && ( function () { $GLOBALS['T_user_id'] = 0; $r = is_super_admin(); $GLOBALS['T_user_id'] = 6; return false === $r; } )() );
+t_set_multisite( true ); update_site_option( 'site_admins', array( 'boss6' ) );
+check( 'multisite: by login in site_admins; the target user 5 is not, user 6 is', false === is_super_admin( 5 ) && true === is_super_admin( 6 ) && true === is_super_admin() );
+t_set_multisite( false ); unset( $GLOBALS['T_users'][5], $GLOBALS['T_users'][6] );
 
 echo "human check\n";
 $h = d5b_human_check();

@@ -267,6 +267,11 @@ class T_Wpdb {
 	function get_var( $sql ) {
 		$this->note( $sql );
 		if ( preg_match( "/^SHOW TABLES LIKE '(.*)'$/", $sql, $m ) ) { $t = stripslashes( stripslashes( $m[1] ) ); return isset( $this->tables[ $t ] ) ? $t : null; }
+		// As MySQL: the smallest created_at, NULL for an empty table (and for a missing one, with an error).
+		if ( preg_match( '/^SELECT MIN\(created_at\) FROM (\S+)$/', $sql, $m ) ) {
+			$rows = $this->tables[ $m[1] ] ?? array(); if ( array() === $rows ) { return null; }
+			$c = array_column( $rows, 'created_at' ); sort( $c, SORT_STRING ); return (string) $c[0];
+		}
 		return null;
 	}
 	// get_col understands the two lookups of the media delete preview, answered from T_meta and T_posts:
@@ -625,10 +630,15 @@ class WP_Query {
 			$rows[] = $p;
 		}
 		usort( $rows, function ( $x, $y ) { return $y->ID <=> $x->ID; } );
-		// orderby modified (as core: by the modified date, newest first with order DESC); other orders stay newest id first.
-		if ( 'modified' === ( $a['orderby'] ?? '' ) ) {
+		// As core: orderby 'date' (core's default, also 'date ID') sorts by the post_date column, 'modified' by post_modified,
+		// order DESC by default, ties by id. A stand-in post without the local column uses its _gmt one (the same here).
+		// Other orders stay newest id first.
+		$ob = trim( (string) ( $a['orderby'] ?? 'date' ) );
+		$col = ( '' === $ob || 'date' === $ob || 'date ID' === $ob ) ? 'post_date' : ( 'modified' === $ob ? 'post_modified' : '' );
+		if ( '' !== $col ) {
 			$asc = 'ASC' === strtoupper( (string) ( $a['order'] ?? 'DESC' ) );
-			usort( $rows, function ( $x, $y ) use ( $asc ) { $c = strcmp( (string) $y->post_modified_gmt, (string) $x->post_modified_gmt ) ?: ( $y->ID <=> $x->ID ); return $asc ? -$c : $c; } );
+			$v = function ( $p ) use ( $col ) { return (string) ( $p->$col ?? ( $p->{$col . '_gmt'} ?? '' ) ); };
+			usort( $rows, function ( $x, $y ) use ( $asc, $v ) { $c = strcmp( $v( $y ), $v( $x ) ) ?: ( $y->ID <=> $x->ID ); return $asc ? -$c : $c; } );
 		}
 		$this->found_posts = count( $rows );
 		$per = max( 1, (int) ( $a['posts_per_page'] ?? 10 ) ); $this->max_num_pages = (int) ceil( $this->found_posts / $per );
@@ -1009,7 +1019,7 @@ function t_media_reset() {
 	$GLOBALS['T_tempfiles'] = array();
 	$GLOBALS['T_files_unlinked'] = array(); $GLOBALS['T_rename_fail'] = array(); $GLOBALS['T_rename_fail_re'] = ''; $GLOBALS['T_renames'] = array();
 	unset( $GLOBALS['T_http_fn'], $GLOBALS['T_theme_root'], $GLOBALS['wp_filesystem'], $GLOBALS['T_copy_done'] );
-	$GLOBALS['T_super_admin'] = false; $GLOBALS['T_fs_fail'] = false; $GLOBALS['T_copy_fail'] = false; $GLOBALS['T_fs_copy_fail'] = false; $GLOBALS['T_copy_calls'] = array();
+	$GLOBALS['T_user_caps'] = array(); $GLOBALS['T_fs_fail'] = false; $GLOBALS['T_copy_fail'] = false; $GLOBALS['T_fs_copy_fail'] = false; $GLOBALS['T_copy_calls'] = array();
 }
 // The media delete's file move, plugged here: a REAL rename (the tests use a real temporary uploads folder,
 // T_upload_basedir), except that a source path listed in T_rename_fail fails as a refused rename would (false, nothing
@@ -1078,12 +1088,30 @@ function home_url( $path = '', $scheme = null ) { $u = 'https://x.example'; retu
 
 // ---- the maintenance stand-ins (#32, 2.4.0). t_media_reset() clears them.
 //   T_theme_root     what get_theme_root returns (a real folder in a test; default ABSPATH/wp-content/themes)
-//   T_super_admin    what is_super_admin returns on a multisite (on a single site core answers delete_users)
+//   T_user_caps      user id => capabilities of a user other than the current one (the current one has T_caps)
+//   super admins     the network option site_admins (logins), as core's get_super_admins reads it
 //   T_fs_fail        WP_Filesystem() fails (returns false, $wp_filesystem stays unset), as with FTP credentials needed
 //   T_copy_fail      copy_dir copies the first file, then fails as core does on a file it cannot copy (WP_Error)
 //   T_fs_copy_fail   $wp_filesystem->copy returns false;  T_copy_calls  every array( function, from, to )
 function get_theme_root( $stylesheet_or_template = '' ) { return $GLOBALS['T_theme_root'] ?? ABSPATH . 'wp-content/themes'; }
-function is_super_admin( $user_id = false ) { return ! empty( $GLOBALS['T_multisite'] ) ? ! empty( $GLOBALS['T_super_admin'] ) : current_user_can( 'delete_users' ); }
+// As core (capabilities.php): the logins in the network option site_admins, ['admin'] when it was never set.
+function get_super_admins() { return get_site_option( 'site_admins', array( 'admin' ) ); }
+// As core's is_super_admin( $user_id ): no id = the current user (none signed in: false); an id is looked up with
+// get_userdata (unknown: false). On a multisite: the user's login is in get_super_admins(); on a single site: THAT user
+// has delete_users (the current user: T_caps; another user: T_user_caps[ id ]).
+function is_super_admin( $user_id = false ) {
+	$id = $user_id ? (int) $user_id : (int) ( $GLOBALS['T_user_id'] ?? 0 );
+	if ( $id < 1 ) { return false; }
+	$user = get_userdata( $id );
+	if ( $user_id && ! $user ) { return false; }
+	$current = $id === (int) ( $GLOBALS['T_user_id'] ?? 0 );
+	if ( ! empty( $GLOBALS['T_multisite'] ) ) {
+		$login = $user ? $user->user_login : ( $current ? ( $GLOBALS['T_user_login'] ?? '' ) : '' );
+		return '' !== (string) $login && in_array( $login, (array) get_super_admins(), true );
+	}
+	$caps = $current ? (array) ( $GLOBALS['T_caps'] ?? array() ) : (array) ( $GLOBALS['T_user_caps'][ $id ] ?? array() );
+	return in_array( 'delete_users', $caps, true );
+}
 // The direct file system (class-wp-filesystem-direct.php), reduced to what the plugin uses: copy( from, to, overwrite, mode ).
 class T_Filesystem {
 	function copy( $from, $to, $overwrite = false, $mode = false ) {

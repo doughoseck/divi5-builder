@@ -73,26 +73,59 @@ if ( ! function_exists( 'd5b_pages_round' ) ) {
 	 * One round of page checks: each url fetched with wp_remote_get (timeout 15 s, a fresh cache-buster, the loopback's own
 	 * sslverify as Site Health has it), read as pageHealth does. Once $budget_s seconds have gone by, the pages left are not
 	 * fetched and come back skipped. A page that does not answer has status 0. The url in the result is the url given.
+	 * $retry (the after round): a page that answers nothing or 5xx is asked again, up to twice, 6 s apart, as the script does
+	 * (right after an update a site can fail once while it leaves maintenance mode); a retry is made only while it fits in the
+	 * budget. The before round does not retry.
 	 * @return array<int, array{url:string,status:int,bytes:int,closed:bool,fatal:string,title:string,skipped:bool}>
 	 */
-	function d5b_pages_round( array $urls, int $budget_s = 60 ): array {
+	function d5b_pages_round( array $urls, int $budget_s = 60, bool $retry = false ): array {
 		$start = d5b_maint_now();
 		$out   = array();
+		$fetch = function ( string $url ): array {
+			$r = wp_remote_get( d5b_maint_bust( $url ), array(
+				'timeout'   => 15,
+				'sslverify' => (bool) apply_filters( 'https_local_ssl_verify', false ),
+				'headers'   => array( 'Cache-Control' => 'no-cache' ),
+			) );
+			if ( is_wp_error( $r ) ) { return d5b_maint_page_health( $url, 0, '' ); }
+			return d5b_maint_page_health( $url, (int) wp_remote_retrieve_response_code( $r ), (string) wp_remote_retrieve_body( $r ) );
+		};
 		foreach ( $urls as $url ) {
 			$url = (string) $url;
 			if ( d5b_maint_now() - $start >= $budget_s ) {
 				$out[] = array( 'url' => $url, 'status' => 0, 'bytes' => 0, 'closed' => false, 'fatal' => '', 'title' => '', 'skipped' => true );
 				continue;
 			}
-			$r = wp_remote_get( d5b_maint_bust( $url ), array(
-				'timeout'   => 15,
-				'sslverify' => (bool) apply_filters( 'https_local_ssl_verify', false ),
-				'headers'   => array( 'Cache-Control' => 'no-cache' ),
-			) );
-			if ( is_wp_error( $r ) ) { $out[] = d5b_maint_page_health( $url, 0, '' ); continue; }
-			$out[] = d5b_maint_page_health( $url, (int) wp_remote_retrieve_response_code( $r ), (string) wp_remote_retrieve_body( $r ) );
+			$h = $fetch( $url );
+			for ( $tries = 1; $retry && $tries < 3 && ( 0 === $h['status'] || $h['status'] >= 500 ); $tries++ ) {
+				if ( d5b_maint_now() - $start + 6 >= $budget_s ) { break; }
+				d5b_maint_sleep( 6 );
+				$h = $fetch( $url );
+			}
+			$out[] = $h;
 		}
 		return $out;
+	}
+}
+
+if ( ! function_exists( 'd5b_maint_sleep' ) ) {
+	/** sleep( $s ); a test replaces it with $GLOBALS['d5b_maint_seams']['sleep'] (the suite never really waits). */
+	function d5b_maint_sleep( int $s ): void {
+		$f = $GLOBALS['d5b_maint_seams']['sleep'] ?? null;
+		if ( is_callable( $f ) ) { $f( $s ); return; }
+		sleep( $s );
+	}
+}
+
+if ( ! function_exists( 'd5b_maint_oldest_row_at' ) ) {
+	/** The created date (UTC, 'Y-m-d H:i:s') of the oldest history row, when space in the store frees up; null when none. */
+	function d5b_maint_oldest_row_at(): ?string {
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return null; }
+		$quiet = method_exists( $wpdb, 'suppress_errors' ) ? $wpdb->suppress_errors( true ) : null;
+		$v     = $wpdb->get_var( 'SELECT MIN(created_at) FROM ' . d5b_history_table() );
+		if ( null !== $quiet ) { $wpdb->suppress_errors( $quiet ); }
+		return is_string( $v ) && '' !== $v ? $v : null;
 	}
 }
 
@@ -138,7 +171,7 @@ if ( ! function_exists( 'd5b_pages_check' ) ) {
 		foreach ( $before as $p ) { if ( 0 !== (int) $p['status'] ) { $unavailable = false; break; } }
 		$change();
 		if ( $unavailable ) { return array( 'before' => $before, 'after' => array(), 'problems' => array(), 'unavailable' => true ); }
-		$after = d5b_pages_round( $urls );
+		$after = d5b_pages_round( $urls, 60, true );
 		return array( 'before' => $before, 'after' => $after, 'problems' => d5b_pages_compare( $before, $after ), 'unavailable' => false );
 	}
 }
@@ -224,7 +257,8 @@ if ( ! function_exists( 'd5b_keep_copy' ) ) {
 		}
 		$store = d5b_history_store_bytes();
 		if ( $store + $size['bytes'] > d5b_maint_store_cap() ) {
-			return new WP_Error( 'store_full', 'The kept copies take ' . $store . ' bytes; this copy (' . $size['bytes'] . ' bytes) would take the store over 2 GB. Copies are removed with their history row after 30 days.', array( 'status' => 507, 'store_bytes' => $store, 'bytes' => $size['bytes'], 'cap' => d5b_maint_store_cap() ) );
+			$oldest = d5b_maint_oldest_row_at();
+			return new WP_Error( 'store_full', 'The kept copies take ' . $store . ' bytes; this copy (' . $size['bytes'] . ' bytes) would take the store over 2 GB. Copies are removed with their history row after 30 days' . ( null === $oldest ? '' : '; the oldest row is from ' . $oldest . ' UTC' ) . '.', array( 'status' => 507, 'store_bytes' => $store, 'bytes' => $size['bytes'], 'cap' => d5b_maint_store_cap(), 'oldest_row_at' => $oldest ) );
 		}
 
 		if ( ! d5b_history_files_prepare() ) { return $fail( 'the store folder could not be made' ); }
