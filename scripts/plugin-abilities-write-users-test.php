@@ -87,7 +87,21 @@ check( '... nor in the history row', 1 === count( hrows() ) && false === strpos(
 $h = hlast();
 check( '... the row: user, create, before null, after the record (login, roles)', 'user' === $h['object_type'] && $id === (int) $h['object_id'] && 'create' === $h['action'] && empty( $h['before'] ) && 'newbie' === $h['after']['login'] && array( 'author' ) === $h['after']['roles'] && (int) ( $r['history_id'] ?? 0 ) === (int) $h['id'], $h );
 check( '... the record leaves out roles-as-meta, the session and secrets (wp_capabilities, session_tokens)', ! isset( $r['meta']['wp_capabilities'] ) && ! isset( $r['meta']['session_tokens'] ) && isset( $r['meta']['nickname'] ), $r['meta'] ?? null );
-$r2 = call( 'users-get', array( 'id' => 3 ) ); // unrelated read: the record shape stays the reads' own
+site( array( 'read', 'list_users', 'create_users' ) );
+$r = call( 'users-create', array( 'login' => 'plainsub', 'email' => 'plainsub@example.org', 'role' => 'subscriber' ) );
+check( 'create without promote_users: the default role (subscriber) is fine', is_array( $r ) && array( 'subscriber' ) === $r['roles'], $r );
+$r = call( 'users-create', array( 'login' => 'wanted', 'email' => 'wanted@example.org', 'role' => 'editor' ) );
+check( 'create without promote_users: any other role (editor) -> not_allowed, nothing created (core gives default_role then)', 'not_allowed' === code( $r ) && false === username_exists( 'wanted' ) && 1 === count( calls( 'wp_insert_user' ) ), code( $r ) );
+$GLOBALS['T_options']['default_role'] = 'author';
+check( '... the site\'s default_role is what counts: author fine, subscriber now refused', is_array( call( 'users-create', array( 'login' => 'auth1', 'email' => 'auth1@example.org', 'role' => 'author' ) ) ) && 'not_allowed' === code( call( 'users-create', array( 'login' => 'sub2', 'email' => 'sub2@example.org', 'role' => 'subscriber' ) ) ) );
+site();
+$bad = array();
+foreach ( array( 'Editor', 'EDITOR', ' editor', 'editor ', "editor\n", 'edi tor' ) as $v ) {
+	$c1 = code( call( 'users-create', array( 'login' => 'var' . strlen( $v ) . ord( $v[0] ), 'email' => 'v' . strlen( $v ) . ord( $v[0] ) . '@example.org', 'role' => $v ) ) );
+	$c2 = code( call( 'users-update', array( 'id' => 4, 'role' => $v ) ) );
+	if ( ! in_array( $c1, array( 'not_allowed', 'invalid_input' ), true ) || ! in_array( $c2, array( 'not_allowed', 'invalid_input' ), true ) ) { $bad[] = array( $v, $c1, $c2 ); }
+}
+check( 'role: case and whitespace variants (Editor, EDITOR, " editor", "editor ", "edi tor") refused by create and update', array() === $bad && array() === calls( 'wp_insert_user' ) && array( 'subscriber' ) === get_userdata( 4 )->roles, $bad );
 site(); $GLOBALS['T_editable_roles'] = array( 'editor', 'author', 'contributor', 'subscriber' );
 $r = call( 'users-create', array( 'login' => 'sneaky', 'email' => 'sneaky@example.org', 'role' => 'administrator' ) );
 check( 'create: a role not in get_editable_roles (administrator for an editor) -> not_allowed, nothing created, no password made', 'not_allowed' === code( $r ) && array() === calls( 'wp_insert_user' ) && array() === calls( 'wp_generate_password' ) && false === username_exists( 'sneaky' ), code( $r ) );
@@ -136,6 +150,40 @@ site( array( 'read', 'list_users', 'edit_users' ) );
 check( 'update: a role change without promote_users -> not_allowed', 'not_allowed' === code( call( 'users-update', array( 'id' => 4, 'role' => 'author' ) ) ) && array( 'subscriber' ) === get_userdata( 4 )->roles );
 site();
 check( 'update: url that is not a web address -> invalid_input', 'invalid_input' === code( call( 'users-update', array( 'id' => 3, 'url' => 'javascript:alert(1)' ) ) ) );
+check( 'update: url with a scheme esc_url_raw keeps but that is not http(s) (ftp:, mailto:, tel:) -> invalid_input, nothing changed', 'invalid_input' === code( call( 'users-update', array( 'id' => 3, 'url' => 'ftp://example.org/x' ) ) ) && 'invalid_input' === code( call( 'users-update', array( 'id' => 3, 'url' => 'mailto:ed@example.org' ) ) ) && 'invalid_input' === code( call( 'users-update', array( 'id' => 3, 'url' => 'tel:12345' ) ) ) && '' === get_userdata( 3 )->user_url && 'mailto:ed@example.org' === esc_url_raw( 'mailto:ed@example.org' ) );
+check( 'update: https url kept; an empty url clears it', is_array( call( 'users-update', array( 'id' => 3, 'url' => 'https://ed.example.org/' ) ) ) && 'https://ed.example.org/' === get_userdata( 3 )->user_url && is_array( call( 'users-update', array( 'id' => 3, 'url' => '' ) ) ) && '' === get_userdata( 3 )->user_url );
+
+echo "the account-takeover guard\n";
+site();
+$GLOBALS['T_roles']['usermanager'] = array( 'name' => 'User manager', 'capabilities' => array( 'read' => true, 'list_users' => true, 'edit_users' => true ) );
+check( 'protected: a custom role holding edit_users (not called administrator) -> other_admin_email', 'other_admin_email' === code( call( 'users-update', array( 'id' => 9, 'email' => 'grab@example.org' ) ) ) && 'manager@example.org' === get_userdata( 9 )->user_email );
+$GLOBALS['T_user_caps'][4] = array( 'manage_options' );
+check( 'protected: a subscriber given manage_options -> other_admin_email', 'other_admin_email' === code( call( 'users-update', array( 'id' => 4, 'email' => 'grab@example.org' ) ) ) );
+$GLOBALS['T_user_caps'][4] = array();
+site( NET_ADMIN, true ); $GLOBALS['T_site_options']['site_admins'] = array( 'boss', 'sub' );
+check( 'protected: a super admin who is a subscriber on this site -> other_admin_email', 'other_admin_email' === code( call( 'users-update', array( 'id' => 4, 'email' => 'grab@example.org' ) ) ) );
+site();
+$r1 = call( 'users-update', array( 'id' => 2, 'role' => 'subscriber' ) );
+$r2 = call( 'users-update', array( 'id' => 2, 'email' => 'attacker@example.org' ) );
+$r3 = call( 'users-password-reset', array( 'id' => 2 ) );
+check( 'chain: demote an administrator, then change their (now unprotected) email: both pass ...', is_array( $r1 ) && is_array( $r2 ) && 'attacker@example.org' === get_userdata( 2 )->user_email, array( code( $r1 ), code( $r2 ) ) );
+check( '... the reset is refused: recently_changed (409), nothing sent', 'recently_changed' === code( $r3 ) && 409 === d5b_ability_http_status( 'recently_changed' ) && array() === calls( 'retrieve_password' ), code( $r3 ) );
+site();
+call( 'users-update', array( 'id' => 4, 'role' => 'author' ) );
+check( 'a role change alone also blocks the reset', 'recently_changed' === code( call( 'users-password-reset', array( 'id' => 4 ) ) ) );
+site();
+call( 'users-update', array( 'id' => 4, 'email' => 'sub.new@example.org' ) );
+check( 'a plain subscriber: email changed, then a reset -> recently_changed', 'recently_changed' === code( call( 'users-password-reset', array( 'id' => 4 ) ) ) && array() === calls( 'retrieve_password' ) );
+foreach ( $GLOBALS['wpdb']->tables[ d5b_history_table() ] as &$row ) { $row['created_at'] = gmdate( 'Y-m-d H:i:s', time() - 86400 - 60 ); } unset( $row );
+check( '... 24 hours later: sent', array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 4 ) ) );
+site();
+call( 'users-update', array( 'id' => 3, 'display_name' => 'Ed Itor', 'description' => 'x' ) );
+check( 'a reset after a change of other fields only (no email, no role) goes through', array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 3 ) ) );
+check( 'a reset with no recent change at all goes through', array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 4 ) ) );
+site();
+check( 'an email change of another user does not block this one', is_array( call( 'users-update', array( 'id' => 3, 'email' => 'ed2@example.org' ) ) ) && array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 4 ) ) );
+site(); $GLOBALS['wpdb']->tables = array_diff_key( $GLOBALS['wpdb']->tables, array( d5b_history_table() => 1 ) );
+check( 'the history cannot be read -> the reset is refused (history_unavailable), nothing sent', 'history_unavailable' === code( d5b_wu_reset( array( 'id' => 3 ) ) ) && array() === calls( 'retrieve_password' ) );
 check( 'update: nothing to change -> invalid_input', 'invalid_input' === code( call( 'users-update', array( 'id' => 3 ) ) ) );
 check( 'update: an unknown user -> not_found', 'not_found' === code( call( 'users-update', array( 'id' => 777, 'display_name' => 'x' ) ) ) );
 
@@ -155,6 +203,27 @@ check( 'last admin: counted fresh at run time, not from the earlier read (which 
 check( '... users-delete-preview of the last administrator -> last_admin', 'last_admin' === code( call( 'users-delete-preview', array( 'id' => 1, 'reassign_to' => 3 ) ) ) );
 check( '... users-delete of the last administrator -> last_admin, nothing deleted', 'last_admin' === code( call( 'users-delete', array( 'id' => 1, 'reassign_to' => 3, 'confirmation' => 'x' ) ) ) && array() === calls( 'wp_delete_user' ) && false !== get_userdata( 1 ) );
 
+site( MANAGER, false, true, 9 );
+// Another request demotes administrator 2 right after our check counted two administrators.
+$GLOBALS['T_after_count'] = function ( $n ) { if ( 1 === $n ) { t_set_roles( 2, array( 'editor' ) ); } };
+$r = call( 'users-update', array( 'id' => 1, 'role' => 'editor' ) );
+check( 'check-then-act: the count changes between the check and the write -> re-counted after, role put back, last_admin', 'last_admin' === code( $r ) && array( 'administrator' ) === get_userdata( 1 )->roles && 1 === count_users()['avail_roles']['administrator'] && false !== strpos( msg( $r ), 'put back' ), array( code( $r ), get_userdata( 1 )->roles ) );
+check( '... no history row for a change that was undone', array() === hrows() );
+site( MANAGER, false, true, 9 );
+$GLOBALS['T_after_count'] = function ( $n ) { if ( 1 === $n ) { t_set_roles( 2, array( 'editor' ) ); } };
+$r = call( 'users-update', array( 'id' => 1, 'role' => 'editor', 'display_name' => 'Still Boss' ) );
+check( '... with another field in the same call: role back, the other field recorded in a row named in the refusal', 'last_admin' === code( $r ) && array( 'administrator' ) === get_userdata( 1 )->roles && 'Still Boss' === get_userdata( 1 )->display_name && 1 === count( hrows() ) && ! isset( hlast()['after']['roles'] ) && (int) ( $r->get_error_data()['history_id'] ?? 0 ) === (int) hlast()['id'], array( code( $r ), hrows() ) );
+site( MANAGER, false, true, 9 );
+$pv = call( 'users-delete-preview', array( 'id' => 1, 'reassign_to' => 3 ) ); // two administrators: fine
+$GLOBALS['T_after_count'] = function ( $n ) { if ( 2 === $n ) { t_set_roles( 2, array( 'editor' ) ); } };
+$r = call( 'users-delete', array( 'id' => 1, 'reassign_to' => 3, 'confirmation' => $pv['confirmation'] ?? '' ) );
+check( 'check-then-act, delete: the other administrator demoted after the first check -> counted again right before the delete, last_admin, nothing deleted, no row left', 'last_admin' === code( $r ) && array() === calls( 'wp_delete_user' ) && false !== get_userdata( 1 ) && array() === hrows(), array( code( $r ), hrows() ) );
+site( array_merge( MANAGER, array( 'manage_network_users' ) ), true, true, 9 ); $GLOBALS['T_site_options']['site_admins'] = array( 'manager' );
+t_add_user( 5, 'otherblog', array( 'administrator' ) ); $GLOBALS['T_user_blogs'][5] = array( 2 ); // an administrator of blog 2 only
+check( 'network: two administrators here; one demoted fine', is_array( call( 'users-update', array( 'id' => 2, 'role' => 'editor' ) ) ) );
+$r = call( 'users-update', array( 'id' => 1, 'role' => 'editor' ) );
+check( 'network: the last administrator of THIS site -> last_admin (blog 2\'s administrator does not count)', 'last_admin' === code( $r ) && array( 'administrator' ) === get_userdata( 1 )->roles, code( $r ) );
+
 // ---- users-password-reset
 echo "users-password-reset\n";
 site();
@@ -173,8 +242,10 @@ for ( $i = 20; $i < 41; $i++ ) { t_add_user( $i, 'u' . $i, array( 'subscriber' )
 $sent = 0; for ( $i = 20; $i < 40; $i++ ) { if ( array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => $i ) ) ) { $sent++; } }
 check( 'reset: 20 different users in an hour: all sent', 20 === $sent, $sent );
 check( '... the 21st -> too_soon (20 per site per hour)', 'too_soon' === code( call( 'users-password-reset', array( 'id' => 40 ) ) ) && 20 === count( calls( 'retrieve_password' ) ) );
-$GLOBALS['T_clock'] += 3601;
-check( '... an hour later: sent again', array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 40 ) ) );
+$GLOBALS['T_clock'] += 3599;
+check( '... still too_soon just before the hour is over', 'too_soon' === code( call( 'users-password-reset', array( 'id' => 40 ) ) ) );
+$GLOBALS['T_clock'] += 2;
+check( '... an hour later: sent again (the site-wide refusals two seconds ago did not spend user 40\'s 10-minute slot)', array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 40 ) ) );
 site(); t_add_user( 30, 'mail@x.org', array( 'subscriber' ), array( 'user_email' => 'real30@example.org' ) ); t_add_user( 31, 'other', array( 'subscriber' ), array( 'user_email' => 'mail@x.org' ) );
 check( 'reset: a login holding @ (core would look it up as an email first, finding user 31): the user\'s own email is passed, user 30 gets it', array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 30 ) ) && 30 === calls( 'retrieve_password' )[0][2] && array( array( 'real30@example.org', 'password_reset_link' ) ) === $GLOBALS['T_user_mails'] );
 site(); $GLOBALS['T_user_fail']['retrieve_password'] = new WP_Error( 'retrieve_password_email_failure', 'The email could not be sent.' );

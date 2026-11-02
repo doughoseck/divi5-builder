@@ -78,6 +78,51 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		return new WP_Error( 'own_account', 'You cannot ' . $what . ' through the abilities. Use your own profile screen in wp-admin (or ask another administrator).' );
 	}
 
+	/**
+	 * True for a user whose email only they themselves change here: a super admin, or anyone holding power over users or the
+	 * site (promote_users, edit_users, manage_options, delete_users), whatever their role is called. An email change plus a reset
+	 * link would hand their account over.
+	 */
+	function d5b_wu_protected( int $id ): bool {
+		if ( is_multisite() && is_super_admin( $id ) ) { return true; }
+		foreach ( array( 'promote_users', 'edit_users', 'manage_options', 'delete_users' ) as $cap ) {
+			if ( user_can( $id, $cap ) ) { return true; }
+		}
+		return false;
+	}
+
+	/** Gives the user exactly $roles again (WP_User::set_role / add_role). True when the user now holds them. */
+	function d5b_wu_restore_roles( int $id, array $roles ): bool {
+		$u = get_userdata( $id );
+		if ( ! is_object( $u ) || ! method_exists( $u, 'set_role' ) || ! method_exists( $u, 'add_role' ) ) { return false; }
+		$u->set_role( '' );
+		foreach ( $roles as $r ) { $u->add_role( (string) $r ); }
+		$now  = get_userdata( $id );
+		$have = is_object( $now ) ? array_map( 'strval', (array) ( $now->roles ?? array() ) ) : array();
+		sort( $have ); $want = array_map( 'strval', $roles ); sort( $want );
+		return $have === $want;
+	}
+
+	/**
+	 * A reset link is refused for 24 hours after the user's email or role was changed through the abilities (users-update rows
+	 * of the change history whose after holds email or roles): a changed address plus a reset link is an account takeover in
+	 * two steps. Fails closed when the history cannot be read. @return true|WP_Error
+	 */
+	function d5b_wu_recently_changed( int $id ) {
+		if ( ! function_exists( 'd5b_history_list' ) || ! d5b_history_table_exists() ) {
+			return new WP_Error( 'history_unavailable', 'The change history cannot be read on this site, so it cannot be checked whether this user\'s email or role changed recently; no reset link was sent.' );
+		}
+		$rows = d5b_history_list( array( 'ability' => 'divi5-builder/users-update', 'object_type' => 'user', 'object_id' => $id, 'since' => gmdate( 'Y-m-d H:i:s', time() - 86400 ) ), 500 );
+		foreach ( $rows as $row ) {
+			$full  = d5b_history_get( (int) $row['id'] );
+			$after = is_array( $full ) ? (array) $full['after'] : array();
+			if ( array_key_exists( 'email', $after ) || array_key_exists( 'roles', $after ) ) {
+				return new WP_Error( 'recently_changed', 'This user\'s email address or role was changed through the abilities in the last 24 hours, so no reset link is sent through them now. Send it from wp-admin if it is wanted.' );
+			}
+		}
+		return true;
+	}
+
 	/** True for a user meta name no ability writes (compared without case, as the database compares names). */
 	function d5b_wu_meta_denied( string $key ): bool {
 		$k = strtolower( $key );
@@ -158,6 +203,11 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		if ( ! is_email( $email ) ) { return new WP_Error( 'invalid_input', 'email is not a valid email address.' ); }
 		$role = (string) $a['role'];
 		$ok = d5b_wu_role_ok( $role ); if ( true !== $ok ) { return $ok; }
+		// As core's edit_user() for a new user: without promote_users the user gets the default role, so any other role needs it.
+		$default = (string) get_option( 'default_role', 'subscriber' );
+		if ( $role !== $default && ! current_user_can( 'promote_users' ) ) {
+			return new WP_Error( 'not_allowed', 'Giving a new user a role other than the default ("' . d5b_rc_cut( $default, 60 ) . '") needs promote_users.' );
+		}
 		$names = array_intersect_key( $a, array( 'display_name' => 1, 'first_name' => 1, 'last_name' => 1 ) );
 		$ok = d5b_wu_masked( $names, array() ); if ( true !== $ok ) { return $ok; }
 		if ( username_exists( $login ) ) { return new WP_Error( 'exists', 'A user with that login already exists.' ); }
@@ -220,8 +270,8 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 				unset( $changes['email'] );
 			} else {
 				if ( $self ) { return d5b_wu_own_error( 'change your own email address' ); }
-				if ( d5b_wu_is_admin( $u ) || ( is_multisite() && is_super_admin( $id ) ) ) {
-					return new WP_Error( 'other_admin_email', 'This user is an administrator: their email address is changed only by themselves, on their own profile screen.' );
+				if ( d5b_wu_protected( $id ) ) {
+					return new WP_Error( 'other_admin_email', 'This user is another administrator or user manager: their email address is changed only by themselves, on their own profile screen.' );
 				}
 				$owner = email_exists( $email );
 				if ( $owner && (int) $owner !== $id ) { return new WP_Error( 'exists', 'Another user already has that email address.' ); }
@@ -230,7 +280,8 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		}
 		if ( isset( $changes['url'] ) ) {
 			$url = esc_url_raw( (string) $changes['url'] );
-			if ( '' !== trim( (string) $changes['url'] ) && '' === $url ) { return new WP_Error( 'invalid_input', 'url must be a web address (http or https).' ); }
+			// esc_url_raw keeps ftp:, mailto: and other schemes too; a profile website is http or https only.
+			if ( '' !== trim( (string) $changes['url'] ) && 1 !== preg_match( '#^https?://#i', $url ) ) { return new WP_Error( 'invalid_input', 'url must be a web address (http or https).' ); }
 			$changes['url'] = $url;
 		}
 		$before = d5b_wu_record( $id );
@@ -241,13 +292,33 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		$data = array( 'ID' => $id );
 		foreach ( $changes as $k => $v ) { $data[ $map[ $k ] ] = $v; }
 		// core unslashes; an email change sends core's own notice to the OLD address (wp_update_user), on purpose not suppressed.
+		$roles_before = array_values( array_map( 'strval', (array) ( $u->roles ?? array() ) ) );
 		$r = wp_update_user( wp_slash( $data ) );
 		if ( is_wp_error( $r ) ) { return d5b_wu_core_error( $r ); }
+		// The last-administrator check above ran before the write; another request may have demoted the other administrator in
+		// between. Counted again now: a site left with none gets the role back and the change is refused.
+		$undo = null; $undone = false;
+		if ( isset( $changes['role'] ) && in_array( 'administrator', $roles_before, true ) && 'administrator' !== $changes['role'] && d5b_wu_admin_count() < 1 ) {
+			if ( d5b_wu_restore_roles( $id, $roles_before ) ) { $undone = true; }
+			else { $undo = 'The site now has no administrator and the role could not be put back: make a user an administrator in wp-admin or with WP-CLI now.'; }
+		}
+		if ( $undone ) {
+			// The role is back; any other field given in the same call did change, and is recorded.
+			$now  = d5b_wu_record( $id );
+			$data = null;
+			if ( $now !== $before ) {
+				$hid  = d5b_wc_history_row( 'divi5-builder/users-update', 'user', $id, 'update', $before, d5b_wc_diff( $before, $now ), 'Updated ' . d5b_wu_label( $u ) . ' (role change undone)' );
+				$data = $hid > 0 ? array( 'history_id' => $hid ) : array( '_history_failed' => true );
+			}
+			$e = d5b_wu_last_admin_error( 'taking the administrator role away (another change made at the same time took the other one; the role was put back)' );
+			return null === $data ? $e : new WP_Error( 'last_admin', $e->get_error_message() . ' The other fields given were changed' . ( isset( $data['history_id'] ) ? '; history row ' . $data['history_id'] . ' holds the previous values.' : '; the history row could not be written.' ), $data );
+		}
 		$after = d5b_wu_record( $id );
 		$hid   = d5b_wc_history_row( 'divi5-builder/users-update', 'user', $id, 'update', $before, d5b_wc_diff( $before, $after ), 'Updated ' . d5b_wu_label( $u ) );
 		$out   = $after;
 		if ( isset( $changes['email'] ) ) { $out['note'] = 'WordPress sent its own notice of the email change to the old address.'; }
 		if ( $hid > 0 ) { $out['history_id'] = $hid; } else { $out['_history_failed'] = true; }
+		if ( null !== $undo ) { return new WP_Error( 'last_admin', $undo, $out ); }
 		return $out;
 	}
 
@@ -263,8 +334,11 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		$id = (int) $u->ID;
 		if ( $id === (int) get_current_user_id() ) { return d5b_wu_own_error( 'reset your own password' ); }
 		if ( ! current_user_can( 'edit_user', $id ) ) { return new WP_Error( 'not_allowed', 'You may not send this user a password reset link.' ); }
-		if ( ! d5b_maint_rate( 'reset_user_' . $id, 1, 600 ) ) { return new WP_Error( 'too_soon', 'A reset link went to this user less than 10 minutes ago. Try again later.' ); }
+		$recent = d5b_wu_recently_changed( $id );
+		if ( true !== $recent ) { return $recent; }
+		// The site limit first: a site-wide refusal must not spend this user's slot.
 		if ( ! d5b_maint_rate( 'reset_site', 20, 3600 ) ) { return new WP_Error( 'too_soon', 'Twenty reset links went out from this site in the last hour. Try again later.' ); }
+		if ( ! d5b_maint_rate( 'reset_user_' . $id, 1, 600 ) ) { return new WP_Error( 'too_soon', 'A reset link went to this user less than 10 minutes ago. Try again later.' ); }
 		$login = (string) $u->user_login;
 		// core's retrieve_password looks a login holding an @ up as an email first: then the user's own email finds exactly them.
 		$r = retrieve_password( wp_slash( strpos( $login, '@' ) ? (string) $u->user_email : $login ) );
@@ -493,6 +567,14 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		if ( $hid < 1 ) { return d5b_wt_history_unavailable(); }
 		$ok = d5b_wc_delete_record_ok( $hid );
 		if ( true !== $ok ) { return $ok; }
+		// The last-administrator check again, as late as it can be: right before the delete. A delete cannot be undone the way a
+		// role change can (the user row and its meta are gone), so this re-count is the best possible; the window left is the
+		// few statements between here and core's delete.
+		$fresh = get_userdata( $id );
+		if ( is_object( $fresh ) && d5b_wu_is_admin( $fresh ) && d5b_wu_admin_count() <= 1 ) {
+			d5b_history_delete( $hid );
+			return d5b_wu_last_admin_error( 'deleting them' );
+		}
 		d5b_wu_admin_includes();
 		if ( is_multisite() ) {
 			$r    = remove_user_from_blog( $id, get_current_blog_id(), $to );
@@ -531,12 +613,12 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 	$d5b_wu_reassign = array( 'reassign_to' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The user who gets every item of the deleted user (required; an existing user of this site, not the one deleted).' ) );
 
 	d5b_wc_def( 'users-create', 'users', 'Create a user',
-		'Creates one user with login, email and role (one of the roles you can give: an editor can never create an administrator), and optionally display_name, first_name, last_name. No password is set or shown: WordPress emails the user its own link to set one. Refuses a login or email already in use (exists), a role you cannot give (not_allowed), an invalid login or email (invalid_input). On a network the user is created for the network and added to this site. A risky action: needs the Users risky switch and create_users. Returns the user (no password, ever) and history_id.',
+		'Creates one user with login, email and role (one of the roles you can give: an editor can never create an administrator), and optionally display_name, first_name, last_name. No password is set or shown: WordPress emails the user its own link to set one. Refuses a login or email already in use (exists), a role you cannot give (not_allowed; a role other than the site\'s default role also needs promote_users), an invalid login or email (invalid_input). On a network the user is created for the network and added to this site. A risky action: needs the Users risky switch and create_users. Returns the user (no password, ever) and history_id.',
 		array( 'login' => array( 'type' => 'string', 'maxLength' => 60, 'description' => 'The login name: letters, digits, spaces and _ . - @ (on a network: lowercase letters and digits, at least 4).' ) ) + $d5b_wu_email + $d5b_wu_role + $d5b_wu_names,
 		array( 'login', 'email', 'role' ), 'd5b_wu_h_create', d5b_wu_can( 'create_users' ), array(), array( 'risky' => true ) );
 
 	d5b_wc_def( 'users-update', 'users', 'Update a user',
-		'Changes display_name, first_name, last_name, url, description, email or role of one user (only the fields given) and returns the user. Refuses: your own role or email (own_account: use your profile screen); another administrator\'s email (other_admin_email: they change it themselves); taking the administrator role from the last administrator (last_admin); a role you cannot give or without promote_users (not_allowed); an email another user has (exists). An email change sends WordPress\'s own notice to the old address. A risky action: needs the Users risky switch and edit_users. The change history keeps the previous values.',
+		'Changes display_name, first_name, last_name, url, description, email or role of one user (only the fields given) and returns the user. Refuses: your own role or email (own_account: use your profile screen); the email of another administrator or user manager (a super admin, or anyone with promote_users, edit_users, manage_options or delete_users: other_admin_email, they change it themselves); taking the administrator role from the last administrator (last_admin); a role you cannot give or without promote_users (not_allowed); an email another user has (exists). An email change sends WordPress\'s own notice to the old address. A risky action: needs the Users risky switch and edit_users. The change history keeps the previous values.',
 		$d5b_wu_id + $d5b_wu_names + array(
 			'url'         => array( 'type' => 'string', 'maxLength' => 200, 'description' => 'The website address (http or https).' ),
 			'description' => array( 'type' => 'string', 'maxLength' => 10000, 'description' => 'The biographical info.' ),
@@ -544,7 +626,7 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		array( 'id' ), 'd5b_wu_h_update', d5b_wu_can( 'edit_users' ), array( 'idempotent' => true ), array( 'risky' => true ) );
 
 	d5b_wc_def( 'users-password-reset', 'users', 'Send a password reset link',
-		'Sends WordPress\'s own password reset email to one user (the link goes to their own address and changes nothing by itself). Returns { sent: true } only: never a password, key or link. Refuses your own account (own_account: use the normal screens), callers without edit_users, and more than one link per user in 10 minutes or 20 per site in an hour (too_soon). A normal write (no risky switch needed).',
+		'Sends WordPress\'s own password reset email to one user (the link goes to their own address and changes nothing by itself). Returns { sent: true } only: never a password, key or link. Refuses your own account (own_account: use the normal screens), callers without edit_users, a user whose email or role was changed through the abilities in the last 24 hours (recently_changed), and more than one link per user in 10 minutes or 20 per site in an hour (too_soon). A normal write (no risky switch needed).',
 		$d5b_wu_id, array( 'id' ), 'd5b_wu_h_reset', d5b_wu_can( 'edit_users' ), array() );
 
 	d5b_wc_def( 'users-meta-set', 'users', 'Set a user field',

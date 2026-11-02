@@ -250,8 +250,9 @@ if ( ! function_exists( 'd5b_ability_http_status' ) ) {
 			'linked' => 409,
 			// Themes (2.4.0): the active theme or its parent (or a network-enabled theme) not deleted; a switch that stopped with an error.
 			'in_use' => 409, 'switch_failed' => 409,
-			// Users (2.4.0): the caller's own account, another administrator's email, the last administrator.
-			'own_account' => 403, 'other_admin_email' => 403, 'last_admin' => 409,
+			// Users (2.4.0): the caller's own account, another administrator's email, the last administrator, a reset link right after
+			// an email or role change.
+			'own_account' => 403, 'other_admin_email' => 403, 'last_admin' => 409, 'recently_changed' => 409,
 			'internal_error' => 500, 'write_failed' => 500,
 		);
 		return $map[ $code ] ?? $default;

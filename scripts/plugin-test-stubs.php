@@ -2620,15 +2620,38 @@ if ( defined( 'T_USER_STANDINS' ) ) {
 	function t_users_reset() {
 		$GLOBALS['T_users'] = array(); $GLOBALS['T_umeta'] = array(); $GLOBALS['T_user_calls'] = array(); $GLOBALS['T_user_pass'] = array();
 		$GLOBALS['T_generated'] = array(); $GLOBALS['T_user_mails'] = array(); $GLOBALS['T_author_ids'] = array(); $GLOBALS['T_user_fail'] = array();
-		$GLOBALS['T_count_users'] = 0; $GLOBALS['T_next_user'] = 50; $GLOBALS['T_editable_roles'] = null;
-		$GLOBALS['T_roles'] = array();
-		foreach ( array( 'administrator', 'editor', 'author', 'contributor', 'subscriber' ) as $r ) { $GLOBALS['T_roles'][ $r ] = array( 'name' => ucfirst( $r ), 'capabilities' => array() ); }
+		$GLOBALS['T_count_users'] = 0; $GLOBALS['T_next_user'] = 50; $GLOBALS['T_editable_roles'] = null; $GLOBALS['T_after_count'] = null; $GLOBALS['T_user_caps'] = array();
+		// The roles with their capabilities as core's defaults hold them, in the part that matters here (user powers).
+		$GLOBALS['T_roles'] = array(
+			'administrator' => array( 'name' => 'Administrator', 'capabilities' => array_fill_keys( array( 'read', 'manage_options', 'list_users', 'create_users', 'edit_users', 'promote_users', 'delete_users', 'remove_users', 'edit_posts' ), true ) ),
+			'editor'        => array( 'name' => 'Editor', 'capabilities' => array_fill_keys( array( 'read', 'edit_posts', 'edit_others_posts', 'publish_posts' ), true ) ),
+			'author'        => array( 'name' => 'Author', 'capabilities' => array_fill_keys( array( 'read', 'edit_posts', 'publish_posts' ), true ) ),
+			'contributor'   => array( 'name' => 'Contributor', 'capabilities' => array_fill_keys( array( 'read', 'edit_posts' ), true ) ),
+			'subscriber'    => array( 'name' => 'Subscriber', 'capabilities' => array( 'read' => true ) ),
+		);
+	}
+	// The user object get_userdata returns: core's WP_User in the part used here (set_role( '' ) takes every role away, add_role adds one).
+	#[AllowDynamicProperties]
+	class T_WP_User {
+		public $ID = 0; public $user_login = ''; public $user_email = ''; public $display_name = ''; public $user_url = ''; public $user_registered = ''; public $roles = array();
+		function __construct( array $f ) { foreach ( $f as $k => $v ) { $this->$k = $v; } }
+		function set_role( $role ) { t_set_roles( $this->ID, '' === (string) $role ? array() : array( (string) $role ) ); }
+		function add_role( $role ) { if ( '' !== (string) $role ) { t_set_roles( $this->ID, array_values( array_unique( array_merge( (array) $this->roles, array( (string) $role ) ) ) ) ); } }
+	}
+	// As core's user_can( user, cap ) for a plain capability: what the user's roles on the current site grant (T_roles), plus
+	// T_user_caps[ id ] when a test gives a user more.
+	function user_can( $user, $cap ) {
+		$u = is_object( $user ) ? $user : get_userdata( (int) $user );
+		if ( ! $u ) { return false; }
+		if ( in_array( $cap, (array) ( $GLOBALS['T_user_caps'][ (int) $u->ID ] ?? array() ), true ) ) { return true; }
+		foreach ( (array) $u->roles as $r ) { if ( ! empty( $GLOBALS['T_roles'][ $r ]['capabilities'][ $cap ] ) ) { return true; } }
+		return false;
 	}
 	// A user as core keeps one: the row, the usual meta (nickname, names, description, the role and level of the current site as
 	// wp_capabilities / wp_user_level, a session) and, on a network, membership of blog 1 when it has a role.
 	function t_add_user( $id, $login, array $roles, array $f = array() ) {
-		$GLOBALS['T_users'][ (int) $id ] = (object) array_merge( array( 'ID' => (int) $id, 'user_login' => $login, 'user_email' => $login . '@example.org', 'display_name' => ucfirst( $login ),
-			'user_url' => '', 'user_registered' => '2026-01-01 10:00:00', 'roles' => array_values( $roles ) ), $f );
+		$GLOBALS['T_users'][ (int) $id ] = new T_WP_User( array_merge( array( 'ID' => (int) $id, 'user_login' => $login, 'user_email' => $login . '@example.org', 'display_name' => ucfirst( $login ),
+			'user_url' => '', 'user_registered' => '2026-01-01 10:00:00', 'roles' => array_values( $roles ) ), $f ) );
 		$GLOBALS['T_umeta'][ (int) $id ] = array( 'nickname' => array( $login ), 'first_name' => array( '' ), 'last_name' => array( '' ), 'description' => array( '' ),
 			'wp_capabilities' => array( array_fill_keys( $roles, true ) ), 'wp_user_level' => array( in_array( 'administrator', $roles, true ) ? '10' : '0' ),
 			'session_tokens' => array( array( 'tokhash' => array( 'expiration' => 1 ) ) ), 'rich_editing' => array( 'true' ) );
@@ -2659,12 +2682,18 @@ if ( defined( 'T_USER_STANDINS' ) ) {
 		return preg_replace( '|\s+|', ' ', trim( $u ) );
 	}
 	function is_email( $email ) { return false !== filter_var( (string) $email, FILTER_VALIDATE_EMAIL ) ? $email : false; }
-	// As core's esc_url_raw for what a profile url holds: http(s) kept, a bare domain gets http://, anything else is dropped.
+	// As core's esc_url_raw: a url with one of wp_allowed_protocols() (http, https, ftp, ftps, mailto, news, irc, gopher, nntp,
+	// feed, telnet, mms, rtsp, sms, svn, tel, fax, xmpp, webcal, urn) is kept, another scheme (javascript:) gives ''; without a
+	// scheme a domain-like start gets http://.
 	function esc_url_raw( $url ) {
 		$url = trim( (string) $url );
-		if ( '' === $url ) { return ''; }
-		if ( preg_match( '#^https?://[^\s"<>]+$#i', $url ) ) { return $url; }
-		return preg_match( '#^[a-z0-9.\-]+\.[a-z]{2,}(/[^\s"<>]*)?$#i', $url ) ? 'http://' . $url : '';
+		if ( '' === $url || preg_match( '/[\s"<>]/', $url ) ) { return ''; }
+		if ( preg_match( '/^([a-z][a-z0-9+.\-]*):/i', $url, $m ) ) {
+			$ok = array( 'http', 'https', 'ftp', 'ftps', 'mailto', 'news', 'irc', 'irc6', 'ircs', 'gopher', 'nntp', 'feed', 'telnet', 'mms', 'rtsp', 'sms', 'svn', 'tel', 'fax', 'xmpp', 'webcal', 'urn' );
+			if ( in_array( strtolower( $m[1] ), $ok, true ) ) { return $url; }
+			if ( ! preg_match( '/^[a-z0-9.\-]+\.[a-z]{2,}:\d/i', $url ) ) { return ''; }
+		}
+		return preg_match( '#^[a-z0-9.\-]+\.[a-z]{2,}([:/][^\s"<>]*)?$#i', $url ) ? 'http://' . $url : '';
 	}
 	// MySQL compares logins and emails without case (utf8mb4_*_ci).
 	function get_user_by( $field, $value ) {
@@ -2718,6 +2747,8 @@ if ( defined( 'T_USER_STANDINS' ) ) {
 			if ( array() === $roles ) { $out['avail_roles']['none'] = ( $out['avail_roles']['none'] ?? 0 ) + 1; }
 			foreach ( $roles as $r ) { $out['avail_roles'][ $r ] = ( $out['avail_roles'][ $r ] ?? 0 ) + 1; }
 		}
+		// T_after_count: a test's stand-in for another request changing the users right after this count was taken.
+		if ( is_callable( $GLOBALS['T_after_count'] ?? null ) ) { call_user_func( $GLOBALS['T_after_count'], $GLOBALS['T_count_users'] ); }
 		return $out;
 	}
 	function get_editable_roles() {
@@ -2742,8 +2773,8 @@ if ( defined( 'T_USER_STANDINS' ) ) {
 		if ( '' !== $email && email_exists( $email ) ) { return new WP_Error( 'existing_user_email', 'Sorry, that email address is already used!' ); }
 		$id = $GLOBALS['T_next_user']++;
 		$role = array_key_exists( 'role', $d ) ? (string) $d['role'] : (string) get_option( 'default_role', 'subscriber' );
-		$GLOBALS['T_users'][ $id ] = (object) array( 'ID' => $id, 'user_login' => $login, 'user_email' => $email, 'display_name' => (string) wp_unslash( $d['display_name'] ?? $login ),
-			'user_url' => (string) wp_unslash( $d['user_url'] ?? '' ), 'user_registered' => '2026-11-02 10:00:00', 'roles' => '' === $role ? array() : array( $role ) );
+		$GLOBALS['T_users'][ $id ] = new T_WP_User( array( 'ID' => $id, 'user_login' => $login, 'user_email' => $email, 'display_name' => (string) wp_unslash( $d['display_name'] ?? $login ),
+			'user_url' => (string) wp_unslash( $d['user_url'] ?? '' ), 'user_registered' => '2026-11-02 10:00:00', 'roles' => '' === $role ? array() : array( $role ) ) );
 		$GLOBALS['T_umeta'][ $id ] = array();
 		$GLOBALS['T_user_pass'][ $id ] = (string) ( $d['user_pass'] ?? '' );
 		foreach ( array( 'nickname' => $login, 'first_name' => '', 'last_name' => '', 'description' => '' ) as $k => $def ) { update_user_meta( $id, $k, $d[ $k ] ?? $def ); }
