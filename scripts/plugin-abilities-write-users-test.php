@@ -125,6 +125,21 @@ check( 'network: wpmu_create_user( login, the generated password, email ), then 
 check( '... a member of this site with the role and the names; notification \'user\'', $id > 0 && is_user_member_of_blog( $id, 1 ) && array( 'editor' ) === $r['roles'] && 'Net' === $r['last_name'] && array( array( 'wp_new_user_notification', $id, null, 'user' ) ) === calls( 'wp_new_user_notification' ), $r );
 check( '... the password in none of result, audit row, history row', false === strpos( json_encode( array( $r, arows(), hrows() ) ), $pw ) );
 check( 'network: a login with capitals (core\'s network rule: a-z and 0-9) -> invalid_input', 'invalid_input' === code( call( 'users-create', array( 'login' => 'NetUser2', 'email' => 'n2@example.org', 'role' => 'editor' ) ) ) );
+echo "fix wave I2: a network create that fails after the network user exists answers ok with warnings and a row\n";
+site( NET_ADMIN, true ); $GLOBALS['T_user_fail']['add_user_to_blog'] = new WP_Error( 'add_fail', 'could not add' );
+$r = call( 'users-create', array( 'login' => 'halfmade', 'email' => 'halfmade@example.org', 'role' => 'author', 'last_name' => 'Half' ) );
+$hid = (int) username_exists( 'halfmade' ); $pw = $GLOBALS['T_generated'][0] ?? '(none)';
+check( 'I2 add_user_to_blog fails: no error, the answer names the user and warns it was not added to this site', is_array( $r ) && $hid > 0 && $hid === (int) ( $r['id'] ?? 0 ) && 1 === count( (array) ( $r['warnings'] ?? array() ) ) && false !== stripos( implode( ' ', (array) $r['warnings'] ), 'not added to this site' ), array( code( $r ), $r ) );
+check( 'I2 ... a create row with the record as after, named in the answer', 1 === count( hrows() ) && 'create' === hlast()['action'] && 'halfmade' === ( hlast()['after']['login'] ?? '' ) && $hid === (int) hlast()['object_id'] && (int) ( $r['history_id'] ?? 0 ) === (int) hlast()['id'], hrows() );
+check( 'I2 ... the names were still set, the set-password email went, no password anywhere', 'Half' === get_user_meta( $hid, 'last_name', true ) && 1 === count( calls( 'wp_new_user_notification' ) ) && false === strpos( json_encode( array( $r, arows(), hrows() ) ), $pw ) );
+site( NET_ADMIN, true ); $GLOBALS['T_user_fail']['wp_update_user'] = new WP_Error( 'db', 'names failed' );
+$r = call( 'users-create', array( 'login' => 'halfnames', 'email' => 'halfnames@example.org', 'role' => 'author', 'display_name' => 'Half' ) );
+$hid = (int) username_exists( 'halfnames' );
+check( 'I2 the names update fails after the user was made and added: no error, a warning that the names were not set', is_array( $r ) && $hid > 0 && is_user_member_of_blog( $hid, 1 ) && array( 'author' ) === ( $r['roles'] ?? null ) && 1 === count( (array) ( $r['warnings'] ?? array() ) ) && false !== stripos( implode( ' ', (array) $r['warnings'] ), 'names' ), array( code( $r ), $r ) );
+check( 'I2 ... and a create row', 1 === count( hrows() ) && 'create' === hlast()['action'] && $hid === (int) hlast()['object_id'] && (int) ( $r['history_id'] ?? 0 ) === (int) hlast()['id'], hrows() );
+site( NET_ADMIN, true ); $GLOBALS['T_user_fail']['wpmu_create_user'] = false;
+$r = call( 'users-create', array( 'login' => 'nevermade', 'email' => 'nevermade@example.org', 'role' => 'author' ) );
+check( 'I2 wpmu_create_user itself fails: still an error, no row', 'write_failed' === code( $r ) && array() === hrows() );
 site( NET_ADMIN, true, true, 3 ); t_set_roles( 3, array( 'administrator' ) );
 check( 'network: a site administrator who is not a super admin cannot create users (core: create_users is network-only)', 'FORBIDDEN' === call( 'users-create', array( 'login' => 'netuser3', 'email' => 'n3@example.org', 'role' => 'editor' ) ) );
 

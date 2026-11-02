@@ -235,16 +235,19 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		if ( email_exists( $email ) ) { return new WP_Error( 'exists', 'A user with that email address already exists.' ); }
 
 		// The password: made and handed to WordPress in the same expression, never kept. Nobody knows it; the user sets their own.
+		$warn = array();
 		if ( is_multisite() ) {
 			// As core on a network: the user is created for the network, then added to this site with the role.
 			$id = wpmu_create_user( $login, wp_generate_password( 24, true, true ), $email );
 			if ( ! $id ) { return new WP_Error( 'write_failed', 'WordPress did not create the user.' ); }
 			$id = (int) $id;
-			$r  = add_user_to_blog( get_current_blog_id(), $id, $role );
-			if ( is_wp_error( $r ) ) { return new WP_Error( 'write_failed', 'The user ' . $id . ' was created for the network but not added to this site: ' . d5b_maint_err_text( $r ) . ' Add them in wp-admin (Users > Add New, existing user).' ); }
+			// From here the network user exists: whatever fails next is a warning on a recorded create, never an error an AI
+			// client would retry (a retry with another login leaves another user behind).
+			$r = add_user_to_blog( get_current_blog_id(), $id, $role );
+			if ( is_wp_error( $r ) ) { $warn[] = 'The user ' . $id . ' was created for the network but not added to this site: ' . d5b_maint_err_text( $r ) . ' Add them in wp-admin (Users > Add New, existing user).'; }
 			if ( array() !== $names ) {
 				$r = wp_update_user( wp_slash( array( 'ID' => $id ) + $names ) );
-				if ( is_wp_error( $r ) ) { return d5b_wu_core_error( $r ); }
+				if ( is_wp_error( $r ) ) { $warn[] = 'The user ' . $id . ' was created but the names (' . implode( ', ', array_keys( $names ) ) . ') were not set: ' . d5b_maint_err_text( $r ) . ' Set them with users-update.'; }
 			}
 		} else {
 			$id = wp_insert_user( wp_slash( array( 'user_login' => $login, 'user_email' => $email, 'role' => $role ) + $names + array( 'user_pass' => wp_generate_password( 24, true, true ) ) ) );
@@ -258,6 +261,7 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		$hid = d5b_wc_history_row( 'divi5-builder/users-create', 'user', $id, 'create', null, $rec, 'Created user ' . $id . " '" . d5b_rc_cut( $login, 60 ) . "' (" . $role . ')' );
 		$out = $rec + array( 'notified' => true, 'note' => 'WordPress emailed the user its own link to set a password. No password is set or shown here.' );
 		if ( $hid > 0 ) { $out['history_id'] = $hid; } else { $out['_history_failed'] = true; }
+		if ( $warn ) { $out['warnings'] = $warn; }
 		return $out;
 	}
 
@@ -642,7 +646,7 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 	$d5b_wu_reassign = array( 'reassign_to' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The user who gets every item of the deleted user (required; an existing user of this site, not the one deleted).' ) );
 
 	d5b_wc_def( 'users-create', 'users', 'Create a user',
-		'Creates one user with login, email and role (one of the roles you can give: an editor can never create an administrator), and optionally display_name, first_name, last_name. No password is set or shown: WordPress emails the user its own link to set one. Refuses a login or email already in use (exists), a role you cannot give (not_allowed; a role other than the site\'s default role also needs promote_users), an invalid login or email (invalid_input). On a network the user is created for the network and added to this site. A risky action: needs the Users risky switch and create_users. Returns the user (no password, ever) and history_id.',
+		'Creates one user with login, email and role (one of the roles you can give: an editor can never create an administrator), and optionally display_name, first_name, last_name. No password is set or shown: WordPress emails the user its own link to set one. Refuses a login or email already in use (exists), a role you cannot give (not_allowed; a role other than the site\'s default role also needs promote_users), an invalid login or email (invalid_input). On a network the user is created for the network and added to this site; once the network user exists the answer is always the created user with history_id, plus warnings when adding it to this site or setting the names failed (do not create it again). A risky action: needs the Users risky switch and create_users. Returns the user (no password, ever) and history_id.',
 		array( 'login' => array( 'type' => 'string', 'maxLength' => 60, 'description' => 'The login name: letters, digits, spaces and _ . - @ (on a network: lowercase letters and digits, at least 4).' ) ) + $d5b_wu_email + $d5b_wu_role + $d5b_wu_names,
 		array( 'login', 'email', 'role' ), 'd5b_wu_h_create', d5b_wu_can( 'create_users' ), array(), array( 'risky' => true ) );
 
