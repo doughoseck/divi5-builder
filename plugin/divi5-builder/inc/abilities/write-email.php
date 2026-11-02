@@ -36,17 +36,17 @@ if ( ! function_exists( 'd5b_wem_send' ) ) {
 		if ( 'me' === $to ) {
 			$u = get_userdata( (int) get_current_user_id() );
 			$addr = is_object( $u ) ? (string) $u->user_email : '';
-			return '' !== $addr && is_email( $addr ) ? array( 'me', $addr, 0 ) : new WP_Error( 'unavailable', 'Your account has no valid email address.' );
+			return '' !== $addr && is_email( $addr ) ? array( 'me', $addr, 0 ) : new WP_Error( 'no_email', 'Your account has no valid email address.' );
 		}
 		if ( 'admin' === $to ) {
 			$addr = (string) get_option( 'admin_email', '' );
-			return '' !== $addr && is_email( $addr ) ? array( 'admin', $addr, 0 ) : new WP_Error( 'unavailable', 'The site\'s admin email is not a valid address.' );
+			return '' !== $addr && is_email( $addr ) ? array( 'admin', $addr, 0 ) : new WP_Error( 'no_email', 'The site\'s admin email is not a valid address.' );
 		}
 		$id = (int) substr( $to, 5 );
 		$u  = $id > 0 && strlen( $to ) <= 25 ? get_userdata( $id ) : false;
 		if ( ! is_object( $u ) || ( is_multisite() && ! is_user_member_of_blog( $id ) ) ) { return new WP_Error( 'not_found', 'No user with that id.' ); }
 		$addr = (string) $u->user_email;
-		return '' !== $addr && is_email( $addr ) ? array( 'user', $addr, $id ) : new WP_Error( 'unavailable', 'That user has no valid email address.' );
+		return '' !== $addr && is_email( $addr ) ? array( 'user', $addr, $id ) : new WP_Error( 'no_email', 'That user has no valid email address.' );
 	}
 
 	/** The note: '' when not given; plain text, at most 500 characters, no secret. @return string|WP_Error */
@@ -79,7 +79,9 @@ if ( ! function_exists( 'd5b_wem_send' ) ) {
 		if ( ! d5b_maint_rate( 'email_test', 5, 3600 ) ) { return new WP_Error( 'too_soon', 'Five test emails were tried from this site in the last hour. Try again later.' ); }
 
 		list( $kind, $addr, $uid ) = $rcpt;
-		$site = html_entity_decode( (string) get_option( 'blogname', '' ), ENT_QUOTES, 'UTF-8' );
+		// The site name as WordPress decodes it for its own mail (only &amp;, &lt;, &gt; and quotes; never &#13;&#10;), and with
+		// no CR, LF or NUL left: a site name can never add a header line, whatever mailer replaces wp_mail.
+		$site = trim( (string) preg_replace( '/[\r\n\x00]+/', ' ', wp_specialchars_decode( (string) get_option( 'blogname', '' ), ENT_QUOTES ) ) );
 		$me   = get_userdata( (int) get_current_user_id() );
 		$who  = is_object( $me ) ? (string) $me->user_login : '';
 		$body = 'This is a test email from ' . ( '' !== $site ? $site : 'your WordPress site' ) . ".\n\n"
@@ -118,7 +120,7 @@ if ( ! function_exists( 'd5b_wem_send' ) ) {
 	// ---- the definition
 
 	d5b_wc_def( 'email-send-test', 'email', 'Send a test email',
-		'Sends a fixed test email (subject "Test email from <site name>"; the site address, the time and who asked, then the optional note) to someone the site already knows: to is "me" (your own address), "admin" (the site\'s admin email) or "user:<id>" (an existing user of this site). Never to an address given here: anything else is refused with invalid_input; an unknown user is not_found; callers without manage_options are refused. note is optional plain text, at most 500 characters, with no secret in it. Returns sent (true or false) and mailer_error (the mailer\'s message when the send failed, else null): a failed send is an answer, not an error, so pass mailer_error on to the user. At most 5 tries per hour per site, failed ones included (too_soon). A normal write: needs the Email category and manage_options, no risky switch. One change-history row records who it went to (me, admin or the user id, never the address) and the outcome.',
+		'Sends a fixed test email (subject "Test email from <site name>"; the site address, the time and who asked, then the optional note) to someone the site already knows: to is "me" (your own address), "admin" (the site\'s admin email) or "user:<id>" (an existing user of this site). Never to an address given here: anything else is refused with invalid_input; an unknown user is not_found; a recipient without a valid address is no_email (409); callers without manage_options are refused. note is optional plain text, at most 500 characters, with no secret in it. Returns sent (true or false) and mailer_error (the mailer\'s message when the send failed, else null): a failed send is an answer, not an error, so pass mailer_error on to the user. At most 5 tries per hour per site, failed ones included (too_soon). A normal write: needs the Email category and manage_options, no risky switch. One change-history row records who it went to (me, admin or the user id, never the address) and the outcome.',
 		array(
 			'to'   => array( 'type' => 'string', 'maxLength' => 25, 'description' => 'me, admin or user:<id>.' ),
 			'note' => array( 'type' => 'string', 'maxLength' => 500, 'description' => 'Optional plain text added after the fixed text.' ),

@@ -2927,3 +2927,22 @@ if ( ! function_exists( 'wp_mail' ) ) {
 if ( ! function_exists( 'wp_date' ) ) {
 	function wp_date( $format, $timestamp = null, $timezone = null ) { return $GLOBALS['T_wp_date'] ?? gmdate( (string) $format, null === $timestamp ? time() : (int) $timestamp ); }
 }
+// As core 6.4.1 (wp-includes/formatting.php): only the HTML special characters are decoded (&amp; &lt; &gt; and, with
+// ENT_QUOTES, the quotes), with their zero-padded numeric forms; every other entity (&#13; included) stays as it is.
+if ( ! function_exists( 'wp_specialchars_decode' ) ) {
+	function wp_specialchars_decode( $text, $quote_style = ENT_NOQUOTES ) {
+		$text = (string) $text;
+		if ( '' === $text || false === strpos( $text, '&' ) ) { return $text; }
+		if ( empty( $quote_style ) ) { $quote_style = ENT_NOQUOTES; } elseif ( ! in_array( $quote_style, array( 0, 2, 3, 'single', 'double' ), true ) ) { $quote_style = ENT_QUOTES; }
+		$single = array( '&#039;' => '\'', '&#x27;' => '\'' );                 $single_preg = array( '/&#0*39;/' => '&#039;', '/&#x0*27;/i' => '&#x27;' );
+		$double = array( '&quot;' => '"', '&#034;' => '"', '&#x22;' => '"' );  $double_preg = array( '/&#0*34;/' => '&#034;', '/&#x0*22;/i' => '&#x22;' );
+		$others = array( '&lt;' => '<', '&#060;' => '<', '&gt;' => '>', '&#062;' => '>', '&amp;' => '&', '&#038;' => '&', '&#x26;' => '&' );
+		$others_preg = array( '/&#0*60;/' => '&#060;', '/&#0*62;/' => '&#062;', '/&#0*38;/' => '&#038;', '/&#x0*26;/i' => '&#x26;' );
+		if ( ENT_QUOTES === $quote_style ) { $t = array_merge( $single, $double, $others ); $p = array_merge( $single_preg, $double_preg, $others_preg ); }
+		elseif ( ENT_COMPAT === $quote_style || 'double' === $quote_style ) { $t = array_merge( $double, $others ); $p = array_merge( $double_preg, $others_preg ); }
+		elseif ( 'single' === $quote_style ) { $t = array_merge( $single, $others ); $p = array_merge( $single_preg, $others_preg ); }
+		else { $t = $others; $p = $others_preg; }
+		$text = preg_replace( array_keys( $p ), array_values( $p ), $text );
+		return strtr( $text, $t );
+	}
+}

@@ -25,6 +25,7 @@ require $dir . '/inc/abilities/secrets.php';
 require $dir . '/inc/abilities/audit.php';
 require $dir . '/inc/abilities/scrub.php';
 require $dir . '/inc/abilities/history.php';
+require $dir . '/inc/abilities/maint-common.php'; // the store cap the history tab names (d5b_maint_store_cap)
 require $dir . '/inc/gate.php';
 require $dir . '/inc/takeover.php';
 require $dir . '/inc/settings.php';
@@ -667,7 +668,7 @@ put_change( 'divi5-builder/plugins-update', 1, 20, array( 'after' => json_encode
 $out = html( 'd5b_settings_render_history' );
 check( '... a kept path outside the store is not named (and not printed)', 1 === substr_count( $out, 'Kept copy:' ) && false === strpos( $out, '/somewhere/else' ), $out );
 // 2.4.0: the store size, from d5b_history_store_bytes(), as a plain line on the history tab.
-check( 'the store size line: nothing kept -> "Kept copies of plugins, themes and media: 0.0 MB of the 2 GB limit"', false !== strpos( $out, 'Kept copies of plugins, themes and media: ' . number_format( d5b_history_store_bytes() / 1048576, 1 ) . ' MB of the 2 GB limit' ), $out );
+check( 'the store size line: nothing kept -> "Kept copies of plugins, themes and media: 0.0 MB of the 2 GB limit" (the limit is d5b_maint_store_cap)', false !== strpos( $out, 'Kept copies of plugins, themes and media: 0.0 MB of the 2 GB limit' ) && 2147483648 === d5b_maint_store_cap(), $out );
 $kdir = $kroot . '/' . $kname . '/plugin/akismet';
 @mkdir( $kdir, 0777, true ); file_put_contents( $kdir . '/a.bin', str_repeat( 'x', 1048576 ) ); file_put_contents( $kdir . '/b.bin', str_repeat( 'y', 524288 ) );
 $out = html( 'd5b_settings_render_history' );

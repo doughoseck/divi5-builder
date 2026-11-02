@@ -266,7 +266,10 @@ if ( ! function_exists( 'd5b_settings_render_history' ) ) {
 		echo '<h2>Change history</h2>';
 		echo '<p class="description">' . esc_html( 'The newest 50 changes the AI abilities made on this site, kept for 30 days. Times are UTC. Open a row to see the content from before and after the change; secrets are masked.' ) . '</p>';
 		if ( function_exists( 'd5b_history_store_bytes' ) ) {
-			echo '<p>' . esc_html( 'Kept copies of plugins, themes and media: ' . number_format( d5b_history_store_bytes() / 1048576, 1 ) . ' MB of the 2 GB limit' ) . '</p>';
+			// The limit as the store enforces it (d5b_maint_store_cap), in GB when it is whole GB, else in MB.
+			$cap   = function_exists( 'd5b_maint_store_cap' ) ? (int) d5b_maint_store_cap() : 2147483648;
+			$limit = 0 === $cap % 1073741824 ? ( $cap / 1073741824 ) . ' GB' : number_format( $cap / 1048576, 0 ) . ' MB';
+			echo '<p>' . esc_html( 'Kept copies of plugins, themes and media: ' . number_format( d5b_history_store_bytes() / 1048576, 1 ) . ' MB of the ' . $limit . ' limit' ) . '</p>';
 		}
 		echo '<form method="get" action="' . esc_url( $base ) . '">';
 		echo '<input type="hidden" name="page" value="divi5-builder" />';

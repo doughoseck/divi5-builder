@@ -102,8 +102,22 @@ $GLOBALS['T_user_blogs'][5] = array( 2 ); $GLOBALS['T_users'][5] = (object) arra
 check( 'network: a user of another site is not found here', 'not_found' === code( send( array( 'to' => 'user:5' ) ) ) && array() === mails() );
 site();
 $GLOBALS['T_options']['admin_email'] = 'not an address';
-check( 'admin_email not an address: unavailable, nothing sent', 'unavailable' === code( send( array( 'to' => 'admin' ) ) ) && array() === mails() );
+check( 'admin_email not an address: no_email (409, a state of the site, not a server error), nothing sent', 'no_email' === code( send( array( 'to' => 'admin' ) ) ) && 409 === d5b_ability_http_status( 'no_email' ) && array() === mails() );
+$GLOBALS['T_users'][1]->user_email = '';
+check( '... the caller without an address (to me): no_email', 'no_email' === code( send( array( 'to' => 'me' ) ) ) && array() === mails() );
+$GLOBALS['T_users'][3] = (object) array( 'ID' => 3, 'user_login' => 'noaddr', 'user_email' => 'not-an-address', 'display_name' => 'N', 'user_url' => '', 'user_registered' => '', 'roles' => array( 'editor' ) );
+check( '... a user without a valid address: no_email', 'no_email' === code( send( array( 'to' => 'user:3' ) ) ) && array() === mails() );
 check( 'the invalid tries spent no slot of the limit', ! get_transient( 'd5b_rate_' . md5( 'email_test' ) ) || 0 === (int) ( get_transient( 'd5b_rate_' . md5( 'email_test' ) )['count'] ?? 0 ) );
+
+// M12: a site name can never add a header line: an entity-encoded CR/LF stays text (WordPress's own decode), raw CR/LF/NUL go.
+foreach ( array( "Shop&#13;&#10;Bcc: spy@evil.example", "Shop\r\nBcc: spy@evil.example", "Shop\nBcc: spy@evil.example\0", 'Shop&#x0d;&#x0a;Bcc: spy@evil.example' ) as $i => $bn ) {
+	site(); $GLOBALS['T_options']['blogname'] = $bn;
+	send( array( 'to' => 'me' ) );
+	$subj = (string) ( mails()[0][1] ?? '' );
+	check( 'M12 site name #' . $i . ' with a line break (encoded or raw): the subject has no CR, LF or NUL', '' !== $subj && 1 !== preg_match( '/[\r\n\x00]/', $subj ) && 0 === strpos( $subj, 'Test email from Shop' ), json_encode( $subj ) );
+	// Decoded as WordPress decodes the site name for its own mail (wp_specialchars_decode): a numeric line break stays text.
+	if ( 0 === $i ) { check( 'M12 ... the encoded one stays as text, as in WordPress\'s own emails', 'Test email from Shop&#13;&#10;Bcc: spy@evil.example' === $subj, json_encode( $subj ) ); }
+}
 
 // ---- the note
 echo "the note\n";
@@ -116,7 +130,7 @@ site();
 check( '500 characters: sent', is_array( send( array( 'to' => 'me', 'note' => str_repeat( 'é', 500 ) ) ) ) && 1 === count( mails() ) );
 check( '501 characters: invalid_input, nothing sent', 'invalid_input' === code( send( array( 'to' => 'me', 'note' => str_repeat( 'a', 501 ) ) ) ) && 1 === count( mails() ) );
 check( 'HTML: invalid_input (plain text only)', 'invalid_input' === code( send( array( 'to' => 'me', 'note' => 'Hi <a href="https://evil.example">click</a>' ) ) ) && 1 === count( mails() ) );
-check( 'a note with a secret in it: refused, nothing sent', null !== code( send( array( 'to' => 'me', 'note' => 'password=hunter2' ) ) ) && null !== code( send( array( 'to' => 'me', 'note' => 'key sk_' . 'live_51HxYzAbCdEfGhIjKlMnOpQr' ) ) ) && 1 === count( mails() ) );
+check( 'a note with a secret in it: refused with invalid_input, nothing sent', 'invalid_input' === code( send( array( 'to' => 'me', 'note' => 'password=hunter2' ) ) ) && 'invalid_input' === code( send( array( 'to' => 'me', 'note' => 'key sk_' . 'live_51HxYzAbCdEfGhIjKlMnOpQr' ) ) ) && 1 === count( mails() ) );
 check( 'a note that is not text: invalid_input', 'invalid_input' === code( send( array( 'to' => 'me', 'note' => array( 'x' ) ) ) ) && 1 === count( mails() ) );
 
 // ---- a failed send

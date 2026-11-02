@@ -76,7 +76,8 @@ if ( ! function_exists( 'd5b_switches_store' ) ) {
 
 if ( ! function_exists( 'd5b_abilities_category_stored_on' ) ) {
 	/**
-	 * One category's stored value: a category never stored reads on (the default, it only matters once the master is on);
+	 * One category's stored value: a category never stored reads on (the default, it only matters once the master is on),
+	 * except a category added after switches were first stored (email, 2.4.0), which reads off until an admin saves it on;
 	 * a stored value counts as on only when it is an array whose 'on' is a real true. A scalar, false, "off", 0 or [] is off.
 	 */
 	function d5b_abilities_category_stored_on( array $rows, string $slug ): bool {
@@ -92,7 +93,8 @@ if ( ! function_exists( 'd5b_abilities_switches' ) ) {
 	/**
 	 * The AI abilities switches, normalized: { master: {on, changed_at, changed_by}, categories: { slug: {on, risky_on, changed_at, changed_by} } }.
 	 * Fail closed: the master and every risky_on read off unless stored as a real true. A category never stored reads on
-	 * (it only matters once the master is on); a stored category reads on only as an array with 'on' => true; a
+	 * (it only matters once the master is on), except email (2.4.0), which reads off until it is saved on
+	 * (d5b_abilities_category_stored_on); a stored category reads on only as an array with 'on' => true; a
 	 * 'categories' value that is not an array turns every category off.
 	 * Every known category is listed. Reading writes nothing.
 	 */
@@ -238,10 +240,15 @@ if ( ! function_exists( 'd5b_abilities_upgrade_consent' ) ) {
 			return;
 		}
 		// On a network the switches are one network option but every site upgrades its own tables: the step runs once per
-		// network, so a master switched on again after the first site's update stays on.
+		// network, so a master switched on again after the first site's update stays on. On a single site the same once
+		// option (not autoloaded): two first requests (admin_init and the abilities init) each see the old db version, and the
+		// second must not turn off a master the admin switched on again in between.
 		if ( is_multisite() ) {
 			if ( get_site_option( $once, 0 ) ) { return; }
 			update_site_option( $once, 1 );
+		} else {
+			if ( get_option( $once, 0 ) ) { return; }
+			update_option( $once, 1, false );
 		}
 		if ( ! d5b_abilities_master_on() ) { return; }
 		d5b_abilities_set_master( false, '0', $why );
