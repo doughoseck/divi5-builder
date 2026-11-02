@@ -625,6 +625,11 @@ class WP_Query {
 			$rows[] = $p;
 		}
 		usort( $rows, function ( $x, $y ) { return $y->ID <=> $x->ID; } );
+		// orderby modified (as core: by the modified date, newest first with order DESC); other orders stay newest id first.
+		if ( 'modified' === ( $a['orderby'] ?? '' ) ) {
+			$asc = 'ASC' === strtoupper( (string) ( $a['order'] ?? 'DESC' ) );
+			usort( $rows, function ( $x, $y ) use ( $asc ) { $c = strcmp( (string) $y->post_modified_gmt, (string) $x->post_modified_gmt ) ?: ( $y->ID <=> $x->ID ); return $asc ? -$c : $c; } );
+		}
 		$this->found_posts = count( $rows );
 		$per = max( 1, (int) ( $a['posts_per_page'] ?? 10 ) ); $this->max_num_pages = (int) ceil( $this->found_posts / $per );
 		$this->posts = array_slice( $rows, ( max( 1, (int) ( $a['paged'] ?? 1 ) ) - 1 ) * $per, $per );
@@ -1003,6 +1008,8 @@ function t_media_reset() {
 	foreach ( $GLOBALS['T_tempfiles'] ?? array() as $f ) { if ( file_exists( $f ) ) { @unlink( $f ); } }
 	$GLOBALS['T_tempfiles'] = array();
 	$GLOBALS['T_files_unlinked'] = array(); $GLOBALS['T_rename_fail'] = array(); $GLOBALS['T_rename_fail_re'] = ''; $GLOBALS['T_renames'] = array();
+	unset( $GLOBALS['T_http_fn'], $GLOBALS['T_theme_root'], $GLOBALS['wp_filesystem'], $GLOBALS['T_copy_done'] );
+	$GLOBALS['T_super_admin'] = false; $GLOBALS['T_fs_fail'] = false; $GLOBALS['T_copy_fail'] = false; $GLOBALS['T_fs_copy_fail'] = false; $GLOBALS['T_copy_calls'] = array();
 }
 // The media delete's file move, plugged here: a REAL rename (the tests use a real temporary uploads folder,
 // T_upload_basedir), except that a source path listed in T_rename_fail fails as a refused rename would (false, nothing
@@ -1053,7 +1060,9 @@ function wp_remote_get( $url, $args = array() ) {
 		foreach ( $handle->resolve as $e ) { if ( preg_match( '/^(.+):(\d+):\[?([^\]]+)\]?$/', $e, $m ) && strtolower( $m[1] ) === $host && (int) $m[2] === $port ) { $ip = $m[3]; } }
 	}
 	$GLOBALS['T_connects'][] = $ip;
-	$r = $GLOBALS['T_http'][ $url ] ?? new WP_Error( 'http_request_failed', 'cURL error 6: Could not resolve host (stand-in: no scripted answer).' );
+	// T_http_fn (optional): callable( url, args ) answering what T_http does not list (a scripted answer, a WP_Error, or null).
+	$r = $GLOBALS['T_http'][ $url ] ?? ( isset( $GLOBALS['T_http_fn'] ) ? call_user_func( $GLOBALS['T_http_fn'], $url, $args ) : null )
+		?? new WP_Error( 'http_request_failed', 'cURL error 6: Could not resolve host (stand-in: no scripted answer).' );
 	if ( $r instanceof WP_Error ) { return $r; }
 	$body = (string) ( $r['body'] ?? '' );
 	if ( isset( $args['limit_response_size'] ) ) { $body = substr( $body, 0, (int) $args['limit_response_size'] ); }
@@ -1063,6 +1072,52 @@ function wp_remote_get( $url, $args = array() ) {
 function wp_remote_retrieve_response_code( $r ) { return ( is_wp_error( $r ) || ! isset( $r['response']['code'] ) ) ? '' : (int) $r['response']['code']; }
 function wp_remote_retrieve_headers( $r ) { return ( is_wp_error( $r ) || ! isset( $r['headers'] ) ) ? array() : $r['headers']; }
 function wp_remote_retrieve_header( $r, $h ) { $all = wp_remote_retrieve_headers( $r ); return $all[ strtolower( $h ) ] ?? ''; }
+function wp_remote_retrieve_body( $r ) { return ( is_wp_error( $r ) || ! isset( $r['body'] ) ) ? '' : $r['body']; }
+// As core's home_url( $path ): the site address, and '/' . $path when a path is given.
+function home_url( $path = '', $scheme = null ) { $u = 'https://x.example'; return ( is_string( $path ) && '' !== $path ) ? $u . '/' . ltrim( $path, '/' ) : $u; }
+
+// ---- the maintenance stand-ins (#32, 2.4.0). t_media_reset() clears them.
+//   T_theme_root     what get_theme_root returns (a real folder in a test; default ABSPATH/wp-content/themes)
+//   T_super_admin    what is_super_admin returns on a multisite (on a single site core answers delete_users)
+//   T_fs_fail        WP_Filesystem() fails (returns false, $wp_filesystem stays unset), as with FTP credentials needed
+//   T_copy_fail      copy_dir copies the first file, then fails as core does on a file it cannot copy (WP_Error)
+//   T_fs_copy_fail   $wp_filesystem->copy returns false;  T_copy_calls  every array( function, from, to )
+function get_theme_root( $stylesheet_or_template = '' ) { return $GLOBALS['T_theme_root'] ?? ABSPATH . 'wp-content/themes'; }
+function is_super_admin( $user_id = false ) { return ! empty( $GLOBALS['T_multisite'] ) ? ! empty( $GLOBALS['T_super_admin'] ) : current_user_can( 'delete_users' ); }
+// The direct file system (class-wp-filesystem-direct.php), reduced to what the plugin uses: copy( from, to, overwrite, mode ).
+class T_Filesystem {
+	function copy( $from, $to, $overwrite = false, $mode = false ) {
+		$GLOBALS['T_copy_calls'][] = array( 'wp_filesystem->copy', $from, $to );
+		if ( ! empty( $GLOBALS['T_fs_copy_fail'] ) || ( ! $overwrite && file_exists( $to ) ) ) { return false; }
+		return @copy( $from, $to );
+	}
+}
+// As core: sets the global $wp_filesystem (direct) and returns true; with T_fs_fail it returns false and sets nothing.
+function WP_Filesystem( $args = false, $context = false, $allow_relaxed_file_ownership = false ) {
+	if ( ! empty( $GLOBALS['T_fs_fail'] ) ) { return false; }
+	$GLOBALS['wp_filesystem'] = new T_Filesystem(); return true;
+}
+// As core's copy_dir (file.php): needs the global $wp_filesystem (an Error without it, as calling a method on null is);
+// the destination folder is made, then every entry copied, folders recursively; a link is followed (core's dirlist reads a
+// linked folder as 'd'). Real files are copied. T_copy_fail: fails after the first file with core's code.
+function copy_dir( $from, $to, $skip_list = array() ) {
+	if ( ! is_object( $GLOBALS['wp_filesystem'] ?? null ) ) { throw new Error( 'Call to a member function dirlist() on null' ); }
+	$GLOBALS['T_copy_calls'][] = array( 'copy_dir', $from, $to );
+	if ( ! is_dir( $from ) ) { return new WP_Error( 'dirlist_failed_copy_dir', 'Directory listing failed.', basename( $from ) ); }
+	$from = rtrim( $from, '/\\' ) . '/'; $to = rtrim( $to, '/\\' ) . '/';
+	if ( ! file_exists( $to ) && ! @mkdir( $to ) ) { return new WP_Error( 'mkdir_destination_failed_copy_dir', 'Could not create the destination directory.', basename( $to ) ); }
+	foreach ( array_diff( (array) scandir( $from ), array( '.', '..' ) ) as $f ) {
+		if ( in_array( $f, $skip_list, true ) ) { continue; }
+		if ( is_dir( $from . $f ) ) {
+			if ( ! is_dir( $to . $f ) && ! @mkdir( $to . $f ) ) { return new WP_Error( 'mkdir_failed_copy_dir', 'Could not create directory.', $to . $f ); }
+			$r = copy_dir( $from . $f, $to . $f ); if ( is_wp_error( $r ) ) { return $r; }
+		} else {
+			if ( ! empty( $GLOBALS['T_copy_fail'] ) && ( $GLOBALS['T_copy_done'] = ( $GLOBALS['T_copy_done'] ?? 0 ) + 1 ) > 1 ) { return new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.', $to . $f ); }
+			if ( ! @copy( $from . $f, $to . $f ) ) { return new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.', $to . $f ); }
+		}
+	}
+	return true;
+}
 function wp_tempnam( $filename = '', $dir = '' ) { $t = tempnam( sys_get_temp_dir(), 'd5bt' ); $GLOBALS['T_tempfiles'][] = $t; return $t; }
 function wp_max_upload_size() { return (int) $GLOBALS['T_max_upload']; }
 function get_allowed_mime_types( $user = null ) { return $GLOBALS['T_mimes']; }

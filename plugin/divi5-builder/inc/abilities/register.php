@@ -238,6 +238,8 @@ if ( ! function_exists( 'd5b_ability_http_status' ) ) {
 			'stale' => 409, 'masked_read' => 409, 'confirmation_invalid' => 409, 'crosses_markup' => 409, 'ambiguous' => 409, 'cannot_trash' => 409,
 			'needs_unfiltered_html' => 403, 'history_unavailable' => 503, 'too_large_to_record' => 413,
 			'unavailable' => 503, 'audit_unavailable' => 503,
+			// A kept copy (2.4.0): too big for one copy, the store at its cap, or the copy could not be made.
+			'copy_too_big' => 413, 'store_full' => 507, 'copy_failed' => 503,
 			'internal_error' => 500, 'write_failed' => 500,
 		);
 		return $map[ $code ] ?? $default;
