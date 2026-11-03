@@ -95,6 +95,11 @@ risky actions" under each (Settings > Divi 5 Builder). The Updates switch is not
    while someone is inside wp-admin, so neither `updates-check` nor the status reads see them from outside. Before an
    abilities update on a site with such plugins, ask the user to open Plugins in wp-admin once, then read the status again;
    the update then runs through `plugins-update` with its kept copy like any other.
+   A big theme (Divi, 135 MB kept copy, 2026-11-03) can take longer than the host keeps a connection open: the client
+   sees `ECONNRESET` or a timeout while PHP carries on and finishes. That is not a failure. Read the newest
+   `history-changes-list` row: `after.running: true` means it is still going, a `version` and `kept` block means it
+   finished; only a row that stays `running` after ten minutes needs a look at the files. Never retry blind: the item
+   lock answers `busy` while the first run is alive, and a second download is wasted work.
 2. `plugins-update` / `themes-update` with the plugin file or theme folder: a copy is kept first (refused with
    `copy_too_big`, `store_full` or `copy_failed` when it cannot be, and `linked` for a folder that is a link), then the
    update, with the pages checked before and after. `problems` lists a page that got worse; by default the new version
