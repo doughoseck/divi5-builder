@@ -623,6 +623,14 @@ console.log('--- rest-post: the run route of a write ability');
     r = wp('rest-post', bad, '--vendor', v, '--data-file', body);
     check('--vendor ' + v + ' still refuses ' + bad, r.code !== 0 && /rest-post needs/.test(r.err) && (st().abilityPosts || []).length === n0 + 1, r.err);
   }
+  // 2026-11-03: --namespace <plugin>/v<n> opens routes inside ONE plugin's own REST namespace, named exactly.
+  const n1 = (st().abilityPosts || []).length;
+  r = wp('rest-post', 'rankmath/v1/updateMeta', '--namespace', 'rankmath/v1', '--data-file', file('rm.json', '{"objectID":12,"objectType":"post","meta":{"rank_math_title":"T"}}'));
+  check('--namespace rankmath/v1 lets rankmath/v1/updateMeta through (the fake site answers the POST)', !/rest-post needs/.test(r.err), r.err);
+  for (const [ns, bad] of [[null, 'rankmath/v1/updateMeta'], ['rankmath/v1', 'rankmath/v1/../wp/v2/users'], ['RankMath/v1', 'RankMath/v1/updateMeta'], ['rankmath/v1', 'rankmath/v2/updateMeta'], ['wp-abilities/v1', 'wp-abilities/v1/abilities/core/run-cron/run'], ['rankmath', 'rankmath/updateMeta']]) {
+    r = ns ? wp('rest-post', bad, '--namespace', ns, '--data-file', body) : wp('rest-post', bad, '--data-file', body);
+    check('--namespace ' + ns + ' still refuses ' + bad, r.code !== 0 && /rest-post needs/.test(r.err) && (st().abilityPosts || []).length === n1, r.err);
+  }
   r = wp('rest-post', 'wp/v2/posts', '--data-file', file('p.json', '{"title":"T"}'));
   check('a wp/v2 route still works', r.code === 0, r.err);
 }

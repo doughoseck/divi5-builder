@@ -62,6 +62,7 @@
  *   node wp.js <site> rest-post wp/v2/<route> --data-file body.json [--out f]   # POST to a core content route (custom post types, ACF fields, terms)
  *   node wp.js <site> rest-post wp-abilities/v1/abilities/divi5-builder/<name>/run --data-file body.json   # run a divi5-builder write ability: body is {"input":{...}}
  *   node wp.js <site> rest-post wp-abilities/v1/abilities/rank-math/<name>/run --vendor rank-math --data-file body.json   # another vendor's ability, named exactly (no divi5-builder history for its writes)
+ *   node wp.js <site> rest-post rankmath/v1/updateMeta --namespace rankmath/v1 --data-file body.json   # one route of a plugin's own REST namespace, named exactly (its rules, its undo)
  *   node wp.js <site> quarantine move|restore --data-file f.json   # used by media-quarantine.js; moves files, never deletes
  *
  * Output is compact JSON or plain lines on stdout; errors to stderr, exit 1.
@@ -726,9 +727,14 @@ function flags(argv) {
       // Another vendor's write has no divi5-builder change-history row: read that vendor's own undo story first.
       //   rest-post wp-abilities/v1/abilities/divi5-builder/posts-update/run --data-file body.json
       //   rest-post wp-abilities/v1/abilities/rank-math/set-homepage-seo/run --vendor rank-math --data-file body.json
+      //   rest-post rankmath/v1/updateMeta --namespace rankmath/v1 --data-file body.json   # a plugin's own REST route, namespace named exactly
       const vendor = typeof f.vendor === 'string' && /^[a-z0-9_\-]+$/.test(f.vendor) ? f.vendor : 'divi5-builder';
       const runRoute = new RegExp('^wp-abilities\\/v1\\/abilities\\/' + vendor.replace(/[-]/g, '\\-') + '\\/[a-z0-9_\\-]+\\/run$');
-      if (!/^wp\/v2\/[a-z0-9_\-\/]+$/i.test(p) && !runRoute.test(p)) die('rest-post needs a wp/v2/... path, e.g. wp/v2/book/123, or wp-abilities/v1/abilities/' + vendor + '/<name>/run (another vendor only with --vendor <name>)');
+      // --namespace <ns>/v<n>: POST to one route inside that plugin's own REST namespace (Rank Math's updateMeta ...). The
+      // namespace must be given exactly, the path after it is one or more plain segments, never ".." and never wp-abilities.
+      const ns = typeof f.namespace === 'string' && /^[a-z0-9_\-]+\/v[0-9]+$/.test(f.namespace) && f.namespace !== 'wp/v2' && !/^wp-abilities\//.test(f.namespace) ? f.namespace : null;
+      const nsRoute = ns ? new RegExp('^' + ns.replace(/[-\/]/g, '\\$&') + '(\\/[A-Za-z0-9_\\-]+)+$') : null;
+      if (!/^wp\/v2\/[a-z0-9_\-\/]+$/i.test(p) && !runRoute.test(p) && !(nsRoute && nsRoute.test(p))) die('rest-post needs a wp/v2/... path, e.g. wp/v2/book/123, or wp-abilities/v1/abilities/' + vendor + '/<name>/run (another vendor only with --vendor <name>), or a route inside --namespace <plugin>/v<n>');
       if (!f['data-file']) die('rest-post needs --data-file <json file>');
       const body = JSON.parse(fs.readFileSync(f['data-file'], 'utf8'));
       const r = await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/${p}`, c, body);
