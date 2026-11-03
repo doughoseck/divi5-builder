@@ -312,6 +312,40 @@ if ( ! function_exists( 'd5b_history_files_root' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_history_public_side' ) ) {
+	/**
+	 * A before or after side as the history reads return it: every kept copy ({ path, bytes, files }, under a key "kept" at
+	 * any depth) shown as { bytes, files } only, never the store path or its <id>-<hex> folder name (2.4.0). The settings
+	 * page shows the folder next to the row instead (d5b_history_kept_folder), for a restore by hand.
+	 */
+	function d5b_history_public_side( $side ) {
+		if ( ! is_array( $side ) ) { return $side; }
+		foreach ( $side as $k => $v ) {
+			if ( 'kept' === $k && is_array( $v ) && array_key_exists( 'path', $v ) ) {
+				$side[ $k ] = array( 'bytes' => (int) ( $v['bytes'] ?? 0 ), 'files' => (int) ( $v['files'] ?? 0 ) );
+			} elseif ( is_array( $v ) ) {
+				$side[ $k ] = d5b_history_public_side( $v );
+			}
+		}
+		return $side;
+	}
+}
+
+if ( ! function_exists( 'd5b_history_kept_folder' ) ) {
+	/**
+	 * Where the kept copy of a row is, for a person restoring it by hand: "d5b-history/<row id>-<hex>/<kind>/<name>" in the
+	 * uploads folder (never the server's full path), from after.kept; '' when the row kept no copy in the store.
+	 */
+	function d5b_history_kept_folder( array $row ): string {
+		$kept = $row['after']['kept'] ?? null;
+		if ( ! is_array( $kept ) || ! is_string( $kept['path'] ?? null ) ) { return ''; }
+		$root = d5b_history_files_root();
+		$p    = str_replace( '\\', '/', $kept['path'] );
+		if ( '' === $root || 0 !== strpos( $p, $root . '/' ) ) { return ''; }
+		return 'd5b-history/' . substr( $p, strlen( $root ) + 1 );
+	}
+}
+
 if ( ! function_exists( 'd5b_history_files_prepare' ) ) {
 	/**
 	 * Makes the d5b-history folder and closes it to the web (an Apache rule for both 2.2 and 2.4, and an empty index.html so
@@ -328,29 +362,81 @@ if ( ! function_exists( 'd5b_history_files_prepare' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_maint_is_link' ) ) {
+	/**
+	 * True when $path is a link of any kind: a symbolic link, or anything whose real path is not its own name in its parent's
+	 * real folder (a Windows junction, which PHP's is_link does not see). Used wherever the store is walked, so a link is
+	 * removed or refused itself and never followed. A path whose parent cannot be resolved counts as a link (refuse).
+	 */
+	function d5b_maint_is_link( string $path ): bool {
+		if ( is_link( $path ) ) { return true; }
+		if ( ! file_exists( $path ) ) { return false; }
+		$real   = realpath( $path );
+		$parent = realpath( dirname( $path ) );
+		if ( ! is_string( $real ) || ! is_string( $parent ) ) { return true; }
+		$norm = function ( string $p ): string { return rtrim( str_replace( '\\', '/', $p ), '/' ); };
+		return $norm( $real ) !== $norm( $parent ) . '/' . basename( $path );
+	}
+}
+
 if ( ! function_exists( 'd5b_history_files_remove' ) ) {
 	/**
-	 * Removes every folder of history row $id: d5b-history/<id>-<32 random hex>/ (the name a media delete records in
-	 * file_copy.dir) and a plain d5b-history/<id>/, with the files in them (plain files only; a link is removed, never followed).
+	 * Removes every folder of history row $id: d5b-history/<id>-<32 random hex>/ (the name a media delete and a kept copy
+	 * record) and a plain d5b-history/<id>/, with everything in them, nested folders included (a kept plugin or theme copy is
+	 * <kind>/<slug>/...). Only inside those folders; a link (or a junction) is removed itself, never followed. $only (a folder
+	 * name of that row, as <id>-<hex>) limits it to that one folder (a kept copy that failed half-way).
 	 * @return bool true when no such folder is left
 	 */
-	function d5b_history_files_remove( int $id ): bool {
+	function d5b_history_files_remove( int $id, string $only = '' ): bool {
 		$root = d5b_history_files_root();
 		if ( '' === $root || $id < 1 || is_link( $root ) || ! is_dir( $root ) ) { return '' !== $root && $id > 0 && ! is_dir( $root ); }
-		$all = true;
-		foreach ( (array) @scandir( $root ) as $name ) {
-			if ( ! is_string( $name ) || 1 !== preg_match( '/^' . $id . '(-[0-9a-f]{32})?$/D', $name ) ) { continue; }
-			$dir = $root . '/' . $name;
-			if ( is_link( $dir ) ) { $all = @unlink( $dir ) && $all; continue; }
-			if ( ! is_dir( $dir ) ) { continue; }
+		// Removes a link itself: unlink, or rmdir for a Windows directory link (which removes the link, not its target).
+		$unlink = function ( string $p ): bool { return @unlink( $p ) || @rmdir( $p ) || ( ! file_exists( $p ) && ! is_link( $p ) ); };
+		// Empties and removes one folder that is known not to be a link; recursion goes only into real sub-folders.
+		$rmtree = function ( string $dir ) use ( &$rmtree, $unlink ): bool {
+			$ok = true;
 			foreach ( (array) @scandir( $dir ) as $f ) {
 				if ( '.' === $f || '..' === $f || ! is_string( $f ) ) { continue; }
 				$path = $dir . '/' . $f;
-				if ( is_link( $path ) || is_file( $path ) ) { @unlink( $path ); }
+				if ( d5b_maint_is_link( $path ) ) { $ok = $unlink( $path ) && $ok; continue; }
+				if ( is_dir( $path ) ) { $ok = $rmtree( $path ) && $ok; continue; }
+				$ok = ( @unlink( $path ) || ! file_exists( $path ) ) && $ok;
 			}
-			$all = ( @rmdir( $dir ) || ! is_dir( $dir ) ) && $all;
+			return ( @rmdir( $dir ) || ! is_dir( $dir ) ) && $ok;
+		};
+		$all = true;
+		foreach ( (array) @scandir( $root ) as $name ) {
+			if ( ! is_string( $name ) || 1 !== preg_match( '/^' . $id . '(-[0-9a-f]{32})?$/D', $name ) ) { continue; }
+			if ( '' !== $only && $name !== $only ) { continue; }
+			$dir = $root . '/' . $name;
+			if ( d5b_maint_is_link( $dir ) ) { $all = $unlink( $dir ) && $all; continue; }
+			if ( ! is_dir( $dir ) ) { continue; }
+			$all = $rmtree( $dir ) && $all;
 		}
 		return $all;
+	}
+}
+
+if ( ! function_exists( 'd5b_history_store_bytes' ) ) {
+	/**
+	 * The size of the store (uploads/d5b-history, every row's kept files): the sum of the file sizes, links not followed
+	 * (a link counts 0). 0 when there is no store.
+	 */
+	function d5b_history_store_bytes(): int {
+		$root = d5b_history_files_root();
+		if ( '' === $root || is_link( $root ) || ! is_dir( $root ) ) { return 0; }
+		$sum = function ( string $dir ) use ( &$sum ): int {
+			$n = 0;
+			foreach ( (array) @scandir( $dir ) as $f ) {
+				if ( '.' === $f || '..' === $f || ! is_string( $f ) ) { continue; }
+				$path = $dir . '/' . $f;
+				if ( d5b_maint_is_link( $path ) ) { continue; }
+				if ( is_dir( $path ) ) { $n += $sum( $path ); continue; }
+				if ( is_file( $path ) ) { $n += (int) @filesize( $path ); }
+			}
+			return $n;
+		};
+		return $sum( $root );
 	}
 }
 

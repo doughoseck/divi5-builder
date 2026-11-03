@@ -154,6 +154,10 @@ if ( ! function_exists( 'd5b_risky_note' ) ) {
 			'templates'  => 'Changes the theme\'s templates and global styles on block themes. A broken template can blank a page until it is put back.',
 			'appearance' => 'Can change Custom CSS and theme settings. A wrong CSS rule can hide the whole page until it is put back.',
 			'health'     => 'Can run a scheduled task now. Tasks belong to plugins and may do real work (send emails, process orders, run migrations).',
+			'users'      => 'Can create users including administrators, change roles and emails, and delete users. A deleted user\'s content is reassigned, never deleted. Passwords are never set or shown; resets go by email.',
+			'plugins'    => 'Can install plugins from wordpress.org, activate, deactivate, update, roll back and delete them. A plugin change can take the site down; the previous version is kept for 30 days and a broken activation is reverted.',
+			'themes'     => 'Can install themes from wordpress.org, switch, update, roll back and delete them. Switching theme changes how the whole site looks; the previous version and the previous theme name are kept for 30 days.',
+			'core'       => 'Can update WordPress itself. There is no rollback for a core update; keep a backup.',
 		);
 		return $notes[ $slug ] ?? '';
 	}
@@ -261,6 +265,12 @@ if ( ! function_exists( 'd5b_settings_render_history' ) ) {
 		$base = d5b_settings_base_url();
 		echo '<h2>Change history</h2>';
 		echo '<p class="description">' . esc_html( 'The newest 50 changes the AI abilities made on this site, kept for 30 days. Times are UTC. Open a row to see the content from before and after the change; secrets are masked.' ) . '</p>';
+		if ( function_exists( 'd5b_history_store_bytes' ) ) {
+			// The limit as the store enforces it (d5b_maint_store_cap), in GB when it is whole GB, else in MB.
+			$cap   = function_exists( 'd5b_maint_store_cap' ) ? (int) d5b_maint_store_cap() : 2147483648;
+			$limit = 0 === $cap % 1073741824 ? ( $cap / 1073741824 ) . ' GB' : number_format( $cap / 1048576, 0 ) . ' MB';
+			echo '<p>' . esc_html( 'Kept copies of plugins, themes and media: ' . number_format( d5b_history_store_bytes() / 1048576, 1 ) . ' MB of the ' . $limit . ' limit' ) . '</p>';
+		}
 		echo '<form method="get" action="' . esc_url( $base ) . '">';
 		echo '<input type="hidden" name="page" value="divi5-builder" />';
 		echo '<input type="hidden" name="tab" value="history" />';
@@ -280,9 +290,14 @@ if ( ! function_exists( 'd5b_settings_render_history' ) ) {
 				. '</td><td>' . esc_html( $r['summary'] ) . '</td><td>' . esc_html( $r['object_type'] . ' #' . (int) $r['object_id'] ) . '</td><td>' . $rev . '</td><td>';
 			$full = function_exists( 'd5b_history_get' ) ? d5b_history_get( (int) $r['id'] ) : null;
 			if ( is_array( $full ) ) {
+				// A kept plugin or theme copy (2.4.0): its folder in the uploads folder, for a restore by hand; the copies below
+				// show it as { bytes, files } only, as the history abilities do.
+				$folder = function_exists( 'd5b_history_kept_folder' ) ? d5b_history_kept_folder( $full ) : '';
+				if ( '' !== $folder ) { echo '<p>' . esc_html( 'Kept copy: uploads/' . $folder ) . '</p>'; }
 				echo '<details><summary>' . esc_html( 'Before and after' ) . '</summary>';
 				foreach ( array( 'before' => 'Before', 'after' => 'After' ) as $side => $label ) {
-					$json = json_encode( $full[ $side ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR );
+					$shown = function_exists( 'd5b_history_public_side' ) ? d5b_history_public_side( $full[ $side ] ) : $full[ $side ];
+					$json = json_encode( $shown, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR );
 					$json = is_string( $json ) ? $json : '{}';
 					// At most 64 KB per side on the page (a side can be MBs); the full copy is one history-change-get away. The text
 					// is cut with 8 KB to spare BEFORE the masker (a secret across the 64 KB line is still seen whole), then at 64 KB.

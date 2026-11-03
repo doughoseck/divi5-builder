@@ -112,6 +112,68 @@ check( 'network: every site\'s d5b-history goes (site 1 in uploads, site 3 in up
 unset( $GLOBALS['T_upload_basedir'] );
 $rmr( $up );
 
+echo "fix wave I1: the whole store goes, kept plugin and theme copies at any depth, links unlinked and never followed\n";
+// A directory link: a symbolic link where PHP may make one, else a Windows junction (no privilege needed). false when neither.
+function t_link_dir( $target, $link ) {
+	if ( @symlink( $target, $link ) ) { return true; }
+	if ( '\\' !== DIRECTORY_SEPARATOR ) { return false; }
+	exec( 'cmd /c mklink /J "' . str_replace( '/', '\\', $link ) . '" "' . str_replace( '/', '\\', $target ) . '" 2>&1', $o, $rc );
+	clearstatcache();
+	return 0 === $rc && file_exists( $link );
+}
+// Test clean-up that never follows a link or a junction.
+function t_rm( $d ) {
+	clearstatcache();
+	if ( is_link( $d ) || is_file( $d ) ) { @unlink( $d ) || @rmdir( $d ); return; }
+	if ( ! file_exists( $d ) ) { return; }
+	if ( ! is_dir( $d ) || realpath( $d ) !== realpath( dirname( $d ) ) . DIRECTORY_SEPARATOR . basename( $d ) ) { @rmdir( $d ) || @unlink( $d ); return; }
+	foreach ( array_diff( (array) scandir( $d ), array( '.', '..' ) ) as $f ) { t_rm( "$d/$f" ); }
+	@rmdir( $d );
+}
+$plant24 = function ( $base ) {
+	$store = "$base/d5b-history";
+	foreach ( array(
+		'.htaccess' => "Require all denied\n", 'index.html' => '',
+		'5-' . str_repeat( 'a', 32 ) . '/photo.jpg' => 'a',
+		'12-' . str_repeat( 'b', 32 ) . '/plugin/akismet/akismet.php' => "<?php // kept\n",
+		'12-' . str_repeat( 'b', 32 ) . '/plugin/akismet/sub/deeper/file.php' => "<?php // nested\n",
+		'13-' . str_repeat( 'c', 32 ) . '/theme/twentyx/inc/functions.php' => "<?php // kept theme\n",
+	) as $rel => $body ) { $p = "$store/$rel"; if ( ! is_dir( dirname( $p ) ) ) { mkdir( dirname( $p ), 0777, true ); } file_put_contents( $p, $body ); }
+};
+$up = str_replace( '\\', '/', sys_get_temp_dir() ) . '/d5b-uninstall-i1-' . getmypid();
+$outside = $up . '-outside';
+t_rm( $up ); t_rm( $outside );
+@mkdir( "$outside/keep", 0777, true ); file_put_contents( "$outside/keep/target.php", 'must stay' );
+t_reset(); t_set_multisite( false ); $GLOBALS['T_upload_basedir'] = $up;
+$plant24( $up );
+$linked = t_link_dir( "$outside/keep", "$up/d5b-history/12-" . str_repeat( 'b', 32 ) . '/plugin/akismet/sub/alias' );
+uninstall();
+clearstatcache();
+check( 'I1 a nested <id>-<hex>/plugin/<dir>/sub/.../file.php store is removed whole (the store folder itself too)', ! file_exists( "$up/d5b-history" ) && ! is_link( "$up/d5b-history" ) );
+check( 'I1 a link inside the store was unlinked, its target outside the store untouched', $linked && 'must stay' === @file_get_contents( "$outside/keep/target.php" ) && is_dir( "$outside/keep" ), array( 'linked' => $linked ) );
+// A file that cannot be removed (read-only on Windows; in a read-only folder elsewhere): the store's .htaccess stays.
+t_rm( $up ); $plant24( $up );
+$held = "$up/d5b-history/12-" . str_repeat( 'b', 32 ) . '/plugin/akismet/sub/deeper/file.php';
+$fh = '\\' === DIRECTORY_SEPARATOR;
+if ( $fh ) { chmod( $held, 0444 ); } else { chmod( dirname( $held ), 0555 ); }
+t_reset(); t_set_multisite( false ); $GLOBALS['T_upload_basedir'] = $up;
+uninstall();
+clearstatcache();
+$held_ok = is_file( $held ); $ht_ok = is_file( "$up/d5b-history/.htaccess" );
+if ( $fh ) { chmod( $held, 0666 ); } else { chmod( dirname( $held ), 0777 ); }
+check( 'I1 when a kept file cannot be removed the store\'s .htaccess (deny rule) stays: it is removed last', $held_ok && $ht_ok, array( 'held' => $held_ok, 'htaccess' => $ht_ok ) );
+t_reset(); t_set_multisite( false ); $GLOBALS['T_upload_basedir'] = $up;
+uninstall(); clearstatcache();
+check( 'I1 ... and a second uninstall run removes the rest', ! file_exists( "$up/d5b-history" ) );
+// The store root itself a link: unlinked, its target untouched.
+t_rm( $up ); @mkdir( $up, 0777, true ); @mkdir( "$outside/store", 0777, true ); file_put_contents( "$outside/store/x.php", 'x' );
+$rootlinked = t_link_dir( "$outside/store", "$up/d5b-history" );
+t_reset(); t_set_multisite( false ); $GLOBALS['T_upload_basedir'] = $up;
+uninstall(); clearstatcache();
+check( 'I1 a store root that is a link is unlinked, its target untouched', $rootlinked && ! file_exists( "$up/d5b-history" ) && 'x' === @file_get_contents( "$outside/store/x.php" ), array( 'linked' => $rootlinked ) );
+unset( $GLOBALS['T_upload_basedir'] );
+t_rm( $up ); t_rm( $outside );
+
 echo "without a database object\n";
 t_reset(); t_set_multisite( false ); unset( $GLOBALS['wpdb'] ); $GLOBALS['T_options'] = array( 'd5b_switches' => 1, 'd5b_db_version' => '1' );
 uninstall();

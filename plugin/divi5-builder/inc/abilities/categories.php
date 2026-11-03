@@ -10,7 +10,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 if ( ! function_exists( 'd5b_category_has_risky' ) ) {
 	/** True for the categories that have a risky switch in the settings page (those with risky actions in this release). */
 	function d5b_category_has_risky( string $slug ): bool {
-		return in_array( $slug, array( 'settings', 'templates', 'appearance', 'health' ), true );
+		return in_array( $slug, array( 'settings', 'templates', 'appearance', 'health', 'users', 'plugins', 'themes', 'core' ), true );
 	}
 }
 
@@ -35,10 +35,11 @@ if ( ! function_exists( 'd5b_ability_categories' ) ) {
 			'widgets'   => array( 'Widgets', 'Read, add, change, move and remove widgets.' ),
 			'cache'     => array( 'Cache', 'Read the cache status and flush the caches.' ),
 			'health'    => array( 'Site health', 'Read the site health summary and run a scheduled task now. Includes the debug log and scheduled tasks.' ),
-			'users'     => array( 'Users', 'Read users, without any secrets. Includes users\' names, roles and email addresses.' ),
-			'plugins'   => array( 'Plugins', 'Read the installed plugins.' ),
-			'themes'    => array( 'Themes', 'Read the installed themes.' ),
-			'core'      => array( 'WordPress core', 'Read the WordPress version and environment.' ),
+			'users'     => array( 'Users', 'Read users, without any secrets, create them, change their details and roles, send password reset links and delete them (their content is reassigned). Includes users\' names, roles and email addresses.' ),
+			'plugins'   => array( 'Plugins', 'Read the installed plugins and their updates; install them from wordpress.org, activate, deactivate, update, roll back and delete them.' ),
+			'themes'    => array( 'Themes', 'Read the installed themes and their updates; install them from wordpress.org, switch, update, roll back and delete them.' ),
+			'core'      => array( 'WordPress core', 'Read the WordPress version and environment, refresh the update list, and update WordPress and its translations.' ),
+			'email'     => array( 'Email', 'Send a test email to a site user or the admin address.' ),
 			'history'   => array( 'Activity history', 'Read this plugin\'s activity log and the change history of its writes.' ),
 			'divi'      => array( 'Divi', 'Read Divi layouts and settings, edit a section or a piece of text, write Theme Builder items and restore backups.' ),
 		);

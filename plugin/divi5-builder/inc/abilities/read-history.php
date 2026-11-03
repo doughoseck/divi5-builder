@@ -71,7 +71,11 @@ if ( ! function_exists( 'd5b_hs_h_audit_list' ) ) {
 			'revision_id' => isset( $r['revision_id'] ) && null !== $r['revision_id'] ? (int) $r['revision_id'] : null,
 			'summary'     => (string) $r['summary'],
 		);
-		if ( $full ) { $item['before'] = $r['before'] ?? array(); $item['after'] = $r['after'] ?? array(); }
+		if ( $full ) {
+			// A kept plugin or theme copy shows as { bytes, files }: never its path in the store (2.4.0).
+			$pub = function_exists( 'd5b_history_public_side' ) ? 'd5b_history_public_side' : function ( $s ) { return $s; };
+			$item['before'] = $pub( $r['before'] ?? array() ); $item['after'] = $pub( $r['after'] ?? array() );
+		}
 		return $item;
 	}
 
@@ -121,7 +125,7 @@ if ( ! function_exists( 'd5b_hs_h_audit_list' ) ) {
 		array(), 'd5b_hs_h_changes_list', $d5b_hs_admin );
 
 	d5b_rc_def( 'history-change-get', 'history', 'Get one change from the history',
-		'Returns one row of the change history of this site with its before and after copies decoded. Secret-named keys were never stored, and the copies are masked again on the way out. A side that was too large to keep comes back as a marker saying how big it was. It reads the current site\'s history table only. Refuses a caller who is not an administrator (manage_options).',
+		'Returns one row of the change history of this site with its before and after copies decoded. Secret-named keys were never stored, and the copies are masked again on the way out. A side that was too large to keep comes back as a marker saying how big it was. A copy of a plugin or theme kept by an update, rollback or delete shows as its size (kept: bytes, files), never where it is stored (the settings page shows that). It reads the current site\'s history table only. Refuses a caller who is not an administrator (manage_options).',
 		array( 'id' => array( 'type' => 'integer', 'minimum' => 1, 'description' => 'The id of the change, from history-changes-list.' ) ),
 		array( 'id' ), 'd5b_hs_h_change_get', $d5b_hs_admin );
 

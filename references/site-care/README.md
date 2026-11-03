@@ -82,8 +82,10 @@ node scripts/site-care/site-updates.js update <site> --all --write         # car
 node scripts/site-care/site-updates.js update <site> --all --fast --write  # small brochure site: all in one go, pages checked at the end
 ```
 
-- Show the user the plan first and get a go for the run: it changes a live site and there is NO rollback (a bad
-  update is undone from a backup). Careful mode for sites that matter, fast for small brochure sites.
+- Show the user the plan first and get a go for the run: it changes a live site and the script keeps NO old version (a
+  bad update is undone from a backup; the 2.4.0 abilities keep one and can roll back, see `wp-site-updates.md`). Careful
+  mode for sites that matter, fast for small brochure sites. Afterwards ask for the human check: the user looks at the
+  site in a browser and on a phone.
 - After every update the site clears Divi's generated CSS and the page cache by itself: on Divi 5 stale CSS after any
   plugin, theme or WordPress update is the classic "the site looks broken". `site-updates.js clear <site>` does only that.
 - A new WordPress release (6.8 -> 6.9) needs `--major`; maintenance releases are taken. Premium items without an
@@ -171,8 +173,8 @@ node scripts/site-care/site-updates.js clear  <site>                       # Div
 - A new WordPress release (6.8 to 6.9) needs `--major`; maintenance releases are taken. Premium items with no
   download on offer (no active licence) are listed as blocked and never tried.
 - An update counts as done only when the installed version, read back from disk, is the new one.
-- There is no rollback: a bad update is undone from a backup. The page check sees errors and broken pages, not a
-  layout that shifted. Playbook: `references/site-care/wp-site-updates.md`.
+- The script has no rollback: a bad update is undone from a backup (the 2.4.0 abilities keep the old version for 30
+  days). The page check sees errors and broken pages, not a layout that shifted. Playbook: `references/site-care/wp-site-updates.md`.
 
 Status when published: plugin updates, the plan, the forced fresh check and the cache clearing have run on a real
 site. Theme updates, WordPress core updates, translations, fast mode and multisite are covered by the tests against a

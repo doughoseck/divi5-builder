@@ -5,16 +5,18 @@
  * Removes every option the plugin stored: d5b_switches, d5b_takeover, d5b_legacy_seen and d5b_db_version, and drops the
  * audit log table (d5b_audit), the change history table (d5b_history), its daily event and its d5b_audit_install_failed and d5b_anon transients, on every site of a network. On a multisite network,
  * the network options and each site's own options (sites read in batches of 100). Also removes the
- * d5b_abilities_upgrade_notice, d5b_abilities_consent_220 and d5b_abilities_consent_230 options and, per site, the folder wp-content/uploads/d5b-history (the files of permanently
- * deleted media, kept 30 days with their history rows). Only deletes, never writes, so a later reinstall starts with every
+ * d5b_abilities_upgrade_notice, d5b_abilities_consent_220, d5b_abilities_consent_230 and d5b_abilities_consent_240 options and, per site, the WHOLE folder wp-content/uploads/d5b-history (the files of permanently
+ * deleted media and the kept plugin and theme copies, every file and folder at any depth). Only deletes, never writes, so a later reinstall starts with every
  * switch off, as on a new site. Nothing else is touched: the old plugins' files and the media clean-up quarantine folder
  * stay where they are.
  */
 if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) { exit; }
 
 /**
- * Removes the current site's wp-content/uploads/d5b-history: its .htaccess and index.html, and each <history id>/ folder with
- * the files in it. Two levels only, as the plugin makes it; a link is removed, never followed.
+ * Removes the current site's wp-content/uploads/d5b-history WHOLE: every file and folder at any depth (deleted media under
+ * <id>-<hex>/, kept plugin and theme copies under <id>-<hex>/<kind>/<slug>/...). A link (a symbolic link or a Windows
+ * junction) is unlinked, never followed, so nothing outside the store is touched. The store's .htaccess (the web deny rule)
+ * is removed only after everything else is gone, and the folder itself last: if a file cannot be removed, the deny rule stays.
  */
 $d5b_rm_history_files = function () {
 	if ( ! function_exists( 'wp_upload_dir' ) ) { return; }
@@ -22,23 +24,37 @@ $d5b_rm_history_files = function () {
 	$base = is_array( $u ) && is_string( $u['basedir'] ?? null ) ? rtrim( str_replace( '\\', '/', $u['basedir'] ), '/' ) : '';
 	if ( '' === $base ) { return; }
 	$root = $base . '/d5b-history';
-	if ( is_link( $root ) ) { @unlink( $root ); return; }
-	if ( ! is_dir( $root ) ) { return; }
-	foreach ( (array) @scandir( $root ) as $f ) {
-		if ( ! is_string( $f ) || '.' === $f || '..' === $f ) { continue; }
-		$p = $root . '/' . $f;
-		if ( is_link( $p ) || is_file( $p ) ) { @unlink( $p ); continue; }
-		if ( ! is_dir( $p ) ) { continue; }
-		foreach ( (array) @scandir( $p ) as $g ) {
-			if ( ! is_string( $g ) || '.' === $g || '..' === $g ) { continue; }
-			if ( is_link( $p . '/' . $g ) || is_file( $p . '/' . $g ) ) { @unlink( $p . '/' . $g ); }
+	// A link: is_link, or a path whose real path is not its parent's real path plus its own name (a Windows junction).
+	$is_link = function ( string $p ): bool {
+		if ( is_link( $p ) ) { return true; }
+		if ( ! file_exists( $p ) ) { return false; }
+		$real = realpath( $p ); $parent = realpath( dirname( $p ) );
+		if ( ! is_string( $real ) || ! is_string( $parent ) ) { return true; }
+		return rtrim( str_replace( '\\', '/', $real ), '/' ) !== rtrim( str_replace( '\\', '/', $parent ), '/' ) . '/' . basename( $p );
+	};
+	// Removes the link itself: unlink, or rmdir for a Windows directory link (which removes the link, not its target).
+	$unlink = function ( string $p ): bool { return @unlink( $p ) || @rmdir( $p ) || ( ! file_exists( $p ) && ! is_link( $p ) ); };
+	// Empties one real folder; recursion goes only into real sub-folders. $keep is left for the caller. True when all went.
+	$empty = function ( string $dir, string $keep = '' ) use ( &$empty, $is_link, $unlink ): bool {
+		$ok = true;
+		foreach ( (array) @scandir( $dir ) as $f ) {
+			if ( ! is_string( $f ) || '.' === $f || '..' === $f || $f === $keep ) { continue; }
+			$p = $dir . '/' . $f;
+			if ( $is_link( $p ) ) { $ok = $unlink( $p ) && $ok; continue; }
+			if ( is_dir( $p ) ) { $ok = $empty( $p ) && ( @rmdir( $p ) || ! is_dir( $p ) ) && $ok; continue; }
+			$ok = ( @unlink( $p ) || ! file_exists( $p ) ) && $ok;
 		}
-		@rmdir( $p );
-	}
+		return $ok;
+	};
+	if ( $is_link( $root ) ) { $unlink( $root ); return; }
+	if ( ! is_dir( $root ) ) { return; }
+	if ( ! $empty( $root, '.htaccess' ) ) { return; } // something stayed: keep the deny rule in front of it
+	if ( file_exists( $root . '/.htaccess' ) && ! $is_link( $root . '/.htaccess' ) && ! @unlink( $root . '/.htaccess' ) ) { return; }
+	if ( $is_link( $root . '/.htaccess' ) ) { $unlink( $root . '/.htaccess' ); }
 	@rmdir( $root );
 };
 
-$d5b_names = array( 'd5b_switches', 'd5b_takeover', 'd5b_legacy_seen', 'd5b_db_version', 'd5b_abilities_upgrade_notice', 'd5b_abilities_consent_220', 'd5b_abilities_consent_230' );
+$d5b_names = array( 'd5b_switches', 'd5b_takeover', 'd5b_legacy_seen', 'd5b_db_version', 'd5b_abilities_upgrade_notice', 'd5b_abilities_consent_220', 'd5b_abilities_consent_230', 'd5b_abilities_consent_240' );
 foreach ( $d5b_names as $d5b_name ) { delete_option( $d5b_name ); }
 
 if ( is_multisite() ) {

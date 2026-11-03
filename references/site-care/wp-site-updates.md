@@ -60,19 +60,69 @@ get the user's go for the run, and for a site that matters agree the watched pag
 It loads each watched page as a visitor (with a cache-buster) and compares with before: the status code, WordPress's
 "critical error" page, a printed PHP fatal or parse error, the database error page, a stuck maintenance page, a page
 cut off before `</html>`, a page that lost more than half its content. It does NOT see a layout that shifted, a form
-that stopped sending, or a problem only logged-in users or the checkout meet. On a site that matters, look at the
-site afterwards (or run the project's own snapshot/visual check) and say plainly what was and was not checked.
+that stopped sending, or a problem only logged-in users or the checkout meet. Ask for the human check below every
+time, and say plainly what was and was not checked.
 
-## No rollback
+## The human check
 
-Nothing keeps the old version. A bad update is undone by restoring a backup or re-uploading the old plugin. Before a
-careful run on a site that matters, ask whether a current backup exists. Each run writes a log to
-`./site-updates/<site>/run-<time>.json`: every update with its from and to version, and every page check.
+In the maintainer's words: there is no substitute for the human check, and it only takes a few seconds. After every
+run, ask the user to look at the site in a browser AND on a phone for layout breaks, missing images, errors in the
+browser console, forms that no longer work and raw shortcodes showing as text. The page check compares status, error
+text and size only, so it cannot see any of these: never report the site as fine, say what was checked and pass the
+request on.
+
+## No rollback (the script); the old version kept (the abilities)
+
+The script and the REST route keep nothing: a bad update made that way is undone by restoring a backup or re-uploading
+the old plugin. Before a careful run on a site that matters, ask whether a current backup exists. Each run writes a log
+to `./site-updates/<site>/run-<time>.json`: every update with its from and to version, and every page check.
+
+The abilities (next section) do keep the old version: before a plugin or theme is updated, rolled back or deleted, its
+folder is copied to the change history store for 30 days, and `plugins-rollback` / `themes-rollback` put it back, premium
+plugins included. WordPress itself is the exception: no copy, a core update is undone only by a backup.
+
+## From a phone or an AI client: the abilities (plugin 2.4.0, WordPress 6.9+)
+
+The same loop is offered as abilities, for a phone or any AI client that speaks the WordPress Abilities API: see what is
+out of date, keep a copy, update, check, and roll back when something breaks. The user turns on the AI abilities master
+switch, the Plugins / Themes / Core categories and, for anything that changes a plugin, theme or WordPress, "Also allow
+risky actions" under each (Settings > Divi 5 Builder). The Updates switch is not needed.
+
+1. `plugins-status` (plugins and themes with the version on offer and why one is blocked, plus `kept_copies`),
+   `themes-status`, `core-status`. They read the stored list; `updates-check` asks wordpress.org again (once per 5 minutes).
+   Show the user what is out of date and get their go, as with the script.
+2. `plugins-update` / `themes-update` with the plugin file or theme folder: a copy is kept first (refused with
+   `copy_too_big`, `store_full` or `copy_failed` when it cannot be, and `linked` for a folder that is a link), then the
+   update, with the pages checked before and after. `problems` lists a page that got worse; by default the new version
+   stays so it can be fixed (`rollback_on_failure: true` puts the copy back at once). `core-update` needs the exact
+   version on offer and keeps no copy. `translations-update` keeps none either (nothing to break).
+3. `plugins-rollback` / `themes-rollback` with the `history_id` of the update (in the result, and in `kept_copies`)
+   puts the old version back; the files it replaces are kept in turn.
+4. Pass the result's `human_check` on to the user (see "The human check" above), every time.
+
+Also there: `plugins-install` / `themes-install` (wordpress.org slugs only, never activated or switched to),
+`plugins-activate` / `plugins-deactivate` and `themes-switch` (checked; an activation or switch that makes the pages worse
+is reverted at once), and deletes with a preview and a confirmation code (`plugins-delete` runs the plugin's uninstall
+routine, so its data goes for good; `keep_data: true` removes the files only). Every change is a row in the change
+history.
+
+**Which to use.** The abilities on a site with WordPress 6.9 or newer and plugin 2.4.0, from a phone or an AI client, or
+whenever a rollback should be one call away. The REST route and this script stay for sites below WordPress 6.9 (no
+Abilities API there) and for the PC runs above (`--careful` / `--fast` over many items, the run log). Retiring the
+route is decided once the maintainer's sites are all on 6.9.
+
+To try the abilities on a dev site: `node scripts/abilities-live-maint.js <site> plugin|theme-switch|update|user|email|history|all`
+(only the `hello-dolly` plugin and a `d5b-live-user` user are ever deleted; deletes and the theme switch print a plan and
+exit 3 until `--confirm go`; `update --item <plugin file>` updates and rolls back, or skips when nothing is waiting).
+Before the `plugin` step, deactivate WordPress's own `hello.php` if it is active: it declares the same function as the
+wordpress.org `hello-dolly`, so activating `hello-dolly` next to it is a PHP fatal (the abilities answer `activation_failed`,
+or the request ends with no answer). A failed update prints the history row that keeps the copy of the version before
+(`plugins-rollback` with that `history_id` puts it back); after a failed step the HUMAN CHECK line names what the run changed.
 
 ## Not covered
 
-mu-plugins and drop-ins (WordPress does not update those), installing or deleting plugins, switching auto-updates
-on or off, updates that need FTP credentials (reported as the updater's error).
+mu-plugins and drop-ins (WordPress does not update those), installing or deleting plugins by the script (the abilities
+do it), switching auto-updates on or off, updates that need FTP credentials (reported as the updater's error).
 
 ## Tests
 

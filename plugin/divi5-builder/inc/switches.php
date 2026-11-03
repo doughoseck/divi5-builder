@@ -76,11 +76,14 @@ if ( ! function_exists( 'd5b_switches_store' ) ) {
 
 if ( ! function_exists( 'd5b_abilities_category_stored_on' ) ) {
 	/**
-	 * One category's stored value: a category never stored reads on (the default, it only matters once the master is on);
+	 * One category's stored value: a category never stored reads on (the default, it only matters once the master is on),
+	 * except a category added after switches were first stored (email, 2.4.0), which reads off until an admin saves it on;
 	 * a stored value counts as on only when it is an array whose 'on' is a real true. A scalar, false, "off", 0 or [] is off.
 	 */
 	function d5b_abilities_category_stored_on( array $rows, string $slug ): bool {
-		if ( ! array_key_exists( $slug, $rows ) ) { return true; }
+		// A category added after the first switches were stored (email, 2.4.0) is off until an admin ticks it: a site whose
+		// master was on must not start sending email on update. The older categories keep their default.
+		if ( ! array_key_exists( $slug, $rows ) ) { return ! in_array( $slug, array( 'email' ), true ); }
 		$row = $rows[ $slug ];
 		return is_array( $row ) && array_key_exists( 'on', $row ) && true === $row['on'];
 	}
@@ -90,7 +93,8 @@ if ( ! function_exists( 'd5b_abilities_switches' ) ) {
 	/**
 	 * The AI abilities switches, normalized: { master: {on, changed_at, changed_by}, categories: { slug: {on, risky_on, changed_at, changed_by} } }.
 	 * Fail closed: the master and every risky_on read off unless stored as a real true. A category never stored reads on
-	 * (it only matters once the master is on); a stored category reads on only as an array with 'on' => true; a
+	 * (it only matters once the master is on), except email (2.4.0), which reads off until it is saved on
+	 * (d5b_abilities_category_stored_on); a stored category reads on only as an array with 'on' => true; a
 	 * 'categories' value that is not an array turns every category off.
 	 * Every known category is listed. Reading writes nothing.
 	 */
@@ -191,11 +195,14 @@ if ( ! function_exists( 'd5b_abilities_set_category' ) ) {
 }
 
 if ( ! function_exists( 'd5b_abilities_upgrade_notice_text' ) ) {
-	/** The notice text: $version 1 is the 2.2.0 text, 2 the 2.3.0 text; null reads which one is stored (2.2.0's when unknown). */
+	/** The notice text: $version 1 is the 2.2.0 text, 2 the 2.3.0 text, 3 the 2.4.0 text; null reads which one is stored (2.2.0's when unknown). */
 	function d5b_abilities_upgrade_notice_text( ?int $version = null ): string {
 		if ( null === $version ) {
-			$v       = is_multisite() ? get_site_option( 'd5b_abilities_upgrade_notice', 0 ) : get_option( 'd5b_abilities_upgrade_notice', 0 );
-			$version = 2 === (int) $v ? 2 : 1;
+			$v       = (int) ( is_multisite() ? get_site_option( 'd5b_abilities_upgrade_notice', 0 ) : get_option( 'd5b_abilities_upgrade_notice', 0 ) );
+			$version = in_array( $v, array( 2, 3 ), true ) ? $v : 1;
+		}
+		if ( 3 === $version ) {
+			return 'The AI abilities master switch was turned off by the update to 2.4.0, which adds abilities that manage users, plugins, themes, WordPress updates and email, and whose normal writes send a test email, send password reset links, update translations and refresh the update list. Review the switches and turn it on again when you are ready.';
 		}
 		if ( 2 === $version ) {
 			return 'divi5-builder 2.3.0 adds AI abilities that can change site settings, theme settings, widgets and caches, and risky actions behind their own switches. The AI abilities master switch was turned off during the update; review the switches and turn it on again when you are ready.';
@@ -214,10 +221,16 @@ if ( ! function_exists( 'd5b_abilities_upgrade_consent' ) ) {
 	 * '1' -> '2' (2.1.x to 2.2.0, abilities that write): the 2.2.0 step, once per network (d5b_abilities_consent_220).
 	 * '2' -> '3' and '1' -> '3' (2.3.0: settings, theme settings, widgets, caches, risky actions): the 2.3.0 step, once per
 	 * network (d5b_abilities_consent_230); a site that skips 2.2.0 gets this one step with the 2.3.0 text.
+	 * '3' -> '4', and '1' or '2' -> '4' (2.4.0: users, plugins, themes, WordPress updates and email; normal writes that send a
+	 * test email, send password reset links, update translations and refresh the update list): the 2.4.0 step, once per
+	 * network (d5b_abilities_consent_240), notice 3; a site that skips 2.2.0 and 2.3.0 gets this one step.
 	 * No arguments means the 2.2.0 step, as before. Any other move: nothing.
 	 */
 	function d5b_abilities_upgrade_consent( string $from = '1', string $to = '2' ): void {
-		if ( '3' === $to && in_array( $from, array( '1', '2' ), true ) ) {
+		if ( '4' === $to && in_array( $from, array( '1', '2', '3' ), true ) ) {
+			$once = 'd5b_abilities_consent_240'; $notice = 3;
+			$why  = 'turned off by the update to 2.4.0, which adds abilities that manage users, plugins, themes, WordPress updates and email, and whose normal writes send a test email, send password reset links, update translations and refresh the update list';
+		} elseif ( '3' === $to && in_array( $from, array( '1', '2' ), true ) ) {
 			$once = 'd5b_abilities_consent_230'; $notice = 2;
 			$why  = 'turned off by the update to 2.3.0, which adds abilities that change site settings, theme settings, widgets and caches';
 		} elseif ( '2' === $to && '1' === $from ) {
@@ -227,10 +240,15 @@ if ( ! function_exists( 'd5b_abilities_upgrade_consent' ) ) {
 			return;
 		}
 		// On a network the switches are one network option but every site upgrades its own tables: the step runs once per
-		// network, so a master switched on again after the first site's update stays on.
+		// network, so a master switched on again after the first site's update stays on. On a single site the same once
+		// option (not autoloaded): two first requests (admin_init and the abilities init) each see the old db version, and the
+		// second must not turn off a master the admin switched on again in between.
 		if ( is_multisite() ) {
 			if ( get_site_option( $once, 0 ) ) { return; }
 			update_site_option( $once, 1 );
+		} else {
+			if ( get_option( $once, 0 ) ) { return; }
+			update_option( $once, 1, false );
 		}
 		if ( ! d5b_abilities_master_on() ) { return; }
 		d5b_abilities_set_master( false, '0', $why );

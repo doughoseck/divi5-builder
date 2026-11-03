@@ -238,6 +238,24 @@ if ( ! function_exists( 'd5b_ability_http_status' ) ) {
 			'stale' => 409, 'masked_read' => 409, 'confirmation_invalid' => 409, 'crosses_markup' => 409, 'ambiguous' => 409, 'cannot_trash' => 409,
 			'needs_unfiltered_html' => 403, 'history_unavailable' => 503, 'too_large_to_record' => 413,
 			'unavailable' => 503, 'audit_unavailable' => 503,
+			// A kept copy (2.4.0): too big for one copy, the store at its cap, or the copy could not be made.
+			'copy_too_big' => 413, 'store_full' => 507, 'copy_failed' => 503,
+			// Plugins (2.4.0): this plugin itself, a slug already installed, a download link not on downloads.wordpress.org, a
+			// check asked again too soon, a plugin that failed to activate, an install the upgrader did not finish.
+			'self' => 403, 'exists' => 409, 'bad_source' => 403, 'too_soon' => 429, 'activation_failed' => 409, 'install_failed' => 502,
+			// Update, rollback, delete (2.4.0): an active plugin not deleted, an older copy while a newer one is kept, a kept copy
+			// that is gone, a copy without the plugin file, an update or delete the engine did not finish.
+			'active' => 409, 'newer_copy_exists' => 409, 'copy_missing' => 410, 'restore_mismatch' => 409, 'update_failed' => 502, 'delete_failed' => 502,
+			// A plugin or theme that is (or holds) a link: never copied, updated, swapped or deleted (without_copy does not lift it).
+			'linked' => 409,
+			// Fix wave (2.4.0): a kept copy that no longer matches the file list in its row; the same item (or the administrators)
+			// being changed by another request right now; no email address to send to.
+			'copy_tampered' => 409, 'busy' => 409, 'no_email' => 409,
+			// Themes (2.4.0): the active theme or its parent (or a network-enabled theme) not deleted; a switch that stopped with an error.
+			'in_use' => 409, 'switch_failed' => 409,
+			// Users (2.4.0): the caller's own account, another administrator's email, the last administrator, a reset link right after
+			// an email or role change.
+			'own_account' => 403, 'other_admin_email' => 403, 'last_admin' => 409, 'recently_changed' => 409,
 			'internal_error' => 500, 'write_failed' => 500,
 		);
 		return $map[ $code ] ?? $default;

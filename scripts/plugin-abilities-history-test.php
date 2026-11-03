@@ -43,9 +43,9 @@ function add_ability( $short, $handler ) { d5b_ability_add( array( 'name' => 'di
 
 echo "install\n";
 fresh();
-check( 'the schema version is 3', '3' === D5B_DB_VERSION );
+check( 'the schema version is 4', '4' === D5B_DB_VERSION );
 d5b_audit_maybe_install();
-check( 'install creates both tables once; d5b_db_version becomes 3', isset( $wpdb->tables['wp_d5b_audit'], $wpdb->tables['wp_d5b_history'] ) && '3' === get_option( 'd5b_db_version' ) && 1 === count( $GLOBALS['T_dbdelta'] ), array( array_keys( $wpdb->tables ), $GLOBALS['T_dbdelta'] ) );
+check( 'install creates both tables once; d5b_db_version becomes 4', isset( $wpdb->tables['wp_d5b_audit'], $wpdb->tables['wp_d5b_history'] ) && '4' === get_option( 'd5b_db_version' ) && 1 === count( $GLOBALS['T_dbdelta'] ), array( array_keys( $wpdb->tables ), $GLOBALS['T_dbdelta'] ) );
 d5b_audit_maybe_install();
 check( 'a second call does nothing (dbDelta not run again)', 1 === count( $GLOBALS['T_dbdelta'] ) );
 $sql = $GLOBALS['T_dbdelta'][0];
@@ -55,7 +55,7 @@ check( 'the history table has its twelve columns, the indexes, and two spaces af
 fresh(); $wpdb->tables['wp_d5b_audit'] = array( array( 'id' => 5, 'created_at' => gmdate( 'Y-m-d H:i:s' ), 'user_id' => 1, 'ability' => 'a/b', 'args' => '{}', 'status' => 'ok', 'duration_ms' => 1, 'ip' => '' ) );
 update_option( 'd5b_db_version', '1' );
 d5b_audit_maybe_install();
-check( 'upgrading from 1 creates the history table, keeps the audit table and its rows, and flips the version to 3', isset( $wpdb->tables['wp_d5b_history'] ) && 1 === count( $wpdb->tables['wp_d5b_audit'] ) && '3' === get_option( 'd5b_db_version' ), array_keys( $wpdb->tables ) );
+check( 'upgrading from 1 creates the history table, keeps the audit table and its rows, and flips the version to 4', isset( $wpdb->tables['wp_d5b_history'] ) && 1 === count( $wpdb->tables['wp_d5b_audit'] ) && '4' === get_option( 'd5b_db_version' ), array_keys( $wpdb->tables ) );
 fresh(); $GLOBALS['T_dbdelta_fail'] = true; update_option( 'd5b_db_version', '1' );
 $wpdb->tables['wp_d5b_audit'] = array();
 d5b_audit_maybe_install();
@@ -63,52 +63,66 @@ check( 'when the history table cannot be made the version stays 1 and the one-ho
 d5b_audit_maybe_install();
 check( '... and a second attempt in the same request runs no more dbDelta', 1 === count( $GLOBALS['T_dbdelta'] ) );
 
-echo "final wave A5: the update from schema 1 (now straight to 3) turns a master switch given for reads only off\n";
+echo "final wave A5: the update from schema 1 (now straight to 4) turns a master switch given for reads only off\n";
 $notice = function () { return get_option( 'd5b_abilities_upgrade_notice', null ); };
 fresh(); $wpdb->tables['wp_d5b_audit'] = array(); update_option( 'd5b_db_version', '1' ); d5b_abilities_set_master( true, 'ann' );
 d5b_audit_maybe_install();
 $m = d5b_abilities_switches()['master'];
-check( 'version 1 + master on: after the install the master is off, changed_by 0 with the reason, the notice option is set', '3' === get_option( 'd5b_db_version' ) && false === $m['on'] && '0' === $m['changed_by'] && false !== strpos( $m['reason'], '2.3.0' ) && 2 === $notice(), $m );
-check( '... the notice text is the agreed one', 'divi5-builder 2.3.0 adds AI abilities that can change site settings, theme settings, widgets and caches, and risky actions behind their own switches. The AI abilities master switch was turned off during the update; review the switches and turn it on again when you are ready.' === d5b_abilities_upgrade_notice_text() && d5b_abilities_upgrade_notice_on() );
+check( 'version 1 + master on: after the install the master is off, changed_by 0 with the reason, the notice option is set', '4' === get_option( 'd5b_db_version' ) && false === $m['on'] && '0' === $m['changed_by'] && false !== strpos( $m['reason'], '2.4.0' ) && 3 === $notice(), $m );
+check( '... the notice text is the agreed one', 'The AI abilities master switch was turned off by the update to 2.4.0, which adds abilities that manage users, plugins, themes, WordPress updates and email, and whose normal writes send a test email, send password reset links, update translations and refresh the update list. Review the switches and turn it on again when you are ready.' === d5b_abilities_upgrade_notice_text() && d5b_abilities_upgrade_notice_on() );
 d5b_abilities_set_master( true, 'ann' ); d5b_audit_install_state( 'reset' ); d5b_audit_maybe_install();
-check( '... once at 2, a later install (or request) leaves a master switched on again alone', true === d5b_abilities_master_on() );
+check( '... once at 4, a later install (or request) leaves a master switched on again alone', true === d5b_abilities_master_on() );
 fresh(); $wpdb->tables['wp_d5b_audit'] = array(); update_option( 'd5b_db_version', '1' ); d5b_abilities_set_master( false, 'ann' );
 d5b_audit_maybe_install();
-check( 'version 1 + master off: nothing (no notice, the master row untouched)', '3' === get_option( 'd5b_db_version' ) && null === $notice() && 'ann' === d5b_abilities_switches()['master']['changed_by'] );
+check( 'version 1 + master off: nothing (no notice, the master row untouched)', '4' === get_option( 'd5b_db_version' ) && null === $notice() && 'ann' === d5b_abilities_switches()['master']['changed_by'] );
 fresh(); d5b_abilities_set_master( true, 'ann' );
 d5b_audit_maybe_install();
 check( 'a new install (no version): the master stays as it is, no notice', true === d5b_abilities_master_on() && null === $notice() );
-fresh(); update_option( 'd5b_db_version', '3' ); d5b_abilities_set_master( true, 'ann' ); $wpdb->tables['wp_d5b_audit'] = array(); $wpdb->tables['wp_d5b_history'] = array();
+fresh(); update_option( 'd5b_db_version', '4' ); d5b_abilities_set_master( true, 'ann' ); $wpdb->tables['wp_d5b_audit'] = array(); $wpdb->tables['wp_d5b_history'] = array();
 d5b_audit_maybe_install();
-check( 'version already 3: nothing', true === d5b_abilities_master_on() && null === $notice() );
+check( 'version already 4: nothing', true === d5b_abilities_master_on() && null === $notice() );
 fresh(); update_option( 'd5b_db_version', '2' ); d5b_abilities_set_master( true, 'ann' ); $wpdb->tables['wp_d5b_audit'] = array(); $wpdb->tables['wp_d5b_history'] = array();
 d5b_audit_maybe_install();
 $m = d5b_abilities_switches()['master'];
-check( 'version 2 (a 2.2.0 site) + master on: the install to 3 turns the master off with the 2.3.0 reason and notice (value 2), version 3', '3' === get_option( 'd5b_db_version' ) && false === $m['on'] && '0' === $m['changed_by'] && false !== strpos( $m['reason'], '2.3.0' ) && 2 === $notice(), $m );
+check( 'version 2 (a 2.2.0 site) + master on: the install to 4 turns the master off with the 2.4.0 reason and notice (value 3), version 4', '4' === get_option( 'd5b_db_version' ) && false === $m['on'] && '0' === $m['changed_by'] && false !== strpos( $m['reason'], '2.4.0' ) && 3 === $notice(), $m );
 fresh(); update_option( 'd5b_db_version', '2' ); d5b_abilities_set_master( false, 'ann' ); $wpdb->tables['wp_d5b_audit'] = array(); $wpdb->tables['wp_d5b_history'] = array();
 d5b_audit_maybe_install();
-check( 'version 2 + master off: the install to 3 changes nothing but the version', '3' === get_option( 'd5b_db_version' ) && null === $notice() && 'ann' === d5b_abilities_switches()['master']['changed_by'] );
+check( 'version 2 + master off: the install to 4 changes nothing but the version', '4' === get_option( 'd5b_db_version' ) && null === $notice() && 'ann' === d5b_abilities_switches()['master']['changed_by'] );
 fresh(); $GLOBALS['T_dbdelta_fail'] = true; update_option( 'd5b_db_version', '1' ); $wpdb->tables['wp_d5b_audit'] = array(); d5b_abilities_set_master( true, 'ann' );
 d5b_audit_maybe_install();
 check( 'version 1 + master on but the history table cannot be made: the version stays 1 and the master is untouched (it happens with the install that succeeds)', '1' === get_option( 'd5b_db_version' ) && true === d5b_abilities_master_on() && null === $notice() );
 fresh(); t_set_multisite( true ); $wpdb->tables['wp_d5b_audit'] = array(); update_option( 'd5b_db_version', '1' ); d5b_abilities_set_master( true, 'ann' );
 d5b_audit_maybe_install();
-check( 'network: the switch (a network option) goes off and the notice is a network option too', false === d5b_abilities_master_on() && 2 === get_site_option( 'd5b_abilities_upgrade_notice', null ) && null === $notice() );
+check( 'network: the switch (a network option) goes off and the notice is a network option too', false === d5b_abilities_master_on() && 3 === get_site_option( 'd5b_abilities_upgrade_notice', null ) && null === $notice() );
 
 echo "re-review 3: the repair keeps an older version; the consent step runs once per network\n";
 fresh(); $wpdb->tables['wp_d5b_audit'] = array(); update_option( 'd5b_db_version', '1' ); d5b_abilities_set_master( true, 'ann' );
 $hw = d5b_history_write( hist() ); // the upgrade CREATE failed earlier: no history table, version still 1
-check( 'a repair from version 1 (failed upgrade CREATE) keeps the version, so the install that works runs the consent step: master off, notice set, version 2', $hw > 0 && '3' === get_option( 'd5b_db_version' ) && false === d5b_abilities_master_on() && 2 === get_option( 'd5b_abilities_upgrade_notice', null ) );
-fresh(); update_option( 'd5b_db_version', '3' ); $wpdb->tables['wp_d5b_audit'] = array(); d5b_abilities_set_master( true, 'ann' );
-check( '... a repair at version 3 (a table dropped later) re-installs without the consent step', d5b_history_write( hist() ) > 0 && true === d5b_abilities_master_on() && null === get_option( 'd5b_abilities_upgrade_notice', null ) );
+check( 'a repair from version 1 (failed upgrade CREATE) keeps the version, so the install that works runs the consent step: master off, notice set, version 4', $hw > 0 && '4' === get_option( 'd5b_db_version' ) && false === d5b_abilities_master_on() && 3 === get_option( 'd5b_abilities_upgrade_notice', null ) );
+fresh(); update_option( 'd5b_db_version', '4' ); $wpdb->tables['wp_d5b_audit'] = array(); d5b_abilities_set_master( true, 'ann' );
+check( '... a repair at version 4 (a table dropped later) re-installs without the consent step', d5b_history_write( hist() ) > 0 && true === d5b_abilities_master_on() && null === get_option( 'd5b_abilities_upgrade_notice', null ) );
 fresh(); t_set_multisite( true ); $wpdb->tables['wp_d5b_audit'] = array(); update_option( 'd5b_db_version', '1' ); d5b_abilities_set_master( true, 'ann' );
 d5b_audit_maybe_install();
-$first = false === d5b_abilities_master_on() && 2 === get_site_option( 'd5b_abilities_upgrade_notice', null ) && 1 === get_site_option( 'd5b_abilities_consent_230', null );
+$first = false === d5b_abilities_master_on() && 3 === get_site_option( 'd5b_abilities_upgrade_notice', null ) && 1 === get_site_option( 'd5b_abilities_consent_240', null );
 d5b_abilities_set_master( true, 'netadmin' ); delete_site_option( 'd5b_abilities_upgrade_notice' );
 // The next site of the network upgrades its own tables.
 unset( $wpdb->tables['wp_d5b_history'] ); update_option( 'd5b_db_version', '1' ); d5b_audit_install_state( 'reset' );
 d5b_audit_maybe_install();
-check( 'network: the first site\'s upgrade turns the master off and records d5b_abilities_consent_230; a later site\'s upgrade leaves the master the admin switched on again, no new notice', $first && true === d5b_abilities_master_on() && '3' === get_option( 'd5b_db_version' ) && null === get_site_option( 'd5b_abilities_upgrade_notice', null ) );
+check( 'network: the first site\'s upgrade turns the master off and records d5b_abilities_consent_240; a later site\'s upgrade leaves the master the admin switched on again, no new notice', $first && true === d5b_abilities_master_on() && '4' === get_option( 'd5b_db_version' ) && null === get_site_option( 'd5b_abilities_upgrade_notice', null ) );
+
+echo "fix wave M11: on a single site the consent step runs once too\n";
+// Two first requests (admin_init and the abilities init) both read the old version '3'. The first turns the master off; the
+// admin switches it on again; the second request, which read '3' before the first finished, must not turn it off again.
+fresh(); update_option( 'd5b_db_version', '3' ); $wpdb->tables['wp_d5b_audit'] = array(); d5b_abilities_set_master( true, 'ann' );
+d5b_audit_maybe_install();
+$first = false === d5b_abilities_master_on() && 3 === $notice() && 1 === get_option( 'd5b_abilities_consent_240', null ) && in_array( $GLOBALS['T_autoload']['d5b_abilities_consent_240'] ?? null, array( false, 'no', 'off' ), true );
+d5b_abilities_set_master( true, 'ann' );
+d5b_abilities_upgrade_consent( '3', '4' ); // the second request's step, with the version it read
+check( 'M11 single site: the first step records d5b_abilities_consent_240 (not autoloaded); the second leaves the master the admin switched on again', $first && true === d5b_abilities_master_on() && 'ann' === d5b_abilities_switches()['master']['changed_by'], array( $first, d5b_abilities_switches()['master'], $GLOBALS['T_autoload']['d5b_abilities_consent_240'] ?? null ) );
+fresh(); update_option( 'd5b_db_version', '2' ); $wpdb->tables['wp_d5b_audit'] = array(); d5b_abilities_set_master( true, 'ann' );
+update_option( 'd5b_abilities_consent_240', 1, false );
+d5b_audit_maybe_install();
+check( 'M11 ... a site whose 2.4.0 step already ran (the once option set) is not switched off again', true === d5b_abilities_master_on() && '4' === get_option( 'd5b_db_version' ) );
 
 echo "write\n";
 installed();
@@ -239,7 +253,7 @@ $ok = true; $threw = false;
 try { $ok = d5b_history_write( hist() ); } catch ( Throwable $t ) { $threw = true; }
 check( 'a database that throws on insert: write returns 0, never throws', 0 === $ok && ! $threw );
 $wpdb->fail_insert = false; $GLOBALS['T_dbdelta_fail'] = false; delete_transient( 'd5b_audit_install_failed' ); d5b_audit_install_state( 'reset' );
-check( 'write when the table is gone but the version says installed: the tables are made on the spot and the row stored', d5b_history_write( hist() ) > 0 && 1 === count( hrows() ) && '3' === get_option( 'd5b_db_version' ) );
+check( 'write when the table is gone but the version says installed: the tables are made on the spot and the row stored', d5b_history_write( hist() ) > 0 && 1 === count( hrows() ) && '4' === get_option( 'd5b_db_version' ) );
 installed(); unset( $wpdb->tables['wp_d5b_history'] ); d5b_audit_install_state( 'reset' ); $before_dd = count( $GLOBALS['T_dbdelta'] );
 $a1 = d5b_history_write( hist() ); $a2 = d5b_history_write( hist() );
 check( 'the repair is bounded: once per request (two writes after a dropped table run dbDelta once)', $a1 > 0 && $a2 > 0 && 1 === count( $GLOBALS['T_dbdelta'] ) - $before_dd );

@@ -38,6 +38,8 @@ function t_reset() {
 	if ( function_exists( 't_widgets_reset' ) && class_exists( 'WP_Widget_Factory', false ) ) { t_widgets_reset(); }
 	if ( function_exists( 't_cron_reset' ) ) { t_cron_reset(); }
 	if ( function_exists( 't_templates_reset' ) ) { t_templates_reset(); }
+	if ( function_exists( 't_plugins_reset' ) ) { t_plugins_reset(); }
+	if ( function_exists( 't_users_reset' ) ) { t_users_reset(); }
 }
 // A new request: WordPress starts a request with the gate not yet run.
 function t_new_request() { unset( $GLOBALS['d5b_gate_ran'] ); }
@@ -95,7 +97,8 @@ function register_rest_route( $ns, $path, $args ) {
 function register_setting( $group, $name, $args = array() ) { $GLOBALS['T_settings'][] = array( $group, $name, $args ); }
 // Set T_NO_DEACTIVATE in the environment to run without deactivate_plugins (as before wp-admin/includes/plugin.php is loaded).
 if ( ! getenv( 'T_NO_DEACTIVATE' ) ) {
-	function deactivate_plugins( $plugins, $silent = false, $network = null ) { $GLOBALS['T_deactivated'][] = $plugins; $GLOBALS['T_deactivate_calls'][] = array( $plugins, $silent, $network ); }
+	// With the plugin stand-ins (T_PLUGIN_STANDINS, at the end of this file) it also changes the active lists as core does.
+	function deactivate_plugins( $plugins, $silent = false, $network = null ) { $GLOBALS['T_deactivated'][] = $plugins; $GLOBALS['T_deactivate_calls'][] = array( $plugins, $silent, $network ); if ( function_exists( 't_plugins_deactivate' ) ) { t_plugins_deactivate( $plugins, $network, $silent ); } }
 }
 
 function get_option( $n, $d = false ) { return array_key_exists( $n, $GLOBALS['T_options'] ) ? $GLOBALS['T_options'][ $n ] : $d; }
@@ -212,7 +215,8 @@ function wp_slash( $v ) { if ( is_array( $v ) ) { return array_map( 'wp_slash', 
 //   T_user_id          what get_current_user_id returns
 if ( ! defined( 'ARRAY_A' ) ) { define( 'ARRAY_A', 'ARRAY_A' ); }
 class T_Wpdb {
-	public $posts = 'wp_posts'; public $postmeta = 'wp_postmeta'; public $options = 'wp_options';
+	public $posts = 'wp_posts'; public $postmeta = 'wp_postmeta'; public $options = 'wp_options'; public $sitemeta = 'wp_sitemeta';
+	public $users = 'wp_users'; public $usermeta = 'wp_usermeta'; public $comments = 'wp_comments'; public $links = 'wp_links';
 	public $prefix = 'wp_'; public $tables = array(); public $queries = array(); public $unprepared = array(); public $fail_insert = false; public $fail_update = false; public $insert_id = 0; public $suppress_now = false; public $suppress_log = array();
 	private $prepared = array(); private $next_id = 1;
 	function get_blog_prefix( $id = null ) { return 'wp_' . ( ( null === $id || 1 === (int) $id ) ? '' : (int) $id . '_' ); }
@@ -256,6 +260,8 @@ class T_Wpdb {
 	// Like wpdb::delete: false on an error (no such table, empty where), else the number of rows deleted.
 	function delete( $table, $where, $where_format = null ) {
 		if ( ! isset( $this->tables[ $table ] ) || ! is_array( $where ) || array() === $where ) { return false; }
+		// T_db_delete_fail: table names whose deletes fail (a database error: false, nothing removed), as wpdb answers then.
+		if ( in_array( $table, (array) ( $GLOBALS['T_db_delete_fail'] ?? array() ), true ) ) { return false; }
 		$keep = array();
 		foreach ( $this->tables[ $table ] as $row ) {
 			foreach ( $where as $k => $v ) { if ( ! array_key_exists( $k, $row ) || (string) $row[ $k ] !== (string) $v ) { $keep[] = $row; continue 2; } }
@@ -267,6 +273,15 @@ class T_Wpdb {
 	function get_var( $sql ) {
 		$this->note( $sql );
 		if ( preg_match( "/^SHOW TABLES LIKE '(.*)'$/", $sql, $m ) ) { $t = stripslashes( stripslashes( $m[1] ) ); return isset( $this->tables[ $t ] ) ? $t : null; }
+		// As MySQL: the smallest created_at, NULL for an empty table (and for a missing one, with an error).
+		// The comments a user wrote, every status (the user stand-ins, T_USER_STANDINS).
+		if ( preg_match( '/^SELECT COUNT\(\*\) FROM wp_comments WHERE user_id = (\d+)$/', $sql, $m ) ) {
+			$n = 0; foreach ( $GLOBALS['T_comments'] ?? array() as $c ) { if ( (int) $c->user_id === (int) $m[1] ) { $n++; } } return (string) $n;
+		}
+		if ( preg_match( '/^SELECT MIN\(created_at\) FROM (\S+)$/', $sql, $m ) ) {
+			$rows = $this->tables[ $m[1] ] ?? array(); if ( array() === $rows ) { return null; }
+			$c = array_column( $rows, 'created_at' ); sort( $c, SORT_STRING ); return (string) $c[0];
+		}
 		return null;
 	}
 	// get_col understands the two lookups of the media delete preview, answered from T_meta and T_posts:
@@ -276,6 +291,8 @@ class T_Wpdb {
 	function get_col( $sql ) {
 		$this->note( $sql );
 		$q = "'((?:[^'\\\\]|\\\\.)*)'";
+		// Core's own query in wp_delete_user / remove_user_from_blog: every item (any type, any status) of the author.
+		if ( preg_match( '/^SELECT ID FROM wp_posts WHERE post_author = (\d+)$/', $sql, $m ) ) { return array_map( 'strval', t_author_ids( (int) $m[1] ) ); }
 		if ( preg_match( "/^SELECT post_id FROM wp_postmeta WHERE meta_key = $q AND meta_value = $q LIMIT (\\d+)$/", $sql, $m ) ) {
 			$k = stripslashes( $m[1] ); $v = stripslashes( $m[2] ); $out = array();
 			foreach ( $GLOBALS['T_meta'] as $id => $keys ) { foreach ( $keys[ $k ] ?? array() as $x ) { if ( (string) $x === $v ) { $out[] = (string) $id; break; } } }
@@ -316,6 +333,13 @@ class T_Wpdb {
 			$v = t_db_transient( stripslashes( $m[1] ) );
 			return null === $v ? null : (object) array( 'option_value' => $v );
 		}
+		// A site transient as the network's sitemeta row holds it (T_db_site_transients when a test models another request's
+		// write, else T_site_transients), as core stores set_site_transient on a multisite network.
+		if ( preg_match( "/^SELECT meta_value FROM wp_sitemeta WHERE meta_key = '_site_transient_([^']+)' AND site_id = \\d+ LIMIT 1$/", $sql, $m ) ) {
+			$k = stripslashes( $m[1] );
+			$v = array_key_exists( $k, $GLOBALS['T_db_site_transients'] ?? array() ) ? $GLOBALS['T_db_site_transients'][ $k ] : ( $GLOBALS['T_site_transients'][ $k ] ?? null );
+			return null === $v ? null : (object) array( 'meta_value' => $v );
+		}
 		// The cron option as the database holds it (T_cron_array, serialized with its version), read past the request's
 		// own copy (T_cron_request_copy, when a test models one, is what _get_cron_array() answers in this request).
 		if ( "SELECT option_value FROM wp_options WHERE option_name = 'cron' LIMIT 1" === $sql ) {
@@ -329,6 +353,13 @@ class T_Wpdb {
 	}
 	function get_results( $sql, $output = 'OBJECT' ) {
 		$this->note( $sql );
+		// The items of an author counted by type (any status), as MySQL's GROUP BY answers it.
+		if ( preg_match( '/^SELECT post_type, COUNT\(\*\) AS n FROM wp_posts WHERE post_author = (\d+) GROUP BY post_type$/', $sql, $m ) ) {
+			$by = array();
+			foreach ( t_author_ids( (int) $m[1] ) as $id ) { $t = isset( $GLOBALS['T_posts'][ $id ] ) ? (string) $GLOBALS['T_posts'][ $id ]->post_type : 'post'; $by[ $t ] = ( $by[ $t ] ?? 0 ) + 1; }
+			$out = array(); foreach ( $by as $t => $n ) { $r = array( 'post_type' => $t, 'n' => (string) $n ); $out[] = ARRAY_A === $output ? $r : (object) $r; }
+			return $out;
+		}
 		if ( ! preg_match( '/^SELECT .+ FROM (\S+)(?: WHERE (.+?))? ORDER BY id DESC LIMIT (\d+) OFFSET (\d+)$/', $sql, $m ) ) { return null; }
 		if ( ! isset( $this->tables[ $m[1] ] ) ) { return null; }
 		$rows = array_reverse( $this->tables[ $m[1] ] );
@@ -524,6 +555,21 @@ function current_user_can( $cap, $id = null, $key = null ) {
 	// core maps add_post_meta and delete_post_meta exactly as edit_post_meta.
 	if ( 'edit_post_meta' === $cap || 'delete_post_meta' === $cap || 'add_post_meta' === $cap ) { return null !== $id && t_post_cap( 'edit_post', (int) $id ) && ! is_protected_meta( (string) $key, 'post' ) && ! in_array( (string) $key, $GLOBALS['T_meta_auth_denied'] ?? array(), true ); }
 	if ( null !== $id && ( 'read_post' === $cap || 'edit_post' === $cap || 'delete_post' === $cap ) ) { return t_post_cap( $cap, (int) $id ); }
+	// The user meta caps as core's map_meta_cap (capabilities.php, 6.4.1): edit_user on oneself needs nothing more; on a network
+	// edit_user/edit_users need manage_network_users, and only a super admin edits a super admin; promote_user is promote_users;
+	// delete_user/delete_users on a network only a super admin; remove_user never oneself (unless super admin), else remove_users;
+	// create_users on a network a super admin, or the network option add_new_users.
+	$me = (int) ( $GLOBALS['T_user_id'] ?? 0 );
+	$net = ! empty( $GLOBALS['T_multisite'] );
+	if ( 'edit_user' === $cap || 'edit_users' === $cap ) {
+		if ( 'edit_user' === $cap && null !== $id && (int) $id === $me && $me > 0 ) { return true; }
+		if ( $net && ( ( ! is_super_admin() && 'edit_user' === $cap && null !== $id && is_super_admin( (int) $id ) ) || ! t_has_cap( 'manage_network_users' ) ) ) { return false; }
+		return t_has_cap( 'edit_users' );
+	}
+	if ( 'promote_user' === $cap ) { return t_has_cap( 'promote_users' ); }
+	if ( 'delete_user' === $cap || 'delete_users' === $cap ) { return ( ! $net || is_super_admin() ) && t_has_cap( 'delete_users' ); }
+	if ( 'remove_user' === $cap ) { return ! ( null !== $id && (int) $id === $me && ! is_super_admin() ) && t_has_cap( 'remove_users' ); }
+	if ( 'create_users' === $cap && $net ) { return ( is_super_admin() || get_site_option( 'add_new_users' ) ) && t_has_cap( 'create_users' ); }
 	return t_has_cap( $cap );
 }
 function get_post( $id = null ) { return is_object( $id ) ? $id : ( $GLOBALS['T_posts'][ (int) $id ] ?? null ); }
@@ -547,6 +593,8 @@ function apply_filters( $tag, $value, ...$args ) {
 	if ( 'wp_delete_file' === $tag ) { foreach ( $GLOBALS['T_filters']['wp_delete_file'] ?? array() as $cb ) { $value = call_user_func( $cb, $value ); } return $value; }
 	// widget_update_callback (core's WP_Widget::update_callback): the callbacks added with add_filter run, as core's.
 	if ( 'widget_update_callback' === $tag ) { foreach ( $GLOBALS['T_filters']['widget_update_callback'] ?? array() as $cb ) { $value = call_user_func( $cb, $value, ...$args ); } return $value; }
+	// upgrader_pre_download (core's WP_Upgrader::download_package): the callbacks added with add_filter run, as core's.
+	if ( 'upgrader_pre_download' === $tag ) { foreach ( $GLOBALS['T_filters']['upgrader_pre_download'] ?? array() as $cb ) { $value = call_user_func( $cb, $value, ...$args ); } return $value; }
 	return 'the_content' === $tag ? '<div class="filtered">' . $value . '</div>' : $value;
 }
 function wp_strip_all_tags( $s ) { return trim( strip_tags( (string) $s ) ); }
@@ -625,6 +673,16 @@ class WP_Query {
 			$rows[] = $p;
 		}
 		usort( $rows, function ( $x, $y ) { return $y->ID <=> $x->ID; } );
+		// As core: orderby 'date' (core's default, also 'date ID') sorts by the post_date column, 'modified' by post_modified,
+		// order DESC by default, ties by id. A stand-in post without the local column uses its _gmt one (the same here).
+		// Other orders stay newest id first.
+		$ob = trim( (string) ( $a['orderby'] ?? 'date' ) );
+		$col = ( '' === $ob || 'date' === $ob || 'date ID' === $ob ) ? 'post_date' : ( 'modified' === $ob ? 'post_modified' : '' );
+		if ( '' !== $col ) {
+			$asc = 'ASC' === strtoupper( (string) ( $a['order'] ?? 'DESC' ) );
+			$v = function ( $p ) use ( $col ) { return (string) ( $p->$col ?? ( $p->{$col . '_gmt'} ?? '' ) ); };
+			usort( $rows, function ( $x, $y ) use ( $asc, $v ) { $c = strcmp( $v( $y ), $v( $x ) ) ?: ( $y->ID <=> $x->ID ); return $asc ? -$c : $c; } );
+		}
 		$this->found_posts = count( $rows );
 		$per = max( 1, (int) ( $a['posts_per_page'] ?? 10 ) ); $this->max_num_pages = (int) ceil( $this->found_posts / $per );
 		$this->posts = array_slice( $rows, ( max( 1, (int) ( $a['paged'] ?? 1 ) ) - 1 ) * $per, $per );
@@ -1003,6 +1061,9 @@ function t_media_reset() {
 	foreach ( $GLOBALS['T_tempfiles'] ?? array() as $f ) { if ( file_exists( $f ) ) { @unlink( $f ); } }
 	$GLOBALS['T_tempfiles'] = array();
 	$GLOBALS['T_files_unlinked'] = array(); $GLOBALS['T_rename_fail'] = array(); $GLOBALS['T_rename_fail_re'] = ''; $GLOBALS['T_renames'] = array();
+	unset( $GLOBALS['T_http_fn'], $GLOBALS['T_theme_root'], $GLOBALS['wp_filesystem'], $GLOBALS['T_copy_done'] );
+	$GLOBALS['T_user_caps'] = array(); $GLOBALS['T_fs_fail'] = false; $GLOBALS['T_copy_fail'] = false; $GLOBALS['T_fs_copy_fail'] = false; $GLOBALS['T_copy_calls'] = array();
+	$GLOBALS['T_copy_fail_to_re'] = ''; $GLOBALS['T_fs_delete_fail_re'] = ''; unset( $GLOBALS['T_copy_re_done'] );
 }
 // The media delete's file move, plugged here: a REAL rename (the tests use a real temporary uploads folder,
 // T_upload_basedir), except that a source path listed in T_rename_fail fails as a refused rename would (false, nothing
@@ -1053,7 +1114,9 @@ function wp_remote_get( $url, $args = array() ) {
 		foreach ( $handle->resolve as $e ) { if ( preg_match( '/^(.+):(\d+):\[?([^\]]+)\]?$/', $e, $m ) && strtolower( $m[1] ) === $host && (int) $m[2] === $port ) { $ip = $m[3]; } }
 	}
 	$GLOBALS['T_connects'][] = $ip;
-	$r = $GLOBALS['T_http'][ $url ] ?? new WP_Error( 'http_request_failed', 'cURL error 6: Could not resolve host (stand-in: no scripted answer).' );
+	// T_http_fn (optional): callable( url, args ) answering what T_http does not list (a scripted answer, a WP_Error, or null).
+	$r = $GLOBALS['T_http'][ $url ] ?? ( isset( $GLOBALS['T_http_fn'] ) ? call_user_func( $GLOBALS['T_http_fn'], $url, $args ) : null )
+		?? new WP_Error( 'http_request_failed', 'cURL error 6: Could not resolve host (stand-in: no scripted answer).' );
 	if ( $r instanceof WP_Error ) { return $r; }
 	$body = (string) ( $r['body'] ?? '' );
 	if ( isset( $args['limit_response_size'] ) ) { $body = substr( $body, 0, (int) $args['limit_response_size'] ); }
@@ -1063,6 +1126,95 @@ function wp_remote_get( $url, $args = array() ) {
 function wp_remote_retrieve_response_code( $r ) { return ( is_wp_error( $r ) || ! isset( $r['response']['code'] ) ) ? '' : (int) $r['response']['code']; }
 function wp_remote_retrieve_headers( $r ) { return ( is_wp_error( $r ) || ! isset( $r['headers'] ) ) ? array() : $r['headers']; }
 function wp_remote_retrieve_header( $r, $h ) { $all = wp_remote_retrieve_headers( $r ); return $all[ strtolower( $h ) ] ?? ''; }
+function wp_remote_retrieve_body( $r ) { return ( is_wp_error( $r ) || ! isset( $r['body'] ) ) ? '' : $r['body']; }
+// As core's home_url( $path ): the site address, and '/' . $path when a path is given.
+function home_url( $path = '', $scheme = null ) { $u = 'https://x.example'; return ( is_string( $path ) && '' !== $path ) ? $u . '/' . ltrim( $path, '/' ) : $u; }
+
+// ---- the maintenance stand-ins (#32, 2.4.0). t_media_reset() clears them.
+//   T_theme_root     what get_theme_root returns (a real folder in a test; default ABSPATH/wp-content/themes)
+//   T_user_caps      user id => capabilities of a user other than the current one (the current one has T_caps)
+//   super admins     the network option site_admins (logins), as core's get_super_admins reads it
+//   T_fs_fail        WP_Filesystem() fails (returns false, $wp_filesystem stays unset), as with FTP credentials needed
+//   T_copy_fail      copy_dir copies the first file, then fails as core does on a file it cannot copy (WP_Error)
+//   T_fs_copy_fail   $wp_filesystem->copy returns false;  T_copy_calls  every array( function, from, to )
+function get_theme_root( $stylesheet_or_template = '' ) { return $GLOBALS['T_theme_root'] ?? ABSPATH . 'wp-content/themes'; }
+// As core (capabilities.php): the logins in the network option site_admins, ['admin'] when it was never set.
+function get_super_admins() { return get_site_option( 'site_admins', array( 'admin' ) ); }
+// As core's is_super_admin( $user_id ): no id = the current user (none signed in: false); an id is looked up with
+// get_userdata (unknown: false). On a multisite: the user's login is in get_super_admins(); on a single site: THAT user
+// has delete_users (the current user: T_caps; another user: T_user_caps[ id ]).
+function is_super_admin( $user_id = false ) {
+	$id = $user_id ? (int) $user_id : (int) ( $GLOBALS['T_user_id'] ?? 0 );
+	if ( $id < 1 ) { return false; }
+	$user = get_userdata( $id );
+	if ( $user_id && ! $user ) { return false; }
+	$current = $id === (int) ( $GLOBALS['T_user_id'] ?? 0 );
+	if ( ! empty( $GLOBALS['T_multisite'] ) ) {
+		$login = $user ? $user->user_login : ( $current ? ( $GLOBALS['T_user_login'] ?? '' ) : '' );
+		return '' !== (string) $login && in_array( $login, (array) get_super_admins(), true );
+	}
+	$caps = $current ? (array) ( $GLOBALS['T_caps'] ?? array() ) : (array) ( $GLOBALS['T_user_caps'][ $id ] ?? array() );
+	return in_array( 'delete_users', $caps, true );
+}
+// The direct file system (class-wp-filesystem-direct.php), reduced to what the plugin uses: copy( from, to, overwrite, mode ).
+class T_Filesystem {
+	function copy( $from, $to, $overwrite = false, $mode = false ) {
+		$GLOBALS['T_copy_calls'][] = array( 'wp_filesystem->copy', $from, $to );
+		if ( ! empty( $GLOBALS['T_fs_copy_fail'] ) || ( ! $overwrite && file_exists( $to ) ) ) { return false; }
+		return @copy( $from, $to );
+	}
+	// As WP_Filesystem_Direct::delete: a file is unlinked; a folder needs $recursive (else rmdir), then everything in it
+	// (a link to a folder is listed as a folder and followed, as core's dirlist does), then the folder.
+	function delete( $file, $recursive = false, $type = false ) {
+		$GLOBALS['T_fs_deletes'][] = array( $file, $recursive );
+		if ( empty( $file ) ) { return false; }
+		$file = str_replace( '\\', '/', $file );
+		// T_fs_delete_fail_re: a file whose path matches cannot be removed (a host's permissions): false, it stays.
+		if ( '' !== ( $GLOBALS['T_fs_delete_fail_re'] ?? '' ) && is_file( $file ) && 1 === preg_match( $GLOBALS['T_fs_delete_fail_re'], $file ) ) { return false; }
+		if ( 'f' === $type || is_file( $file ) ) { return @unlink( $file ); }
+		if ( ! $recursive && is_dir( $file ) ) { return @rmdir( $file ); }
+		$file = rtrim( $file, '/' ) . '/';
+		$ok = true;
+		foreach ( array_diff( (array) @scandir( $file ), array( '.', '..' ) ) as $f ) { if ( ! $this->delete( $file . $f, $recursive, is_dir( $file . $f ) ? 'd' : 'f' ) ) { $ok = false; } }
+		if ( file_exists( $file ) && ! @rmdir( $file ) ) { $ok = false; }
+		return $ok;
+	}
+}
+// Removes a test folder (or file) with everything in it; a link is removed, never followed.
+function t_plugins_rmtree( $p ) {
+	if ( is_link( $p ) || is_file( $p ) ) { @unlink( $p ); return; }
+	if ( ! is_dir( $p ) ) { return; }
+	foreach ( array_diff( (array) scandir( $p ), array( '.', '..' ) ) as $f ) { t_plugins_rmtree( $p . '/' . $f ); }
+	@rmdir( $p );
+}
+// As core: sets the global $wp_filesystem (direct) and returns true; with T_fs_fail it returns false and sets nothing.
+function WP_Filesystem( $args = false, $context = false, $allow_relaxed_file_ownership = false ) {
+	if ( ! empty( $GLOBALS['T_fs_fail'] ) ) { return false; }
+	$GLOBALS['wp_filesystem'] = new T_Filesystem(); return true;
+}
+// As core's copy_dir (file.php): needs the global $wp_filesystem (an Error without it, as calling a method on null is);
+// the destination folder is made, then every entry copied, folders recursively; a link is followed (core's dirlist reads a
+// linked folder as 'd'). Real files are copied. T_copy_fail: fails after the first file with core's code.
+function copy_dir( $from, $to, $skip_list = array() ) {
+	if ( ! is_object( $GLOBALS['wp_filesystem'] ?? null ) ) { throw new Error( 'Call to a member function dirlist() on null' ); }
+	$GLOBALS['T_copy_calls'][] = array( 'copy_dir', $from, $to );
+	if ( ! is_dir( $from ) ) { return new WP_Error( 'dirlist_failed_copy_dir', 'Directory listing failed.', basename( $from ) ); }
+	$from = rtrim( $from, '/\\' ) . '/'; $to = rtrim( $to, '/\\' ) . '/';
+	if ( ! file_exists( $to ) && ! @mkdir( $to ) ) { return new WP_Error( 'mkdir_destination_failed_copy_dir', 'Could not create the destination directory.', basename( $to ) ); }
+	foreach ( array_diff( (array) scandir( $from ), array( '.', '..' ) ) as $f ) {
+		if ( in_array( $f, $skip_list, true ) ) { continue; }
+		if ( is_dir( $from . $f ) ) {
+			if ( ! is_dir( $to . $f ) && ! @mkdir( $to . $f ) ) { return new WP_Error( 'mkdir_failed_copy_dir', 'Could not create directory.', $to . $f ); }
+			$r = copy_dir( $from . $f, $to . $f ); if ( is_wp_error( $r ) ) { return $r; }
+		} else {
+			if ( ! empty( $GLOBALS['T_copy_fail'] ) && ( $GLOBALS['T_copy_done'] = ( $GLOBALS['T_copy_done'] ?? 0 ) + 1 ) > 1 ) { return new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.', $to . $f ); }
+			// T_copy_fail_to_re: a copy whose destination matches fails the same way, after its first file (one copy of several).
+			if ( '' !== ( $GLOBALS['T_copy_fail_to_re'] ?? '' ) && 1 === preg_match( $GLOBALS['T_copy_fail_to_re'], str_replace( '\\', '/', $to . $f ) ) && ( $GLOBALS['T_copy_re_done'] = ( $GLOBALS['T_copy_re_done'] ?? 0 ) + 1 ) > 1 ) { return new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.', $to . $f ); }
+			if ( ! @copy( $from . $f, $to . $f ) ) { return new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.', $to . $f ); }
+		}
+	}
+	return true;
+}
 function wp_tempnam( $filename = '', $dir = '' ) { $t = tempnam( sys_get_temp_dir(), 'd5bt' ); $GLOBALS['T_tempfiles'][] = $t; return $t; }
 function wp_max_upload_size() { return (int) $GLOBALS['T_max_upload']; }
 function get_allowed_mime_types( $user = null ) { return $GLOBALS['T_mimes']; }
@@ -1554,7 +1706,8 @@ function sanitize_option( $option, $value ) {
 //   T_css_rewrite      a callable the css passes through before it is stored (the update_custom_css_data filter)
 // edit_css is mapped as core maps it (to unfiltered_html), in current_user_can above.
 if ( ! function_exists( 'get_stylesheet' ) ) {
-	function get_stylesheet() { return isset( $GLOBALS['T_theme'] ) && is_object( $GLOBALS['T_theme'] ) ? $GLOBALS['T_theme']->get_stylesheet() : 'teststyle'; }
+	// As core: the stylesheet option (switch_theme writes it); 'teststyle' when it was never set.
+	function get_stylesheet() { return isset( $GLOBALS['T_theme'] ) && is_object( $GLOBALS['T_theme'] ) ? $GLOBALS['T_theme']->get_stylesheet() : (string) get_option( 'stylesheet', 'teststyle' ); }
 }
 function get_theme_mods() { return $GLOBALS['T_theme_mods'] ?? array(); }
 function remove_theme_mod( $name ) {
@@ -1894,5 +2047,909 @@ if ( ! class_exists( 'WP_Theme_JSON_Resolver', false ) ) {
 			if ( is_array( $user ) && ! empty( $user['isGlobalStylesUserThemeJSON'] ) ) { unset( $user['isGlobalStylesUserThemeJSON'] ); $data = array_replace_recursive( $data, $user ); }
 			return new T_Merged_Theme_JSON( $data );
 		}
+	}
+}
+
+// ---- plugins and the update list (2.4.0, write-plugins.php). OPT-IN: define T_PLUGIN_STANDINS before requiring this file
+// (other suites declare their own get_plugins, get_site_transient and the like). t_reset() clears them.
+// core 6.4.1 wp-admin/includes/plugin.php, plugin-install.php, class-plugin-upgrader.php and update.php, reduced:
+//   T_plugin_table        file => headers (Name, Version, Network): the fake plugins folder get_plugins() reads
+//   active_plugins (option) and active_sitewide_plugins (network option): the active lists, kept as core keeps them
+//   T_activate_fail       file => 'fatal' (the sandbox include throws an Error with core's output buffer still open: nothing
+//                         activated) | 'output' (activated, THEN core's WP_Error unexpected_output) | 'requirements'
+//                         (WP_Error plugin_php_incompatible before anything changes)
+//   T_activate_calls      every array( plugin, redirect, network_wide, silent );  T_traps  the order of the named calls
+//   T_plugins_api         slug => the object (or WP_Error) plugins_api returns; missing: core's WP_Error plugins_api_failed
+//   T_install_result      what Plugin_Upgrader::install returns (default true); T_install_adds  file => headers added on success
+//   T_install_calls       every package given to install();  T_plugins_cache_cleans  wp_clean_plugins_cache calls
+//   T_site_transients     name => value;  T_site_transient_deletes  every name deleted;  T_update_checks  the update calls
+//   T_fresh               name => what wp_version_check / wp_update_plugins / wp_update_themes store (the fresh answer)
+//   T_file_mods_off       wp_is_file_mod_allowed() answers false (DISALLOW_FILE_MODS)
+//   T_plugin_hooks        hook => list of callables run when activate_plugin / deactivate_plugins fire it (not silent);
+//                         T_hook_log every such hook in order
+// Update, rollback and delete (Task 3) need real files: with T_plugins_disk true, get_plugins() reads WP_PLUGIN_DIR as core
+// does (the .php files at the top and one folder down, their Plugin Name / Version / Network headers) and keeps the answer
+// until wp_clean_plugins_cache() (core's 'plugins' cache), so a caller that forgets to clean it sees the old list.
+//   T_upgrade_result      file => what Plugin_Upgrader::bulk_upgrade gives for that plugin instead of updating it (false, WP_Error)
+//   T_upgrade_calls       every list given to bulk_upgrade;  T_copies_at_upgrade  count( T_copy_calls ) when it ran
+//   T_uninstalls          every plugin file uninstall_plugin ran for;  T_delete_calls  every list given to delete_plugins
+//   T_fs_deletes          every array( path, recursive ) given to $wp_filesystem->delete
+if ( defined( 'T_PLUGIN_STANDINS' ) ) {
+	function t_plugins_reset() {
+		$GLOBALS['T_plugin_table'] = array(); $GLOBALS['T_activate_fail'] = array(); $GLOBALS['T_activate_calls'] = array(); $GLOBALS['T_traps'] = array();
+		$GLOBALS['T_plugins_api'] = array(); $GLOBALS['T_plugins_api_calls'] = array(); $GLOBALS['T_install_adds'] = array(); $GLOBALS['T_install_calls'] = array();
+		unset( $GLOBALS['T_install_result'] );
+		$GLOBALS['T_plugins_cache_cleans'] = 0; $GLOBALS['T_site_transients'] = array(); $GLOBALS['T_site_transient_deletes'] = array();
+		$GLOBALS['T_update_checks'] = array(); $GLOBALS['T_fresh'] = array(); $GLOBALS['T_file_mods_off'] = false;
+		$GLOBALS['T_plugin_hooks'] = array(); $GLOBALS['T_hook_log'] = array();
+		$GLOBALS['T_plugins_disk'] = false; $GLOBALS['T_plugins_cache'] = null; $GLOBALS['T_upgrade_result'] = array(); $GLOBALS['T_upgrade_calls'] = array();
+		$GLOBALS['T_copies_at_upgrade'] = null; $GLOBALS['T_uninstalls'] = array(); $GLOBALS['T_delete_calls'] = array(); $GLOBALS['T_fs_deletes'] = array();
+		$GLOBALS['T_maintenance'] = array(); $GLOBALS['T_in_maintenance'] = false; $GLOBALS['T_opcache'] = array();
+		$GLOBALS['T_wp_version'] = '6.9'; $GLOBALS['T_core_upgrade_calls'] = array(); $GLOBALS['T_core_upgrade_result'] = null; $GLOBALS['T_lang_upgrade_calls'] = array(); $GLOBALS['T_lang_upgrade_result'] = null;
+		t_themes_reset();
+	}
+	// The headers core's get_plugin_data reads (the first 8 KB, "Plugin Name:" etc. at the start of a comment line); null without a name.
+	function t_plugin_headers( $file ) {
+		$h = (string) @file_get_contents( $file, false, null, 0, 8192 );
+		$get = function ( $k ) use ( $h ) { return preg_match( '/^[ \t\/*#@]*' . preg_quote( $k, '/' ) . ':(.*)$/mi', $h, $m ) ? trim( $m[1] ) : ''; };
+		$name = $get( 'Plugin Name' );
+		if ( '' === $name ) { return null; }
+		return array( 'Name' => $name, 'Version' => $get( 'Version' ), 'Network' => 'true' === strtolower( $get( 'Network' ) ) );
+	}
+	function get_plugins( $plugin_folder = '' ) {
+		$out = array();
+		if ( empty( $GLOBALS['T_plugins_disk'] ) ) {
+			foreach ( $GLOBALS['T_plugin_table'] as $f => $h ) { $out[ $f ] = array_merge( array( 'Name' => $f, 'Version' => '', 'Network' => false ), $h ); }
+			return $out;
+		}
+		if ( is_array( $GLOBALS['T_plugins_cache'] ) ) { return $GLOBALS['T_plugins_cache']; }
+		$root = WP_PLUGIN_DIR;
+		foreach ( (array) @scandir( $root ) as $f ) {
+			if ( ! is_string( $f ) || '' === $f || '.' === $f[0] ) { continue; }
+			if ( is_dir( $root . '/' . $f ) ) {
+				foreach ( (array) @scandir( $root . '/' . $f ) as $g ) {
+					if ( ! is_string( $g ) || '.' === ( $g[0] ?? '.' ) || '.php' !== substr( $g, -4 ) || ! is_file( $root . '/' . $f . '/' . $g ) ) { continue; }
+					$h = t_plugin_headers( $root . '/' . $f . '/' . $g );
+					if ( null !== $h ) { $out[ $f . '/' . $g ] = $h; }
+				}
+			} elseif ( '.php' === substr( $f, -4 ) ) {
+				$h = t_plugin_headers( $root . '/' . $f );
+				if ( null !== $h ) { $out[ $f ] = $h; }
+			}
+		}
+		uasort( $out, function ( $a, $b ) { return strnatcasecmp( $a['Name'], $b['Name'] ); } );
+		return $GLOBALS['T_plugins_cache'] = $out;
+	}
+	function is_plugin_active_for_network( $plugin ) {
+		if ( ! is_multisite() ) { return false; }
+		return isset( ( (array) get_site_option( 'active_sitewide_plugins', array() ) )[ $plugin ] );
+	}
+	function is_plugin_active( $plugin ) { return in_array( $plugin, (array) get_option( 'active_plugins', array() ), true ) || is_plugin_active_for_network( $plugin ); }
+	function is_plugin_inactive( $plugin ) { return ! is_plugin_active( $plugin ); }
+	function is_network_only_plugin( $plugin ) { return ! empty( get_plugins()[ $plugin ]['Network'] ); }
+	// As core: a network activation on a multisite (asked for, or a Network: true plugin) goes to the network list; the plugin
+	// must be in get_plugins(); an active plugin is left as it is (null); the sandbox include runs inside ob_start(), and a
+	// plugin that throws leaves that buffer open (core does not catch); output after activating is WP_Error unexpected_output
+	// with the plugin ALREADY active.
+	function activate_plugin( $plugin, $redirect = '', $network_wide = false, $silent = false ) {
+		$GLOBALS['T_traps'][] = 'activate_plugin';
+		$GLOBALS['T_activate_calls'][] = array( $plugin, $redirect, $network_wide, $silent );
+		$plugin = trim( $plugin );
+		if ( is_multisite() && ( $network_wide || is_network_only_plugin( $plugin ) ) ) { $network_wide = true; $current = (array) get_site_option( 'active_sitewide_plugins', array() ); }
+		else { $current = (array) get_option( 'active_plugins', array() ); }
+		if ( ! isset( get_plugins()[ $plugin ] ) ) { return new WP_Error( 'plugin_not_found', 'Plugin file does not exist.' ); }
+		$fail = $GLOBALS['T_activate_fail'][ $plugin ] ?? '';
+		if ( 'requirements' === $fail ) { return new WP_Error( 'plugin_php_incompatible', '<p><strong>Error:</strong> Current PHP version does not meet minimum requirements for Test Plugin.</p>' ); }
+		if ( ( $network_wide && ! isset( $current[ $plugin ] ) ) || ( ! $network_wide && ! in_array( $plugin, $current, true ) ) ) {
+			ob_start();
+			if ( 'fatal' === $fail ) { echo 'Fatal output'; throw new Error( 'Call to undefined function t_missing_function()' ); }
+			// Not silent: activate_plugin and activate_{$plugin} (register_activation_hook) BEFORE the list is saved, inside
+			// the buffer; activated_plugin after it. A hook that throws leaves the buffer open and the plugin inactive.
+			if ( ! $silent ) { t_plugins_fire( 'activate_plugin', $plugin, $network_wide ); t_plugins_fire( "activate_{$plugin}", $network_wide ); }
+			if ( $network_wide ) { $c = (array) get_site_option( 'active_sitewide_plugins', array() ); $c[ $plugin ] = time(); update_site_option( 'active_sitewide_plugins', $c ); }
+			else { $c = (array) get_option( 'active_plugins', array() ); $c[] = $plugin; sort( $c ); update_option( 'active_plugins', $c ); }
+			if ( ! $silent ) { t_plugins_fire( 'activated_plugin', $plugin, $network_wide ); }
+			if ( 'output' === $fail ) { echo 'Notice: something printed'; }
+			if ( ob_get_length() > 0 ) { $output = ob_get_clean(); return new WP_Error( 'unexpected_output', 'The plugin generated unexpected output.', $output ); }
+			ob_end_clean();
+		}
+		return null;
+	}
+	// A plugin hook: recorded with do_action (T_do_actions), then the callbacks of T_plugin_hooks[ hook ] run, in order
+	// (the stub's do_action only records). T_hook_log: every hook fired, in order.
+	function t_plugins_fire( $hook, ...$args ) {
+		$GLOBALS['T_hook_log'][] = $hook;
+		do_action( $hook, ...$args );
+		foreach ( (array) ( $GLOBALS['T_plugin_hooks'][ $hook ] ?? array() ) as $cb ) { $cb( ...$args ); }
+	}
+	// core's deactivate_plugins after the stand-in above recorded the call: per plugin, not silent: deactivate_plugin, then
+	// the lists changed in memory, then deactivate_{$plugin} (register_deactivation_hook) and deactivated_plugin; the lists
+	// are SAVED after the loop, so a hook that throws leaves the plugin active.
+	function t_plugins_deactivate( $plugins, $network_wide, $silent = false ) {
+		$net = is_multisite() ? (array) get_site_option( 'active_sitewide_plugins', array() ) : array();
+		$cur = (array) get_option( 'active_plugins', array() );
+		$do_blog = false; $do_network = false;
+		foreach ( (array) $plugins as $p ) {
+			$p = trim( $p );
+			if ( ! is_plugin_active( $p ) ) { continue; }
+			$net_deact = false !== $network_wide && is_plugin_active_for_network( $p );
+			if ( ! $silent ) { t_plugins_fire( 'deactivate_plugin', $p, $net_deact ); }
+			if ( false !== $network_wide ) {
+				if ( is_plugin_active_for_network( $p ) ) { $do_network = true; unset( $net[ $p ] ); }
+				elseif ( $network_wide ) { continue; }
+			}
+			if ( true !== $network_wide ) { $k = array_search( $p, $cur, true ); if ( false !== $k ) { $do_blog = true; unset( $cur[ $k ] ); } }
+			if ( ! $silent ) { t_plugins_fire( "deactivate_{$p}", $net_deact ); t_plugins_fire( 'deactivated_plugin', $p, $net_deact ); }
+		}
+		if ( $do_blog ) { update_option( 'active_plugins', array_values( $cur ) ); }
+		if ( $do_network ) { update_site_option( 'active_sitewide_plugins', $net ); }
+	}
+	function plugins_api( $action, $args = array() ) {
+		$GLOBALS['T_traps'][] = 'plugins_api';
+		$GLOBALS['T_plugins_api_calls'][] = array( $action, $args );
+		if ( is_array( $args ) ) { $args = (object) $args; }
+		$slug = (string) ( $args->slug ?? '' );
+		return $GLOBALS['T_plugins_api'][ $slug ] ?? new WP_Error( 'plugins_api_failed', 'Plugin not found.' );
+	}
+	function wp_clean_plugins_cache( $clear_update_cache = true ) { $GLOBALS['T_plugins_cache_cleans']++; $GLOBALS['T_plugins_cache'] = null; if ( $clear_update_cache ) { delete_site_transient( 'update_plugins' ); } }
+	// As core (plugin.php): a plugin with uninstall.php in its folder (for a single-file plugin, the plugins folder itself:
+	// dirname is '.'), or one registered in the uninstall_plugins option.
+	function is_uninstallable_plugin( $plugin ) {
+		$file = plugin_basename( $plugin );
+		$u    = (array) get_option( 'uninstall_plugins' );
+		return isset( $u[ $file ] ) || file_exists( WP_PLUGIN_DIR . '/' . dirname( $file ) . '/uninstall.php' );
+	}
+	// As core: uninstall.php is included (the option entry dropped), else the registered callback runs on uninstall_{$file}.
+	// (core also defines WP_UNINSTALL_PLUGIN; a constant cannot be defined twice in one test run, so it is not.)
+	function uninstall_plugin( $plugin ) {
+		$file = plugin_basename( $plugin );
+		$GLOBALS['T_traps'][] = 'uninstall_plugin'; $GLOBALS['T_uninstalls'][] = $file;
+		$u = (array) get_option( 'uninstall_plugins' );
+		do_action( 'pre_uninstall_plugin', $plugin, $u );
+		if ( file_exists( WP_PLUGIN_DIR . '/' . dirname( $file ) . '/uninstall.php' ) ) {
+			if ( isset( $u[ $file ] ) ) { unset( $u[ $file ] ); update_option( 'uninstall_plugins', $u ); }
+			include WP_PLUGIN_DIR . '/' . dirname( $file ) . '/uninstall.php';
+			return true;
+		}
+		if ( isset( $u[ $file ] ) ) {
+			$cb = $u[ $file ]; unset( $u[ $file ] ); update_option( 'uninstall_plugins', $u );
+			if ( is_callable( $cb ) ) { $cb(); }
+		}
+		return null;
+	}
+	// As core's delete_plugins (plugin.php), reduced: the file system (WP_Filesystem; nothing done without it), then per plugin
+	// the uninstall routine when it has one, then its folder (or its single file) removed with $wp_filesystem->delete; the
+	// deleted plugins dropped from the update list. It does NOT clean the plugins cache (core does not). With the table
+	// (not T_plugins_disk) the plugin is dropped from T_plugin_table.
+	function delete_plugins( $plugins, $deprecated = '' ) {
+		$GLOBALS['T_traps'][] = 'delete_plugins'; $GLOBALS['T_delete_calls'][] = $plugins;
+		if ( empty( $plugins ) ) { return false; }
+		if ( ! WP_Filesystem() ) { return null; }
+		$fs = $GLOBALS['wp_filesystem']; $dir = rtrim( str_replace( '\\', '/', WP_PLUGIN_DIR ), '/' ) . '/';
+		$errors = array();
+		foreach ( $plugins as $plugin_file ) {
+			if ( is_uninstallable_plugin( $plugin_file ) ) { uninstall_plugin( $plugin_file ); }
+			do_action( 'delete_plugin', $plugin_file );
+			$this_dir = rtrim( dirname( $dir . $plugin_file ), '/' ) . '/';
+			$deleted  = ( strpos( $plugin_file, '/' ) && $this_dir !== $dir ) ? $fs->delete( $this_dir, true ) : $fs->delete( $dir . $plugin_file );
+			do_action( 'deleted_plugin', $plugin_file, $deleted );
+			if ( ! $deleted ) { $errors[] = $plugin_file; continue; }
+			if ( empty( $GLOBALS['T_plugins_disk'] ) ) { unset( $GLOBALS['T_plugin_table'][ $plugin_file ] ); }
+		}
+		$current = get_site_transient( 'update_plugins' );
+		if ( $current ) { foreach ( array_diff( $plugins, $errors ) as $f ) { unset( $current->response[ $f ] ); } set_site_transient( 'update_plugins', $current ); }
+		if ( $errors ) { return new WP_Error( 'could_not_remove_plugin', 'Could not fully remove the plugin ' . implode( ', ', $errors ) . '.' ); }
+		return true;
+	}
+	// The new version an update writes (T_plugins_disk): the old folder (or single file) removed, as clear_destination does,
+	// then the plugin file with the new Version header and a changelog.txt saying so. With the table: the version changed.
+	function t_plugins_replace( $plugin, $version ) {
+		if ( empty( $GLOBALS['T_plugins_disk'] ) ) { $GLOBALS['T_plugin_table'][ $plugin ]['Version'] = $version; return array( 'destination_name' => dirname( $plugin ) ); }
+		$name = (string) ( get_plugins()[ $plugin ]['Name'] ?? $plugin );
+		$path = WP_PLUGIN_DIR . '/' . $plugin;
+		if ( false !== strpos( $plugin, '/' ) ) {
+			t_plugins_rmtree( dirname( $path ) );
+			@mkdir( dirname( $path ), 0777, true );
+			file_put_contents( dirname( $path ) . '/changelog.txt', $name . ' ' . $version . ' changes' );
+		}
+		file_put_contents( $path, "<?php\n/*\nPlugin Name: " . $name . "\nVersion: " . $version . "\n*/\n// the new code of " . $version . "\n" );
+		return array( 'destination_name' => dirname( $plugin ) );
+	}
+	// As core (theme.php): the update list (when asked), the theme folders read again, every theme's cache dropped.
+	function wp_clean_themes_cache( $clear_update_cache = true ) {
+		$GLOBALS['T_themes_cache_cleans'] = ( $GLOBALS['T_themes_cache_cleans'] ?? 0 ) + 1;
+		if ( $clear_update_cache ) { delete_site_transient( 'update_themes' ); }
+		search_theme_directories( true );
+		foreach ( wp_get_themes( array( 'errors' => null ) ) as $theme ) { $theme->cache_delete(); }
+	}
+	// As core's wp_clean_update_cache (update.php): the three update transients.
+	function wp_clean_update_cache() { $GLOBALS['T_traps'][] = 'wp_clean_update_cache'; wp_clean_plugins_cache(); wp_clean_themes_cache(); delete_site_transient( 'update_core' ); }
+	function get_site_transient( $n ) { return $GLOBALS['T_site_transients'][ $n ] ?? false; }
+	function set_site_transient( $n, $v, $ttl = 0 ) { $GLOBALS['T_site_transients'][ $n ] = $v; unset( $GLOBALS['T_db_site_transients'][ $n ] ); if ( isset( $GLOBALS['T_on_set_site'][ $n ] ) ) { $cb = $GLOBALS['T_on_set_site'][ $n ]; unset( $GLOBALS['T_on_set_site'][ $n ] ); $cb(); } return true; }
+	function delete_site_transient( $n ) { $GLOBALS['T_site_transient_deletes'][] = $n; $had = isset( $GLOBALS['T_site_transients'][ $n ] ); unset( $GLOBALS['T_site_transients'][ $n ], $GLOBALS['T_db_site_transients'][ $n ] ); return $had; }
+	// The update checks store what wordpress.org would answer (T_fresh), as core stores the transient after asking.
+	function wp_version_check() { $GLOBALS['T_update_checks'][] = 'wp_version_check'; if ( isset( $GLOBALS['T_fresh']['update_core'] ) ) { set_site_transient( 'update_core', $GLOBALS['T_fresh']['update_core'] ); } }
+	function wp_update_plugins() { $GLOBALS['T_update_checks'][] = 'wp_update_plugins'; if ( isset( $GLOBALS['T_fresh']['update_plugins'] ) ) { set_site_transient( 'update_plugins', $GLOBALS['T_fresh']['update_plugins'] ); } }
+	function wp_update_themes() { $GLOBALS['T_update_checks'][] = 'wp_update_themes'; if ( isset( $GLOBALS['T_fresh']['update_themes'] ) ) { set_site_transient( 'update_themes', $GLOBALS['T_fresh']['update_themes'] ); } }
+	function get_core_updates( $options = array() ) { $t = get_site_transient( 'update_core' ); return is_object( $t ) && isset( $t->updates ) ? (array) $t->updates : array(); }
+	// As core (update.php): the translations listed in the three update transients (update_core, update_plugins, update_themes).
+	function wp_get_translation_updates() {
+		$out = array();
+		foreach ( array( 'update_core', 'update_plugins', 'update_themes' ) as $t ) {
+			$v = get_site_transient( $t );
+			if ( is_object( $v ) && ! empty( $v->translations ) ) { foreach ( (array) $v->translations as $tr ) { $out[] = (object) $tr; } }
+		}
+		return $out;
+	}
+	// 'version' is the WordPress version: T_wp_version (default 6.9); the core update stand-in changes it.
+	if ( ! function_exists( 'get_bloginfo' ) ) { function get_bloginfo( $k = '' ) { return 'version' === $k ? (string) ( $GLOBALS['T_wp_version'] ?? '6.9' ) : ''; } }
+	// As core: the template option (switch_theme writes it); 'teststyle' when it was never set.
+	if ( ! function_exists( 'get_template' ) ) { function get_template() { return (string) get_option( 'template', 'teststyle' ); } }
+	function wp_is_file_mod_allowed( $context ) { return empty( $GLOBALS['T_file_mods_off'] ); }
+	if ( ! class_exists( 'Automatic_Upgrader_Skin', false ) ) {
+		class Automatic_Upgrader_Skin { function get_upgrade_messages() { return array(); } function get_errors() { return new WP_Error(); } }
+	}
+	// As core's Plugin_Upgrader::install( $package ): true on success (the new plugin in the folder, the plugins cache cleaned),
+	// else what the run left in ->result (false, or a WP_Error such as folder_exists). plugin_info() names the new plugin file.
+	// As core's WP_Upgrader, reduced to maintenance_mode( $enable ): it writes or removes ABSPATH/.maintenance through the global
+	// $wp_filesystem (an Error without it, as core's call on null). Recorded: T_maintenance (each true / false), T_traps
+	// (maintenance_on / maintenance_off), T_in_maintenance (whether it is on now).
+	if ( ! class_exists( 'WP_Upgrader', false ) ) {
+		class WP_Upgrader {
+			public $skin;
+			function __construct( $skin = null ) { $this->skin = $skin; }
+			function maintenance_mode( $enable = false ) {
+				if ( ! is_object( $GLOBALS['wp_filesystem'] ?? null ) ) { throw new Error( 'Call to a member function abspath() on null' ); }
+				$GLOBALS['T_maintenance'][] = (bool) $enable; $GLOBALS['T_traps'][] = $enable ? 'maintenance_on' : 'maintenance_off';
+				$GLOBALS['T_in_maintenance'] = (bool) $enable;
+			}
+		}
+	}
+	// As core (functions.php, 6.2+): the opcode cache of every .php file in a folder; recorded in T_opcache.
+	function wp_opcache_invalidate_directory( $dir ) { $GLOBALS['T_opcache'][] = str_replace( '\\', '/', $dir ); }
+	function wp_opcache_invalidate( $filepath, $force = false ) { $GLOBALS['T_opcache'][] = str_replace( '\\', '/', $filepath ); return true; }
+	if ( ! class_exists( 'Plugin_Upgrader', false ) ) {
+		class Plugin_Upgrader extends WP_Upgrader {
+			public $skin; public $result = array(); private $t_file = '';
+			function __construct( $skin = null ) { $this->skin = $skin; }
+			function install( $package, $args = array() ) {
+				$GLOBALS['T_traps'][] = 'install';
+				$GLOBALS['T_install_calls'][] = $package;
+				$r = array_key_exists( 'T_install_result', $GLOBALS ) ? $GLOBALS['T_install_result'] : true;
+				if ( true !== $r ) { $this->result = $r; return $r; }
+				foreach ( $GLOBALS['T_install_adds'] as $f => $h ) {
+					// With a real plugins folder (T_plugins_disk), as core: the zip's folder written there, never over one that is there.
+					if ( ! empty( $GLOBALS['T_plugins_disk'] ) ) {
+						$p = WP_PLUGIN_DIR . '/' . $f;
+						if ( file_exists( dirname( $p ) ) && dirname( $p ) !== WP_PLUGIN_DIR ) { $this->result = new WP_Error( 'folder_exists', 'Destination folder already exists.' ); return $this->result; }
+						if ( ! is_dir( dirname( $p ) ) ) { mkdir( dirname( $p ), 0777, true ); }
+						file_put_contents( $p, "<?php\n/*\nPlugin Name: " . ( $h['Name'] ?? $f ) . "\nVersion: " . ( $h['Version'] ?? '1.0' ) . "\n*/\n" );
+					} else {
+						$GLOBALS['T_plugin_table'][ $f ] = $h;
+					}
+					$this->t_file = $f;
+				}
+				$this->result = array( 'destination_name' => dirname( $this->t_file ) );
+				wp_clean_plugins_cache( true );
+				return true;
+			}
+			function plugin_info() { return '' === $this->t_file ? false : $this->t_file; }
+			// As core's bulk_upgrade: per plugin, true when the update list has no offer for it (up to date), else the run's
+			// result (T_upgrade_result, or the new version written by t_plugins_replace); a false stops the loop; the plugins
+			// cache cleaned at the end (clear_update_cache, default true). Returns file => result.
+			function bulk_upgrade( $plugins, $args = array() ) {
+				$GLOBALS['T_traps'][] = 'bulk_upgrade'; $GLOBALS['T_upgrade_calls'][] = $plugins;
+				$GLOBALS['T_copies_at_upgrade'] = count( $GLOBALS['T_copy_calls'] ?? array() );
+				$current = get_site_transient( 'update_plugins' );
+				$results = array();
+				foreach ( $plugins as $plugin ) {
+					if ( ! is_object( $current ) || ! isset( $current->response[ $plugin ] ) ) { $results[ $plugin ] = true; continue; }
+					$r = $current->response[ $plugin ];
+					$result = array_key_exists( $plugin, $GLOBALS['T_upgrade_result'] ) ? $GLOBALS['T_upgrade_result'][ $plugin ] : t_plugins_replace( $plugin, (string) $r->new_version );
+					// 'wipe': the run cleared the old folder (clear_destination) and then failed to install the new one.
+					if ( 'wipe' === $result ) { t_plugins_rmtree( WP_PLUGIN_DIR . '/' . ( false !== strpos( $plugin, '/' ) ? dirname( $plugin ) : $plugin ) ); $result = new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.' ); }
+					$results[ $plugin ] = $result;
+					if ( false === $result ) { break; }
+				}
+				wp_clean_plugins_cache( $args['clear_update_cache'] ?? true );
+				return $results;
+			}
+		}
+	}
+
+	// ---- themes (2.4.0 Task 4, write-themes.php), in the same opt-in block. core 6.4.1 wp-includes/theme.php,
+	// class-wp-theme.php, wp-admin/includes/theme.php and class-theme-upgrader.php, reduced:
+	//   T_themes_disk         wp_get_themes / wp_get_theme read the theme root (get_theme_root(): T_theme_root) as core does:
+	//                         each folder not starting with a dot that holds a style.css; off: no themes at all
+	//   the options stylesheet / template / current_theme: what get_stylesheet / get_template answer (switch_theme writes them)
+	//   T_theme_cache         stylesheet => what WP_Theme read (core's per-request 'themes' cache group): kept until
+	//                         cache_delete / wp_clean_themes_cache, so a caller that forgets to clean it reads the old headers
+	//   T_theme_dirs          search_theme_directories' list (null: read the folder again)
+	//   allowedthemes         the network option (network-enabled) and the site option, as WP_Theme::is_allowed reads them
+	//   T_themes_api          slug => what themes_api returns (missing: core's WP_Error themes_api_failed); T_themes_api_calls
+	//   T_theme_install_result  what Theme_Upgrader::install returns instead of installing (false, WP_Error)
+	//   T_theme_install_adds  stylesheet => style.css headers (Theme Name, Version, Template, Requires PHP) written on install
+	//   T_theme_parent_adds   stylesheet => headers of a parent theme the install fetches (check_parent_theme_filter)
+	//   T_theme_install_calls every package given to install();  T_theme_downloads every package that passed upgrader_pre_download
+	//   T_theme_upgrade_result  stylesheet => what Theme_Upgrader::bulk_upgrade gives instead of updating (false, WP_Error, 'wipe')
+	//   T_theme_upgrade_calls every list given to bulk_upgrade (T_copies_at_upgrade as for plugins)
+	//   T_switch_calls        every stylesheet given to switch_theme;  T_theme_delete_calls every stylesheet given to delete_theme
+	//   T_theme_translations  stylesheet => locales installed; delete_theme removes them (T_theme_translation_deletes)
+	function t_themes_reset() {
+		$GLOBALS['T_themes_disk'] = false; $GLOBALS['T_theme_cache'] = array(); $GLOBALS['T_theme_dirs'] = null;
+		$GLOBALS['T_themes_api'] = array(); $GLOBALS['T_themes_api_calls'] = array(); unset( $GLOBALS['T_theme_install_result'] );
+		$GLOBALS['T_theme_install_adds'] = array(); $GLOBALS['T_theme_parent_adds'] = array(); $GLOBALS['T_theme_install_calls'] = array(); $GLOBALS['T_theme_downloads'] = array();
+		$GLOBALS['T_theme_upgrade_result'] = array(); $GLOBALS['T_theme_upgrade_calls'] = array(); $GLOBALS['T_switch_calls'] = array(); $GLOBALS['T_theme_delete_calls'] = array();
+		$GLOBALS['T_theme_translations'] = array(); $GLOBALS['T_theme_translation_deletes'] = array(); $GLOBALS['T_themes_cache_cleans'] = 0;
+	}
+	function t_theme_root() { return rtrim( str_replace( '\\', '/', get_theme_root() ), '/' ); }
+	// What WP_Theme reads for $stylesheet, from the cache or the folder: null when the folder is not there (theme_not_found,
+	// cached as such, as core caches the error), else the headers with error '' or theme_no_stylesheet (folder, no style.css).
+	function t_theme_read( $stylesheet ) {
+		if ( array_key_exists( $stylesheet, $GLOBALS['T_theme_cache'] ) ) { return $GLOBALS['T_theme_cache'][ $stylesheet ]; }
+		$dir = t_theme_root() . '/' . $stylesheet;
+		$r   = null;
+		if ( ! empty( $GLOBALS['T_themes_disk'] ) && '' !== (string) $stylesheet && is_dir( $dir ) ) {
+			$css = (string) @file_get_contents( $dir . '/style.css', false, null, 0, 8192 );
+			$get = function ( $k ) use ( $css ) { return preg_match( '/^[ \t\/*#@]*' . preg_quote( $k, '/' ) . ':(.*)$/mi', $css, $m ) ? trim( $m[1] ) : ''; };
+			$r = array( 'Name' => $get( 'Theme Name' ), 'Version' => $get( 'Version' ), 'Template' => $get( 'Template' ), 'RequiresPHP' => $get( 'Requires PHP' ), 'error' => '' );
+			if ( ! is_file( $dir . '/style.css' ) ) { $r = array( 'Name' => '', 'Version' => '', 'Template' => '', 'RequiresPHP' => '', 'error' => 'theme_no_stylesheet' ); }
+		}
+		return $GLOBALS['T_theme_cache'][ $stylesheet ] = $r;
+	}
+	if ( ! class_exists( 'WP_Theme', false ) ) {
+		class WP_Theme {
+			private $s; private $d;
+			function __construct( $stylesheet ) { $this->s = (string) $stylesheet; $this->d = t_theme_read( $this->s ); }
+			// As core: false only for theme_not_found (no folder); a folder without style.css "exists" with an error.
+			function exists() { return null !== $this->d; }
+			function get( $k ) { return null === $this->d ? false : (string) ( $this->d[ $k ] ?? '' ); }
+			function display( $k ) { return $this->get( $k ); }
+			function get_stylesheet() { return $this->s; }
+			function get_template() { return null !== $this->d && '' !== $this->d['Template'] ? $this->d['Template'] : $this->s; }
+			function parent() { return null !== $this->d && '' !== $this->d['Template'] ? new WP_Theme( $this->d['Template'] ) : false; }
+			function errors() {
+				if ( null === $this->d ) { return new WP_Error( 'theme_not_found', 'The theme directory "' . $this->s . '" does not exist.' ); }
+				if ( '' !== $this->d['error'] ) { return new WP_Error( $this->d['error'], 'Stylesheet is missing.' ); }
+				if ( '' !== $this->d['Template'] && ! ( new WP_Theme( $this->d['Template'] ) )->exists() ) { return new WP_Error( 'theme_no_parent', 'The parent theme is missing. Please install the "' . $this->d['Template'] . '" parent theme.' ); }
+				return false;
+			}
+			// As core: true on a single site; on a network, enabled for the network or for this site.
+			function is_allowed( $check = 'both', $blog_id = null ) {
+				if ( ! is_multisite() ) { return true; }
+				if ( ( 'both' === $check || 'network' === $check ) && ! empty( self::get_allowed_on_network()[ $this->s ] ) ) { return true; }
+				if ( ( 'both' === $check || 'site' === $check ) && ! empty( self::get_allowed_on_site( $blog_id )[ $this->s ] ) ) { return true; }
+				return false;
+			}
+			static function get_allowed_on_network() { return (array) get_site_option( 'allowedthemes', array() ); }
+			static function get_allowed_on_site( $blog_id = null ) { return (array) get_option( 'allowedthemes', array() ); }
+			static function network_disable_theme( $stylesheets ) {
+				$allowed = (array) get_site_option( 'allowedthemes', array() );
+				foreach ( (array) $stylesheets as $s ) { unset( $allowed[ $s ] ); }
+				update_site_option( 'allowedthemes', $allowed );
+			}
+			function cache_delete() { unset( $GLOBALS['T_theme_cache'][ $this->s ] ); }
+			function is_block_theme() { return false; }
+			function delete_pattern_cache() {}
+		}
+	}
+	// As core: no name = the active theme.
+	function wp_get_theme( $stylesheet = '', $theme_root = '' ) { return new WP_Theme( '' === (string) $stylesheet ? get_stylesheet() : $stylesheet ); }
+	// As core (one level, the usual layout): the folders of the theme root that hold a style.css, skipping names that start
+	// with a dot; kept until asked with $force.
+	function search_theme_directories( $force = false ) {
+		if ( is_array( $GLOBALS['T_theme_dirs'] ) && ! $force ) { return $GLOBALS['T_theme_dirs']; }
+		$out = array();
+		if ( ! empty( $GLOBALS['T_themes_disk'] ) ) {
+			$root = t_theme_root();
+			foreach ( (array) @scandir( $root ) as $d ) {
+				if ( ! is_string( $d ) || '' === $d || '.' === $d[0] || ! is_dir( $root . '/' . $d ) || ! is_file( $root . '/' . $d . '/style.css' ) ) { continue; }
+				$out[ $d ] = array( 'theme_file' => $d . '/style.css', 'theme_root' => $root );
+			}
+		}
+		return $GLOBALS['T_theme_dirs'] = $out;
+	}
+	// As core: errors false (default) = the themes without errors, null = all, true = only the broken ones.
+	function wp_get_themes( $args = array() ) {
+		$errors = array_key_exists( 'errors', (array) $args ) ? $args['errors'] : false;
+		$out = array();
+		foreach ( array_keys( search_theme_directories() ) as $s ) {
+			$t = new WP_Theme( $s );
+			if ( null !== $errors && (bool) $errors !== (bool) $t->errors() ) { continue; }
+			$out[ $s ] = $t;
+		}
+		return $out;
+	}
+	// As core (theme.php): the theme's Requires PHP against this PHP.
+	function validate_theme_requirements( $stylesheet ) {
+		$req = (string) wp_get_theme( $stylesheet )->get( 'RequiresPHP' );
+		if ( '' !== $req && version_compare( PHP_VERSION, $req, '<' ) ) { return new WP_Error( 'theme_php_incompatible', '<strong>Error:</strong> Current PHP version does not meet minimum requirements for ' . wp_get_theme( $stylesheet )->display( 'Name' ) . '.' ); }
+		return true;
+	}
+	// As core's switch_theme: requirements not met -> wp_die (the request ends: here an Error after the stub's record); no
+	// check that the theme exists or is allowed (the caller's job); the options written, then the switch_theme action
+	// (T_plugin_hooks callbacks run, so a test can make it throw).
+	function switch_theme( $stylesheet ) {
+		$GLOBALS['T_traps'][] = 'switch_theme'; $GLOBALS['T_switch_calls'][] = $stylesheet;
+		$req = validate_theme_requirements( $stylesheet );
+		if ( is_wp_error( $req ) ) { wp_die( $req ); throw new Error( 'wp_die ended the request' ); }
+		update_option( 'theme_switch_menu_locations', get_theme_mod( 'nav_menu_locations' ) );
+		$old = wp_get_theme(); $new = wp_get_theme( $stylesheet );
+		update_option( 'template', $new->get_template() );
+		update_option( 'stylesheet', $stylesheet );
+		update_option( 'current_theme', $new->get( 'Name' ) );
+		update_option( 'theme_switched', $old->get_stylesheet() );
+		t_plugins_fire( 'switch_theme', $new->get( 'Name' ), $new, $old );
+	}
+	// As core's delete_theme (wp-admin/includes/theme.php), reduced: the file system (none: null, core prints a form), the
+	// delete_theme action, the folder removed with $wp_filesystem->delete, deleted_theme, then (deleted) its translations
+	// removed, on a network the theme disabled for the network, its cache and the update list dropped. Never refuses the
+	// active theme itself (the callers do).
+	function delete_theme( $stylesheet, $redirect = '' ) {
+		$GLOBALS['T_traps'][] = 'delete_theme'; $GLOBALS['T_theme_delete_calls'][] = $stylesheet;
+		if ( empty( $stylesheet ) ) { return false; }
+		if ( ! WP_Filesystem() ) { return null; }
+		$fs = $GLOBALS['wp_filesystem'];
+		do_action( 'delete_theme', $stylesheet );
+		$theme   = wp_get_theme( $stylesheet );
+		$deleted = $fs->delete( t_theme_root() . '/' . $stylesheet . '/', true );
+		do_action( 'deleted_theme', $stylesheet, $deleted );
+		if ( ! $deleted ) { return new WP_Error( 'could_not_remove_theme', 'Could not fully remove the theme ' . $stylesheet . '.' ); }
+		foreach ( (array) ( $GLOBALS['T_theme_translations'][ $stylesheet ] ?? array() ) as $loc ) { $GLOBALS['T_theme_translation_deletes'][] = $stylesheet . '-' . $loc; }
+		unset( $GLOBALS['T_theme_translations'][ $stylesheet ] );
+		if ( is_multisite() ) { WP_Theme::network_disable_theme( $stylesheet ); }
+		$theme->cache_delete();
+		delete_site_transient( 'update_themes' );
+		return true;
+	}
+	function themes_api( $action, $args = array() ) {
+		$GLOBALS['T_traps'][] = 'themes_api';
+		$GLOBALS['T_themes_api_calls'][] = array( $action, $args );
+		if ( is_array( $args ) ) { $args = (object) $args; }
+		return $GLOBALS['T_themes_api'][ (string) ( $args->slug ?? '' ) ] ?? new WP_Error( 'themes_api_failed', 'Theme not found.' );
+	}
+	// A theme on disk: style.css with the headers, index.php, and the extra files (path in its folder => content).
+	function t_theme_write( $stylesheet, array $h, array $extra = array() ) {
+		$dir = t_theme_root() . '/' . $stylesheet;
+		if ( ! is_dir( $dir ) ) { mkdir( $dir, 0777, true ); }
+		$css = "/*\nTheme Name: " . ( $h['Name'] ?? $stylesheet ) . "\nVersion: " . ( $h['Version'] ?? '1.0' ) . "\n" . ( isset( $h['Template'] ) ? 'Template: ' . $h['Template'] . "\n" : '' ) . ( isset( $h['RequiresPHP'] ) ? 'Requires PHP: ' . $h['RequiresPHP'] . "\n" : '' ) . "*/\n";
+		file_put_contents( $dir . '/style.css', $css );
+		file_put_contents( $dir . '/index.php', "<?php // " . $stylesheet . ' ' . ( $h['Version'] ?? '1.0' ) . "\n" );
+		foreach ( $extra as $rel => $body ) { if ( ! is_dir( dirname( $dir . '/' . $rel ) ) ) { mkdir( dirname( $dir . '/' . $rel ), 0777, true ); } file_put_contents( $dir . '/' . $rel, $body ); }
+	}
+	// As WP_Upgrader::download_package: the upgrader_pre_download filter first; a WP_Error from it stops the run.
+	function t_theme_download( $package ) {
+		$reply = apply_filters( 'upgrader_pre_download', false, $package, null, array( 'type' => 'theme', 'action' => 'install' ) );
+		if ( is_wp_error( $reply ) ) { return $reply; }
+		$GLOBALS['T_theme_downloads'][] = $package;
+		return true;
+	}
+	if ( ! class_exists( 'Theme_Upgrader', false ) ) {
+		class Theme_Upgrader extends WP_Upgrader {
+			public $result = array();
+			// As core: the package downloaded (upgrader_pre_download), the theme written into the theme root (never over a
+			// folder that is there: folder_exists), then check_parent_theme_filter: a child whose parent is missing gets the
+			// parent from themes_api's download_link (through the same filter); the themes cache cleaned. true or the error.
+			function install( $package, $args = array() ) {
+				$GLOBALS['T_traps'][] = 'theme_install'; $GLOBALS['T_theme_install_calls'][] = $package;
+				$d = t_theme_download( $package );
+				if ( is_wp_error( $d ) ) { return $this->result = $d; }
+				if ( array_key_exists( 'T_theme_install_result', $GLOBALS ) ) { return $this->result = $GLOBALS['T_theme_install_result']; }
+				foreach ( $GLOBALS['T_theme_install_adds'] as $s => $h ) {
+					if ( file_exists( t_theme_root() . '/' . $s ) ) { return $this->result = new WP_Error( 'folder_exists', 'Destination folder already exists.' ); }
+					t_theme_write( $s, $h ); $this->result = array( 'destination_name' => $s );
+				}
+				$info = $this->theme_info();
+				if ( $info && $info->parent() && ! $info->parent()->exists() ) {
+					$p   = $info->get( 'Template' );
+					$api = themes_api( 'theme_information', array( 'slug' => $p, 'fields' => array( 'sections' => false, 'tags' => false ) ) );
+					if ( is_object( $api ) && ! is_wp_error( $api ) && ! is_wp_error( t_theme_download( $api->download_link ?? '' ) ) && isset( $GLOBALS['T_theme_parent_adds'][ $p ] ) ) { t_theme_write( $p, $GLOBALS['T_theme_parent_adds'][ $p ] ); }
+				}
+				wp_clean_themes_cache( $args['clear_update_cache'] ?? true );
+				return true;
+			}
+			function theme_info( $theme = null ) {
+				if ( empty( $theme ) ) { if ( empty( $this->result['destination_name'] ) ) { return false; } $theme = $this->result['destination_name']; }
+				$t = wp_get_theme( $theme ); $t->cache_delete();
+				return wp_get_theme( $theme );
+			}
+			// As core's bulk_upgrade for themes: per theme, true when the update list has no offer, else the run's result
+			// (T_theme_upgrade_result, or the new version written by t_theme_replace); a false stops the loop; the themes cache cleaned.
+			function bulk_upgrade( $themes, $args = array() ) {
+				$GLOBALS['T_traps'][] = 'theme_bulk_upgrade'; $GLOBALS['T_theme_upgrade_calls'][] = $themes;
+				$GLOBALS['T_copies_at_upgrade'] = count( $GLOBALS['T_copy_calls'] ?? array() );
+				$current = get_site_transient( 'update_themes' );
+				$results = array();
+				foreach ( $themes as $s ) {
+					if ( ! is_object( $current ) || ! isset( $current->response[ $s ] ) ) { $results[ $s ] = true; continue; }
+					$o = (array) $current->response[ $s ];
+					$result = array_key_exists( $s, $GLOBALS['T_theme_upgrade_result'] ) ? $GLOBALS['T_theme_upgrade_result'][ $s ] : t_theme_replace( $s, (string) $o['new_version'] );
+					if ( 'wipe' === $result ) { t_plugins_rmtree( t_theme_root() . '/' . $s ); $result = new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.' ); }
+					$results[ $s ] = $result;
+					if ( false === $result ) { break; }
+				}
+				wp_clean_themes_cache( $args['clear_update_cache'] ?? true );
+				return $results;
+			}
+		}
+	}
+	// The new version an update writes: the old folder removed (clear_destination), then style.css with the new Version (same
+	// name and parent) and a changelog.txt saying so.
+	function t_theme_replace( $stylesheet, $version ) {
+		$old = t_theme_read( $stylesheet );
+		t_plugins_rmtree( t_theme_root() . '/' . $stylesheet );
+		$h = array( 'Name' => (string) ( $old['Name'] ?? $stylesheet ), 'Version' => $version );
+		if ( '' !== (string) ( $old['Template'] ?? '' ) ) { $h['Template'] = $old['Template']; }
+		t_theme_write( $stylesheet, $h, array( 'changelog.txt' => $h['Name'] . ' ' . $version . ' changes' ) );
+		return array( 'destination_name' => $stylesheet );
+	}
+	// ---- core and translations (2.4.0 Task 5, write-core.php), in the same opt-in block.
+	//   T_wp_version          the WordPress version get_bloginfo( 'version' ) answers (the update_core transient lists what is offered:
+	//                         ->updates = [ { response: upgrade, current: version } ], ->translations = [ {...} ])
+	//   T_core_upgrade_calls  every update object given to Core_Upgrader::upgrade;  T_core_upgrade_result  what it returns instead of
+	//                         updating (a WP_Error, false);  T_lang_upgrade_calls / T_lang_upgrade_result likewise for the language packs
+	// As core's Core_Upgrader::upgrade( $current ): the new version string on success (core 6.4.1 class-core-upgrader.php returns
+	// the result of update_core(), the new version), else a WP_Error / false. The files are not touched: core's own update_core()
+	// replaces the WHOLE of WordPress, nothing a plugin could keep a copy of.
+	if ( ! class_exists( 'Core_Upgrader', false ) ) {
+		class Core_Upgrader extends WP_Upgrader {
+			function upgrade( $current, $args = array() ) {
+				$GLOBALS['T_traps'][] = 'core_upgrade'; $GLOBALS['T_core_upgrade_calls'][] = $current; if ( is_callable( $GLOBALS['T_core_upgrade_hook'] ?? null ) ) { call_user_func( $GLOBALS['T_core_upgrade_hook'], $current ); }
+				if ( $GLOBALS['T_core_upgrade_result'] instanceof Throwable ) { echo 'printed by the upgrader'; throw $GLOBALS['T_core_upgrade_result']; }
+				if ( null !== $GLOBALS['T_core_upgrade_result'] ) { return $GLOBALS['T_core_upgrade_result']; }
+				$GLOBALS['T_wp_version'] = (string) $current->current;
+				return (string) $current->current;
+			}
+		}
+	}
+	// As core's Language_Pack_Upgrader::bulk_upgrade(): every pack in wp_get_translation_updates() installed (one result each),
+	// the updates dropped from the three transients; false when there is nothing to do.
+	if ( ! class_exists( 'Language_Pack_Upgrader', false ) ) {
+		class Language_Pack_Upgrader extends WP_Upgrader {
+			function bulk_upgrade( $language_updates = array(), $args = array() ) {
+				$GLOBALS['T_traps'][] = 'lang_upgrade';
+				if ( empty( $language_updates ) ) { $language_updates = wp_get_translation_updates(); }
+				$GLOBALS['T_lang_upgrade_calls'][] = count( $language_updates );
+				if ( empty( $language_updates ) ) { return false; }
+				if ( null !== $GLOBALS['T_lang_upgrade_result'] ) { return $GLOBALS['T_lang_upgrade_result']; }
+				foreach ( array( 'update_core', 'update_plugins', 'update_themes' ) as $t ) {
+					$v = get_site_transient( $t );
+					if ( is_object( $v ) && isset( $v->translations ) ) { $v->translations = array(); set_site_transient( $t, $v ); }
+				}
+				return array_fill( 0, count( $language_updates ), true );
+			}
+		}
+	}
+	t_plugins_reset();
+}
+
+// ---- users (2.4.0 Task 6, write-users.php). OPT-IN: define T_USER_STANDINS before requiring this file. Core 6.4.1 at the surface
+// the plugin uses (wp-includes/user.php, pluggable.php, ms-functions.php, wp-admin/includes/user.php):
+//   T_users        id => user object (ID, user_login, user_email, display_name, user_url, user_registered, roles = the roles on the
+//                  current site); on a network a user is a member of the sites in T_user_blogs (t_add_user adds blog 1)
+//   T_umeta        id => key => list of values (get_user_meta and friends; keys and values unslashed as core's metadata API does)
+//   T_roles        role => array( name, capabilities ) (wp_roles()->roles);  T_editable_roles  null = all, else the role names the
+//                  editable_roles filter leaves (get_editable_roles)
+//   T_user_calls   every call: array( function, args ... );  T_generated  every password wp_generate_password returned
+//   T_user_pass    id => the plain password the user was created with (wp_insert_user / wpmu_create_user)
+//   T_user_mails   every email these functions send: array( to, what )
+//   T_author_ids   user id => post ids: the author's items instead of those in T_posts (a 30,000-post user without the posts)
+//   T_user_fail    function name => what it returns instead of acting (a WP_Error, false)
+//   T_count_users  how many times count_users ran (it queries every time, as core: no cache)
+if ( defined( 'T_USER_STANDINS' ) ) {
+	function t_users_reset() {
+		$GLOBALS['T_users'] = array(); $GLOBALS['T_umeta'] = array(); $GLOBALS['T_user_calls'] = array(); $GLOBALS['T_user_pass'] = array();
+		$GLOBALS['T_generated'] = array(); $GLOBALS['T_user_mails'] = array(); $GLOBALS['T_author_ids'] = array(); $GLOBALS['T_user_fail'] = array();
+		$GLOBALS['T_count_users'] = 0; $GLOBALS['T_next_user'] = 50; $GLOBALS['T_editable_roles'] = null; $GLOBALS['T_after_count'] = null; $GLOBALS['T_user_caps'] = array();
+		// The roles with their capabilities as core's defaults hold them, in the part that matters here (user powers).
+		$GLOBALS['T_roles'] = array(
+			'administrator' => array( 'name' => 'Administrator', 'capabilities' => array_fill_keys( array( 'read', 'manage_options', 'list_users', 'create_users', 'edit_users', 'promote_users', 'delete_users', 'remove_users', 'edit_posts' ), true ) ),
+			'editor'        => array( 'name' => 'Editor', 'capabilities' => array_fill_keys( array( 'read', 'edit_posts', 'edit_others_posts', 'publish_posts' ), true ) ),
+			'author'        => array( 'name' => 'Author', 'capabilities' => array_fill_keys( array( 'read', 'edit_posts', 'publish_posts' ), true ) ),
+			'contributor'   => array( 'name' => 'Contributor', 'capabilities' => array_fill_keys( array( 'read', 'edit_posts' ), true ) ),
+			'subscriber'    => array( 'name' => 'Subscriber', 'capabilities' => array( 'read' => true ) ),
+		);
+	}
+	// The user object get_userdata returns: core's WP_User in the part used here (set_role( '' ) takes every role away, add_role adds one).
+	#[AllowDynamicProperties]
+	class T_WP_User {
+		public $ID = 0; public $user_login = ''; public $user_email = ''; public $display_name = ''; public $user_url = ''; public $user_registered = ''; public $roles = array();
+		function __construct( array $f ) { foreach ( $f as $k => $v ) { $this->$k = $v; } }
+		function set_role( $role ) { t_set_roles( $this->ID, '' === (string) $role ? array() : array( (string) $role ) ); }
+		function add_role( $role ) { if ( '' !== (string) $role ) { t_set_roles( $this->ID, array_values( array_unique( array_merge( (array) $this->roles, array( (string) $role ) ) ) ) ); } }
+	}
+	// As core's user_can( user, cap ) for a plain capability: what the user's roles on the current site grant (T_roles), plus
+	// T_user_caps[ id ] when a test gives a user more.
+	function user_can( $user, $cap ) {
+		$u = is_object( $user ) ? $user : get_userdata( (int) $user );
+		if ( ! $u ) { return false; }
+		if ( in_array( $cap, (array) ( $GLOBALS['T_user_caps'][ (int) $u->ID ] ?? array() ), true ) ) { return true; }
+		foreach ( (array) $u->roles as $r ) { if ( ! empty( $GLOBALS['T_roles'][ $r ]['capabilities'][ $cap ] ) ) { return true; } }
+		return false;
+	}
+	// A user as core keeps one: the row, the usual meta (nickname, names, description, the role and level of the current site as
+	// wp_capabilities / wp_user_level, a session) and, on a network, membership of blog 1 when it has a role.
+	function t_add_user( $id, $login, array $roles, array $f = array() ) {
+		$GLOBALS['T_users'][ (int) $id ] = new T_WP_User( array_merge( array( 'ID' => (int) $id, 'user_login' => $login, 'user_email' => $login . '@example.org', 'display_name' => ucfirst( $login ),
+			'user_url' => '', 'user_registered' => '2026-01-01 10:00:00', 'roles' => array_values( $roles ) ), $f ) );
+		$GLOBALS['T_umeta'][ (int) $id ] = array( 'nickname' => array( $login ), 'first_name' => array( '' ), 'last_name' => array( '' ), 'description' => array( '' ),
+			'wp_capabilities' => array( array_fill_keys( $roles, true ) ), 'wp_user_level' => array( in_array( 'administrator', $roles, true ) ? '10' : '0' ),
+			'session_tokens' => array( array( 'tokhash' => array( 'expiration' => 1 ) ) ), 'rich_editing' => array( 'true' ) );
+		if ( array() !== $roles ) { $GLOBALS['T_user_blogs'][ (int) $id ] = array( 1 ); }
+		return (int) $id;
+	}
+	// The author's items: T_author_ids when a test set it, else the posts in T_posts by that author; ascending.
+	function t_author_ids( $uid ) {
+		if ( isset( $GLOBALS['T_author_ids'][ (int) $uid ] ) ) { return array_values( array_map( 'intval', $GLOBALS['T_author_ids'][ (int) $uid ] ) ); }
+		$out = array(); foreach ( $GLOBALS['T_posts'] as $id => $p ) { if ( (int) $p->post_author === (int) $uid ) { $out[] = (int) $id; } }
+		sort( $out ); return $out;
+	}
+	// UPDATE posts SET post_author = to WHERE post_author = from.
+	function t_reassign_posts( $from, $to ) {
+		foreach ( $GLOBALS['T_posts'] as $p ) { if ( (int) $p->post_author === (int) $from ) { $p->post_author = (int) $to; } }
+		if ( isset( $GLOBALS['T_author_ids'][ (int) $from ] ) ) { $GLOBALS['T_author_ids'][ (int) $to ] = array_merge( $GLOBALS['T_author_ids'][ (int) $to ] ?? array(), $GLOBALS['T_author_ids'][ (int) $from ] ); unset( $GLOBALS['T_author_ids'][ (int) $from ] ); }
+	}
+	function t_set_roles( $id, array $roles ) {
+		$GLOBALS['T_users'][ (int) $id ]->roles = array_values( $roles );
+		$GLOBALS['T_umeta'][ (int) $id ]['wp_capabilities'] = array( array_fill_keys( $roles, true ) );
+	}
+	// As core (formatting.php), the parts that matter here: tags, accents, octets and entities out; strict keeps a-z 0-9 space _ . - @.
+	function sanitize_user( $username, $strict = false ) {
+		$u = strip_tags( (string) $username );
+		if ( function_exists( 'remove_accents' ) ) { $u = remove_accents( $u ); }
+		$u = preg_replace( '|%([a-fA-F0-9][a-fA-F0-9])|', '', $u ); $u = preg_replace( '/&.+?;/', '', $u );
+		if ( $strict ) { $u = preg_replace( '|[^a-z0-9 _.\-@]|i', '', $u ); }
+		return preg_replace( '|\s+|', ' ', trim( $u ) );
+	}
+	function is_email( $email ) { return false !== filter_var( (string) $email, FILTER_VALIDATE_EMAIL ) ? $email : false; }
+	// As core's esc_url_raw: a url with one of wp_allowed_protocols() (http, https, ftp, ftps, mailto, news, irc, gopher, nntp,
+	// feed, telnet, mms, rtsp, sms, svn, tel, fax, xmpp, webcal, urn) is kept, another scheme (javascript:) gives ''; without a
+	// scheme a domain-like start gets http://.
+	function esc_url_raw( $url ) {
+		$url = trim( (string) $url );
+		if ( '' === $url || preg_match( '/[\s"<>]/', $url ) ) { return ''; }
+		if ( preg_match( '/^([a-z][a-z0-9+.\-]*):/i', $url, $m ) ) {
+			$ok = array( 'http', 'https', 'ftp', 'ftps', 'mailto', 'news', 'irc', 'irc6', 'ircs', 'gopher', 'nntp', 'feed', 'telnet', 'mms', 'rtsp', 'sms', 'svn', 'tel', 'fax', 'xmpp', 'webcal', 'urn' );
+			if ( in_array( strtolower( $m[1] ), $ok, true ) ) { return $url; }
+			if ( ! preg_match( '/^[a-z0-9.\-]+\.[a-z]{2,}:\d/i', $url ) ) { return ''; }
+		}
+		return preg_match( '#^[a-z0-9.\-]+\.[a-z]{2,}([:/][^\s"<>]*)?$#i', $url ) ? 'http://' . $url : '';
+	}
+	// MySQL compares logins and emails without case (utf8mb4_*_ci).
+	function get_user_by( $field, $value ) {
+		if ( 'id' === $field || 'ID' === $field ) { return get_userdata( (int) $value ); }
+		$col = 'login' === $field ? 'user_login' : ( 'email' === $field ? 'user_email' : null );
+		if ( null === $col || '' === (string) $value ) { return false; }
+		foreach ( $GLOBALS['T_users'] as $u ) { if ( 0 === strcasecmp( (string) $u->$col, (string) $value ) ) { return $u; } }
+		return false;
+	}
+	function username_exists( $username ) { $u = get_user_by( 'login', $username ); return $u ? (int) $u->ID : false; }
+	function email_exists( $email ) { $u = get_user_by( 'email', $email ); return $u ? (int) $u->ID : false; }
+	// T_user_fail[ 'get_user_meta:<key>' ]: a database error reading that key (core's get_metadata then gives false).
+	function get_user_meta( $id, $key = '', $single = false ) {
+		if ( '' !== $key && isset( $GLOBALS['T_user_fail'][ 'get_user_meta:' . $key ] ) ) { return false; }
+		$all = $GLOBALS['T_umeta'][ (int) $id ] ?? array();
+		if ( '' === $key ) { return $all; }
+		$vals = $all[ $key ] ?? array();
+		return $single ? ( $vals[0] ?? '' ) : $vals;
+	}
+	// As core's update_metadata: key and value unslashed; no row yet -> added; else every row of the key set to the value
+	// (false when that changes nothing).
+	function update_user_meta( $id, $key, $value, $prev = '' ) {
+		$GLOBALS['T_user_calls'][] = array( 'update_user_meta', (int) $id, wp_unslash( $key ) );
+		if ( isset( $GLOBALS['T_user_fail']['update_user_meta'] ) ) { return $GLOBALS['T_user_fail']['update_user_meta']; }
+		// T_user_fail[ 'update_user_meta:<key>' ]: a database error writing that key (nothing stored).
+		if ( isset( $GLOBALS['T_user_fail'][ 'update_user_meta:' . wp_unslash( $key ) ] ) ) { return false; }
+		$key = wp_unslash( $key ); $value = wp_unslash( $value );
+		$rows = $GLOBALS['T_umeta'][ (int) $id ][ $key ] ?? null;
+		if ( null === $rows ) { $GLOBALS['T_umeta'][ (int) $id ][ $key ] = array( $value ); return 1000 + count( $GLOBALS['T_umeta'][ (int) $id ] ); }
+		$same = true; foreach ( $rows as $r ) { if ( maybe_serialize( $r ) !== maybe_serialize( $value ) ) { $same = false; } }
+		if ( $same ) { return false; }
+		$GLOBALS['T_umeta'][ (int) $id ][ $key ] = array_fill( 0, count( $rows ), $value );
+		return true;
+	}
+	function add_user_meta( $id, $key, $value, $unique = false ) {
+		$key = wp_unslash( $key ); $value = wp_unslash( $value );
+		if ( $unique && isset( $GLOBALS['T_umeta'][ (int) $id ][ $key ] ) ) { return false; }
+		$GLOBALS['T_umeta'][ (int) $id ][ $key ][] = $value;
+		return 2000 + count( $GLOBALS['T_umeta'][ (int) $id ][ $key ] );
+	}
+	function delete_user_meta( $id, $key, $value = '' ) {
+		if ( isset( $GLOBALS['T_user_fail']['delete_user_meta'] ) ) { return $GLOBALS['T_user_fail']['delete_user_meta']; }
+		$key = wp_unslash( $key );
+		if ( ! isset( $GLOBALS['T_umeta'][ (int) $id ][ $key ] ) ) { return false; }
+		unset( $GLOBALS['T_umeta'][ (int) $id ][ $key ] );
+		return true;
+	}
+	// As core: a fresh count of the current site's users by role (every call queries; there is no cache).
+	function count_users( $strategy = 'time', $site_id = null ) {
+		$GLOBALS['T_count_users']++;
+		$out = array( 'total_users' => 0, 'avail_roles' => array() );
+		foreach ( $GLOBALS['T_users'] as $u ) {
+			if ( ! empty( $GLOBALS['T_multisite'] ) && ! is_user_member_of_blog( (int) $u->ID, get_current_blog_id() ) ) { continue; }
+			$out['total_users']++;
+			$roles = (array) $u->roles;
+			if ( array() === $roles ) { $out['avail_roles']['none'] = ( $out['avail_roles']['none'] ?? 0 ) + 1; }
+			foreach ( $roles as $r ) { $out['avail_roles'][ $r ] = ( $out['avail_roles'][ $r ] ?? 0 ) + 1; }
+		}
+		// T_after_count: a test's stand-in for another request changing the users right after this count was taken.
+		if ( is_callable( $GLOBALS['T_after_count'] ?? null ) ) { call_user_func( $GLOBALS['T_after_count'], $GLOBALS['T_count_users'] ); }
+		return $out;
+	}
+	function get_editable_roles() {
+		$r = $GLOBALS['T_roles'];
+		return is_array( $GLOBALS['T_editable_roles'] ) ? array_intersect_key( $r, array_flip( $GLOBALS['T_editable_roles'] ) ) : $r;
+	}
+	function wp_generate_password( $length = 12, $special_chars = true, $extra_special_chars = false ) {
+		$v = 'mossylantern' . count( $GLOBALS['T_generated'] ) . 'quietharbor';
+		$GLOBALS['T_generated'][] = $v;
+		$GLOBALS['T_user_calls'][] = array( 'wp_generate_password', $length, $special_chars, $extra_special_chars );
+		return $v;
+	}
+	// wp_insert_user without an ID: as core (user.php), the input is slashed (core unslashes the row fields, the metadata API the
+	// meta); empty or too long login, a login or email already in use refused with core's codes; the role (or default_role) on
+	// the current site (on a network that makes the user a member of it).
+	function t_user_create( array $d ) {
+		$login = trim( sanitize_user( (string) ( $d['user_login'] ?? '' ), true ) );
+		if ( '' === $login ) { return new WP_Error( 'empty_user_login', 'Cannot create a user with an empty login name.' ); }
+		if ( mb_strlen( $login ) > 60 ) { return new WP_Error( 'user_login_too_long', 'Username may not be longer than 60 characters.' ); }
+		if ( username_exists( $login ) ) { return new WP_Error( 'existing_user_login', 'Sorry, that username already exists!' ); }
+		$email = (string) wp_unslash( $d['user_email'] ?? '' );
+		if ( '' !== $email && email_exists( $email ) ) { return new WP_Error( 'existing_user_email', 'Sorry, that email address is already used!' ); }
+		$id = $GLOBALS['T_next_user']++;
+		$role = array_key_exists( 'role', $d ) ? (string) $d['role'] : (string) get_option( 'default_role', 'subscriber' );
+		$GLOBALS['T_users'][ $id ] = new T_WP_User( array( 'ID' => $id, 'user_login' => $login, 'user_email' => $email, 'display_name' => (string) wp_unslash( $d['display_name'] ?? $login ),
+			'user_url' => (string) wp_unslash( $d['user_url'] ?? '' ), 'user_registered' => '2026-11-02 10:00:00', 'roles' => '' === $role ? array() : array( $role ) ) );
+		$GLOBALS['T_umeta'][ $id ] = array();
+		$GLOBALS['T_user_pass'][ $id ] = (string) ( $d['user_pass'] ?? '' );
+		foreach ( array( 'nickname' => $login, 'first_name' => '', 'last_name' => '', 'description' => '' ) as $k => $def ) { update_user_meta( $id, $k, $d[ $k ] ?? $def ); }
+		update_user_meta( $id, 'wp_capabilities', '' === $role ? array() : array( $role => true ) );
+		if ( '' !== $role ) { $GLOBALS['T_user_blogs'][ $id ][] = get_current_blog_id(); }
+		return $id;
+	}
+	function wp_insert_user( $userdata ) {
+		$d = is_object( $userdata ) ? get_object_vars( $userdata ) : (array) $userdata;
+		$GLOBALS['T_user_calls'][] = array( 'wp_insert_user', $d );
+		if ( isset( $GLOBALS['T_user_fail']['wp_insert_user'] ) ) { return $GLOBALS['T_user_fail']['wp_insert_user']; }
+		if ( ! empty( $d['ID'] ) ) { return t_user_apply( $d ); }
+		return t_user_create( $d );
+	}
+	// wp_update_user as core: an unknown id refused; a new email checked (in use: existing_user_email) and core's own notice of
+	// the change sent to the OLD address; the fields given set (slashed input); role set on the current site (set_role).
+	function t_user_apply( array $d ) {
+		$id = (int) ( $d['ID'] ?? 0 ); $u = get_userdata( $id );
+		if ( ! $u ) { return new WP_Error( 'invalid_user_id', 'Invalid user ID.' ); }
+		if ( isset( $d['user_email'] ) ) {
+			$new = (string) wp_unslash( $d['user_email'] );
+			if ( 0 !== strcasecmp( $new, (string) $u->user_email ) ) {
+				$owner = email_exists( $new );
+				if ( $owner && (int) $owner !== $id ) { return new WP_Error( 'existing_user_email', 'Sorry, that email address is already used!' ); }
+			}
+			if ( $new !== (string) $u->user_email ) { $GLOBALS['T_user_mails'][] = array( (string) $u->user_email, 'email_change_notice' ); }
+			$u->user_email = $new;
+		}
+		foreach ( array( 'display_name' => 'display_name', 'user_url' => 'user_url' ) as $k => $col ) { if ( isset( $d[ $k ] ) ) { $u->$col = (string) wp_unslash( $d[ $k ] ); } }
+		foreach ( array( 'first_name', 'last_name', 'description', 'nickname' ) as $k ) { if ( isset( $d[ $k ] ) ) { update_user_meta( $id, $k, $d[ $k ] ); } }
+		if ( isset( $d['role'] ) ) { t_set_roles( $id, '' === (string) $d['role'] ? array() : array( (string) $d['role'] ) ); }
+		return $id;
+	}
+	function wp_update_user( $userdata ) {
+		$d = is_object( $userdata ) ? get_object_vars( $userdata ) : (array) $userdata;
+		$GLOBALS['T_user_calls'][] = array( 'wp_update_user', $d );
+		if ( isset( $GLOBALS['T_user_fail']['wp_update_user'] ) ) { return $GLOBALS['T_user_fail']['wp_update_user']; }
+		return t_user_apply( $d );
+	}
+	// pluggable.php: 'user' or 'both' emails the user the link to set a password ('admin' tells the site admin only).
+	function wp_new_user_notification( $user_id, $deprecated = null, $notify = '' ) {
+		$GLOBALS['T_user_calls'][] = array( 'wp_new_user_notification', $user_id, $deprecated, $notify );
+		$u = get_userdata( $user_id );
+		if ( $u && in_array( $notify, array( 'user', 'both' ), true ) ) { $GLOBALS['T_user_mails'][] = array( (string) $u->user_email, 'set_password_link' ); }
+	}
+	// As core (user.php): the login unslashed and trimmed; with an @ it is looked up as an email first, then as a login.
+	function retrieve_password( $user_login = null ) {
+		$l = trim( (string) wp_unslash( (string) $user_login ) );
+		$u = false;
+		if ( '' !== $l ) { $u = strpos( $l, '@' ) ? ( get_user_by( 'email', $l ) ?: get_user_by( 'login', $l ) ) : get_user_by( 'login', $l ); }
+		$GLOBALS['T_user_calls'][] = array( 'retrieve_password', $user_login, $u ? (int) $u->ID : 0 );
+		if ( isset( $GLOBALS['T_user_fail']['retrieve_password'] ) ) { return $GLOBALS['T_user_fail']['retrieve_password']; }
+		if ( '' === $l ) { return new WP_Error( 'empty_username', 'Please enter a username or email address.' ); }
+		if ( ! $u ) { return new WP_Error( 'invalidcombo', 'There is no account with that username or email address.' ); }
+		$GLOBALS['T_user_mails'][] = array( (string) $u->user_email, 'password_reset_link' );
+		return true;
+	}
+	// wp-admin/includes/user.php: with a reassign id every item of the user (core's own query) gets that author; then on a network
+	// the user leaves the current site, else the user and every meta row are deleted. false for an unknown user.
+	function wp_delete_user( $id, $reassign = null ) {
+		global $wpdb;
+		$GLOBALS['T_user_calls'][] = array( 'wp_delete_user', $id, $reassign );
+		if ( isset( $GLOBALS['T_user_fail']['wp_delete_user'] ) ) { return $GLOBALS['T_user_fail']['wp_delete_user']; }
+		$id = (int) $id;
+		if ( ! get_userdata( $id ) ) { return false; }
+		if ( null !== $reassign ) {
+			$post_ids = $wpdb->get_col( $wpdb->prepare( "SELECT ID FROM $wpdb->posts WHERE post_author = %d", $id ) );
+			t_reassign_posts( $id, (int) $reassign );
+		} else {
+			foreach ( t_author_ids( $id ) as $pid ) { unset( $GLOBALS['T_posts'][ $pid ] ); }
+		}
+		if ( ! empty( $GLOBALS['T_multisite'] ) ) { remove_user_from_blog( $id, get_current_blog_id() ); }
+		else { unset( $GLOBALS['T_users'][ $id ], $GLOBALS['T_umeta'][ $id ] ); }
+		return true;
+	}
+	// ms-functions.php: the user loses every role on the site (no longer a member); with a reassign id the user's items get that author.
+	function remove_user_from_blog( $user_id, $blog_id = 0, $reassign = 0 ) {
+		global $wpdb;
+		$GLOBALS['T_user_calls'][] = array( 'remove_user_from_blog', $user_id, $blog_id, $reassign );
+		if ( isset( $GLOBALS['T_user_fail']['remove_user_from_blog'] ) ) { return $GLOBALS['T_user_fail']['remove_user_from_blog']; }
+		$user_id = (int) $user_id;
+		if ( ! get_userdata( $user_id ) ) { return new WP_Error( 'user_does_not_exist', 'That user does not exist.' ); }
+		$GLOBALS['T_user_blogs'][ $user_id ] = array_values( array_diff( $GLOBALS['T_user_blogs'][ $user_id ] ?? array(), array( (int) $blog_id ) ) );
+		t_set_roles( $user_id, array() );
+		if ( $reassign ) {
+			$post_ids = $wpdb->get_col( $wpdb->prepare( "SELECT ID FROM $wpdb->posts WHERE post_author = %d", $user_id ) );
+			if ( ! empty( $post_ids ) ) { t_reassign_posts( $user_id, (int) $reassign ); }
+		}
+		return true;
+	}
+	// ms-functions.php: the login made strict and without spaces, the user created for the network with no role on any site;
+	// false on failure.
+	function wpmu_create_user( $user_name, $password, $email ) {
+		$GLOBALS['T_user_calls'][] = array( 'wpmu_create_user', $user_name, $password, $email );
+		if ( isset( $GLOBALS['T_user_fail']['wpmu_create_user'] ) ) { return $GLOBALS['T_user_fail']['wpmu_create_user']; }
+		$user_name = preg_replace( '/\s+/', '', sanitize_user( $user_name, true ) );
+		$id = t_user_create( array( 'user_login' => wp_slash( $user_name ), 'user_email' => wp_slash( $email ), 'user_pass' => $password ) );
+		if ( is_wp_error( $id ) ) { return false; }
+		t_set_roles( $id, array() ); $GLOBALS['T_user_blogs'][ $id ] = array();
+		return $id;
+	}
+	function add_user_to_blog( $blog_id, $user_id, $role ) {
+		$GLOBALS['T_user_calls'][] = array( 'add_user_to_blog', $blog_id, $user_id, $role );
+		if ( isset( $GLOBALS['T_user_fail']['add_user_to_blog'] ) ) { return $GLOBALS['T_user_fail']['add_user_to_blog']; }
+		if ( ! get_userdata( $user_id ) ) { return new WP_Error( 'user_does_not_exist', 'The requested user does not exist.' ); }
+		$GLOBALS['T_user_blogs'][ (int) $user_id ][] = (int) $blog_id;
+		t_set_roles( $user_id, array( (string) $role ) );
+		return true;
+	}
+	t_users_reset();
+}
+
+// ---- email (2.4.0 Task 7, write-email.php). pluggable.php's wp_mail at the surface the plugin uses:
+//   T_mails      every call: array( to, subject, message, headers )
+//   T_mail_fail  a message (or true): the send fails as PHPMailer's catch block does in core 6.4.1: do_action( 'wp_mail_failed',
+//                new WP_Error( 'wp_mail_failed', message, mail_data ) ), then false. The do_action stand-in only records, so the
+//                listeners added with add_action( 'wp_mail_failed', ... ) are run here as core's do_action would.
+// wp_date: the site's time as core formats it (UTC here; T_wp_date overrides the text).
+if ( ! function_exists( 'wp_mail' ) ) {
+	function wp_mail( $to, $subject, $message, $headers = '', $attachments = array() ) {
+		$GLOBALS['T_mails'][] = array( $to, $subject, $message, $headers );
+		$fail = $GLOBALS['T_mail_fail'] ?? false;
+		if ( false === $fail || null === $fail ) { return true; }
+		$msg  = is_string( $fail ) ? $fail : 'Could not instantiate mail function.';
+		$data = array( 'to' => (array) $to, 'subject' => $subject, 'message' => $message, 'headers' => array(), 'attachments' => array(), 'phpmailer_exception_code' => 2 );
+		$err  = new WP_Error( 'wp_mail_failed', $msg, $data );
+		do_action( 'wp_mail_failed', $err );
+		foreach ( $GLOBALS['T_actions']['wp_mail_failed'] ?? array() as $cb ) { call_user_func( $cb, $err ); }
+		return false;
+	}
+}
+if ( ! function_exists( 'wp_date' ) ) {
+	function wp_date( $format, $timestamp = null, $timezone = null ) { return $GLOBALS['T_wp_date'] ?? gmdate( (string) $format, null === $timestamp ? time() : (int) $timestamp ); }
+}
+// As core 6.4.1 (wp-includes/formatting.php): only the HTML special characters are decoded (&amp; &lt; &gt; and, with
+// ENT_QUOTES, the quotes), with their zero-padded numeric forms; every other entity (&#13; included) stays as it is.
+if ( ! function_exists( 'wp_specialchars_decode' ) ) {
+	function wp_specialchars_decode( $text, $quote_style = ENT_NOQUOTES ) {
+		$text = (string) $text;
+		if ( '' === $text || false === strpos( $text, '&' ) ) { return $text; }
+		if ( empty( $quote_style ) ) { $quote_style = ENT_NOQUOTES; } elseif ( ! in_array( $quote_style, array( 0, 2, 3, 'single', 'double' ), true ) ) { $quote_style = ENT_QUOTES; }
+		$single = array( '&#039;' => '\'', '&#x27;' => '\'' );                 $single_preg = array( '/&#0*39;/' => '&#039;', '/&#x0*27;/i' => '&#x27;' );
+		$double = array( '&quot;' => '"', '&#034;' => '"', '&#x22;' => '"' );  $double_preg = array( '/&#0*34;/' => '&#034;', '/&#x0*22;/i' => '&#x22;' );
+		$others = array( '&lt;' => '<', '&#060;' => '<', '&gt;' => '>', '&#062;' => '>', '&amp;' => '&', '&#038;' => '&', '&#x26;' => '&' );
+		$others_preg = array( '/&#0*60;/' => '&#060;', '/&#0*62;/' => '&#062;', '/&#0*38;/' => '&#038;', '/&#x0*26;/i' => '&#x26;' );
+		if ( ENT_QUOTES === $quote_style ) { $t = array_merge( $single, $double, $others ); $p = array_merge( $single_preg, $double_preg, $others_preg ); }
+		elseif ( ENT_COMPAT === $quote_style || 'double' === $quote_style ) { $t = array_merge( $double, $others ); $p = array_merge( $double_preg, $others_preg ); }
+		elseif ( 'single' === $quote_style ) { $t = array_merge( $single, $others ); $p = array_merge( $single_preg, $others_preg ); }
+		else { $t = $others; $p = $others_preg; }
+		$text = preg_replace( array_keys( $p ), array_values( $p ), $text );
+		return strtr( $text, $t );
 	}
 }

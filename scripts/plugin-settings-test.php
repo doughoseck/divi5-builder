@@ -289,6 +289,14 @@ update_option( 'active_plugins', array( 'wp-site-updates/wp-site-updates.php' ) 
 $GLOBALS['T_server_routes'] = array( '/wp-site-updates/v1/info' => array() );
 check( 'settings page alone: the red line shows at once', false !== strpos( html( 'd5b_settings_render' ), 'Updates is LIVE on this site through the old copy' ) && array( 'updates' ) === get_option( 'd5b_legacy_seen' ) );
 
+echo "the 2.4.0 categories on the page\n";
+fresh(); t_set_caps( array( 'manage_options' ) );
+$out = html( 'd5b_settings_render' );
+$ok = true; foreach ( array( 'users', 'plugins', 'themes', 'core' ) as $s ) { if ( '' === d5b_risky_note( $s ) || false === strpos( $out, 'name="d5b_risky[' . $s . ']"' ) || false === strpos( $out, esc_html( d5b_risky_note( $s ) ) ) ) { $ok = false; } }
+check( 'users, plugins, themes and core each show a risky box with its note', $ok );
+check( 'the email category shows (label Email), without a risky box, unticked on a fresh site', false !== strpos( $out, 'name="d5b_abilities_cat[email]"' ) && false !== strpos( $out, '> Email</label>' ) && false === strpos( $out, 'name="d5b_risky[email]"' ) && 0 === preg_match( '/name="d5b_abilities_cat\[email\]"[^>]*checked/', $out ), $out );
+check( 'the WordPress core note warns there is no rollback', false !== strpos( d5b_risky_note( 'core' ), 'There is no rollback for a core update; keep a backup.' ) );
+
 echo "old copy inert (constant, no routes): plain line only\n";
 fresh(); t_set_caps( array( 'activate_plugins' ) );
 update_option( 'd5b_legacy_seen', array( 'updates' ) ); // a stale record from when it was serving
