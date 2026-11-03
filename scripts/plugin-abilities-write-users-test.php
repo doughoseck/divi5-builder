@@ -402,6 +402,16 @@ $GLOBALS['T_options']['d5b_users_admin_lock'] = str_repeat( 'f', 16 ) . '|' . ( 
 $GLOBALS['T_clock'] += 21;
 check( 'M4 ... past its 30 s it is taken over', is_array( call( 'users-update', array( 'id' => 3, 'role' => 'author' ) ) ) && array( 'author' ) === get_userdata( 3 )->roles );
 check( 'meta-set: a value that is an object -> invalid_input', 'invalid_input' === code( d5b_wu_meta_set( array( 'id' => 4, 'key' => 'k1', 'value' => new ArrayObject( array() ) ) ) ) );
+// Fix round 1 S4: a vendor-shaped key in an ordinary user meta value (split literal: no whole key in the source).
+site();
+$ghk = 'gh' . 'p_' . str_repeat( 'A', 36 );
+update_user_meta( 3, 'deploy_note', 'ci uses x=' . $ghk . ' today' );
+$pv = call( 'users-delete-preview', array( 'id' => 3, 'reassign_to' => 4 ) );
+check( 'S4 users-delete-preview: a GitHub token in a user meta value is masked in the record, the field and the rest of its text shown', is_array( $pv ) && false === strpos( json_encode( $pv ), $ghk ) && array( 'ci uses x=[redacted] today' ) === ( $pv['user']['meta']['deploy_note'] ?? null ), $pv['user']['meta'] ?? $pv );
+$ms = call( 'users-meta-set', array( 'id' => 4, 'key' => 'deploy_note', 'value' => 'token ' . $ghk ) );
+d5b_abilities_set_category( 'history', true, false, 'tester' ); t_set_caps( array_merge( ADMIN, array( 'manage_options' ) ) ); // the history reads need manage_options
+$hg =is_array( $ms ) ? call( 'history-change-get', array( 'id' => (int) ( $ms['history_id'] ?? 0 ) ) ) : null;
+check( 'S4 users-meta-set with a GitHub token: the answer and the history read (history-change-get) mask it (the row keeps the value as given, for the undo)', is_array( $ms ) && false === strpos( json_encode( $ms ), $ghk ) && is_array( $hg ) && false === strpos( json_encode( $hg ), $ghk ) && false !== strpos( json_encode( $hg ), 'deploy_note' ), array( $ms, $hg ) );
 
 // ---- users-delete-preview / users-delete
 echo "users-delete\n";
