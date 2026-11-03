@@ -398,6 +398,13 @@ if ( ! function_exists( 'd5b_maint_remove_tree' ) ) {
 }
 
 if ( ! function_exists( 'd5b_maint_rename' ) ) {
+	/** bin2hex( random_bytes( $n ) ); a test replaces it with $GLOBALS['d5b_maint_seams']['hex'] (to predict a name). */
+	function d5b_maint_hex( int $n ): string {
+		$f = $GLOBALS['d5b_maint_seams']['hex'] ?? null;
+		if ( is_callable( $f ) ) { return (string) $f( $n ); }
+		return bin2hex( random_bytes( max( 1, $n ) ) );
+	}
+
 	/** rename( $from, $to ); a test replaces it with $GLOBALS['d5b_maint_seams']['rename'] (to refuse one, as a host can). */
 	function d5b_maint_rename( string $from, string $to ): bool {
 		$f = $GLOBALS['d5b_maint_seams']['rename'] ?? null;
@@ -615,9 +622,12 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 
 		// Two names beside the live folder (a rename there does not cross a disk), both starting with a dot: WordPress skips
 		// those when it lists plugins, so a leftover never shows up as a second plugin.
-		// 6 random hex characters each: a name taken anyway is refused below (copy_failed, nothing changed).
-		$staging = $parent . '/.d5b-new-' . $dir . '-' . bin2hex( random_bytes( 3 ) );
-		$aside   = null === $cur ? '' : $parent . '/.d5b-old-' . $dir . '-' . bin2hex( random_bytes( 3 ) );
+		// 6 random hex characters each: a name taken anyway (a leftover of a request that died) is refused below, before the
+		// row is written, and that folder is never touched (copy_failed, nothing changed).
+		$staging = $parent . '/.d5b-new-' . $dir . '-' . d5b_maint_hex( 3 );
+		$aside   = null === $cur ? '' : $parent . '/.d5b-old-' . $dir . '-' . d5b_maint_hex( 3 );
+		$taken   = function ( string $p ): bool { return '' !== $p && ( file_exists( $p ) || is_link( $p ) ); };
+		if ( $taken( $staging ) || $taken( $aside ) ) { return $fail( 'copying the files failed; nothing was changed' ); }
 		$where   = 'the ' . $kind . 's folder';
 
 		// The row first, naming both folders (names only, in the plugins or themes folder): a request that dies between the
@@ -629,7 +639,7 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 		if ( $new < 1 ) { return new WP_Error( 'history_unavailable', 'The change history row could not be written, so nothing was put back.' ); }
 
 		// 1. the kept copy into the staging folder, compared file by file: a copy that is not whole never touches the live one
-		if ( file_exists( $staging ) || ( '' !== $aside && file_exists( $aside ) ) || ! d5b_maint_copy_in( $src, $staging ) ) {
+		if ( ! d5b_maint_copy_in( $src, $staging ) ) { // the name was free above: what is there now is this request's part-made copy
 			$clean = d5b_maint_remove_tree( $staging );
 			d5b_history_delete( $new );
 			return $fail( $clean

@@ -715,6 +715,21 @@ check( '... a file that was there first: on leaves it, off leaves it', true === 
 @unlink( ABSPATH . '.maintenance' );
 check( '... an off without an on of this request removes nothing', ( function () { file_put_contents( ABSPATH . '.maintenance', 'x' ); unset( $GLOBALS['d5b_maint_mm_created'] ); d5b_maint_maintenance( false ); $ok = file_exists( ABSPATH . '.maintenance' ); @unlink( ABSPATH . '.maintenance' ); return $ok; } )() );
 
+// Fix round 1 S1: a staging or aside folder of that name is already there (a request that died): refused, nothing touched.
+foreach ( array( 'new', 'old' ) as $which ) {
+	disk_site();
+	$u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
+	$v51 = tree( WP_PLUGIN_DIR . '/akismet' ); $nrows = count( hrows() );
+	$GLOBALS['d5b_maint_seams']['hex'] = function ( $n ) { return 'abc123'; };
+	$pre = WP_PLUGIN_DIR . '/.d5b-' . $which . '-akismet-abc123';
+	@mkdir( $pre, 0777, true ); file_put_contents( $pre . '/left.txt', 'a leftover of a request that died' );
+	$GLOBALS['T_mrenames'] = array(); $GLOBALS['T_maintenance'] = array(); $GLOBALS['T_copy_calls'] = array();
+	$r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
+	unset( $GLOBALS['d5b_maint_seams']['hex'] );
+	check( "S1 a .d5b-$which- folder of the chosen name already there: copy_failed \"nothing was changed\" before any copy, rename or maintenance mode; that folder and its file untouched, live 5.1, no new row", 'copy_failed' === code( $r ) && false !== strpos( $r->get_error_message(), 'nothing was changed' ) && 'a leftover of a request that died' === @file_get_contents( $pre . '/left.txt' ) && $v51 === tree( WP_PLUGIN_DIR . '/akismet' ) && $nrows === count( hrows() ) && array() === $GLOBALS['T_mrenames'] && array() === $GLOBALS['T_maintenance'] && array() === $GLOBALS['T_copy_calls'], array( code( $r ), is_wp_error( $r ) ? $r->get_error_message() : $r, $GLOBALS['T_mrenames'] ) );
+	@unlink( $pre . '/left.txt' ); @rmdir( $pre );
+}
+
 disk_site();
 $u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
 $v51 = tree( WP_PLUGIN_DIR . '/akismet' ); $nrows = count( hrows() ); $GLOBALS['T_maintenance'] = array();

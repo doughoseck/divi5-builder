@@ -442,7 +442,7 @@ t_put( WP_PLUGIN_DIR . '/mv-file.php', 'x' );
 check( '... to a file that exists: refused too', array( 'moved' => false, 'leftover' => false ) === d5b_maint_move( WP_PLUGIN_DIR . '/mv-src', WP_PLUGIN_DIR . '/mv-file.php' ) && 'x' === @file_get_contents( WP_PLUGIN_DIR . '/mv-file.php' ) && is_dir( WP_PLUGIN_DIR . '/mv-src' ) );
 check( '... to a free name: moved', array( 'moved' => true, 'leftover' => false ) === d5b_maint_move( WP_PLUGIN_DIR . '/mv-src', WP_PLUGIN_DIR . '/mv-new' ) && 'source' === @file_get_contents( WP_PLUGIN_DIR . '/mv-new/a.php' ) );
 $mc = (string) file_get_contents( $dir . '/inc/abilities/maint-common.php' );
-check( 'the staging and aside names: a dot, the folder, 6 random hex characters (no time, no numbered slots)', false !== strpos( $mc, "'/.d5b-new-' . \$dir . '-' . bin2hex( random_bytes( 3 ) )" ) && false !== strpos( $mc, "'/.d5b-old-' . \$dir . '-' . bin2hex( random_bytes( 3 ) )" ) && false === strpos( $mc, '$i < 100' ) );
+check( 'the staging and aside names: a dot, the folder, 6 random hex characters (no time, no numbered slots)', false !== strpos( $mc, "'/.d5b-new-' . \$dir . '-' . d5b_maint_hex( 3 )" ) && false !== strpos( $mc, "'/.d5b-old-' . \$dir . '-' . d5b_maint_hex( 3 )" ) && false === strpos( $mc, '$i < 100' ) && 1 === preg_match( '/^[0-9a-f]{6}$/D', d5b_maint_hex( 3 ) ) );
 
 echo "the is_super_admin stand-in (as core)\n";
 fresh();
