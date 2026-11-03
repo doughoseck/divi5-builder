@@ -46,6 +46,8 @@ function hrows() { global $wpdb; return array_values( $wpdb->tables[ d5b_history
 function hlast() { $r = hrows(); return $r ? d5b_history_get( (int) end( $r )['id'] ) : null; }
 function arows() { global $wpdb; return array_values( $wpdb->tables[ d5b_audit_table() ] ?? array() ); }
 function mails() { return $GLOBALS['T_mails']; }
+// The limit's count: the option row of this hour's window (windows start at multiples of 3600 s).
+function rate_count() { return (int) ( $GLOBALS['T_options'][ 'd5b_rate_email_test_' . ( (int) floor( $GLOBALS['T_clock'] / 3600 ) * 3600 ) ] ?? 0 ); }
 function send( $in ) { return call( 'email-send-test', $in ); }
 
 // ---- registration and switches
@@ -107,7 +109,7 @@ $GLOBALS['T_users'][1]->user_email = '';
 check( '... the caller without an address (to me): no_email', 'no_email' === code( send( array( 'to' => 'me' ) ) ) && array() === mails() );
 $GLOBALS['T_users'][3] = (object) array( 'ID' => 3, 'user_login' => 'noaddr', 'user_email' => 'not-an-address', 'display_name' => 'N', 'user_url' => '', 'user_registered' => '', 'roles' => array( 'editor' ) );
 check( '... a user without a valid address: no_email', 'no_email' === code( send( array( 'to' => 'user:3' ) ) ) && array() === mails() );
-check( 'the invalid tries spent no slot of the limit', ! get_transient( 'd5b_rate_' . md5( 'email_test' ) ) || 0 === (int) ( get_transient( 'd5b_rate_' . md5( 'email_test' ) )['count'] ?? 0 ) );
+check( 'the invalid tries spent no slot of the limit', 0 === rate_count() );
 
 // M12: a site name can never add a header line: an entity-encoded CR/LF stays text (WordPress's own decode), raw CR/LF/NUL go.
 foreach ( array( "Shop&#13;&#10;Bcc: spy@evil.example", "Shop\r\nBcc: spy@evil.example", "Shop\nBcc: spy@evil.example\0", 'Shop&#x0d;&#x0a;Bcc: spy@evil.example' ) as $i => $bn ) {
@@ -141,7 +143,7 @@ $r = send( array( 'to' => 'admin' ) );
 check( 'failed: sent false, mailer_error the wp_mail_failed message (not a WP_Error)', array( 'sent' => false, 'mailer_error' => 'SMTP Error: Could not authenticate.' ) === $r, $r );
 check( '... the row says the same', array( 'to_kind' => 'admin', 'sent' => false, 'mailer_error' => 'SMTP Error: Could not authenticate.' ) === hlast()['after'], hlast() );
 check( '... the listener is removed afterwards', array() === ( $GLOBALS['T_actions']['wp_mail_failed'] ?? array() ) );
-check( '... the attempt counted against the limit', 1 === (int) ( get_transient( 'd5b_rate_' . md5( 'email_test' ) )['count'] ?? 0 ) );
+check( '... the attempt counted against the limit', 1 === rate_count() );
 $GLOBALS['T_mail_fail'] = false;
 $r = send( array( 'to' => 'admin' ) );
 check( 'a later good send does not repeat the old error', array( 'sent' => true, 'mailer_error' => null ) === $r, $r );

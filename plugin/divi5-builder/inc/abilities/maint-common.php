@@ -504,7 +504,7 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 	 * files are removed instead of kept (kept null) and a warning says so. A live folder that is or holds a link is refused
 	 * (linked) whatever the options.
 	 * The copy must still match the file list fingerprinted in its row (kept.manifest_sha1), else copy_tampered. The whole
-	 * restore holds the item's lock (d5b_maint_item_lock, 600 s, read fresh): a second update or rollback of the same folder
+	 * restore holds the item's lock (d5b_maint_item_lock, 600 s, an options-table row): a second update or rollback of the same folder
 	 * meanwhile is busy and touches nothing. The rollback row is written before the renames with the two folder names
 	 * (aside, staging), so a request that dies between them leaves a row that says where the files are.
 	 * Errors: invalid_input, not_found (no such row, no copy recorded), copy_missing, copy_tampered, busy, linked,
@@ -689,7 +689,7 @@ if ( ! function_exists( 'd5b_maint_update_sequence' ) ) {
 	function d5b_maint_update_sequence( string $kind, string $item, string $dir, array $opts ) {
 		if ( 'plugin' !== $kind && 'theme' !== $kind ) { return new WP_Error( 'invalid_input', 'kind must be plugin or theme.' ); }
 		if ( ! function_exists( 'wpsu_update' ) ) { return new WP_Error( 'unavailable', 'The update code is not loaded on this site, so nothing was updated.' ); }
-		// The item's lock (600 s, read fresh) for the whole update: a rollback or another update of the same folder meanwhile is
+		// The item's lock (600 s, an options-table row) for the whole update: a rollback or another update of the same folder meanwhile is
 		// busy. The automatic restore below runs under the same lock (a nested take).
 		$lock  = d5b_maint_item_lock( $kind, $dir );
 		$token = d5b_maint_lock_take( $lock, d5b_maint_item_lock_ttl(), 'An update or rollback of this ' . $kind, true ); // network-wide on a network
@@ -822,21 +822,38 @@ if ( ! function_exists( 'd5b_human_check' ) ) {
 
 if ( ! function_exists( 'd5b_maint_rate' ) ) {
 	/**
-	 * A fixed-window rate limit kept in a transient: true when this attempt is allowed (and counts it), false when $limit
-	 * attempts were already allowed in the current $window_s seconds. A refused attempt is not counted.
+	 * A fixed-window rate limit: true when this attempt is allowed (and counts it), false when $limit attempts were already
+	 * allowed in the current window. Windows are $window_s seconds long and start at multiples of it. Each key and window is
+	 * one option row, d5b_rate_<key>_<window start> (not autoloaded), added with one INSERT IGNORE that never resets a count;
+	 * the attempt is then ONE conditional UPDATE (+1 only while the count is under the limit), and it is allowed only when
+	 * that UPDATE changed the row, so two requests in the same instant can never both take the last slot. A refused attempt is
+	 * not counted. The call that opens a window removes this key's rows of windows before the previous one.
 	 */
 	function d5b_maint_rate( string $key, int $limit, int $window_s ): bool {
-		$name = 'd5b_rate_' . md5( $key );
-		$now  = d5b_maint_now();
-		$w    = max( 1, $window_s );
-		$v    = get_transient( $name );
-		if ( ! is_array( $v ) || ! isset( $v['start'], $v['count'] ) || $now - (float) $v['start'] >= $w || $now < (float) $v['start'] ) {
-			$v = array( 'start' => $now, 'count' => 0 );
+		global $wpdb;
+		if ( $limit < 1 ) { return false; }
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return false; } // no database: fail closed
+		$w     = max( 1, $window_s );
+		$start = (int) ( floor( d5b_maint_now() / $w ) * $w );
+		$base  = 'd5b_rate_' . $key . '_';
+		if ( strlen( $base ) > 160 || 1 !== preg_match( '/^[A-Za-z0-9_-]+$/', $key ) ) { $base = 'd5b_rate_' . md5( $key ) . '_'; } // option_name holds 191
+		$name  = $base . $start;
+		$table = $wpdb->options;
+		if ( d5b_options_insert_once( $table, $name, '0' ) ) {
+			// A new window: this key's rows of windows before the previous one go (the name's tail must be all digits, so a
+			// longer key that starts the same, reset_user_77 next to reset_user_7, is never matched).
+			$old = $wpdb->get_col( $wpdb->prepare( "SELECT option_name FROM `{$table}` WHERE option_name LIKE %s", $wpdb->esc_like( $base ) . '%' ) );
+			foreach ( (array) $old as $o ) {
+				$tail = substr( (string) $o, strlen( $base ) );
+				if ( '' !== $tail && ctype_digit( $tail ) && (int) $tail < $start - $w ) {
+					$wpdb->query( $wpdb->prepare( "DELETE FROM `{$table}` WHERE option_name = %s", (string) $o ) );
+					if ( function_exists( 'wp_cache_delete' ) ) { wp_cache_delete( (string) $o, 'options' ); }
+				}
+			}
 		}
-		if ( (int) $v['count'] >= $limit ) { return false; }
-		$v['count'] = (int) $v['count'] + 1;
-		set_transient( $name, $v, (int) max( 1, ceil( $w - ( $now - (float) $v['start'] ) ) ) );
-		return true;
+		$n = $wpdb->query( $wpdb->prepare( "UPDATE `{$table}` SET option_value = option_value + 1 WHERE option_name = %s AND CAST(option_value AS UNSIGNED) < %d", $name, $limit ) );
+		if ( function_exists( 'wp_cache_delete' ) ) { wp_cache_delete( $name, 'options' ); }
+		return 1 === $n;
 	}
 }
 
@@ -854,64 +871,75 @@ if ( ! function_exists( 'd5b_maint_ok' ) ) {
 
 if ( ! function_exists( 'd5b_maint_lock_fresh' ) ) {
 	/**
-	 * A lock transient read past this request's caches, as d5b_wsite_cron_lock_fresh reads doing_cron (wp-cron.php's
-	 * _get_cron_lock): with a persistent object cache the shared copy read with force, else the option row itself. '' when
-	 * there is none. $network (a multisite network): a site transient, read from the network's sitemeta row (or the
-	 * site-transient cache group), shared by every site of the network.
+	 * The options table that holds the lock: this site's, or with $network on a multisite network the MAIN site's
+	 * ($wpdb->base_prefix . 'options'), one row for the whole network (the plugins and themes folders are shared by every site).
 	 */
+	function d5b_maint_lock_table( bool $network ): string {
+		global $wpdb;
+		return ( $network && is_multisite() ) ? $wpdb->base_prefix . 'options' : (string) $wpdb->options;
+	}
+
+	/** The lock row's value as the database holds it now (never a cached copy); '' when there is none. */
 	function d5b_maint_lock_fresh( string $name, bool $network = false ): string {
 		global $wpdb;
-		$network = $network && is_multisite();
-		if ( function_exists( 'wp_using_ext_object_cache' ) && wp_using_ext_object_cache() ) {
-			$v = function_exists( 'wp_cache_get' ) ? wp_cache_get( $name, $network ? 'site-transient' : 'transient', true ) : false;
-			return is_string( $v ) ? $v : '';
-		}
 		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return ''; }
-		if ( $network ) {
-			$net = function_exists( 'get_current_network_id' ) ? (int) get_current_network_id() : 1;
-			$row = $wpdb->get_row( $wpdb->prepare( "SELECT meta_value FROM {$wpdb->sitemeta} WHERE meta_key = %s AND site_id = %d LIMIT 1", '_site_transient_' . $name, $net ) );
-			return is_object( $row ) ? (string) $row->meta_value : '';
-		}
-		$row = $wpdb->get_row( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1", '_transient_' . $name ) );
-		return is_object( $row ) ? (string) $row->option_value : '';
+		$table = d5b_maint_lock_table( $network );
+		$v = $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM `{$table}` WHERE option_name = %s LIMIT 1", $name ) );
+		return null === $v ? '' : (string) $v;
 	}
 
 	/**
-	 * Takes the lock $name for $ttl seconds. Read fresh before it is taken (a lock of another request that has not run out
-	 * is busy, 409) and again right after (it must read back as ours, else busy). The write and its read-back are not one
-	 * atomic step: two requests in the same few milliseconds could still both pass, so this narrows the window to that, as
-	 * wp-cron.php's own lock does. The value is "<expires at>|<random>"; a lock past its time (a request that died) is taken
-	 * over. A lock this request already holds is taken again at once (a nested call: an update that puts its copy back holds
-	 * that item's lock). Released with d5b_maint_lock_release, in finally. $what names the work in the busy message.
-	 * $network: a site transient on a multisite network (the plugins and themes folders are shared by every site).
-	 * @return string|WP_Error the token, or busy
+	 * Takes the lock $name for $ttl seconds. The mutex is the options table's UNIQUE option_name index: the lock is a row
+	 * (not autoloaded) added with one INSERT IGNORE, so of two requests in the same instant exactly one adds it; the other is
+	 * busy (409). The value is "<random token>|<expires at>". A row whose time has passed (a request that died) is taken over
+	 * with one conditional UPDATE ... WHERE option_value = <the stale value read>, so of two requests taking over the same
+	 * stale lock exactly one changes the row. A lock this request already holds is taken again at once (a nested call: an
+	 * update that puts its copy back holds that item's lock). Released with d5b_maint_lock_release, in finally. $what names
+	 * the work in the busy message. $network: the main site's table on a multisite network (d5b_maint_lock_table).
+	 * @return string|WP_Error the value written (the caller's token for the release), or busy
 	 */
 	function d5b_maint_lock_take( string $name, int $ttl, string $what, bool $network = false ) {
-		$network = $network && is_multisite();
-		$key  = ( $network ? 'net:' : '' ) . $name;
-		$mine = $GLOBALS['d5b_maint_locks'][ $key ] ?? null;
-		if ( is_array( $mine ) ) { $GLOBALS['d5b_maint_locks'][ $key ][1]++; return (string) $mine[0]; }
+		global $wpdb;
 		$busy = new WP_Error( 'busy', $what . ' is already running in another request. Wait until it has finished (at most ' . $ttl . ' seconds), read the change history, then decide whether to try again.', array( 'status' => 409 ) );
-		$now  = (int) floor( d5b_maint_now() );
-		$held = d5b_maint_lock_fresh( $name, $network );
-		if ( '' !== $held && (int) strtok( $held, '|' ) > $now ) { return $busy; }
-		$token = ( $now + $ttl ) . '|' . bin2hex( random_bytes( 8 ) );
-		if ( $network ) { set_site_transient( $name, $token, $ttl ); } else { set_transient( $name, $token, $ttl ); }
-		if ( d5b_maint_lock_fresh( $name, $network ) !== $token ) { return $busy; }
-		$GLOBALS['d5b_maint_locks'][ $key ] = array( $token, 1 );
-		return $token;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return $busy; } // no database: fail closed
+		$table = d5b_maint_lock_table( $network );
+		$key   = $table . ':' . $name;
+		$mine  = $GLOBALS['d5b_maint_locks'][ $key ] ?? null;
+		if ( is_array( $mine ) ) { $GLOBALS['d5b_maint_locks'][ $key ][1]++; return (string) $mine[0]; }
+		$now   = (int) floor( d5b_maint_now() );
+		$value = bin2hex( random_bytes( 8 ) ) . '|' . ( $now + $ttl );
+		$won   = d5b_options_insert_once( $table, $name, $value );
+		if ( ! $won ) {
+			$held = d5b_maint_lock_fresh( $name, $network );
+			if ( '' === $held ) {
+				// released between the INSERT and the read: one more INSERT, which again only one request can win
+				$won = d5b_options_insert_once( $table, $name, $value );
+			} elseif ( (int) substr( (string) strrchr( $held, '|' ), 1 ) <= $now ) {
+				$n   = $wpdb->query( $wpdb->prepare( "UPDATE `{$table}` SET option_value = %s WHERE option_name = %s AND option_value = %s", $value, $name, $held ) );
+				$won = 1 === $n;
+				if ( function_exists( 'wp_cache_delete' ) ) { wp_cache_delete( $name, 'options' ); }
+			}
+		}
+		if ( ! $won ) { return $busy; }
+		$GLOBALS['d5b_maint_locks'][ $key ] = array( $value, 1 );
+		return $value;
 	}
 
-	/** Releases the lock $name when it is still $token (read fresh); a nested take only counts down. @return bool released */
+	/**
+	 * Releases the lock $name when its row still holds $token (one conditional DELETE: a lock another request has taken over
+	 * meanwhile is left alone); a nested take only counts down. @return bool released
+	 */
 	function d5b_maint_lock_release( string $name, string $token, bool $network = false ): bool {
-		$network = $network && is_multisite();
-		$key  = ( $network ? 'net:' : '' ) . $name;
-		$mine = $GLOBALS['d5b_maint_locks'][ $key ] ?? null;
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return false; }
+		$table = d5b_maint_lock_table( $network );
+		$key   = $table . ':' . $name;
+		$mine  = $GLOBALS['d5b_maint_locks'][ $key ] ?? null;
 		if ( is_array( $mine ) && $token === $mine[0] && $mine[1] > 1 ) { $GLOBALS['d5b_maint_locks'][ $key ][1]--; return true; }
-		unset( $GLOBALS['d5b_maint_locks'][ $key ] );
-		if ( d5b_maint_lock_fresh( $name, $network ) !== $token ) { return false; }
-		if ( $network ) { delete_site_transient( $name ); } else { delete_transient( $name ); }
-		return true;
+		if ( is_array( $mine ) && $token === $mine[0] ) { unset( $GLOBALS['d5b_maint_locks'][ $key ] ); }
+		$n = $wpdb->query( $wpdb->prepare( "DELETE FROM `{$table}` WHERE option_name = %s AND option_value = %s", $name, $token ) );
+		if ( function_exists( 'wp_cache_delete' ) ) { wp_cache_delete( $name, 'options' ); }
+		return 1 === $n;
 	}
 
 	/** How long an item's lock holds (seconds): 600, the ceiling the update engine gives itself (set_time_limit), so a slow update is never taken over. */

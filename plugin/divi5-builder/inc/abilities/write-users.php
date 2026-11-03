@@ -212,7 +212,7 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 	}
 
 	/**
-	 * The administrators lock (30 s, read fresh, d5b_maint_lock_take): a role change and a delete that can change how many
+	 * The administrators lock (30 s, an options-table row, d5b_maint_lock_take): a role change and a delete that can change how many
 	 * administrators the site has never run at the same time, so two of them cannot both pass the last-administrator count.
 	 * @return string|WP_Error the token, or busy
 	 */

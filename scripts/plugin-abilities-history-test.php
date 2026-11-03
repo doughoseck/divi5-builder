@@ -115,7 +115,7 @@ echo "fix wave M11: on a single site the consent step runs once too\n";
 // admin switches it on again; the second request, which read '3' before the first finished, must not turn it off again.
 fresh(); update_option( 'd5b_db_version', '3' ); $wpdb->tables['wp_d5b_audit'] = array(); d5b_abilities_set_master( true, 'ann' );
 d5b_audit_maybe_install();
-$first = false === d5b_abilities_master_on() && 3 === $notice() && 1 === get_option( 'd5b_abilities_consent_240', null ) && in_array( $GLOBALS['T_autoload']['d5b_abilities_consent_240'] ?? null, array( false, 'no', 'off' ), true );
+$first = false === d5b_abilities_master_on() && 3 === $notice() && 1 === (int) get_option( 'd5b_abilities_consent_240', null ) && in_array( $GLOBALS['T_autoload']['d5b_abilities_consent_240'] ?? null, array( false, 'no', 'off' ), true );
 d5b_abilities_set_master( true, 'ann' );
 d5b_abilities_upgrade_consent( '3', '4' ); // the second request's step, with the version it read
 check( 'M11 single site: the first step records d5b_abilities_consent_240 (not autoloaded); the second leaves the master the admin switched on again', $first && true === d5b_abilities_master_on() && 'ann' === d5b_abilities_switches()['master']['changed_by'], array( $first, d5b_abilities_switches()['master'], $GLOBALS['T_autoload']['d5b_abilities_consent_240'] ?? null ) );
@@ -123,6 +123,25 @@ fresh(); update_option( 'd5b_db_version', '2' ); $wpdb->tables['wp_d5b_audit'] =
 update_option( 'd5b_abilities_consent_240', 1, false );
 d5b_audit_maybe_install();
 check( 'M11 ... a site whose 2.4.0 step already ran (the once option set) is not switched off again', true === d5b_abilities_master_on() && '4' === get_option( 'd5b_db_version' ) );
+
+echo "2.4.1: the once option is a mutex (an INSERT into the options table's unique index), not a read then a write\n";
+// Two first requests in the same instant: both read the old version and get past every read; the other request's INSERT
+// lands first, it turns the master off, and the admin switches it on again before this request's INSERT runs.
+fresh(); update_option( 'd5b_db_version', '3' ); d5b_abilities_set_master( true, 'ann' );
+$GLOBALS['T_db_before']["/^INSERT IGNORE INTO `wp_options` .*'d5b_abilities_consent_240'/"] = function () { d5b_abilities_upgrade_consent( '3', '4' ); d5b_abilities_set_master( true, 'ann' ); };
+d5b_abilities_upgrade_consent( '3', '4' );
+check( 'single site: two first requests, one step (the other request\'s); the master the admin switched on again stays on', true === d5b_abilities_master_on() && 'ann' === d5b_abilities_switches()['master']['changed_by'] && 3 === $notice() && 1 === (int) get_option( 'd5b_abilities_consent_240' ) && array() === $GLOBALS['T_db_before'], d5b_abilities_switches()['master'] );
+check( '... the once option is taken with INSERT IGNORE (not add_option: its INSERT ... ON DUPLICATE KEY UPDATE overwrites a racing row)', (bool) preg_grep( "/^INSERT IGNORE INTO `wp_options` \\(`option_name`, `option_value`, `autoload`\\) VALUES \\('d5b_abilities_consent_240', '1', 'no'\\)$/", $wpdb->queries ) && ! in_array( array( 'update_option', 'd5b_abilities_consent_240' ), $GLOBALS['T_writes'], true ) && ! in_array( array( 'add_option', 'd5b_abilities_consent_240' ), $GLOBALS['T_writes'], true ), $wpdb->queries );
+// The same on a network: the step's mutex is a row of the MAIN site's options table (sitemeta has no unique key, so
+// add_site_option is a read then a plain INSERT and two sites can both pass it); the network option is still recorded.
+fresh(); t_set_multisite( true ); switch_to_blog( 3 ); d5b_abilities_set_master( true, 'netadmin' );
+$GLOBALS['T_db_before']["/^INSERT IGNORE INTO `wp_options` .*'d5b_abilities_consent_240'/"] = function () { switch_to_blog( 2 ); d5b_abilities_upgrade_consent( '3', '4' ); restore_current_blog(); d5b_abilities_set_master( true, 'netadmin' ); delete_site_option( 'd5b_abilities_upgrade_notice' ); };
+d5b_abilities_upgrade_consent( '3', '4' ); restore_current_blog();
+check( 'network: two sites\' first requests in the same instant, one step; the master switched on again stays on, no second notice', true === d5b_abilities_master_on() && 'netadmin' === d5b_abilities_switches()['master']['changed_by'] && null === get_site_option( 'd5b_abilities_upgrade_notice', null ) && '1' === ( $GLOBALS['T_options']['d5b_abilities_consent_240'] ?? null ) && 1 === (int) get_site_option( 'd5b_abilities_consent_240' ) && ! isset( $GLOBALS['T_blogs'][2]['d5b_abilities_consent_240'] ) && ! isset( $GLOBALS['T_blogs'][3]['d5b_abilities_consent_240'] ), array( d5b_abilities_switches()['master'], $GLOBALS['T_options']['d5b_abilities_consent_240'] ?? null ) );
+fresh(); t_set_multisite( true ); d5b_abilities_set_master( true, 'netadmin' ); update_site_option( 'd5b_abilities_consent_240', 1 );
+d5b_abilities_upgrade_consent( '3', '4' );
+check( 'network: a step recorded the old way (the network option of 2.4.0) is still honoured', true === d5b_abilities_master_on() );
+t_set_multisite( false );
 
 echo "write\n";
 installed();
