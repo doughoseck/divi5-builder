@@ -221,6 +221,15 @@ site();
 check( 'an email change of another user does not block this one', is_array( call( 'users-update', array( 'id' => 3, 'email' => 'ed2@example.org' ) ) ) && array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 4 ) ) );
 site(); call( 'users-update', array( 'id' => 4, 'email' => 'sub.h@example.org' ) ); $GLOBALS['wpdb']->tables = array_diff_key( $GLOBALS['wpdb']->tables, array( d5b_history_table() => 1 ) );
 check( 'no history dependency: with the history table gone the marker still blocks (4) and its absence lets through (3)', 'recently_changed' === code( d5b_wu_reset( array( 'id' => 4 ) ) ) && true === ( d5b_wu_reset( array( 'id' => 3 ) )['sent'] ?? null ) && 1 === count( calls( 'retrieve_password' ) ) );
+// 2.4.1: a marker that is not a number (written by something else, or broken) counts as recent: fail closed.
+$bad = array();
+foreach ( array( 'garbage', '', '17e8', '1700000000 ', '-5', 'x1700000000' ) as $v ) {
+	site(); update_user_meta( 4, '_d5b_identity_changed_at', $v );
+	if ( 'recently_changed' !== code( call( 'users-password-reset', array( 'id' => 4 ) ) ) || array() !== calls( 'retrieve_password' ) ) { $bad[] = $v; }
+}
+check( '2.4.1 a non-numeric marker counts as a recent change (recently_changed, nothing sent)', array() === $bad, $bad );
+site(); update_user_meta( 4, '_d5b_identity_changed_at', (string) ( (int) $GLOBALS['T_clock'] - 90000 ) );
+check( '... a numeric marker older than 24 hours still lets the reset through', array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 4 ) ) );
 check( 'update: nothing to change -> invalid_input', 'invalid_input' === code( call( 'users-update', array( 'id' => 3 ) ) ) );
 check( 'update: an unknown user -> not_found', 'not_found' === code( call( 'users-update', array( 'id' => 777, 'display_name' => 'x' ) ) ) );
 
@@ -271,19 +280,20 @@ check( 'reset: { sent: true } only: no key, no link', array( 'sent' => true ) ==
 check( '... retrieve_password with the login, it found user 3; the link went to their address', array( array( 'retrieve_password', 'ed', 3 ) ) === calls( 'retrieve_password' ) && array( array( 'ed@example.org', 'password_reset_link' ) ) === $GLOBALS['T_user_mails'] );
 check( '... one row: password_reset with after { sent: true }', 'password_reset' === hlast()['action'] && array( 'sent' => true ) === hlast()['after'] && 3 === (int) hlast()['object_id'] );
 check( 'reset: the same user again within 10 minutes -> too_soon, nothing sent', 'too_soon' === code( call( 'users-password-reset', array( 'id' => 3 ) ) ) && 1 === count( calls( 'retrieve_password' ) ) );
-$GLOBALS['T_clock'] += 599;
-check( '... at 9:59 still too_soon', 'too_soon' === code( call( 'users-password-reset', array( 'id' => 3 ) ) ) );
-$GLOBALS['T_clock'] += 2;
-check( '... after 10 minutes: sent', array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 3 ) ) );
+// 2.4.1: fixed windows that start at multiples of their length (the 10-minute window of 1700000000 is 1699999800 to 1700000400).
+$GLOBALS['T_clock'] = 1700000399.0;
+check( '... at the end of the 10-minute window still too_soon', 'too_soon' === code( call( 'users-password-reset', array( 'id' => 3 ) ) ) );
+$GLOBALS['T_clock'] = 1700000400.0;
+check( '... in the next 10-minute window: sent', array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 3 ) ) );
 site();
 for ( $i = 20; $i < 41; $i++ ) { t_add_user( $i, 'u' . $i, array( 'subscriber' ) ); }
 $sent = 0; for ( $i = 20; $i < 40; $i++ ) { if ( array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => $i ) ) ) { $sent++; } }
 check( 'reset: 20 different users in an hour: all sent', 20 === $sent, $sent );
 check( '... the 21st -> too_soon (20 per site per hour)', 'too_soon' === code( call( 'users-password-reset', array( 'id' => 40 ) ) ) && 20 === count( calls( 'retrieve_password' ) ) );
-$GLOBALS['T_clock'] += 3599;
-check( '... still too_soon just before the hour is over', 'too_soon' === code( call( 'users-password-reset', array( 'id' => 40 ) ) ) );
-$GLOBALS['T_clock'] += 2;
-check( '... an hour later: sent again (the site-wide refusals two seconds ago did not spend user 40\'s 10-minute slot)', array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 40 ) ) );
+$GLOBALS['T_clock'] = 1700002799.0; // the hour's window of 1700000000 is 1699999200 to 1700002800
+check( '... still too_soon just before the hour\'s window is over', 'too_soon' === code( call( 'users-password-reset', array( 'id' => 40 ) ) ) );
+$GLOBALS['T_clock'] = 1700002800.0;
+check( '... in the next hour\'s window: sent again (the site-wide refusals a second ago did not spend user 40\'s 10-minute slot)', array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 40 ) ) );
 site(); t_add_user( 30, 'mail@x.org', array( 'subscriber' ), array( 'user_email' => 'real30@example.org' ) ); t_add_user( 31, 'other', array( 'subscriber' ), array( 'user_email' => 'mail@x.org' ) );
 check( 'reset: a login holding @ (core would look it up as an email first, finding user 31): the user\'s own email is passed, user 30 gets it', array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 30 ) ) && 30 === calls( 'retrieve_password' )[0][2] && array( array( 'real30@example.org', 'password_reset_link' ) ) === $GLOBALS['T_user_mails'] );
 site(); $GLOBALS['T_user_fail']['retrieve_password'] = new WP_Error( 'retrieve_password_email_failure', 'The email could not be sent.' );
@@ -379,19 +389,29 @@ $r = call( 'users-update', array( 'id' => 2, 'role' => 'editor' ) );
 $GLOBALS['T_after_count'] = null;
 check( 'M4 a delete while a role change holds the lock: busy, nothing deleted; the role change went through', 'busy' === code( $other ) && false !== get_userdata( 1 ) && is_array( $r ) && array( 'editor' ) === get_userdata( 2 )->roles && array() === calls( 'wp_delete_user' ), array( code( $other ), code( $r ) ) );
 site();
-set_transient( 'd5b_users_admin_lock', ( (int) $GLOBALS['T_clock'] + 20 ) . '|' . str_repeat( 'f', 16 ), 30 );
+$GLOBALS['T_options']['d5b_users_admin_lock'] = str_repeat( 'f', 16 ) . '|' . ( (int) $GLOBALS['T_clock'] + 20 ); // another request's row
 check( 'M4 the lock held by another request: a role change and a delete are busy; a change without a role is not held up', 'busy' === code( call( 'users-update', array( 'id' => 3, 'role' => 'author' ) ) ) && 'busy' === code( call( 'users-delete', array( 'id' => 3, 'reassign_to' => 1, 'confirmation' => 'x' ) ) ) && is_array( call( 'users-update', array( 'id' => 3, 'display_name' => 'Ed' ) ) ) && array( 'editor' ) === get_userdata( 3 )->roles );
 $GLOBALS['T_clock'] += 21;
-// F2: on a network the administrators lock stays per site (each site counts its own administrators): a site transient.
-site( NET_ADMIN, true );
+// F2: on a network the administrators lock stays per site (each site counts its own administrators): this site's options table.
+site( NET_ADMIN, true ); switch_to_blog( 2 );
 $token = d5b_wu_admin_lock();
-check( 'F2 network: the administrators lock is this site\'s transient (not a network one)', is_string( $token ) && $token === ( $GLOBALS['T_transients']['d5b_users_admin_lock'][0] ?? null ) && $token === d5b_maint_lock_fresh( 'd5b_users_admin_lock' ), $token );
-d5b_maint_lock_release( 'd5b_users_admin_lock', $token );
+check( 'F2 network: the administrators lock is a row of this site\'s options table (wp_2_options), not the main site\'s', is_string( $token ) && $token === ( $GLOBALS['T_blogs'][2]['d5b_users_admin_lock'] ?? null ) && ! isset( $GLOBALS['T_options']['d5b_users_admin_lock'] ) && $token === d5b_maint_lock_fresh( 'd5b_users_admin_lock' ), $token );
+d5b_maint_lock_release( 'd5b_users_admin_lock', $token ); restore_current_blog();
 site();
-set_transient( 'd5b_users_admin_lock', ( (int) $GLOBALS['T_clock'] + 20 ) . '|' . str_repeat( 'f', 16 ), 30 );
+$GLOBALS['T_options']['d5b_users_admin_lock'] = str_repeat( 'f', 16 ) . '|' . ( (int) $GLOBALS['T_clock'] + 20 );
 $GLOBALS['T_clock'] += 21;
 check( 'M4 ... past its 30 s it is taken over', is_array( call( 'users-update', array( 'id' => 3, 'role' => 'author' ) ) ) && array( 'author' ) === get_userdata( 3 )->roles );
 check( 'meta-set: a value that is an object -> invalid_input', 'invalid_input' === code( d5b_wu_meta_set( array( 'id' => 4, 'key' => 'k1', 'value' => new ArrayObject( array() ) ) ) ) );
+// Fix round 1 S4: a vendor-shaped key in an ordinary user meta value (split literal: no whole key in the source).
+site();
+$ghk = 'gh' . 'p_' . str_repeat( 'A', 36 );
+update_user_meta( 3, 'deploy_note', 'ci uses x=' . $ghk . ' today' );
+$pv = call( 'users-delete-preview', array( 'id' => 3, 'reassign_to' => 4 ) );
+check( 'S4 users-delete-preview: a GitHub token in a user meta value is masked in the record, the field and the rest of its text shown', is_array( $pv ) && false === strpos( json_encode( $pv ), $ghk ) && array( 'ci uses x=[redacted] today' ) === ( $pv['user']['meta']['deploy_note'] ?? null ), $pv['user']['meta'] ?? $pv );
+$ms = call( 'users-meta-set', array( 'id' => 4, 'key' => 'deploy_note', 'value' => 'token ' . $ghk ) );
+d5b_abilities_set_category( 'history', true, false, 'tester' ); t_set_caps( array_merge( ADMIN, array( 'manage_options' ) ) ); // the history reads need manage_options
+$hg =is_array( $ms ) ? call( 'history-change-get', array( 'id' => (int) ( $ms['history_id'] ?? 0 ) ) ) : null;
+check( 'S4 users-meta-set with a GitHub token: the answer and the history read (history-change-get) mask it (the row keeps the value as given, for the undo)', is_array( $ms ) && false === strpos( json_encode( $ms ), $ghk ) && is_array( $hg ) && false === strpos( json_encode( $hg ), $ghk ) && false !== strpos( json_encode( $hg ), 'deploy_note' ), array( $ms, $hg ) );
 
 // ---- users-delete-preview / users-delete
 echo "users-delete\n";
@@ -409,9 +429,12 @@ check( 'delete: a code for another reassign_to -> confirmation_invalid', 'confir
 $pv = call( 'users-delete-preview', array( 'id' => 3, 'reassign_to' => 4 ) );
 t_add_post( array( 'post_author' => 3 ) ); // one more item since the preview
 check( 'delete: the item count changed since the preview -> confirmation_invalid', 'confirmation_invalid' === code( call( 'users-delete', array( 'id' => 3, 'reassign_to' => 4, 'confirmation' => $pv['confirmation'] ) ) ) && false !== get_userdata( 3 ) );
+update_user_meta( 3, '_wpseo_profile_flag', 'PROTECTED-VALUE' ); update_user_meta( 3, 'smtp_password', 'S3CR3T-PW' ); update_user_meta( 3, 'favourite_colour', 'teal' );
 $pv = call( 'users-delete-preview', array( 'id' => 3, 'reassign_to' => 4 ) );
 $ids = t_author_ids( 3 );
 $r = call( 'users-delete', array( 'id' => 3, 'reassign_to' => 4, 'confirmation' => $pv['confirmation'] ) );
+$hw = d5b_history_get( (int) ( $r['history_id'] ?? 0 ) );
+check( '2.4.1 delete: the row names the protected and secret-named meta keys it could not keep (names only, sorted), never their values', is_array( $hw ) && array( '_wpseo_profile_flag', 'session_tokens', 'smtp_password' ) === ( $hw['before']['withheld_meta_keys'] ?? null ) && false === strpos( json_encode( hrows() ), 'S3CR3T-PW' ) && false === strpos( json_encode( hrows() ), 'PROTECTED-VALUE' ) && array( 'teal' ) === ( $hw['before']['meta']['favourite_colour'] ?? null ), $hw['before'] ?? null );
 check( 'delete: done: wp_delete_user( 3, 4 ), the user gone, every item now by user 4', is_array( $r ) && true === $r['deleted'] && array( array( 'wp_delete_user', 3, 4 ) ) === calls( 'wp_delete_user' ) && false === get_userdata( 3 ) && array() === t_author_ids( 3 ) && 4 === count( $ids ) && 4 === $r['posts_reassigned'] && 4 === $r['reassigned_to'], $r );
 $h = hlast();
 check( '... one row, written before: before = the record + reassigned_post_ids (read before the delete), after { reassigned_to, posts }', 1 === count( hrows() ) && 'delete' === $h['action'] && 'ed' === $h['before']['login'] && $ids === $h['before']['reassigned_post_ids'] && array( 'posts' => 4, 'reassigned_to' => 4 ) === ( function ( $a ) { ksort( $a ); return $a; } )( $h['after'] ) && (int) $r['history_id'] === (int) $h['id'], $h );

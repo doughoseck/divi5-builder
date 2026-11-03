@@ -44,13 +44,16 @@ define( 'WP_UNINSTALL_PLUGIN', 'divi5-builder/divi5-builder.php' );
 echo "single site\n";
 t_reset(); t_set_multisite( false );
 $GLOBALS['T_options'] = array( 'd5b_switches' => array( 'updates' => array( 'on' => true ) ), 'd5b_takeover' => array( 'deactivated' => array() ),
-	'd5b_legacy_seen' => array( 'updates' ), 'd5b_db_version' => '1', 'active_plugins' => array( 'akismet/akismet.php' ), 'd5b_other' => 'kept' );
+	'd5b_legacy_seen' => array( 'updates' ), 'd5b_db_version' => '1', 'active_plugins' => array( 'akismet/akismet.php' ), 'd5b_other' => 'kept',
+	// 2.4.1: the rate-limit and lock rows (they used to be transients that ran out by themselves)
+	'd5b_rate_email_test_1699999200' => '2', 'd5b_rate_reset_user_7_1699999800' => '1', 'd5b_maint_lock_plugin_' . md5( 'akismet' ) => 'aa|1', 'd5b_users_admin_lock' => 'bb|2' );
 $GLOBALS['wpdb']->tables = array( 'wp_d5b_audit' => array( array( 'id' => 1 ) ), 'wp_d5b_history' => array( array( 'id' => 1 ) ), 'wp_posts' => array( 'row' ) );
 $GLOBALS['T_cron']['d5b_audit_prune'] = 123;
 uninstall();
 check( 'uninstall drops table and option: the audit table is dropped, other tables stay, the daily event is cleared', array( 'wp_posts' ) === array_keys( $GLOBALS['wpdb']->tables ) && ! isset( $GLOBALS['T_cron']['d5b_audit_prune'] ) && ! array_key_exists( 'd5b_db_version', $GLOBALS['T_options'] ), array_keys( $GLOBALS['wpdb']->tables ) );
 check( 'uninstall drops the history table on a single site (and only that one)', ! isset( $GLOBALS['wpdb']->tables['wp_d5b_history'] ) && isset( $GLOBALS['wpdb']->tables['wp_posts'] ), array_keys( $GLOBALS['wpdb']->tables ) );
 check( 'all four options are deleted (d5b_db_version too)', array() === array_intersect( $OURS, array_keys( $GLOBALS['T_options'] ) ), array_keys( $GLOBALS['T_options'] ) );
+check( '2.4.1: the rate-limit rows (d5b_rate_*), the lock rows (d5b_maint_lock_*) and the administrators lock are deleted', array() === preg_grep( '/^d5b_(rate_|maint_lock_|users_admin_lock)/', array_keys( $GLOBALS['T_options'] ) ), array_keys( $GLOBALS['T_options'] ) );
 check( 'nothing else is touched', array( 'active_plugins', 'd5b_other' ) === array_keys( $GLOBALS['T_options'] ) && array() === array_filter( $GLOBALS['T_writes'], function ( $w ) { return 'delete_option' !== $w[0]; } ), $GLOBALS['T_writes'] );
 check( 'no other site is read on a single site', array() === $GLOBALS['T_get_sites'] );
 check( 'the d5b_audit_install_failed transient is deleted', in_array( array( 'd5b_audit_install_failed', 1 ), $GLOBALS['T_transient_deletes'], true ), $GLOBALS['T_transient_deletes'] );
@@ -67,7 +70,12 @@ $GLOBALS['T_blogs'][7]['d5b_db_version'] = '1';
 $GLOBALS['wpdb']->tables = array( 'wp_posts' => array( 'row' ) );
 for ( $i = 1; $i <= 250; $i++ ) { $GLOBALS['wpdb']->tables[ $GLOBALS['wpdb']->get_blog_prefix( $i ) . 'd5b_audit' ] = array( array( 'id' => $i ) ); $GLOBALS['wpdb']->tables[ $GLOBALS['wpdb']->get_blog_prefix( $i ) . 'd5b_history' ] = array( array( 'id' => $i ) ); $GLOBALS['wpdb']->tables[ $GLOBALS['wpdb']->get_blog_prefix( $i ) . 'posts' ] = array( 'row' ); }
 $GLOBALS['T_blogs'][7]['d5b_switches'] = array( 'updates' => array( 'on' => true ) ); // left from before the site joined a network
+$GLOBALS['T_blogs'][12]['d5b_rate_reset_site_1699999200'] = '20'; $GLOBALS['T_blogs'][250]['d5b_users_admin_lock'] = 'cc|3';
+$GLOBALS['T_options']['d5b_maint_lock_theme_' . md5( 'divi' )] = 'dd|4'; // a network-wide item lock: the main site's table
+$GLOBALS['T_options']['d5b_abilities_consent_240_n1'] = '1'; $GLOBALS['T_options']['d5b_abilities_consent_240_n2'] = '1'; // fix round 1 S3: per-network rows
 uninstall();
+check( 'S3 the per-network consent rows (d5b_abilities_consent_<n>_n<network>) in the main site\'s table are deleted', array() === preg_grep( '/^d5b_abilities_consent_/', array_keys( $GLOBALS['T_options'] ) ), array_keys( $GLOBALS['T_options'] ) );
+check( '2.4.1: the rate-limit and lock rows are deleted on every site and in the main site\'s table (network locks)', ! isset( $GLOBALS['T_blogs'][12]['d5b_rate_reset_site_1699999200'] ) && ! isset( $GLOBALS['T_blogs'][250]['d5b_users_admin_lock'] ) && array() === preg_grep( '/^d5b_maint_lock_/', array_keys( $GLOBALS['T_options'] ) ) );
 check( 'network options deleted, others kept', array( 'active_sitewide_plugins' ) === array_keys( $GLOBALS['T_site_options'] ), array_keys( $GLOBALS['T_site_options'] ) );
 $left = array(); foreach ( $GLOBALS['T_blogs'] as $id => $o ) { foreach ( $OURS as $name ) { if ( array_key_exists( $name, $o ) ) { $left[] = "$id:$name"; } } }
 check( 'every one of the 250 sites lost all four options (more than one batch)', array() === $left, array_slice( $left, 0, 10 ) );

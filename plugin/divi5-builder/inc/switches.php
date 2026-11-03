@@ -226,7 +226,7 @@ if ( ! function_exists( 'd5b_abilities_upgrade_consent' ) ) {
 	 * network (d5b_abilities_consent_240), notice 3; a site that skips 2.2.0 and 2.3.0 gets this one step.
 	 * No arguments means the 2.2.0 step, as before. Any other move: nothing.
 	 */
-	function d5b_abilities_upgrade_consent( string $from = '1', string $to = '2' ): void {
+	function d5b_abilities_upgrade_consent( string $from = '1', string $to = '2' ): bool {
 		if ( '4' === $to && in_array( $from, array( '1', '2', '3' ), true ) ) {
 			$once = 'd5b_abilities_consent_240'; $notice = 3;
 			$why  = 'turned off by the update to 2.4.0, which adds abilities that manage users, plugins, themes, WordPress updates and email, and whose normal writes send a test email, send password reset links, update translations and refresh the update list';
@@ -237,22 +237,55 @@ if ( ! function_exists( 'd5b_abilities_upgrade_consent' ) ) {
 			$once = 'd5b_abilities_consent_220'; $notice = 1;
 			$why  = 'turned off by the update to 2.2.0, which adds abilities that create and change content';
 		} else {
-			return;
+			return true;
 		}
 		// On a network the switches are one network option but every site upgrades its own tables: the step runs once per
 		// network, so a master switched on again after the first site's update stays on. On a single site the same once
 		// option (not autoloaded): two first requests (admin_init and the abilities init) each see the old db version, and the
-		// second must not turn off a master the admin switched on again in between.
+		// second must not turn off a master the admin switched on again in between. The once option is taken with one INSERT
+		// into the options table's unique option_name index (d5b_options_insert_once), never a read then a write: only the
+		// request whose INSERT added the row runs the step. On a network that row is in the MAIN site's options table (the
+		// network's sitemeta has no unique key, so add_site_option cannot be a mutex); the network option is still written,
+		// and a network option written by 2.4.0 still counts as the step already run. The main site's table is shared by every
+		// network of a multi-network install, so the row carries the network id (<once>_n<network id>): each network runs its
+		// own step. (The item locks stay install-wide on purpose: the plugins and themes folders are one per install.)
+		// A database error on that INSERT fails closed: the master goes off (with the notice) and false is returned, so the
+		// caller does not record the new schema version and the next request runs the step. @return bool false: retry later
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) ) { return false; }
 		if ( is_multisite() ) {
-			if ( get_site_option( $once, 0 ) ) { return; }
-			update_site_option( $once, 1 );
+			if ( get_site_option( $once, 0 ) ) { return true; }
+			$net = function_exists( 'get_current_network_id' ) ? (int) get_current_network_id() : 1;
+			$got = d5b_options_insert_once( $wpdb->base_prefix . 'options', $once . '_n' . max( 1, $net ), '1' );
 		} else {
-			if ( get_option( $once, 0 ) ) { return; }
-			update_option( $once, 1, false );
+			$got = d5b_options_insert_once( $wpdb->options, $once, '1' );
 		}
-		if ( ! d5b_abilities_master_on() ) { return; }
-		d5b_abilities_set_master( false, '0', $why );
-		if ( is_multisite() ) { update_site_option( 'd5b_abilities_upgrade_notice', $notice ); } else { update_option( 'd5b_abilities_upgrade_notice', $notice, false ); }
+		if ( false === $got ) { return true; } // another request ran (or is running) the step
+		if ( true === $got && is_multisite() ) { update_site_option( $once, 1 ); }
+		if ( d5b_abilities_master_on() ) {
+			d5b_abilities_set_master( false, '0', $why );
+			if ( is_multisite() ) { update_site_option( 'd5b_abilities_upgrade_notice', $notice ); } else { update_option( 'd5b_abilities_upgrade_notice', $notice, false ); }
+		}
+		return true === $got;
+	}
+}
+
+if ( ! function_exists( 'd5b_options_insert_once' ) ) {
+	/**
+	 * Adds the row $name to the options table $table (not autoloaded) when no row of that name exists: one INSERT IGNORE, so
+	 * the table's UNIQUE option_name index decides between two requests in the same instant. True only for the request whose
+	 * INSERT added the row. Not add_option: core's add_option reads first and then runs INSERT ... ON DUPLICATE KEY UPDATE,
+	 * so a second request whose read missed the row overwrites it, and is told it added it whenever its value differs.
+	 * These rows are read with raw queries only, never with get_option; the object-cache entry is dropped anyway.
+	 * @return bool|null true: this request added the row; false: it was there; null: no database or the query failed
+	 */
+	function d5b_options_insert_once( string $table, string $name, string $value ): ?bool {
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || '' === $name || 1 !== preg_match( '/^\w+$/', $table ) ) { return null; }
+		$n = $wpdb->query( $wpdb->prepare( "INSERT IGNORE INTO `{$table}` (`option_name`, `option_value`, `autoload`) VALUES (%s, %s, %s)", $name, $value, 'no' ) );
+		if ( function_exists( 'wp_cache_delete' ) ) { wp_cache_delete( $name, 'options' ); }
+		if ( ! is_int( $n ) ) { return null; }
+		return 1 === $n;
 	}
 }
 

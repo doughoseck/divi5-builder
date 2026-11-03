@@ -123,6 +123,8 @@ function is_user_member_of_blog( $user_id = 0, $blog_id = 0 ) {
 	return $u > 0 && in_array( $b, $GLOBALS['T_user_blogs'][ $u ] ?? array(), true );
 }
 function get_current_blog_id() { return $GLOBALS['T_blog_id']; }
+// As core: the current network's id (1 on a single site and on the first network); T_network_id models another network.
+if ( ! function_exists( 'get_current_network_id' ) ) { function get_current_network_id() { return (int) ( $GLOBALS['T_network_id'] ?? 1 ); } }
 function get_main_site_id( $network_id = null ) { return $GLOBALS['T_main_site']; }
 function is_main_site( $site_id = null, $network_id = null ) { return ( null === $site_id ? $GLOBALS['T_blog_id'] : (int) $site_id ) === $GLOBALS['T_main_site']; }
 // fields => ids only, as the plugin asks for; number (WordPress defaults to 100) and offset honoured.
@@ -217,7 +219,7 @@ if ( ! defined( 'ARRAY_A' ) ) { define( 'ARRAY_A', 'ARRAY_A' ); }
 class T_Wpdb {
 	public $posts = 'wp_posts'; public $postmeta = 'wp_postmeta'; public $options = 'wp_options'; public $sitemeta = 'wp_sitemeta';
 	public $users = 'wp_users'; public $usermeta = 'wp_usermeta'; public $comments = 'wp_comments'; public $links = 'wp_links';
-	public $prefix = 'wp_'; public $tables = array(); public $queries = array(); public $unprepared = array(); public $fail_insert = false; public $fail_update = false; public $insert_id = 0; public $suppress_now = false; public $suppress_log = array();
+	public $prefix = 'wp_'; public $base_prefix = 'wp_'; public $tables = array(); public $queries = array(); public $unprepared = array(); public $fail_insert = false; public $fail_update = false; public $insert_id = 0; public $suppress_now = false; public $suppress_log = array();
 	private $prepared = array(); private $next_id = 1;
 	function get_blog_prefix( $id = null ) { return 'wp_' . ( ( null === $id || 1 === (int) $id ) ? '' : (int) $id . '_' ); }
 	function get_charset_collate() { return 'DEFAULT CHARACTER SET utf8mb4'; }
@@ -272,6 +274,12 @@ class T_Wpdb {
 	}
 	function get_var( $sql ) {
 		$this->note( $sql );
+		$this->before( $sql );
+		if ( preg_match( "/^SELECT option_value FROM `(\\w+)` WHERE option_name = '((?:[^'\\\\]|\\\\.)*)' LIMIT 1$/", $sql, $m ) ) {
+			$store = &$this->opt_store( $m[1] ); if ( null === $store ) { return null; }
+			$k = $this->opt_key( $store, stripslashes( $m[2] ) );
+			return null === $k ? null : ( is_scalar( $store[ $k ] ) ? (string) $store[ $k ] : serialize( $store[ $k ] ) );
+		}
 		if ( preg_match( "/^SHOW TABLES LIKE '(.*)'$/", $sql, $m ) ) { $t = stripslashes( stripslashes( $m[1] ) ); return isset( $this->tables[ $t ] ) ? $t : null; }
 		// As MySQL: the smallest created_at, NULL for an empty table (and for a missing one, with an error).
 		// The comments a user wrote, every status (the user stand-ins, T_USER_STANDINS).
@@ -291,6 +299,11 @@ class T_Wpdb {
 	function get_col( $sql ) {
 		$this->note( $sql );
 		$q = "'((?:[^'\\\\]|\\\\.)*)'";
+		if ( preg_match( "/^SELECT option_name FROM `(\\w+)` WHERE option_name LIKE $q$/", $sql, $m ) ) {
+			$store = &$this->opt_store( $m[1] ); if ( null === $store ) { return array(); }
+			$re = $this->like_re( stripslashes( $m[2] ) );
+			return array_values( array_map( 'strval', array_filter( array_keys( $store ), function ( $k ) use ( $re ) { return 1 === preg_match( $re, (string) $k ); } ) ) );
+		}
 		// Core's own query in wp_delete_user / remove_user_from_blog: every item (any type, any status) of the author.
 		if ( preg_match( '/^SELECT ID FROM wp_posts WHERE post_author = (\d+)$/', $sql, $m ) ) { return array_map( 'strval', t_author_ids( (int) $m[1] ) ); }
 		if ( preg_match( "/^SELECT post_id FROM wp_postmeta WHERE meta_key = $q AND meta_value = $q LIMIT (\\d+)$/", $sql, $m ) ) {
@@ -315,8 +328,82 @@ class T_Wpdb {
 		}
 		return array();
 	}
+	// ---- the options tables as rows (2.4.1: atomic locks, limits and once-steps). wp_options is T_options (what get_option
+	// reads), wp_<N>_options is T_blogs[N] (what get_blog_option reads). As MySQL with WordPress's utf8mb4 *_ci collation:
+	// option_name is the UNIQUE key and compares without case, and so does option_value in a WHERE. A query returns the
+	// affected rows as MySQL reports them without CLIENT_FOUND_ROWS (wpdb does not set it): an UPDATE that leaves a row as it
+	// was is 0. T_db_before: regex => callable, run once (removed first) right before the first matching query() or get_var() statement:
+	// another request acting between this request's read and its write.
+	private function &opt_store( string $table ) {
+		$null = null;
+		if ( 'wp_options' === $table ) { return $GLOBALS['T_options']; }
+		if ( preg_match( '/^wp_(\d+)_options$/', $table, $m ) ) {
+			if ( ! isset( $GLOBALS['T_blogs'][ (int) $m[1] ] ) || ! is_array( $GLOBALS['T_blogs'][ (int) $m[1] ] ) ) { $GLOBALS['T_blogs'][ (int) $m[1] ] = array(); }
+			return $GLOBALS['T_blogs'][ (int) $m[1] ];
+		}
+		return $null;
+	}
+	private function opt_key( $store, string $name ) {
+		foreach ( array_keys( (array) $store ) as $k ) { if ( 0 === strcasecmp( (string) $k, $name ) ) { return $k; } }
+		return null;
+	}
+	private static function opt_eq( $stored, string $v ): bool { return is_scalar( $stored ) && 0 === strcasecmp( (string) $stored, $v ); }
+	// MySQL's CAST( x AS UNSIGNED ) of a string: the leading digits; a leading minus wraps to a huge number; else 0.
+	private static function opt_unsigned( $v ) { $s = ltrim( (string) $v ); if ( preg_match( '/^\+?(\d+)/', $s, $m ) ) { return (float) $m[1]; } if ( preg_match( '/^-\d*[1-9]/', $s ) ) { return 18446744073709551615.0; } return 0.0; }
+	// MySQL's string + 1: the leading number (0 when there is none), as a number.
+	private static function opt_plus_one( $v ) { $s = ltrim( (string) $v ); $n = preg_match( '/^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?/', $s, $m ) ? (float) $m[0] : 0.0; $n += 1; return floor( $n ) === $n ? (string) (int) $n : (string) $n; }
+	private function opt_query( string $sql ) {
+		$q = "'((?:[^'\\\\]|\\\\.)*)'";
+		if ( preg_match( "/^INSERT IGNORE INTO `(\\w+)` \\(`option_name`, `option_value`, `autoload`\\) VALUES \\($q, $q, $q\\)$/", $sql, $m ) ) {
+			$store = &$this->opt_store( $m[1] ); if ( null === $store ) { return false; }
+			$name = stripslashes( $m[2] );
+			if ( null !== $this->opt_key( $store, $name ) ) { return 0; }
+			$store[ $name ] = stripslashes( $m[3] );
+			if ( 'wp_options' === $m[1] ) { $GLOBALS['T_autoload'][ $name ] = stripslashes( $m[4] ); }
+			return 1;
+		}
+		if ( preg_match( "/^UPDATE `(\\w+)` SET option_value = option_value \\+ 1 WHERE option_name = $q AND CAST\\(option_value AS UNSIGNED\\) < (\\d+)$/", $sql, $m ) ) {
+			$store = &$this->opt_store( $m[1] ); if ( null === $store ) { return false; }
+			$k = $this->opt_key( $store, stripslashes( $m[2] ) );
+			if ( null === $k || self::opt_unsigned( $store[ $k ] ) >= (float) $m[3] ) { return 0; }
+			$store[ $k ] = self::opt_plus_one( $store[ $k ] );
+			return 1;
+		}
+		if ( preg_match( "/^UPDATE `(\\w+)` SET option_value = $q WHERE option_name = $q AND option_value = $q$/", $sql, $m ) ) {
+			$store = &$this->opt_store( $m[1] ); if ( null === $store ) { return false; }
+			$k = $this->opt_key( $store, stripslashes( $m[3] ) ); $new = stripslashes( $m[2] );
+			if ( null === $k || ! self::opt_eq( $store[ $k ], stripslashes( $m[4] ) ) ) { return 0; }
+			if ( (string) $store[ $k ] === $new ) { return 0; }
+			$store[ $k ] = $new;
+			return 1;
+		}
+		if ( preg_match( "/^DELETE FROM `(\\w+)` WHERE option_name = $q(?: AND option_value = $q)?$/", $sql, $m ) ) {
+			$store = &$this->opt_store( $m[1] ); if ( null === $store ) { return false; }
+			$k = $this->opt_key( $store, stripslashes( $m[2] ) );
+			if ( null === $k || ( isset( $m[3] ) && ! self::opt_eq( $store[ $k ], stripslashes( $m[3] ) ) ) ) { return 0; }
+			unset( $store[ $k ] );
+			return 1;
+		}
+		return null;
+	}
+	private function like_re( string $l ): string {
+		$re = ''; $n = strlen( $l );
+		for ( $i = 0; $i < $n; $i++ ) { $c = $l[ $i ]; if ( '\\' === $c && $i + 1 < $n ) { $re .= preg_quote( $l[ ++$i ], '/' ); } elseif ( '%' === $c ) { $re .= '.*'; } elseif ( '_' === $c ) { $re .= '.'; } else { $re .= preg_quote( $c, '/' ); } }
+		return '/^' . $re . '$/is';
+	}
+	private function before( string $sql ): void {
+		foreach ( (array) ( $GLOBALS['T_db_before'] ?? array() ) as $re => $cb ) {
+			if ( 1 === preg_match( $re, $sql ) ) { unset( $GLOBALS['T_db_before'][ $re ] ); $cb( $sql ); return; }
+		}
+	}
 	function query( $sql ) {
 		$this->note( $sql );
+		$this->before( $sql );
+		// T_db_fail: regex => true, the first matching statement fails once (a lost connection): false, as wpdb answers then.
+		foreach ( array_keys( (array) ( $GLOBALS['T_db_fail'] ?? array() ) ) as $re ) {
+			if ( 1 === preg_match( $re, $sql ) ) { unset( $GLOBALS['T_db_fail'][ $re ] ); return false; }
+		}
+		$o = $this->opt_query( $sql ); if ( null !== $o ) { return $o; }
 		if ( preg_match( '/^DROP TABLE IF EXISTS `(.+)`$/', $sql, $m ) ) { unset( $this->tables[ $m[1] ] ); return true; }
 		if ( preg_match( "/^DELETE FROM (\S+) WHERE created_at < '((?:[^'\\\\]|\\\\.)*)'$/", $sql, $m ) ) {
 			if ( ! isset( $this->tables[ $m[1] ] ) ) { return false; }
@@ -366,6 +453,10 @@ class T_Wpdb {
 		$w = $m[2] ?? '';
 		$q = "'((?:[^'\\\\]|\\\\.)*)'";
 		if ( preg_match( "/ability = $q/", $w, $x ) ) { $v = stripslashes( $x[1] ); $rows = array_filter( $rows, function ( $r ) use ( $v ) { return $r['ability'] === $v; } ); }
+		if ( preg_match( "/ability IN \\(($q(?:, $q)*)\\)/", $w, $x ) ) {
+			preg_match_all( "/$q/", $x[1], $vs ); $in = array_map( 'stripslashes', $vs[1] );
+			$rows = array_filter( $rows, function ( $r ) use ( $in ) { return in_array( $r['ability'], $in, true ); } );
+		}
 		if ( preg_match( "/status = $q/", $w, $x ) ) { $v = stripslashes( $x[1] ); $rows = array_filter( $rows, function ( $r ) use ( $v ) { return $r['status'] === $v; } ); }
 		if ( preg_match( "/object_type = $q/", $w, $x ) ) { $v = stripslashes( $x[1] ); $rows = array_filter( $rows, function ( $r ) use ( $v ) { return $r['object_type'] === $v; } ); }
 		if ( preg_match( '/object_id = (\d+)/', $w, $x ) ) { $v = (int) $x[1]; $rows = array_filter( $rows, function ( $r ) use ( $v ) { return (int) $r['object_id'] === $v; } ); }
@@ -409,8 +500,11 @@ function set_transient( $n, $v, $ttl = 0 ) {
 function get_transient( $n ) { $t = $GLOBALS['T_transients'][ $n ] ?? null; $v = ( null === $t || $t[1] < time() ) ? false : $t[0]; if ( isset( $GLOBALS['T_on_get'][ $n ] ) ) { $cb = $GLOBALS['T_on_get'][ $n ]; unset( $GLOBALS['T_on_get'][ $n ] ); $cb(); } return $v; }
 function delete_transient( $n ) { $GLOBALS['T_transient_deletes'][] = array( $n, $GLOBALS['T_blog_id'] ?? 1 ); $had = false !== get_transient( $n ); unset( $GLOBALS['T_transients'][ $n ], $GLOBALS['T_db_transients'][ $n ], $GLOBALS['T_object_cache']['transient'][ $n ] ); return $had; }
 function absint( $n ) { return abs( (int) $n ); }
-function switch_to_blog( $id ) { $GLOBALS['T_blog_stack'][] = $GLOBALS['T_blog_id']; $GLOBALS['T_blog_id'] = (int) $id; return true; }
-function restore_current_blog() { $GLOBALS['T_blog_id'] = array_pop( $GLOBALS['T_blog_stack'] ); return true; }
+// As core (wpdb::set_blog_id): the per-site table names follow the current site. Only ->options here: the stand-in keeps its
+// other tables under fixed names.
+function t_wpdb_follow_blog() { if ( isset( $GLOBALS['wpdb'] ) && $GLOBALS['wpdb'] instanceof T_Wpdb ) { $GLOBALS['wpdb']->options = $GLOBALS['wpdb']->get_blog_prefix( $GLOBALS['T_blog_id'] ) . 'options'; } }
+function switch_to_blog( $id ) { $GLOBALS['T_blog_stack'][] = $GLOBALS['T_blog_id']; $GLOBALS['T_blog_id'] = (int) $id; t_wpdb_follow_blog(); return true; }
+function restore_current_blog() { $GLOBALS['T_blog_id'] = array_pop( $GLOBALS['T_blog_stack'] ); t_wpdb_follow_blog(); return true; }
 
 // ---- Abilities API stand-ins (#32, Task 2). Recorded in:
 //   T_abilities           name => args   (wp_register_ability calls that core would accept)
@@ -1158,6 +1252,10 @@ function is_super_admin( $user_id = false ) {
 }
 // The direct file system (class-wp-filesystem-direct.php), reduced to what the plugin uses: copy( from, to, overwrite, mode ).
 class T_Filesystem {
+	// As WP_Filesystem_Direct: ABSPATH (made here when the stand-in's temp ABSPATH does not exist yet), file_exists, a write.
+	function abspath() { if ( ! is_dir( ABSPATH ) ) { @mkdir( ABSPATH, 0777, true ); } return ABSPATH; }
+	function exists( $file ) { return @file_exists( $file ); }
+	function put_contents( $file, $contents, $mode = false ) { return false !== @file_put_contents( $file, $contents ); }
 	function copy( $from, $to, $overwrite = false, $mode = false ) {
 		$GLOBALS['T_copy_calls'][] = array( 'wp_filesystem->copy', $from, $to );
 		if ( ! empty( $GLOBALS['T_fs_copy_fail'] ) || ( ! $overwrite && file_exists( $to ) ) ) { return false; }
@@ -1211,6 +1309,8 @@ function copy_dir( $from, $to, $skip_list = array() ) {
 			// T_copy_fail_to_re: a copy whose destination matches fails the same way, after its first file (one copy of several).
 			if ( '' !== ( $GLOBALS['T_copy_fail_to_re'] ?? '' ) && 1 === preg_match( $GLOBALS['T_copy_fail_to_re'], str_replace( '\\', '/', $to . $f ) ) && ( $GLOBALS['T_copy_re_done'] = ( $GLOBALS['T_copy_re_done'] ?? 0 ) + 1 ) > 1 ) { return new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.', $to . $f ); }
 			if ( ! @copy( $from . $f, $to . $f ) ) { return new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.', $to . $f ); }
+			// T_copy_each: callable( source file, copied file ) run after each file: another process writing meanwhile.
+			if ( is_callable( $GLOBALS['T_copy_each'] ?? null ) ) { $cb = $GLOBALS['T_copy_each']; $cb( $from . $f, $to . $f ); }
 		}
 	}
 	return true;
@@ -1840,7 +1940,7 @@ t_widgets_reset();
 // do_action_ref_array runs with the event's args. T_cron_fail: 'reschedule' / 'unschedule' => true makes that call fail
 // (WP_Error when $wp_error, as core).
 if ( ! defined( 'WP_CRON_LOCK_TIMEOUT' ) ) { define( 'WP_CRON_LOCK_TIMEOUT', 60 ); }
-function t_cron_reset() { $GLOBALS['T_cron_array'] = array(); $GLOBALS['T_cron_ops'] = array(); $GLOBALS['T_cron_hooks'] = array(); $GLOBALS['T_cron_fail'] = array(); $GLOBALS['T_do_actions'] = array(); $GLOBALS['T_ext_cache'] = false; $GLOBALS['T_object_cache'] = array(); $GLOBALS['T_cache_forced'] = array(); $GLOBALS['T_db_transients'] = array(); $GLOBALS['T_on_set'] = array(); unset( $GLOBALS['T_cron_request_copy'] ); $GLOBALS['T_cron_fresh_reads'] = 0; }
+function t_cron_reset() { $GLOBALS['T_cron_array'] = array(); $GLOBALS['T_cron_ops'] = array(); $GLOBALS['T_cron_hooks'] = array(); $GLOBALS['T_cron_fail'] = array(); $GLOBALS['T_do_actions'] = array(); $GLOBALS['T_ext_cache'] = false; $GLOBALS['T_object_cache'] = array(); $GLOBALS['T_cache_forced'] = array(); $GLOBALS['T_cache_deletes'] = array(); $GLOBALS['T_db_before'] = array(); $GLOBALS['T_db_fail'] = array(); $GLOBALS['T_db_transients'] = array(); $GLOBALS['T_on_set'] = array(); unset( $GLOBALS['T_cron_request_copy'] ); $GLOBALS['T_cron_fresh_reads'] = 0; }
 // do_action records (T_do_actions: hook, args). The doing_cron lock as _get_cron_lock reads it, past the request's caches:
 // with T_ext_cache on, wp_cache_get( ..., force ) reads T_object_cache[ group ][ key ] (T_cache_forced records the force
 // flag); without it, $wpdb->get_row on the options table reads T_db_transients[ name ] when set (another process wrote the
@@ -1849,6 +1949,8 @@ function do_action( $hook, ...$args ) { $GLOBALS['T_do_actions'][] = array( $hoo
 if ( ! function_exists( '__return_true' ) ) { function __return_true() { return true; } }
 function wp_using_ext_object_cache( $using = null ) { return ! empty( $GLOBALS['T_ext_cache'] ); }
 function wp_cache_get( $key, $group = '', $force = false, &$found = null ) { $GLOBALS['T_cache_forced'][] = $force; $found = isset( $GLOBALS['T_object_cache'][ $group ][ $key ] ); return $found ? $GLOBALS['T_object_cache'][ $group ][ $key ] : false; }
+// As core: true when the key was there. T_cache_deletes records array( key, group ) per call.
+function wp_cache_delete( $key, $group = '' ) { $GLOBALS['T_cache_deletes'][] = array( $key, $group ); $had = isset( $GLOBALS['T_object_cache'][ $group ][ $key ] ); unset( $GLOBALS['T_object_cache'][ $group ][ $key ] ); return $had; }
 function t_db_transient( string $name ) {
 	if ( array_key_exists( $name, $GLOBALS['T_db_transients'] ?? array() ) ) { return $GLOBALS['T_db_transients'][ $name ]; }
 	return isset( $GLOBALS['T_transients'][ $name ] ) ? $GLOBALS['T_transients'][ $name ][0] : null;
@@ -2085,6 +2187,7 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		$GLOBALS['T_plugins_disk'] = false; $GLOBALS['T_plugins_cache'] = null; $GLOBALS['T_upgrade_result'] = array(); $GLOBALS['T_upgrade_calls'] = array();
 		$GLOBALS['T_copies_at_upgrade'] = null; $GLOBALS['T_uninstalls'] = array(); $GLOBALS['T_delete_calls'] = array(); $GLOBALS['T_fs_deletes'] = array();
 		$GLOBALS['T_maintenance'] = array(); $GLOBALS['T_in_maintenance'] = false; $GLOBALS['T_opcache'] = array();
+		@unlink( ABSPATH . '.maintenance' ); unset( $GLOBALS['d5b_maint_mm_created'] ); // no site starts in maintenance mode
 		$GLOBALS['T_wp_version'] = '6.9'; $GLOBALS['T_core_upgrade_calls'] = array(); $GLOBALS['T_core_upgrade_result'] = null; $GLOBALS['T_lang_upgrade_calls'] = array(); $GLOBALS['T_lang_upgrade_result'] = null;
 		t_themes_reset();
 	}
@@ -2301,7 +2404,11 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 			function maintenance_mode( $enable = false ) {
 				if ( ! is_object( $GLOBALS['wp_filesystem'] ?? null ) ) { throw new Error( 'Call to a member function abspath() on null' ); }
 				$GLOBALS['T_maintenance'][] = (bool) $enable; $GLOBALS['T_traps'][] = $enable ? 'maintenance_on' : 'maintenance_off';
-				$GLOBALS['T_in_maintenance'] = (bool) $enable;
+				// As core 6.4.1: on deletes and writes ABSPATH/.maintenance; off deletes it when it is there.
+				$fs = $GLOBALS['wp_filesystem']; $file = $fs->abspath() . '.maintenance';
+				if ( $enable ) { $fs->delete( $file ); $fs->put_contents( $file, '<?php $upgrading = ' . time() . '; ?>' ); }
+				elseif ( $fs->exists( $file ) ) { $fs->delete( $file ); }
+				$GLOBALS['T_in_maintenance'] = $fs->exists( $file );
 			}
 		}
 	}

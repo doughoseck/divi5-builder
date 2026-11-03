@@ -122,8 +122,20 @@ check( '... a page that does not answer: status 0, not skipped', 0 === $by['e'][
 check( '... a skipped page past the budget (fake clock, 12 s a page, 60 s): the sixth page is not fetched', true === $by['f']['skipped'] && 0 === $by['f']['status'] && 5 === count( $GLOBALS['T_http_calls'] ), array( $by['f'], count( $GLOBALS['T_http_calls'] ) ) );
 check( '... the url in the result is the url given', 'https://x.example/a?d5b=1' === $r[0]['url'] );
 $c0 = $GLOBALS['T_http_calls'][0];
-check( '... each fetch: timeout 15, a fresh cache-buster (the clock at that moment, not the one given)', 15 === $c0[1]['timeout'] && 'https://x.example/a?d5b=1700000000500' === $c0[0] && 'https://x.example/b?d5b=1700000012500' === $GLOBALS['T_http_calls'][1][0], $GLOBALS['T_http_calls'][1][0] );
+check( '... each fetch: timeout 15, a fresh cache-buster (the clock at that moment, not the one given)', 15.0 === (float) $c0[1]['timeout'] && 'https://x.example/a?d5b=1700000000500' === $c0[0] && 'https://x.example/b?d5b=1700000012500' === $GLOBALS['T_http_calls'][1][0], $GLOBALS['T_http_calls'][1][0] );
 check( '... sslverify as the loopback allows (https_local_ssl_verify, false by default)', false === $c0[1]['sslverify'] );
+check( '2.4.1 ... a fetch\'s timeout is min( 15, the budget left ): the fifth page, 48 s in, gets 12 s', array( 15, 15, 15, 15, 12 ) === array_map( function ( $c ) { return (int) round( $c[1]['timeout'] ); }, $GLOBALS['T_http_calls'] ), array_map( function ( $c ) { return $c[1]['timeout']; }, $GLOBALS['T_http_calls'] ) );
+// Every fetch takes its whole timeout (a page that never answers): the round still ends within its 60 s.
+fresh();
+$t0 = $GLOBALS['T_clock'];
+$GLOBALS['T_http_fn'] = function ( $url, $args ) { $GLOBALS['T_clock'] += (float) $args['timeout']; return null; };
+$r = d5b_pages_round( array( 'https://x.example/a', 'https://x.example/b', 'https://x.example/c', 'https://x.example/d', 'https://x.example/e' ), 60, true );
+check( '... pages that each take their whole timeout: the round (retries included) never runs past 60 s', $GLOBALS['T_clock'] - $t0 <= 60.0 && true === end( $r )['skipped'], array( $GLOBALS['T_clock'] - $t0, array_column( $r, 'skipped' ), array_map( function ( $c ) { return $c[1]['timeout']; }, $GLOBALS['T_http_calls'] ) ) );
+$GLOBALS['T_http_fn'] = null;
+// Less than a second of the budget left: the page is skipped, never fetched with a timeout of a fraction of a second.
+fresh(); serve( array( 'https://x.example/a' => array( 200, page() ), 'https://x.example/b' => array( 200, page() ), 'https://x.example/c' => array( 200, page() ), 'https://x.example/d' => array( 200, page() ), 'https://x.example/e' => array( 200, page() ) ), 14.9 );
+$r = d5b_pages_round( array( 'https://x.example/a', 'https://x.example/b', 'https://x.example/c', 'https://x.example/d', 'https://x.example/e' ), 60 );
+check( '... with less than a second left (59.6 s gone) the page is skipped, not fetched', 4 === count( $GLOBALS['T_http_calls'] ) && true === $r[4]['skipped'], array( count( $GLOBALS['T_http_calls'] ), array_column( $r, 'skipped' ) ) );
 fresh(); serve( array( 'https://x.example/a' => array( 200, page() ) ), 0.0 );
 check( 'a round inside its budget skips nothing', array( false ) === array_column( d5b_pages_round( array( 'https://x.example/a' ), 60 ), 'skipped' ) );
 $h = d5b_maint_page_health( '/x', 200, '<html><p>How to fix a fatal error in PHP</p></html>' );
@@ -142,7 +154,7 @@ check( 'a page that shows a fatal error with status 200', array( '/a: shows "Fat
 $p = d5b_pages_compare( array( ok( '/a' ) ), array( array_merge( ok( '/a' ), array( 'closed' => false ) ) ) );
 check( 'a page that is cut off', array( '/a: the page is cut off (no closing </html>)' ) === $p, $p );
 $p = d5b_pages_compare( array( ok( '/a', 50000 ) ), array( ok( '/a', 20000 ) ) );
-check( 'a page that lost more than half its content', array( '/a: the page shrank from 50000 to 20000 characters' ) === $p, $p );
+check( 'a page that lost more than half its content (2.4.1: counted in bytes, and the sentence says bytes)', array( '/a: the page shrank from 50000 to 20000 bytes' ) === $p, $p );
 check( '... but a small change in size is fine', array() === d5b_pages_compare( array( ok( '/a', 50000 ) ), array( ok( '/a', 30000 ) ) ) );
 check( 'shrink below half only over 2000 bytes: 2000 -> 100 is not blamed, 2001 -> 1000 is', array() === d5b_pages_compare( array( ok( '/a', 2000 ) ), array( ok( '/a', 100 ) ) ) && 1 === count( d5b_pages_compare( array( ok( '/a', 2001 ) ), array( ok( '/a', 1000 ) ) ) ) );
 check( 'a page that was already broken before is not blamed (bad-before not blamed)',
@@ -280,6 +292,21 @@ t_put( WP_PLUGIN_DIR . '/two/a.php', 'a' ); t_put( WP_PLUGIN_DIR . '/two/b.php',
 $GLOBALS['T_copy_fail'] = true;
 $k = d5b_keep_copy( 'plugin', 'two', 47 );
 check( 'copy failure -> copy_failed, the half-made copy removed', 'copy_failed' === code( $k ) && array() === row_dirs( 47 ), array( code( $k ), row_dirs( 47 ) ) );
+// 2.4.1: the plugin writes its own files while they are copied (a cache file, a log). Once: the copy is made again.
+fresh();
+t_put( WP_PLUGIN_DIR . '/busy/a.php', 'a' ); t_put( WP_PLUGIN_DIR . '/busy/b.log', 'log' );
+$writes = 0;
+$GLOBALS['T_copy_each'] = function ( $src, $dst ) use ( &$writes ) { if ( 'a.php' === basename( $src ) && $writes < 1 ) { $writes++; file_put_contents( dirname( $src ) . '/b.log', 'log line 2', FILE_APPEND ); } };
+$k = d5b_keep_copy( 'plugin', 'busy', 60 );
+check( 'a source that changed during the copy (once): the copy is made again and kept whole, as the source is now', is_array( $k ) && 'loglog line 2' === @file_get_contents( $k['path'] . '/b.log' ) && 1 + 13 === $k['bytes'] && 2 === count( array_filter( $GLOBALS['T_copy_calls'], function ( $c ) { return 'copy_dir' === $c[0] && 'busy' === basename( $c[1] ); } ) ) && 1 === count( row_dirs( 60 ) ), is_wp_error( $k ) ? $k->get_error_message() : $k );
+// Every time: refused, nothing kept.
+fresh();
+t_put( WP_PLUGIN_DIR . '/busy/a.php', 'a' ); t_put( WP_PLUGIN_DIR . '/busy/b.log', 'log' );
+$GLOBALS['T_copy_each'] = function ( $src, $dst ) { if ( 'a.php' === basename( $src ) ) { file_put_contents( dirname( $src ) . '/b.log', '+', FILE_APPEND ); } };
+$k = d5b_keep_copy( 'plugin', 'busy', 61 );
+check( '... changing during the second copy too: copy_failed "the plugin changed its own files while they were being copied; try again when it is idle", nothing kept', 'copy_failed' === code( $k ) && false !== strpos( $k->get_error_message(), 'the plugin changed its own files while they were being copied; try again when it is idle' ) && array() === row_dirs( 61 ) && 2 === count( array_filter( $GLOBALS['T_copy_calls'], function ( $c ) { return 'copy_dir' === $c[0] && 'busy' === basename( $c[1] ); } ) ), is_wp_error( $k ) ? $k->get_error_message() : $k );
+$GLOBALS['T_copy_each'] = null;
+fresh(); t_put( WP_PLUGIN_DIR . '/two/a.php', 'a' ); t_put( WP_PLUGIN_DIR . '/two/b.php', 'b' ); // the section above goes on with these
 $GLOBALS['T_copy_fail'] = false; $GLOBALS['T_fs_fail'] = true; unset( $GLOBALS['wp_filesystem'] );
 $k = d5b_keep_copy( 'plugin', 'two', 48 );
 check( 'no file system access (WP_Filesystem fails) -> copy_failed', 'copy_failed' === code( $k ) && array() === row_dirs( 48 ), code( $k ) );
@@ -348,38 +375,74 @@ $l2 = t_link_dir( WP_PLUGIN_DIR . '/other', WP_PLUGIN_DIR . '/other-alias' );
 check( 'M10 a folder link to this plugin\'s own folder is self (realpath compared), in any case', $l1 && d5b_maint_self( 'd5b-alias/divi5-builder.php' ) && d5b_maint_self( 'D5B-Alias/divi5-builder.php' ), array( $l1 ) );
 check( 'M10 ... a link to another plugin\'s folder, and a plain other plugin, are not', $l2 && ! d5b_maint_self( 'other-alias/other.php' ) && ! d5b_maint_self( 'other/other.php' ) && ! d5b_maint_self( 'nope/nope.php' ) && ! d5b_maint_self( 'hello.php' ), array( $l2 ) );
 
-echo "fix wave M2/M4: the fresh-read transient lock\n";
-fresh(); $GLOBALS['d5b_maint_locks'] = array();
-$t1 = d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' );
-check( 'lock: taken, the value is "<expires>|<random>" (now + 120)', is_string( $t1 ) && 1 === preg_match( '/^' . ( (int) floor( $GLOBALS['T_clock'] ) + 120 ) . '\|[0-9a-f]{16}$/D', $t1 ), $t1 );
-$t1b = d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' );
+echo "2.4.1: the lock is a row of the options table (its unique option_name index is the mutex)\n";
+// Another request: none of this request's memory of the locks it holds.
+function other_request( callable $fn ) { $saved = $GLOBALS['d5b_maint_locks'] ?? array(); $GLOBALS['d5b_maint_locks'] = array(); try { return $fn(); } finally { $GLOBALS['d5b_maint_locks'] = $saved; } }
+function take_test() { return d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' ); }
+fresh(); $GLOBALS['d5b_maint_locks'] = array(); $now = (int) floor( $GLOBALS['T_clock'] );
+$t1 = take_test();
+check( 'lock: taken; its row holds "<random>|<expires at>" (now + 120), not autoloaded; no transient written', is_string( $t1 ) && 1 === preg_match( '/^[0-9a-f]{16}\|' . ( $now + 120 ) . '$/D', $t1 ) && $t1 === ( $GLOBALS['T_options']['d5b_maint_lock_test'] ?? null ) && 'no' === ( $GLOBALS['T_autoload']['d5b_maint_lock_test'] ?? null ) && array() === $GLOBALS['T_transients'], array( $t1, $GLOBALS['T_options']['d5b_maint_lock_test'] ?? null ) );
+check( '... taken with one INSERT IGNORE, no read first (the INSERT is the mutex)', 1 === preg_match( '/^INSERT IGNORE INTO `wp_options` /', (string) ( $GLOBALS['wpdb']->queries[0] ?? '' ) ) && 1 === count( $GLOBALS['wpdb']->queries ), $GLOBALS['wpdb']->queries );
+$t1b = take_test();
 check( 'lock: taken again in the same request (nested) -> the same token, counted', $t1 === $t1b );
 check( '... the inner release only counts down (the lock stays)', true === d5b_maint_lock_release( 'd5b_maint_lock_test', $t1b ) && $t1 === d5b_maint_lock_fresh( 'd5b_maint_lock_test' ) );
-$saved = $GLOBALS['d5b_maint_locks']; $GLOBALS['d5b_maint_locks'] = array(); // another request: none of this request's memory
-$o = d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' );
-check( 'lock: another request while it is held -> busy (409) naming the work', 'busy' === code( $o ) && 0 === strpos( $o->get_error_message(), 'The test is already running' ) && $t1 === d5b_maint_lock_fresh( 'd5b_maint_lock_test' ), is_wp_error( $o ) ? $o->get_error_message() : $o );
-$GLOBALS['d5b_maint_locks'] = $saved;
-check( '... the outer release deletes it', true === d5b_maint_lock_release( 'd5b_maint_lock_test', $t1 ) && '' === d5b_maint_lock_fresh( 'd5b_maint_lock_test' ) );
-// Read fresh: this request's copy says free, the database holds another request's lock.
-$GLOBALS['T_db_transients']['d5b_maint_lock_test'] = ( (int) $GLOBALS['T_clock'] + 60 ) . '|' . str_repeat( 'a', 16 );
-check( 'lock: read past this request\'s copy (the database row): held -> busy', 'busy' === code( d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' ) ) && false === get_transient( 'd5b_maint_lock_test' ) );
-$GLOBALS['T_db_transients']['d5b_maint_lock_test'] = ( (int) $GLOBALS['T_clock'] - 1 ) . '|' . str_repeat( 'a', 16 );
-$t2 = d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' );
-check( 'lock: one past its time (a request that died) is taken over', is_string( $t2 ) && $t2 === d5b_maint_lock_fresh( 'd5b_maint_lock_test' ), $t2 );
+$o = other_request( 'take_test' );
+check( 'lock: another request while it is held -> busy (409) naming the work, the row unchanged', 'busy' === code( $o ) && 409 === ( $o->get_error_data()['status'] ?? 0 ) && 0 === strpos( $o->get_error_message(), 'The test is already running' ) && $t1 === d5b_maint_lock_fresh( 'd5b_maint_lock_test' ), is_wp_error( $o ) ? $o->get_error_message() : $o );
+check( '... the outer release deletes the row', true === d5b_maint_lock_release( 'd5b_maint_lock_test', $t1 ) && '' === d5b_maint_lock_fresh( 'd5b_maint_lock_test' ) && ! array_key_exists( 'd5b_maint_lock_test', $GLOBALS['T_options'] ) );
+// Held by another request (its row in the database, this request has never seen it).
+$GLOBALS['T_options']['d5b_maint_lock_test'] = str_repeat( 'a', 16 ) . '|' . ( $now + 60 );
+check( 'lock: a row of another request that has not run out -> busy, the row left as it was', 'busy' === code( take_test() ) && str_repeat( 'a', 16 ) . '|' . ( $now + 60 ) === $GLOBALS['T_options']['d5b_maint_lock_test'] );
+// Stale: a request that died; taken over with one conditional UPDATE on the stale value.
+$GLOBALS['T_options']['d5b_maint_lock_test'] = str_repeat( 'a', 16 ) . '|' . ( $now - 1 );
+$t2 = take_test();
+check( 'lock: a row past its time is taken over (UPDATE ... WHERE option_value = the stale value)', is_string( $t2 ) && $t2 === $GLOBALS['T_options']['d5b_maint_lock_test'] && (bool) preg_grep( "/^UPDATE `wp_options` SET option_value = '[0-9a-f]{16}\\|\\d+' WHERE option_name = 'd5b_maint_lock_test' AND option_value = '" . str_repeat( 'a', 16 ) . '\|' . ( $now - 1 ) . "'$/", $GLOBALS['wpdb']->queries ), $t2 );
+// A token that is not ours: nothing happens, this request still holds its lock.
+check( 'lock: a release with another token does nothing (conditional DELETE: no row matched)', false === d5b_maint_lock_release( 'd5b_maint_lock_test', str_repeat( 'f', 16 ) . '|' . ( $now + 999 ) ) && $t2 === $GLOBALS['T_options']['d5b_maint_lock_test'] );
 // Another request takes it over (its stale-lock rule) before this one releases: this one leaves it alone.
-$GLOBALS['T_db_transients']['d5b_maint_lock_test'] = 'theirs';
-check( 'lock: released only while still ours (read fresh)', false === d5b_maint_lock_release( 'd5b_maint_lock_test', $t2 ) && 'theirs' === d5b_maint_lock_fresh( 'd5b_maint_lock_test' ) && array() === ( $GLOBALS['d5b_maint_locks'] ?? array() ) );
-unset( $GLOBALS['T_db_transients']['d5b_maint_lock_test'] ); delete_transient( 'd5b_maint_lock_test' );
-// Two requests in the same instant: the read-back after the write is not ours -> busy.
-$GLOBALS['T_on_set']['d5b_maint_lock_test'] = function () { $GLOBALS['T_db_transients']['d5b_maint_lock_test'] = ( (int) $GLOBALS['T_clock'] + 120 ) . '|' . str_repeat( 'b', 16 ); };
-check( 'lock: the read-back is another request\'s value -> busy, not held by this request', 'busy' === code( d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' ) ) && array() === ( $GLOBALS['d5b_maint_locks'] ?? array() ) );
-unset( $GLOBALS['T_db_transients']['d5b_maint_lock_test'] ); delete_transient( 'd5b_maint_lock_test' );
-// A persistent object cache: the shared copy read with force.
-$GLOBALS['T_ext_cache'] = true; $GLOBALS['T_cache_forced'] = array();
-$GLOBALS['T_object_cache']['transient']['d5b_maint_lock_test'] = ( (int) $GLOBALS['T_clock'] + 60 ) . '|' . str_repeat( 'c', 16 );
-check( 'lock: with a persistent object cache the shared copy is read with force', 'busy' === code( d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' ) ) && in_array( true, $GLOBALS['T_cache_forced'], true ) );
-$GLOBALS['T_ext_cache'] = false; unset( $GLOBALS['T_object_cache']['transient']['d5b_maint_lock_test'] );
+$GLOBALS['T_options']['d5b_maint_lock_test'] = 'theirs';
+check( 'lock: released only while still ours (conditional DELETE)', false === d5b_maint_lock_release( 'd5b_maint_lock_test', $t2 ) && 'theirs' === d5b_maint_lock_fresh( 'd5b_maint_lock_test' ) && array() === ( $GLOBALS['d5b_maint_locks'] ?? array() ) );
+// Two takers at a stale lock, in the same instant: both read the stale value; the other one's UPDATE lands first.
+fresh(); $GLOBALS['d5b_maint_locks'] = array(); $now = (int) floor( $GLOBALS['T_clock'] );
+$GLOBALS['T_options']['d5b_maint_lock_test'] = str_repeat( 'a', 16 ) . '|' . ( $now - 5 );
+$theirs = null;
+$GLOBALS['T_db_before']['/^UPDATE `wp_options` SET option_value = /'] = function () use ( &$theirs ) { $theirs = other_request( 'take_test' ); };
+$mine = take_test();
+check( 'lock: two takers at a stale lock -> exactly one wins (the other request), this one is busy', is_string( $theirs ) && 'busy' === code( $mine ) && $theirs === $GLOBALS['T_options']['d5b_maint_lock_test'] && array() === $GLOBALS['d5b_maint_locks'], array( $theirs, is_wp_error( $mine ) ? $mine->get_error_code() : $mine ) );
+// The holder releases between this request's failed INSERT and its read: the INSERT is tried once more.
+fresh(); $GLOBALS['d5b_maint_locks'] = array(); $now = (int) floor( $GLOBALS['T_clock'] );
+$GLOBALS['T_options']['d5b_maint_lock_test'] = str_repeat( 'a', 16 ) . '|' . ( $now + 60 );
+$GLOBALS['T_db_before']['/^SELECT option_value FROM `wp_options` /'] = function () { unset( $GLOBALS['T_options']['d5b_maint_lock_test'] ); };
+$t3 = take_test();
+check( 'lock: released between the failed INSERT and the read -> the INSERT once more takes it', is_string( $t3 ) && $t3 === $GLOBALS['T_options']['d5b_maint_lock_test'], $t3 );
+// A persistent object cache changes nothing: the row is read and written in the database.
+fresh(); $GLOBALS['d5b_maint_locks'] = array(); $GLOBALS['T_ext_cache'] = true; $now = (int) floor( $GLOBALS['T_clock'] );
+$GLOBALS['T_options']['d5b_maint_lock_test'] = str_repeat( 'c', 16 ) . '|' . ( $now + 60 );
+check( 'lock: with a persistent object cache the database row still decides (busy)', 'busy' === code( take_test() ) );
+$GLOBALS['T_ext_cache'] = false;
+// Network-wide: the MAIN site's options table, the same statements, seen from every site.
+fresh(); $GLOBALS['d5b_maint_locks'] = array(); t_set_multisite( true ); switch_to_blog( 2 );
+$tn = d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test', true );
+check( 'network lock: taken from site 2 into the main site\'s table (wp_options), not site 2\'s (wp_2_options)', is_string( $tn ) && $tn === ( $GLOBALS['T_options']['d5b_maint_lock_test'] ?? null ) && ! isset( $GLOBALS['T_blogs'][2]['d5b_maint_lock_test'] ) && (bool) preg_grep( '/^INSERT IGNORE INTO `wp_options` /', $GLOBALS['wpdb']->queries ), $GLOBALS['wpdb']->queries );
+switch_to_blog( 3 );
+$on3 = other_request( function () { return d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test', true ); } );
+$site3 = other_request( function () { return d5b_maint_lock_take( 'd5b_maint_lock_test', 120, 'The test' ); } );
+check( 'network lock: visible from a second site (busy there); a per-site lock of the same name on site 3 is its own row', 'busy' === code( $on3 ) && is_string( $site3 ) && $site3 === ( $GLOBALS['T_blogs'][3]['d5b_maint_lock_test'] ?? null ), array( is_wp_error( $on3 ) ? $on3->get_error_code() : $on3, $site3 ) );
+restore_current_blog(); restore_current_blog();
+check( '... released by its holder: the main site\'s row is gone', true === d5b_maint_lock_release( 'd5b_maint_lock_test', $tn, true ) && ! isset( $GLOBALS['T_options']['d5b_maint_lock_test'] ) );
+t_set_multisite( false );
+check( 'no lock code uses a transient any more', 0 === preg_match( '/_transient\(\s*\$name/', (string) file_get_contents( $dir . '/inc/abilities/maint-common.php' ) ) );
 check( 'lock: one name per plugin or theme folder (kind + md5 of the folder, any case)', d5b_maint_item_lock( 'plugin', 'Akismet' ) === 'd5b_maint_lock_plugin_' . md5( 'akismet' ) && d5b_maint_item_lock( 'theme', 'akismet' ) !== d5b_maint_item_lock( 'plugin', 'akismet' ) );
+
+echo "2.4.1: a move never replaces or removes what is already at the destination\n";
+fresh();
+t_put( WP_PLUGIN_DIR . '/mv-src/a.php', 'source' ); t_put( WP_PLUGIN_DIR . '/mv-dst/keep.php', 'already here' );
+$mv = d5b_maint_move( WP_PLUGIN_DIR . '/mv-src', WP_PLUGIN_DIR . '/mv-dst' );
+check( 'd5b_maint_move to a folder that exists: refused (moved false), the destination and the source both left as they were', array( 'moved' => false, 'leftover' => false ) === $mv && 'already here' === @file_get_contents( WP_PLUGIN_DIR . '/mv-dst/keep.php' ) && 'source' === @file_get_contents( WP_PLUGIN_DIR . '/mv-src/a.php' ) && ! file_exists( WP_PLUGIN_DIR . '/mv-dst/a.php' ), $mv );
+t_put( WP_PLUGIN_DIR . '/mv-file.php', 'x' );
+check( '... to a file that exists: refused too', array( 'moved' => false, 'leftover' => false ) === d5b_maint_move( WP_PLUGIN_DIR . '/mv-src', WP_PLUGIN_DIR . '/mv-file.php' ) && 'x' === @file_get_contents( WP_PLUGIN_DIR . '/mv-file.php' ) && is_dir( WP_PLUGIN_DIR . '/mv-src' ) );
+check( '... to a free name: moved', array( 'moved' => true, 'leftover' => false ) === d5b_maint_move( WP_PLUGIN_DIR . '/mv-src', WP_PLUGIN_DIR . '/mv-new' ) && 'source' === @file_get_contents( WP_PLUGIN_DIR . '/mv-new/a.php' ) );
+$mc = (string) file_get_contents( $dir . '/inc/abilities/maint-common.php' );
+check( 'the staging and aside names: a dot, the folder, 6 random hex characters (no time, no numbered slots)', false !== strpos( $mc, "'/.d5b-new-' . \$dir . '-' . d5b_maint_hex( 3 )" ) && false !== strpos( $mc, "'/.d5b-old-' . \$dir . '-' . d5b_maint_hex( 3 )" ) && false === strpos( $mc, '$i < 100' ) && 1 === preg_match( '/^[0-9a-f]{6}$/D', d5b_maint_hex( 3 ) ) );
 
 echo "the is_super_admin stand-in (as core)\n";
 fresh();
@@ -399,16 +462,40 @@ check( 'the human check is one fixed sentence: browser and phone, the five thing
 	$h === d5b_human_check() && false !== stripos( $h, 'browser' ) && false !== stripos( $h, 'phone' ) && false !== stripos( $h, 'layout' ) && false !== stripos( $h, 'images' ) && false !== stripos( $h, 'console' ) && false !== stripos( $h, 'forms' ) && false !== stripos( $h, 'shortcodes' )
 	&& false !== stripos( $h, 'there is no substitute for the human check and it only takes a few seconds' ) && false === strpos( $h, "\u{2014}" ), $h );
 
-echo "rate\n";
-fresh();
+echo "rate (2.4.1: one option row per key and window; allowed iff one conditional UPDATE changed a row)\n";
+fresh(); // T_clock 1700000000.5: the 600 s window started at 1699999800 (windows start at multiples of their length)
 $got = array(); for ( $i = 0; $i < 5; $i++ ) { $got[] = d5b_maint_rate( 'reset_user_7', 3, 600 ); }
 check( 'rate: limit N in window allows N then refuses', array( true, true, true, false, false ) === $got, $got );
-check( '... another key has its own count', true === d5b_maint_rate( 'email_test', 3, 600 ) );
-$GLOBALS['T_clock'] += 599;
-check( '... still refused one second before the window ends', false === d5b_maint_rate( 'reset_user_7', 3, 600 ) );
-$GLOBALS['T_clock'] += 1;
+check( '... the count is the row d5b_rate_<key>_<window start>, not autoloaded; a refused attempt is not counted', '3' === ( $GLOBALS['T_options']['d5b_rate_reset_user_7_1699999800'] ?? null ) && 'no' === ( $GLOBALS['T_autoload']['d5b_rate_reset_user_7_1699999800'] ?? null ) && array() === $GLOBALS['T_transients'], $GLOBALS['T_options'] );
+check( '... the statement: UPDATE ... SET option_value = option_value + 1 WHERE option_name = ... AND CAST(option_value AS UNSIGNED) < 3', (bool) preg_grep( "/^UPDATE `wp_options` SET option_value = option_value \\+ 1 WHERE option_name = 'd5b_rate_reset_user_7_1699999800' AND CAST\\(option_value AS UNSIGNED\\) < 3$/", $GLOBALS['wpdb']->queries ) && array() === $GLOBALS['wpdb']->unprepared, array_slice( $GLOBALS['wpdb']->queries, 0, 4 ) );
+$mark = null; $GLOBALS['T_db_before']['/^UPDATE `wp_options` SET option_value = option_value \+ 1 /'] = function () use ( &$mark ) { $mark = count( $GLOBALS['T_cache_deletes'] ); };
+d5b_maint_rate( 'reset_user_7', 3, 600 );
+check( '... and the cached copy of the option is dropped AFTER the UPDATE', null !== $mark && in_array( array( 'd5b_rate_reset_user_7_1699999800', 'options' ), array_slice( $GLOBALS['T_cache_deletes'], $mark ), true ), array( $mark, $GLOBALS['T_cache_deletes'] ) );
+check( '... another key has its own count', true === d5b_maint_rate( 'email_test', 3, 600 ) && '1' === ( $GLOBALS['T_options']['d5b_rate_email_test_1699999800'] ?? null ) );
+$GLOBALS['T_clock'] = 1699999800 + 599.9;
+check( '... still refused at the end of the window', false === d5b_maint_rate( 'reset_user_7', 3, 600 ) );
+$GLOBALS['T_clock'] = 1700000400.0;
 $got = array(); for ( $i = 0; $i < 4; $i++ ) { $got[] = d5b_maint_rate( 'reset_user_7', 3, 600 ); }
-check( 'a new window allows again (N, then refused)', array( true, true, true, false ) === $got, $got );
+check( 'a new window allows again (N, then refused), in its own row; the previous window\'s row is kept', array( true, true, true, false ) === $got && '3' === ( $GLOBALS['T_options']['d5b_rate_reset_user_7_1700000400'] ?? null ) && isset( $GLOBALS['T_options']['d5b_rate_reset_user_7_1699999800'] ), $got );
+$GLOBALS['T_options']['d5b_rate_reset_user_77_1699999800'] = '3'; // a longer key that starts the same: not this key's row
+$GLOBALS['T_clock'] = 1700001000.0;
+d5b_maint_rate( 'reset_user_7', 3, 600 );
+check( 'rows of this key older than 2 windows are removed by the call that opens a window; one window back kept; other keys left', ! isset( $GLOBALS['T_options']['d5b_rate_reset_user_7_1699999800'] ) && isset( $GLOBALS['T_options']['d5b_rate_reset_user_7_1700000400'] ) && isset( $GLOBALS['T_options']['d5b_rate_reset_user_7_1700001000'] ) && isset( $GLOBALS['T_options']['d5b_rate_reset_user_77_1699999800'] ) && isset( $GLOBALS['T_options']['d5b_rate_email_test_1699999800'] ), array_keys( $GLOBALS['T_options'] ) );
+// Two "simultaneous" callers at limit - 1: one sequential pair, then one interleaved (the other request's UPDATE lands
+// between this request's INSERT and its UPDATE).
+fresh();
+d5b_maint_rate( 'k2', 3, 600 ); d5b_maint_rate( 'k2', 3, 600 );
+check( 'two callers at count limit - 1 -> exactly one passes', array( true, false ) === array( d5b_maint_rate( 'k2', 3, 600 ), d5b_maint_rate( 'k2', 3, 600 ) ) );
+fresh();
+d5b_maint_rate( 'k3', 3, 600 ); d5b_maint_rate( 'k3', 3, 600 );
+$theirs = null;
+$GLOBALS['T_db_before']['/^UPDATE `wp_options` SET option_value = option_value \+ 1 /'] = function () use ( &$theirs ) { $theirs = d5b_maint_rate( 'k3', 3, 600 ); };
+$mine = d5b_maint_rate( 'k3', 3, 600 );
+check( '... interleaved: the other request passes, this one is refused; the count is exactly the limit', true === $theirs && false === $mine && '3' === $GLOBALS['T_options']['d5b_rate_k3_1699999800'], array( $theirs, $mine, $GLOBALS['T_options']['d5b_rate_k3_1699999800'] ?? null ) );
+// A second request that opens the same window after this one counted: its INSERT leaves the count alone.
+fresh();
+$GLOBALS['T_db_before']['/^UPDATE `wp_options` SET option_value = option_value \+ 1 /'] = function () { d5b_maint_rate( 'k4', 1, 600 ); };
+check( '... a limit of 1 with two first callers in the same instant: one passes (the INSERT never resets a count)', false === d5b_maint_rate( 'k4', 1, 600 ) && '1' === $GLOBALS['T_options']['d5b_rate_k4_1699999800'] );
 fresh();
 check( 'a limit of 1 in 600 s', true === d5b_maint_rate( 'k', 1, 600 ) && false === d5b_maint_rate( 'k', 1, 600 ) );
 

@@ -58,13 +58,21 @@ const dayOf = d => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.ge
 
 // ---------------------------------------------------------------- talking to the site (wp.js only)
 
+/**
+ * A wp.js error as { ok:false, status, code, history_id }. wp.js prints "ERROR: HTTP <status> ..." and the first 500 characters of
+ * the body, then, as its LAST line, "ERROR-JSON: <json>": the error's code, its HTTP status and the history row its data names
+ * (a failed update keeps a copy in it), or null when the body was not a WordPress error. code and history_id are read from that
+ * line only, never from the cut text above it (a long error body puts history_id past its first 500 characters).
+ */
 function parseErr(e) {
   const err = String(e.stderr || e.message);
   const m = /HTTP (\d{3})/.exec(err);
-  const c = /"code"\s*:\s*"([A-Za-z0-9_:\-]+)"/.exec(err);
-  // The history row an error names in its data (a failed update keeps a copy in it): a number only, never the rest of the body.
-  const h = /"history_id"\s*:\s*(\d{1,12})\b/.exec(err);
-  return { ok: false, status: m ? Number(m[1]) : 0, code: c ? tok(c[1]) : 'http_' + (m ? m[1] : '0'), json: null, history_id: h ? Number(h[1]) : null };
+  let j = null;
+  const jl = /(?:^|\n)ERROR-JSON: ([^\n]*)\s*$/.exec(err);
+  if (jl) { try { j = JSON.parse(jl[1]); } catch (x) { j = null; } }
+  const code = j && typeof j.code === 'string' && /^[A-Za-z0-9_:\-]+$/.test(j.code) ? j.code : '';
+  const hid = j && Number.isInteger(j.history_id) && j.history_id > 0 ? j.history_id : null;
+  return { ok: false, status: m ? Number(m[1]) : 0, code: code ? tok(code) : 'http_' + (m ? m[1] : '0'), json: null, history_id: hid };
 }
 
 function wp(ctx, args) {

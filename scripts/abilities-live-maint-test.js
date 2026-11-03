@@ -106,6 +106,9 @@ if (process.env.FAKE_MAINT_STATE && require.main !== module) {
         if (m.updateFail) {
           p.version = '';
           const fh = row(short, 'plugin', 0, 'update', 'Updated plugin ' + f + ' from ' + from + ' to ' + p.nv, { plugin: f, version: from }, { to: p.nv, kept: rowKept(short), pages, failed: 'Could not copy file. SECRET-LEAK-VALUE' });
+          // m.bigErr (2.4.1): the error body is long (pages, problems...) and history_id sits past its first 500 characters, while
+          // a nested object near the start carries a decoy history_id 4242.
+          if (m.bigErr) return [502, { code: 'update_failed', message: 'Could not copy file.', data: { status: 502, decoy: { history_id: 4242 }, pad: 'P'.repeat(900), plugin: f, from, to: p.nv, version: '', updated: false, kept: keptOf(short), history_id: fh, rolled_back: false, problems: [], human_check: HC } }];
           return E(502, 'update_failed', { plugin: f, from, to: p.nv, version: '', updated: false, kept: keptOf(short), history_id: fh, rolled_back: false, problems: [], human_check: HC });
         }
         p.version = p.nv;
@@ -296,6 +299,15 @@ start({ bad: { 'plugins-activate': 'activation_failed' } });
 r = go(['plugin', '--confirm', 'go']);
 check('a failed activation -> exit 1, the plugin is still deleted', r.code === 1 && /refused:activation_failed/.test(r.out) && !r.m.plugins['hello-dolly/hello.php'], [r.code, r.out]);
 
+// 2.4.1: the guard also runs on the plugins-install INPUT, before the call (not only on what the site answers).
+const mod = require(SCRIPT);
+const throwsUsage = fn => { try { fn(); return false; } catch (e) { return !!e && e.constructor && e.constructor.name === 'Usage'; } };
+check('2.4.1 the plugins-install input is guarded before the call: exactly { slug: hello-dolly }, nothing else', typeof mod.guardInstallInput === 'function'
+  && !throwsUsage(() => mod.guardInstallInput({ slug: 'hello-dolly' })) && throwsUsage(() => mod.guardInstallInput({ slug: 'akismet' }))
+  && throwsUsage(() => mod.guardInstallInput({ slug: 'divi5-builder' })) && throwsUsage(() => mod.guardInstallInput({ slug: 'hello-dolly', plugin: 'x/x.php' }))
+  && throwsUsage(() => mod.guardInstallInput({ slug: 'hello-dolly/../akismet' })) && throwsUsage(() => mod.guardInstallInput({})) && throwsUsage(() => mod.guardInstallInput(null)));
+check('... and the script sends plugins-install only that guarded input', /postAbility\(ctx, 'plugins-install', guardInstallInput\(\{ slug: TEST_SLUG \}\)\)/.test(fs.readFileSync(SCRIPT, 'utf8')));
+
 console.log('--- theme-switch');
 start();
 r = go(['theme-switch', '--confirm', 'go']);
@@ -341,6 +353,11 @@ check('M9 ... no rollback is tried by the script (the maintainer decides)', !pos
 const hcLine = (r.out.split('\n').find(l => l.startsWith('HUMAN CHECK: ')) || '');
 check('M9 ... the HUMAN CHECK line names the failed update as a change; never "no change"', /This run changed: plugins-update akismet\/akismet\.php \(FAILED part-way: the files may have changed\)/.test(hcLine) && !/no change|changed nothing/.test(r.out), hcLine);
 check('M9 ... the planted secret in the error body is not printed', !/SECRET-LEAK|Could not copy/.test(r.out), r.out);
+// 2.4.1: history_id comes from the JSON error data wp.js prints (its ERROR-JSON line), not from the first 500 characters of text.
+start({ updateFail: true, bigErr: true });
+r = go(['update', '--item', 'akismet/akismet.php']);
+const bigHid = (r.m.hist.find(x => x.ability === 'divi5-builder/plugins-update') || {}).id;
+check('2.4.1 a long error body (history_id past its first 500 characters, a decoy in the message): the real row is named, never the decoy', r.code === 1 && Number.isInteger(bigHid) && new RegExp('refused:update_failed  HTTP 502  history_id=' + bigHid + '\\b').test(r.out) && new RegExp('History row ' + bigHid + ' keeps the copy').test(r.out) && !/4242/.test(r.out), [r.code, r.out]);
 // M9: a step that fails after writes went through names them on the HUMAN CHECK line, with the plugin's sentence.
 start({ bad: { 'plugins-deactivate': 'not_allowed' } });
 r = go(['plugin', '--confirm', 'go']);

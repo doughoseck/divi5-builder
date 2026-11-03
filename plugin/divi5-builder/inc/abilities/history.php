@@ -222,7 +222,8 @@ if ( ! function_exists( 'd5b_history_write' ) ) {
 
 if ( ! function_exists( 'd5b_history_list' ) ) {
 	/**
-	 * Newest first. Filters (all optional): ability (exact name), user_id, since ('Y-m-d H:i:s' UTC), object_type, object_id.
+	 * Newest first. Filters (all optional): ability (exact name), abilities (a list of exact names: any of them; an empty
+	 * list matches nothing), user_id, since ('Y-m-d H:i:s' UTC), object_type, object_id.
 	 * Rows come without before and after (d5b_history_get has them).
 	 * @return array<int, array<string, mixed>>
 	 */
@@ -232,6 +233,12 @@ if ( ! function_exists( 'd5b_history_list' ) ) {
 		$where = array();
 		$vals  = array();
 		if ( isset( $filters['ability'] ) && is_string( $filters['ability'] ) && '' !== $filters['ability'] ) { $where[] = 'ability = %s'; $vals[] = $filters['ability']; }
+		if ( array_key_exists( 'abilities', $filters ) ) {
+			$names = array_values( array_unique( array_filter( (array) $filters['abilities'], function ( $a ) { return is_string( $a ) && '' !== $a; } ) ) );
+			if ( array() === $names ) { return array(); }
+			$where[] = 'ability IN (' . implode( ', ', array_fill( 0, count( $names ), '%s' ) ) . ')';
+			foreach ( $names as $a ) { $vals[] = $a; }
+		}
 		if ( isset( $filters['user_id'] ) && (int) $filters['user_id'] > 0 ) { $where[] = 'user_id = %d'; $vals[] = (int) $filters['user_id']; }
 		if ( isset( $filters['since'] ) && is_string( $filters['since'] ) && '' !== $filters['since'] ) { $where[] = 'created_at >= %s'; $vals[] = $filters['since']; }
 		if ( isset( $filters['object_type'] ) && is_string( $filters['object_type'] ) && '' !== $filters['object_type'] ) { $where[] = 'object_type = %s'; $vals[] = $filters['object_type']; }

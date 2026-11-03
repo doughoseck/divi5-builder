@@ -65,6 +65,25 @@ if ( ! function_exists( 'd5b_wem_send' ) ) {
 		return $note;
 	}
 
+	/**
+	 * $text with the recipient address replaced by [recipient], without case: as given, and in the punycode form of its domain
+	 * (idn_to_ascii, when PHP has it), which is the form PHPMailer sends to and names in its errors.
+	 */
+	function d5b_wem_scrub_address( string $text, string $addr ): string {
+		$forms = array( $addr );
+		$at    = strrpos( $addr, '@' );
+		if ( false !== $at && function_exists( 'idn_to_ascii' ) ) {
+			$dom  = substr( $addr, $at + 1 );
+			$puny = defined( 'INTL_IDNA_VARIANT_UTS46' ) ? @idn_to_ascii( $dom, IDNA_DEFAULT, INTL_IDNA_VARIANT_UTS46 ) : @idn_to_ascii( $dom );
+			if ( is_string( $puny ) && '' !== $puny && $puny !== $dom ) { $forms[] = substr( $addr, 0, $at + 1 ) . $puny; }
+		}
+		foreach ( $forms as $f ) {
+			if ( '' === $f ) { continue; }
+			$text = (string) preg_replace( '/' . preg_quote( $f, '/' ) . '/iu', '[recipient]', $text ) ?: str_ireplace( $f, '[recipient]', $text );
+		}
+		return $text;
+	}
+
 	/** @return array|WP_Error { sent, mailer_error } */
 	function d5b_wem_send( array $in ) {
 		if ( ! d5b_wem_ok() ) { return new WP_Error( 'forbidden', 'You may not send a test email.' ); }
@@ -103,7 +122,9 @@ if ( ! function_exists( 'd5b_wem_send' ) ) {
 		if ( $sent ) { $error = null; }
 		elseif ( null === $error ) { $error = 'wp_mail returned false without a reason.'; }
 		// A mailer names the recipient in its errors ("The following recipients failed: ..."): the row never holds the address.
-		if ( null !== $error ) { $error = str_ireplace( $addr, '[recipient]', $error ); }
+		if ( null !== $error ) { $error = d5b_wem_scrub_address( $error, $addr ); }
+		// An API mailer can echo its own key in the error; the history row keeps text as given, so the shapes go here.
+		if ( null !== $error ) { $error = d5b_secret_mask_values( $error ); }
 
 		$after = array( 'to_kind' => $kind );
 		if ( 'user' === $kind ) { $after['user_id'] = $uid; }

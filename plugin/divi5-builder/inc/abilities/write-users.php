@@ -137,7 +137,9 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 			return new WP_Error( 'unavailable', 'It could not be read whether this user\'s email or role changed recently, so no reset link was sent. Try again later.' );
 		}
 		foreach ( $rows as $t ) {
-			if ( d5b_wu_now() - (int) $t < 86400 ) {
+			// Only digits are a time this plugin wrote; anything else (another writer, a broken value) counts as recent: fail closed.
+			$recent = ! is_scalar( $t ) || 1 !== preg_match( '/^[0-9]{1,12}$/D', (string) $t ) || d5b_wu_now() - (int) $t < 86400;
+			if ( $recent ) {
 				return new WP_Error( 'recently_changed', 'This user\'s email address or role was changed through the abilities in the last 24 hours, so no reset link is sent through them now. Send it from wp-admin if it is wanted.' );
 			}
 		}
@@ -176,6 +178,22 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		);
 	}
 
+	/**
+	 * The names (never the values) of the user's meta rows the record leaves out because they are protected (an underscore
+	 * name) or secret-named, sorted: a delete keeps them in its row, so whoever rebuilds the user knows what existed.
+	 * @return string[]
+	 */
+	function d5b_wu_withheld_keys( int $id ): array {
+		$all  = get_user_meta( $id );
+		$keys = array();
+		foreach ( is_array( $all ) ? array_keys( $all ) : array() as $k ) {
+			$k = (string) $k;
+			if ( is_protected_meta( $k, 'user' ) || d5b_is_secret_key( $k ) ) { $keys[] = $k; }
+		}
+		sort( $keys, SORT_STRING );
+		return array_values( array_unique( $keys ) );
+	}
+
 	/** "user 12 'anna'". */
 	function d5b_wu_label( $u ): string {
 		return 'user ' . (int) $u->ID . " '" . d5b_rc_cut( (string) $u->user_login, 60 ) . "'";
@@ -212,7 +230,7 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 	}
 
 	/**
-	 * The administrators lock (30 s, read fresh, d5b_maint_lock_take): a role change and a delete that can change how many
+	 * The administrators lock (30 s, an options-table row, d5b_maint_lock_take): a role change and a delete that can change how many
 	 * administrators the site has never run at the same time, so two of them cannot both pass the last-administrator count.
 	 * @return string|WP_Error the token, or busy
 	 */
@@ -626,7 +644,7 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 			'note' => ( is_multisite()
 				? 'On a network the user is removed from this site, not deleted from the network. '
 				: 'The user and their profile fields are deleted for good. ' )
-				. 'Every item of the user (posts_by_type, every type and status) gets the author reassign_to; nothing is deleted. Their comments are left as they are, with the author name they carry (WordPress does not reassign comments). The change history keeps the user\'s record and the ids of the items that move.',
+				. 'Every item of the user (posts_by_type, every type and status) gets the author reassign_to; nothing is deleted. Their comments are left as they are, with the author name they carry (WordPress does not reassign comments). The change history keeps the user\'s record, the ids of the items that move and the names (not the values) of the protected and secret-named fields it cannot keep.',
 		) + $code;
 	}
 
@@ -654,7 +672,7 @@ if ( ! function_exists( 'd5b_wu_record' ) ) {
 		if ( true !== $ok ) { return $ok; }
 		// The ids of the items that move are read BEFORE the delete; the history row comes first and holds them with the record.
 		$ids    = d5b_wu_post_ids( $id );
-		$before = d5b_wu_record( $id ) + array( 'reassigned_post_ids' => $ids );
+		$before = d5b_wu_record( $id ) + array( 'reassigned_post_ids' => $ids, 'withheld_meta_keys' => d5b_wu_withheld_keys( $id ) );
 		$hid    = d5b_wc_history_row( 'divi5-builder/users-delete', 'user', $id, 'delete', $before, array( 'reassigned_to' => $to, 'posts' => count( $ids ) ),
 			( is_multisite() ? 'Removed ' . d5b_wu_label( $u ) . ' from the site' : 'Deleted ' . d5b_wu_label( $u ) ) . ', ' . count( $ids ) . ' items to user ' . $to );
 		if ( $hid < 1 ) { return d5b_wt_history_unavailable(); }

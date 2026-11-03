@@ -299,6 +299,7 @@ if ( ! function_exists( 'd5b_wplug_load' ) ) {
 		// before its after round: the exception below carries it out of d5b_pages_check.
 		$err   = null;
 		$level = ob_get_level();
+		$only_before = null; // the before round, kept for the activation_failed answer (the check stops before its after round)
 		try {
 			$pages = d5b_pages_check( function () use ( $plugin, $net, $level, &$err ) {
 				try {
@@ -312,7 +313,7 @@ if ( ! function_exists( 'd5b_wplug_load' ) ) {
 					$err = $r;
 					throw new RuntimeException( 'd5b_activation_failed' );
 				}
-			} );
+			}, $only_before );
 		} catch ( RuntimeException $x ) {
 			if ( null === $err ) { throw $x; }
 		}
@@ -322,12 +323,14 @@ if ( ! function_exists( 'd5b_wplug_load' ) ) {
 			$reverted = false; $rv = array( 'thrown' => false, 'forced' => false );
 			if ( d5b_wplug_is_active( $plugin, $net ) ) { $rv = d5b_wplug_deactivate( $plugin, $net ); $reverted = true; }
 			$still = d5b_wplug_is_active( $plugin, $net );
-			d5b_history_set_after( $hid, array( 'active' => d5b_wplug_active_list( $net ), 'failed' => $err->get_error_code(), 'reverted' => $reverted, 'deactivation_error' => $rv['thrown'] ) );
+			// The before round only: no after round was taken, so nothing was compared (after and problems empty).
+			$fpages = is_array( $only_before ) ? $only_before : null;
+			d5b_history_set_after( $hid, array( 'active' => d5b_wplug_active_list( $net ), 'failed' => $err->get_error_code(), 'reverted' => $reverted, 'deactivation_error' => $rv['thrown'], 'pages' => $fpages ) );
 			return new WP_Error( 'activation_failed', 'The plugin "' . $plugin . '" could not be activated: ' . d5b_wplug_msg( $err ) . '.'
 				. ( $reverted ? ' WordPress had switched it on before it complained, so it was switched off again.' : '' )
 				. ( $rv['thrown'] ? ' Its deactivation routine stopped with an error, so it was switched off without it.' : '' )
 				. ( $still ? ' It is still active: deactivate it on the Plugins screen.' : '' ),
-				array( 'plugin' => $plugin, 'reason' => $err->get_error_code(), 'reverted' => $reverted, 'active' => $still, 'pages' => null, 'human_check' => d5b_human_check() ) );
+				array( 'plugin' => $plugin, 'reason' => $err->get_error_code(), 'reverted' => $reverted, 'active' => $still, 'pages' => $fpages, 'human_check' => d5b_human_check() ) );
 		}
 
 		$problems = (array) $pages['problems'];

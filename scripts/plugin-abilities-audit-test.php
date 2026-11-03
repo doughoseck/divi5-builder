@@ -164,6 +164,13 @@ stored_row_at( 31 * 86400, 'old/31d' ); stored_row_at( 45 * 86400, 'old/45d' ); 
 $gone = d5b_audit_prune();
 check( 'prune removes rows older than 30 days only, and returns the count', 2 === $gone && array( 'new/29d', 'new/10d', 'new/now' ) === array_column( rows(), 'ability' ), array( $gone, array_column( rows(), 'ability' ) ) );
 check( 'a second prune deletes nothing', 0 === d5b_audit_prune() );
+// Fix round 1 N3: the daily prune also sweeps rate-limit rows whose window started more than a day ago (a key that never
+// opens a new window, a per-user reset limit, would otherwise keep its row for ever).
+$h = (int) ( floor( time() / 3600 ) * 3600 ); $d = (int) ( floor( ( time() - 2 * 86400 ) / 600 ) * 600 );
+$GLOBALS['T_options']['d5b_rate_reset_user_7_' . $d] = '1'; $GLOBALS['T_options']['d5b_rate_email_test_' . $h] = '2';
+$GLOBALS['T_options']['d5b_rate_' . md5( 'k' ) . '_' . $d] = '1'; $GLOBALS['T_options']['d5b_rate_odd_name'] = 'x'; $GLOBALS['T_options']['d5b_other_' . $d] = 'kept';
+d5b_audit_prune();
+check( 'N3 prune: rate rows older than a day go (any key), this hour\'s stays, other names stay', ! isset( $GLOBALS['T_options']['d5b_rate_reset_user_7_' . $d] ) && ! isset( $GLOBALS['T_options']['d5b_rate_' . md5( 'k' ) . '_' . $d] ) && '2' === ( $GLOBALS['T_options']['d5b_rate_email_test_' . $h] ?? null ) && 'x' === ( $GLOBALS['T_options']['d5b_rate_odd_name'] ?? null ) && 'kept' === ( $GLOBALS['T_options']['d5b_other_' . $d] ?? null ), array_keys( $GLOBALS['T_options'] ) );
 fresh();
 check( 'prune with no table returns 0, no fatal', 0 === d5b_audit_prune() );
 

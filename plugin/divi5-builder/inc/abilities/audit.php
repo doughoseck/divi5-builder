@@ -109,10 +109,13 @@ CREATE TABLE {$history} (
 		// Only remember the version when both tables are really there, so a failed create is tried again.
 		if ( d5b_audit_table_exists() && d5b_history_table_exists() ) {
 			$was = get_option( 'd5b_db_version' );
-			update_option( 'd5b_db_version', D5B_DB_VERSION, false );
 			// From schema 1 (2.1.x), 2 (2.2.x) or 3 (2.3.x) to the current one: a master switch given before the abilities could
-			// do this much is turned off once (d5b_abilities_upgrade_consent decides which step and which text).
-			if ( in_array( $was, array( '1', '2', '3' ), true ) && function_exists( 'd5b_abilities_upgrade_consent' ) ) { d5b_abilities_upgrade_consent( (string) $was, D5B_DB_VERSION ); }
+			// do this much is turned off once (d5b_abilities_upgrade_consent decides which step and which text). The step runs
+			// BEFORE the version is recorded: when it could not record itself (a database error) the master is already off and
+			// the version stays, so the next request runs it again.
+			$step_done = true;
+			if ( in_array( $was, array( '1', '2', '3' ), true ) && function_exists( 'd5b_abilities_upgrade_consent' ) ) { $step_done = false !== d5b_abilities_upgrade_consent( (string) $was, D5B_DB_VERSION ); }
+			if ( $step_done ) { update_option( 'd5b_db_version', D5B_DB_VERSION, false ); }
 			if ( function_exists( 'delete_transient' ) ) { delete_transient( 'd5b_audit_install_failed' ); }
 		} elseif ( function_exists( 'set_transient' ) ) {
 			set_transient( 'd5b_audit_install_failed', 1, 3600 ); // CREATE denied: do not try again for an hour
@@ -492,7 +495,28 @@ if ( ! function_exists( 'd5b_audit_prune' ) ) {
 		$n      = $wpdb->query( $wpdb->prepare( 'DELETE FROM ' . d5b_audit_table() . ' WHERE created_at < %s', $cutoff ) );
 		if ( null !== $quiet ) { $wpdb->suppress_errors( $quiet ); }
 		if ( function_exists( 'd5b_history_prune' ) ) { d5b_history_prune(); }
+		d5b_audit_prune_rate_rows();
 		return is_int( $n ) ? $n : 0;
+	}
+
+	/**
+	 * This site's rate-limit rows (d5b_rate_<key>_<window start>, see d5b_maint_rate) whose window started more than a day
+	 * ago: a key that never opens a new window (a per-user limit) would otherwise keep its row for ever. The rows live in each
+	 * site's own options table (the network-wide rows in the main site's table are locks and consent rows, never rate rows).
+	 * @return int rows removed
+	 */
+	function d5b_audit_prune_rate_rows(): int {
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'get_col' ) ) { return 0; }
+		$table = (string) $wpdb->options;
+		if ( 1 !== preg_match( '/^\w+$/', $table ) ) { return 0; }
+		$cut  = time() - 86400;
+		$gone = 0;
+		foreach ( (array) $wpdb->get_col( $wpdb->prepare( "SELECT option_name FROM `{$table}` WHERE option_name LIKE %s", $wpdb->esc_like( 'd5b_rate_' ) . '%' ) ) as $name ) {
+			if ( 1 !== preg_match( '/_([0-9]{9,11})$/D', (string) $name, $m ) || (int) $m[1] >= $cut ) { continue; }
+			if ( 1 === $wpdb->query( $wpdb->prepare( "DELETE FROM `{$table}` WHERE option_name = %s", (string) $name ) ) ) { $gone++; }
+		}
+		return $gone;
 	}
 }
 

@@ -6,7 +6,8 @@
  * audit log table (d5b_audit), the change history table (d5b_history), its daily event and its d5b_audit_install_failed and d5b_anon transients, on every site of a network. On a multisite network,
  * the network options and each site's own options (sites read in batches of 100). Also removes the
  * d5b_abilities_upgrade_notice, d5b_abilities_consent_220, d5b_abilities_consent_230 and d5b_abilities_consent_240 options and, per site, the WHOLE folder wp-content/uploads/d5b-history (the files of permanently
- * deleted media and the kept plugin and theme copies, every file and folder at any depth). Only deletes, never writes, so a later reinstall starts with every
+ * deleted media and the kept plugin and theme copies, every file and folder at any depth), and the rate-limit and lock rows
+ * (d5b_rate_*, d5b_maint_lock_*, d5b_users_admin_lock) of every site's options table. Only deletes, never writes, so a later reinstall starts with every
  * switch off, as on a new site. Nothing else is touched: the old plugins' files and the media clean-up quarantine folder
  * stay where they are.
  */
@@ -71,6 +72,18 @@ if ( is_multisite() ) {
 
 // The audit log: its table on every site (a network has one per site) and the daily clean-up event.
 global $wpdb;
+// The rate-limit rows (d5b_rate_<key>_<window start>) and the lock rows (d5b_maint_lock_*, d5b_users_admin_lock) of one
+// options table; a network's item locks and the per-network consent rows (d5b_abilities_consent_<n>_n<network id>) are in
+// the main site's table, which is site 1's.
+$d5b_rm_rows = function ( string $table ) use ( $wpdb ) {
+	if ( 1 !== preg_match( '/^\w+$/', $table ) ) { return; }
+	foreach ( array( 'd5b_rate_', 'd5b_maint_lock_', 'd5b_users_admin_lock', 'd5b_abilities_consent_' ) as $d5b_prefix ) {
+		$d5b_rows = $wpdb->get_col( $wpdb->prepare( "SELECT option_name FROM `{$table}` WHERE option_name LIKE %s", $wpdb->esc_like( $d5b_prefix ) . ( '_' === substr( $d5b_prefix, -1 ) ? '%' : '' ) ) );
+		foreach ( (array) $d5b_rows as $d5b_row ) {
+			$wpdb->query( $wpdb->prepare( "DELETE FROM `{$table}` WHERE option_name = %s", (string) $d5b_row ) );
+		}
+	}
+};
 if ( isset( $wpdb ) && is_object( $wpdb ) ) {
 	if ( is_multisite() ) {
 		$d5b_offset = 0;
@@ -79,6 +92,7 @@ if ( isset( $wpdb ) && is_object( $wpdb ) ) {
 			foreach ( $d5b_ids as $d5b_id ) {
 				$wpdb->query( 'DROP TABLE IF EXISTS `' . $wpdb->get_blog_prefix( (int) $d5b_id ) . 'd5b_audit`' );
 				$wpdb->query( 'DROP TABLE IF EXISTS `' . $wpdb->get_blog_prefix( (int) $d5b_id ) . 'd5b_history`' );
+				$d5b_rm_rows( $wpdb->get_blog_prefix( (int) $d5b_id ) . 'options' );
 				if ( function_exists( 'switch_to_blog' ) ) {
 					switch_to_blog( (int) $d5b_id );
 					wp_clear_scheduled_hook( 'd5b_audit_prune' );
@@ -93,6 +107,7 @@ if ( isset( $wpdb ) && is_object( $wpdb ) ) {
 	} else {
 		$wpdb->query( 'DROP TABLE IF EXISTS `' . $wpdb->prefix . 'd5b_audit`' );
 		$wpdb->query( 'DROP TABLE IF EXISTS `' . $wpdb->prefix . 'd5b_history`' );
+		$d5b_rm_rows( (string) $wpdb->options );
 		wp_clear_scheduled_hook( 'd5b_audit_prune' );
 		delete_transient( 'd5b_audit_install_failed' );
 		delete_transient( 'd5b_anon' );
@@ -100,4 +115,4 @@ if ( isset( $wpdb ) && is_object( $wpdb ) ) {
 }
 // The kept media files of a single site (a network's are removed above, site by site, when its tables are).
 if ( ! is_multisite() || ! isset( $wpdb ) || ! is_object( $wpdb ) ) { $d5b_rm_history_files(); }
-unset( $d5b_names, $d5b_name, $d5b_offset, $d5b_ids, $d5b_id, $d5b_rm_history_files );
+unset( $d5b_names, $d5b_name, $d5b_offset, $d5b_ids, $d5b_id, $d5b_rm_history_files, $d5b_rm_rows );
