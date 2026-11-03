@@ -3,7 +3,7 @@ Contributors: doughoseck
 Tags: divi, rest api
 Requires at least: 6.0
 Requires PHP: 7.4
-Stable tag: 2.4.1
+Stable tag: 2.4.2
 License: MIT
 
 Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.
@@ -26,6 +26,11 @@ Use at your own risk. With the AI abilities switched on, this plugin lets connec
 2. as a must-use plugin: copy the folder divi5-builder/ into wp-content/mu-plugins/ and the one file divi5-builder-loader.php next to it (it is published next to divi5-builder.zip in each release).
 
 == Changelog ==
+
+= 2.4.2 =
+* Popups made over REST now appear. Divi keeps a per-post note of which canvases a page, post or layout has, and only its own builder save refreshed it, so a popup canvas linked or edited over REST stayed out of the page. The plugin now drops that note on every save of Divi content and on every link-canvas call (for the new parent and the previous one).
+* link-canvas can make a canvas global (page id 0, `link-canvas <canvas> global` in the script): no parent at all, so one popup serves the homepage and the single-post template alike, wherever the trigger lives. Making a canvas global needs the Theme Builder level of trust (edit_theme_options).
+* Updating from 2.4.1 asks nothing again: no switch changes.
 
 = 2.4.1 =
 * Secrets: more key shapes are hidden wherever they appear, in plugin headers, user names and mailer errors too: GitHub and GitLab tokens, AWS access key ids and Slack tokens. A payment, GitHub, AWS, Slack, GitLab or Google key is hidden even when it runs straight on from other text.
