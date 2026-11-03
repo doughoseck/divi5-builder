@@ -109,10 +109,13 @@ CREATE TABLE {$history} (
 		// Only remember the version when both tables are really there, so a failed create is tried again.
 		if ( d5b_audit_table_exists() && d5b_history_table_exists() ) {
 			$was = get_option( 'd5b_db_version' );
-			update_option( 'd5b_db_version', D5B_DB_VERSION, false );
 			// From schema 1 (2.1.x), 2 (2.2.x) or 3 (2.3.x) to the current one: a master switch given before the abilities could
-			// do this much is turned off once (d5b_abilities_upgrade_consent decides which step and which text).
-			if ( in_array( $was, array( '1', '2', '3' ), true ) && function_exists( 'd5b_abilities_upgrade_consent' ) ) { d5b_abilities_upgrade_consent( (string) $was, D5B_DB_VERSION ); }
+			// do this much is turned off once (d5b_abilities_upgrade_consent decides which step and which text). The step runs
+			// BEFORE the version is recorded: when it could not record itself (a database error) the master is already off and
+			// the version stays, so the next request runs it again.
+			$step_done = true;
+			if ( in_array( $was, array( '1', '2', '3' ), true ) && function_exists( 'd5b_abilities_upgrade_consent' ) ) { $step_done = false !== d5b_abilities_upgrade_consent( (string) $was, D5B_DB_VERSION ); }
+			if ( $step_done ) { update_option( 'd5b_db_version', D5B_DB_VERSION, false ); }
 			if ( function_exists( 'delete_transient' ) ) { delete_transient( 'd5b_audit_install_failed' ); }
 		} elseif ( function_exists( 'set_transient' ) ) {
 			set_transient( 'd5b_audit_install_failed', 1, 3600 ); // CREATE denied: do not try again for an hour

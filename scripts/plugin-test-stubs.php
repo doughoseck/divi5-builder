@@ -123,6 +123,8 @@ function is_user_member_of_blog( $user_id = 0, $blog_id = 0 ) {
 	return $u > 0 && in_array( $b, $GLOBALS['T_user_blogs'][ $u ] ?? array(), true );
 }
 function get_current_blog_id() { return $GLOBALS['T_blog_id']; }
+// As core: the current network's id (1 on a single site and on the first network); T_network_id models another network.
+if ( ! function_exists( 'get_current_network_id' ) ) { function get_current_network_id() { return (int) ( $GLOBALS['T_network_id'] ?? 1 ); } }
 function get_main_site_id( $network_id = null ) { return $GLOBALS['T_main_site']; }
 function is_main_site( $site_id = null, $network_id = null ) { return ( null === $site_id ? $GLOBALS['T_blog_id'] : (int) $site_id ) === $GLOBALS['T_main_site']; }
 // fields => ids only, as the plugin asks for; number (WordPress defaults to 100) and offset honoured.
@@ -397,6 +399,10 @@ class T_Wpdb {
 	function query( $sql ) {
 		$this->note( $sql );
 		$this->before( $sql );
+		// T_db_fail: regex => true, the first matching statement fails once (a lost connection): false, as wpdb answers then.
+		foreach ( array_keys( (array) ( $GLOBALS['T_db_fail'] ?? array() ) ) as $re ) {
+			if ( 1 === preg_match( $re, $sql ) ) { unset( $GLOBALS['T_db_fail'][ $re ] ); return false; }
+		}
 		$o = $this->opt_query( $sql ); if ( null !== $o ) { return $o; }
 		if ( preg_match( '/^DROP TABLE IF EXISTS `(.+)`$/', $sql, $m ) ) { unset( $this->tables[ $m[1] ] ); return true; }
 		if ( preg_match( "/^DELETE FROM (\S+) WHERE created_at < '((?:[^'\\\\]|\\\\.)*)'$/", $sql, $m ) ) {
@@ -1934,7 +1940,7 @@ t_widgets_reset();
 // do_action_ref_array runs with the event's args. T_cron_fail: 'reschedule' / 'unschedule' => true makes that call fail
 // (WP_Error when $wp_error, as core).
 if ( ! defined( 'WP_CRON_LOCK_TIMEOUT' ) ) { define( 'WP_CRON_LOCK_TIMEOUT', 60 ); }
-function t_cron_reset() { $GLOBALS['T_cron_array'] = array(); $GLOBALS['T_cron_ops'] = array(); $GLOBALS['T_cron_hooks'] = array(); $GLOBALS['T_cron_fail'] = array(); $GLOBALS['T_do_actions'] = array(); $GLOBALS['T_ext_cache'] = false; $GLOBALS['T_object_cache'] = array(); $GLOBALS['T_cache_forced'] = array(); $GLOBALS['T_cache_deletes'] = array(); $GLOBALS['T_db_before'] = array(); $GLOBALS['T_db_transients'] = array(); $GLOBALS['T_on_set'] = array(); unset( $GLOBALS['T_cron_request_copy'] ); $GLOBALS['T_cron_fresh_reads'] = 0; }
+function t_cron_reset() { $GLOBALS['T_cron_array'] = array(); $GLOBALS['T_cron_ops'] = array(); $GLOBALS['T_cron_hooks'] = array(); $GLOBALS['T_cron_fail'] = array(); $GLOBALS['T_do_actions'] = array(); $GLOBALS['T_ext_cache'] = false; $GLOBALS['T_object_cache'] = array(); $GLOBALS['T_cache_forced'] = array(); $GLOBALS['T_cache_deletes'] = array(); $GLOBALS['T_db_before'] = array(); $GLOBALS['T_db_fail'] = array(); $GLOBALS['T_db_transients'] = array(); $GLOBALS['T_on_set'] = array(); unset( $GLOBALS['T_cron_request_copy'] ); $GLOBALS['T_cron_fresh_reads'] = 0; }
 // do_action records (T_do_actions: hook, args). The doing_cron lock as _get_cron_lock reads it, past the request's caches:
 // with T_ext_cache on, wp_cache_get( ..., force ) reads T_object_cache[ group ][ key ] (T_cache_forced records the force
 // flag); without it, $wpdb->get_row on the options table reads T_db_transients[ name ] when set (another process wrote the

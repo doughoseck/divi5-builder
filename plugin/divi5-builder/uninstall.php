@@ -73,10 +73,11 @@ if ( is_multisite() ) {
 // The audit log: its table on every site (a network has one per site) and the daily clean-up event.
 global $wpdb;
 // The rate-limit rows (d5b_rate_<key>_<window start>) and the lock rows (d5b_maint_lock_*, d5b_users_admin_lock) of one
-// options table; a network's item locks are in the main site's table, which is site 1's.
+// options table; a network's item locks and the per-network consent rows (d5b_abilities_consent_<n>_n<network id>) are in
+// the main site's table, which is site 1's.
 $d5b_rm_rows = function ( string $table ) use ( $wpdb ) {
 	if ( 1 !== preg_match( '/^\w+$/', $table ) ) { return; }
-	foreach ( array( 'd5b_rate_', 'd5b_maint_lock_', 'd5b_users_admin_lock' ) as $d5b_prefix ) {
+	foreach ( array( 'd5b_rate_', 'd5b_maint_lock_', 'd5b_users_admin_lock', 'd5b_abilities_consent_' ) as $d5b_prefix ) {
 		$d5b_rows = $wpdb->get_col( $wpdb->prepare( "SELECT option_name FROM `{$table}` WHERE option_name LIKE %s", $wpdb->esc_like( $d5b_prefix ) . ( '_' === substr( $d5b_prefix, -1 ) ? '%' : '' ) ) );
 		foreach ( (array) $d5b_rows as $d5b_row ) {
 			$wpdb->query( $wpdb->prepare( "DELETE FROM `{$table}` WHERE option_name = %s", (string) $d5b_row ) );

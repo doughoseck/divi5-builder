@@ -72,7 +72,9 @@ for ( $i = 1; $i <= 250; $i++ ) { $GLOBALS['wpdb']->tables[ $GLOBALS['wpdb']->ge
 $GLOBALS['T_blogs'][7]['d5b_switches'] = array( 'updates' => array( 'on' => true ) ); // left from before the site joined a network
 $GLOBALS['T_blogs'][12]['d5b_rate_reset_site_1699999200'] = '20'; $GLOBALS['T_blogs'][250]['d5b_users_admin_lock'] = 'cc|3';
 $GLOBALS['T_options']['d5b_maint_lock_theme_' . md5( 'divi' )] = 'dd|4'; // a network-wide item lock: the main site's table
+$GLOBALS['T_options']['d5b_abilities_consent_240_n1'] = '1'; $GLOBALS['T_options']['d5b_abilities_consent_240_n2'] = '1'; // fix round 1 S3: per-network rows
 uninstall();
+check( 'S3 the per-network consent rows (d5b_abilities_consent_<n>_n<network>) in the main site\'s table are deleted', array() === preg_grep( '/^d5b_abilities_consent_/', array_keys( $GLOBALS['T_options'] ) ), array_keys( $GLOBALS['T_options'] ) );
 check( '2.4.1: the rate-limit and lock rows are deleted on every site and in the main site\'s table (network locks)', ! isset( $GLOBALS['T_blogs'][12]['d5b_rate_reset_site_1699999200'] ) && ! isset( $GLOBALS['T_blogs'][250]['d5b_users_admin_lock'] ) && array() === preg_grep( '/^d5b_maint_lock_/', array_keys( $GLOBALS['T_options'] ) ) );
 check( 'network options deleted, others kept', array( 'active_sitewide_plugins' ) === array_keys( $GLOBALS['T_site_options'] ), array_keys( $GLOBALS['T_site_options'] ) );
 $left = array(); foreach ( $GLOBALS['T_blogs'] as $id => $o ) { foreach ( $OURS as $name ) { if ( array_key_exists( $name, $o ) ) { $left[] = "$id:$name"; } } }
