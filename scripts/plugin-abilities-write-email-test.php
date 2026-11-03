@@ -149,6 +149,12 @@ site();
 $GLOBALS['T_mail_fail'] = 'SMTP Error: The following recipients failed: ED@example.org: mailbox full';
 $r = send( array( 'to' => 'user:3' ) );
 check( 'a mailer error naming the recipient: the address is replaced in the answer and the row', 'SMTP Error: The following recipients failed: [recipient]: mailbox full' === ( $r['mailer_error'] ?? '' ) && false === stripos( json_encode( array( hrows(), arows(), $r ) ), 'ed@example.org' ), $r );
+// 2.4.1: a mailer (an API mailer plugin) that echoes its key in the error; split literals, no whole key in the source.
+site();
+$sgk = 'xo' . 'xb-' . '1234567890-abcdEF'; $awk = 'AS' . 'IA' . str_repeat( 'Z3', 8 );
+$GLOBALS['T_mail_fail'] = 'API error: ' . $sgk . ' rejected for id' . $awk;
+$r = send( array( 'to' => 'admin' ) );
+check( 'a mailer error holding a Slack token and a glued AWS id: masked in the answer and the row', is_array( $r ) && false === strpos( json_encode( array( hrows(), arows(), $r ) ), $sgk ) && false === strpos( json_encode( array( hrows(), arows(), $r ) ), $awk ) && false !== strpos( (string) $r['mailer_error'], 'API error' ), $r );
 
 // ---- the rate limit
 echo "the rate limit\n";

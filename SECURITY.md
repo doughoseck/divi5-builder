@@ -87,8 +87,10 @@ From 2.1.0 the plugin can offer abilities to AI tools through the WordPress Abil
   Passwords, session tokens and site settings outside a short list never leave the site.
   Theme mods, widget options and Divi design data are returned with secrets filtered: values
   are hidden by the name they are stored under, by the name beside them and by a few
-  certain shapes (private keys, payment keys, Stripe webhook secrets, Google API keys, JSON Web
-  Tokens, bearer tokens).
+  certain shapes (private keys, payment keys, Stripe webhook secrets, Google API keys, GitHub
+  and GitLab tokens, AWS access key ids, Slack tokens, JSON Web Tokens, bearer tokens). The
+  vendor-prefixed keys are masked even when they run straight on from other text
+  (`tokensk_live_...`, `x=ghp_...`).
 
 **What the secret filter cannot catch.** Names are a heuristic, built to hide when in doubt,
 so it also hides some harmless fields. It does not catch: a key written with look-alike

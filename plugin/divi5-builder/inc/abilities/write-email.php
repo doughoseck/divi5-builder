@@ -104,6 +104,8 @@ if ( ! function_exists( 'd5b_wem_send' ) ) {
 		elseif ( null === $error ) { $error = 'wp_mail returned false without a reason.'; }
 		// A mailer names the recipient in its errors ("The following recipients failed: ..."): the row never holds the address.
 		if ( null !== $error ) { $error = str_ireplace( $addr, '[recipient]', $error ); }
+		// An API mailer can echo its own key in the error; the history row keeps text as given, so the shapes go here.
+		if ( null !== $error ) { $error = d5b_secret_mask_values( $error ); }
 
 		$after = array( 'to_kind' => $kind );
 		if ( 'user' === $kind ) { $after['user_id'] = $uid; }

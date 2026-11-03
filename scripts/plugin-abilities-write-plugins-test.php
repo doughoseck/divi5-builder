@@ -144,6 +144,14 @@ site( array( 'read', 'manage_options' ) );
 check( 'without update_plugins: refused', 'FORBIDDEN' === call( 'plugins-status' ) );
 site();
 check( 'unknown input refused', 'invalid_input' === code( call( 'plugins-status', array( 'refresh' => true ) ) ) );
+// 2.4.1: a plugin header holding a vendor key (split literals: no whole key-shaped string in the source).
+site();
+$ghk = 'gh' . 'p_' . str_repeat( 'aB3', 12 ); $awk = 'AK' . 'IA' . str_repeat( 'Q7', 8 ); $glk = 'gl' . 'pat-' . str_repeat( 'aB_-', 5 );
+$GLOBALS['T_plugin_table'][ HELLO ]['Version'] = '1.7.2+' . $ghk;
+$GLOBALS['T_plugin_table'][ AKISMET ]['Name'] = 'Akismet id' . $awk . ' ' . $glk;
+$GLOBALS['T_site_transients']['update_plugins'] = offers( array( AKISMET => '5.1', HELLO => '1.7.3' ) );
+$r = call( 'plugins-status' ); $j = json_encode( $r );
+check( 'status: a GitHub token in a Version header and an AWS id and GitLab token in a Name header are masked (glued too)', is_array( $r ) && false === strpos( $j, $ghk ) && false === strpos( $j, $awk ) && false === strpos( $j, $glk ) && false !== strpos( $j, '1.7.2+[redacted]' ), $r );
 
 // ---- updates-check
 echo "updates-check\n";

@@ -184,12 +184,21 @@ if ( ! function_exists( 'd5b_secret_key_norm' ) ) {
 	 * Value shapes that are a secret wherever they sit, also inside post content: high confidence only, so ordinary text
 	 * is left alone. Each pattern matches exactly the part that is replaced. PEM private keys are masked by
 	 * d5b_secret_mask_pem(), not here.
+	 *
+	 * The vendor-prefixed shapes (Stripe, GitHub, AWS, Slack, GitLab, Google) have no left boundary: a key run onto other
+	 * text (tokensk_live_..., x=ghp_...) is masked too, because the prefix itself is the evidence. The hashes, the JWT and
+	 * Bearer keep theirs, so prose that merely contains the letters stays.
 	 */
 	function d5b_secret_value_patterns(): array {
 		return array(
-			'/(?<![A-Za-z0-9])(?:sk_live|rk_live|sk_test)_[A-Za-z0-9]{8,}/',                  // Stripe secret and restricted keys
-			'/(?<![A-Za-z0-9])whsec_[A-Za-z0-9]{20,}/',                                       // Stripe webhook signing secrets
-			'/(?<![A-Za-z0-9_-])AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])/',                    // Google API keys
+			'/(?:sk_live|rk_live|sk_test)_[A-Za-z0-9]{8,}/',                                   // Stripe secret and restricted keys
+			'/whsec_[A-Za-z0-9]{20,}/',                                                        // Stripe webhook signing secrets
+			'/AIza[0-9A-Za-z_-]{35}(?![0-9A-Za-z_-])/',                                        // Google API keys
+			'/gh[pousr]_[A-Za-z0-9]{36,}/',                                                    // GitHub tokens (36; a longer run goes whole)
+			'/github_pat_[A-Za-z0-9_]{22,}/',                                                  // GitHub fine-grained tokens
+			'/(?:AKIA|ASIA)[0-9A-Z]{16}(?![0-9A-Z])/',                                         // AWS access key ids
+			'/xox[baprs]-[A-Za-z0-9-]{10,}/',                                                  // Slack tokens
+			'/glpat-[A-Za-z0-9_-]{20,}/',                                                      // GitLab personal access tokens
 			'/(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/', // a JSON Web Token
 			'/\$(?:P|H)\$[.\/A-Za-z0-9]{8,}/',                                                // phpass password hashes
 			'/\$wp\$[.\/A-Za-z0-9$]{8,}/',                                                    // WordPress 6.8+ bcrypt hashes
@@ -227,7 +236,7 @@ if ( ! function_exists( 'd5b_secret_key_norm' ) ) {
 
 	/** Cheap test before the patterns run: none of the shapes can be in a string without one of these. */
 	function d5b_secret_may_hold_shape( string $s ): bool {
-		foreach ( array( 'PRIVATE KEY', '_live_', 'sk_test_', 'whsec_', 'AIza', 'eyJ', '$', 'Bearer' ) as $needle ) {
+		foreach ( array( 'PRIVATE KEY', '_live_', 'sk_test_', 'whsec_', 'AIza', 'eyJ', '$', 'Bearer', 'ghp_', 'gho_', 'ghu_', 'ghs_', 'ghr_', 'github_pat_', 'AKIA', 'ASIA', 'xox', 'glpat-' ) as $needle ) {
 			if ( false !== strpos( $s, $needle ) ) { return true; }
 		}
 		return false;

@@ -226,6 +226,42 @@ $prose_out = array_map( function ( $p ) { return d5b_ability_scrub( array( 'v' =
 check( 'ordinary text with look-alike bits is left alone', $prose === $prose_out, $prose_out );
 check( 'a scalar string result is masked too', '[redacted]' === d5b_ability_scrub( $jwt ) );
 
+echo "vendor key shapes (2.4.1)\n";
+// Every literal split so no whole key-shaped string is in the source (GitHub push protection scans the push).
+// label => array( the key, the same key one character short )
+$vendor = array(
+	'GitHub ghp_'    => array( 'gh' . 'p_' . str_repeat( 'aB3', 12 ), 'gh' . 'p_' . substr( str_repeat( 'aB3', 12 ), 1 ) ),
+	'GitHub gho_'    => array( 'gh' . 'o_' . str_repeat( 'Zx9', 12 ), 'gh' . 'o_' . substr( str_repeat( 'Zx9', 12 ), 1 ) ),
+	'GitHub ghu_'    => array( 'gh' . 'u_' . str_repeat( 'Qw7', 12 ), 'gh' . 'u_' . substr( str_repeat( 'Qw7', 12 ), 1 ) ),
+	'GitHub ghs_'    => array( 'gh' . 's_' . str_repeat( 'Er5', 12 ), 'gh' . 's_' . substr( str_repeat( 'Er5', 12 ), 1 ) ),
+	'GitHub ghr_'    => array( 'gh' . 'r_' . str_repeat( 'Ty1', 12 ), 'gh' . 'r_' . substr( str_repeat( 'Ty1', 12 ), 1 ) ),
+	'github_pat_'    => array( 'github' . '_pat_' . str_repeat( 'Ab1_', 6 ), 'github' . '_pat_' . substr( str_repeat( 'Ab1_', 6 ), 3 ) ),
+	'AWS AKIA'       => array( 'AK' . 'IA' . str_repeat( 'Q7', 8 ), 'AK' . 'IA' . substr( str_repeat( 'Q7', 8 ), 1 ) ),
+	'AWS ASIA'       => array( 'AS' . 'IA' . str_repeat( 'Z3', 8 ), 'AS' . 'IA' . substr( str_repeat( 'Z3', 8 ), 1 ) ),
+	'Slack xoxb-'    => array( 'xo' . 'xb-' . '1234567890-abcdEF', 'xo' . 'xb-' . '123456789' ),
+	'Slack xoxp-'    => array( 'xo' . 'xp-' . '98765-43210-zz', 'xo' . 'xp-' . '98765-432' ),
+	'GitLab glpat-'  => array( 'gl' . 'pat-' . str_repeat( 'aB_-', 5 ), 'gl' . 'pat-' . substr( str_repeat( 'aB_-', 5 ), 1 ) ),
+	'Stripe sk_live' => array( 'sk_' . 'live_' . '51HxYzAbCdEf', 'sk_' . 'live_' . '51HxYzA' ),
+	'Stripe rk_live' => array( 'rk_' . 'live_' . '51HxYzAbCdEf', 'rk_' . 'live_' . '51HxYzA' ),
+	'Stripe sk_test' => array( 'sk_' . 'test_' . '51HxYzAbCdEf', 'sk_' . 'test_' . '51HxYzA' ),
+	'Stripe whsec_'  => array( 'wh' . 'sec_' . str_repeat( 'Ab1', 7 ), 'wh' . 'sec_' . substr( str_repeat( 'Ab1', 7 ), 2 ) ),
+	'Google AIza'    => array( 'AI' . 'za' . str_repeat( 'Sy_-x', 7 ), 'AI' . 'za' . substr( str_repeat( 'Sy_-x', 7 ), 1 ) ),
+);
+foreach ( $vendor as $label => $c ) {
+	list( $key, $short ) = $c;
+	$alone = d5b_secret_mask_values( $key );
+	$prose = d5b_secret_mask_values( "use $key here" );
+	$glued = array( d5b_secret_mask_values( 'token' . $key ), d5b_secret_mask_values( 'x=' . $key . ' ok' ) );
+	$sc    = d5b_ability_scrub( array( 'content' => "a $key b" ) );
+	check( "vendor shape masked on its own, in prose and through the scrubber: $label", '[redacted]' === $alone && 'use [redacted] here' === $prose && false === strpos( json_encode( $sc ), $key ), array( $alone, $prose, $sc ) );
+	check( "vendor shape glued to text (no left boundary) is masked too: $label", array( 'token[redacted]', 'x=[redacted] ok' ) === $glued, $glued );
+	check( "one character short is left alone: $label", $short === d5b_secret_mask_values( $short ) && "a $short b" === d5b_secret_mask_values( "a $short b" ), d5b_secret_mask_values( $short ) );
+}
+$glued_jwt = 'ab' . 'eyJhbGciOiJIUzI1.eyJzdWIiOiIx.SflKxwRJSM'; $glued_bearer = 'xBearer abcdefghij0123456789xyz';
+check( 'the JWT and Bearer keep their left boundary (prose safety)', $glued_jwt === d5b_secret_mask_values( $glued_jwt ) && $glued_bearer === d5b_secret_mask_values( $glued_bearer ), array( d5b_secret_mask_values( $glued_jwt ), d5b_secret_mask_values( $glued_bearer ) ) );
+check( 'an AWS id is bounded on the right: AKIA plus 17 capitals or digits is not an access key id', ( 'AK' . 'IA' . str_repeat( 'Q7', 8 ) . 'X' ) === d5b_secret_mask_values( 'AK' . 'IA' . str_repeat( 'Q7', 8 ) . 'X' ) );
+check( 'the cheap needle test sees every new shape', d5b_secret_may_hold_shape( $vendor['GitHub ghp_'][0] ) && d5b_secret_may_hold_shape( $vendor['github_pat_'][0] ) && d5b_secret_may_hold_shape( $vendor['AWS AKIA'][0] ) && d5b_secret_may_hold_shape( $vendor['AWS ASIA'][0] ) && d5b_secret_may_hold_shape( $vendor['Slack xoxb-'][0] ) && d5b_secret_may_hold_shape( $vendor['GitLab glpat-'][0] ) && ! d5b_secret_may_hold_shape( 'plain words only' ) );
+
 echo "WP_Error on the way out\n";
 site( ADMIN );
 $snapshot = d5b_ability_registry();
@@ -568,6 +604,11 @@ $GLOBALS['T_users'] = array( 1 => mkuser( 1, 'alice', array( 'administrator' ) )
 $r = call( 'users-get', array( 'id' => 3 ) );
 check( 'users-get: id, login, display name, roles, registered and the email (the caller has list_users)', is_array( $r ) && 3 === $r['id'] && 'carol' === $r['login'] && 'Carol' === $r['display_name'] && array( 'editor', 'author' ) === $r['roles'] && '2026-01-03 10:00:00' === $r['registered_gmt'] && 'carol@example.org' === $r['email'], $r );
 check( 'users-get: no password hash, key, session or application password', array( 'id', 'login', 'display_name', 'roles', 'registered_gmt', 'email' ) === array_keys( $r ) && false === strpos( json_encode( $r ), 'hunter2' ), array_keys( $r ) );
+// users-get returns no meta; the display name is the user-set field it does return (core builds it from the name meta).
+$GLOBALS['T_users'][3]->display_name = 'Carol x=' . $vendor['GitHub ghp_'][0] . ' ' . $vendor['Slack xoxb-'][0];
+$r = call( 'users-get', array( 'id' => 3 ) );
+check( 'users-get: a GitHub token and a Slack token in the user\'s display name are masked (glued one too)', is_array( $r ) && false === strpos( json_encode( $r ), $vendor['GitHub ghp_'][0] ) && false === strpos( json_encode( $r ), $vendor['Slack xoxb-'][0] ) && 0 === strpos( $r['display_name'], 'Carol x=[redacted]' ), $r );
+$GLOBALS['T_users'][3]->display_name = 'Carol';
 check( 'users-get: a missing user is not_found; a bad id is invalid_input', 'not_found' === code( call( 'users-get', array( 'id' => 99 ) ) ) && 'invalid_input' === code( call( 'users-get', array( 'id' => 'x' ) ) ) && 'invalid_input' === code( call( 'users-get' ) ) );
 $r = call( 'users-list', array( 'per_page' => 500, 'role' => 'editor', 'search' => 'bo' ) );
 check( 'users-list: per_page 500 reaches the query as 100; role and search are passed on', 100 === end( $GLOBALS['T_user_queries'] )['number'] && 'editor' === end( $GLOBALS['T_user_queries'] )['role'] && '*bo*' === end( $GLOBALS['T_user_queries'] )['search'] && 'bob' === $r['items'][0]['login'] && 1 === $r['total'], $r );
