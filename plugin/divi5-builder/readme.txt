@@ -3,7 +3,7 @@ Contributors: doughoseck
 Tags: divi, rest api
 Requires at least: 6.0
 Requires PHP: 7.4
-Stable tag: 2.4.0
+Stable tag: 2.4.1
 License: MIT
 
 Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.
@@ -26,6 +26,13 @@ Use at your own risk. With the AI abilities switched on, this plugin lets connec
 2. as a must-use plugin: copy the folder divi5-builder/ into wp-content/mu-plugins/ and the one file divi5-builder-loader.php next to it (it is published next to divi5-builder.zip in each release).
 
 == Changelog ==
+
+= 2.4.1 =
+* Secrets: more key shapes are hidden wherever they appear, in plugin headers, user names and mailer errors too: GitHub and GitLab tokens, AWS access key ids and Slack tokens. A payment, GitHub, AWS, Slack, GitLab or Google key is hidden even when it runs straight on from other text.
+* Two requests at the same moment: the limits (test emails, reset links, update checks), the one-at-a-time locks of updates, rollbacks and administrator changes, and the one-time "the update asks again" step now use the database's own guarantee that a name exists only once, so two requests in the same instant can never both get through. The limits count in fixed windows (10:00, 10:10 ...).
+* The kept copies are listed with one short lookup, however long the change history is.
+* Sharper edges: the page check never runs past its 60 seconds, a failed activation still reports the pages it checked before, a plugin that writes its own files while it is being copied is copied again (or refused with a clear message), a rollback never moves anything over a folder that is already there and never ends another update's maintenance mode, a broken reset-link guard on a user blocks the reset instead of allowing it, a user delete records the names of the fields it could not keep, and a mailer error never shows the recipient's address in any form.
+* Updating from 2.4.0 asks nothing again: no switch changes.
 
 = 2.4.0 =
 * New: AI abilities for site maintenance, behind the same master switch and the category switches. AI tools can now see what is out of date, check for updates now, install plugins and themes from wordpress.org, activate and deactivate plugins, switch the theme, update plugins, themes, WordPress and translations, roll a plugin or theme back to its previous version, and delete plugins and themes. Around that, the small user and email tasks: create a user, change a user's details or role, send a password reset link, delete a user, and send a test email.
