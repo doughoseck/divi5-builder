@@ -685,9 +685,11 @@ function flags(argv) {
     case 'link-canvas': {
       // Link a canvas to a page (sets post_parent) so Divi appends it on render.
       // Requires divi5-builder-rest.php >= 1.1.
+      // `global` as the page (plugin >= 2.4.2): no parent at all, Divi appends the canvas on any page where an
+      // interaction targets it, whichever document holds the trigger (needs edit_theme_options).
       const canvas = f._[0], page = f._[1];
-      if (!canvas || !page) die('usage: link-canvas <canvas_id> <page_id>');
-      const r = await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/link-canvas`, c, { canvas_id: Number(canvas), page_id: Number(page) });
+      if (!canvas || !page) die('usage: link-canvas <canvas_id> <page_id|global>');
+      const r = await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/divi5-builder/v1/link-canvas`, c, { canvas_id: Number(canvas), page_id: page === 'global' ? 0 : Number(page) });
       console.log(JSON.stringify(r));
       break;
     }

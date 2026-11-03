@@ -372,6 +372,29 @@ site( array( 'read', 'edit_posts' ), 3 );
 $mine = t_add_post( array( 'post_type' => 'page', 'post_author' => 3, 'post_status' => 'draft' ) ); $their_cv = t_add_post( array( 'post_type' => 'et_pb_canvas', 'post_author' => 2 ) ); $my_cv = t_add_post( array( 'post_type' => 'et_pb_canvas', 'post_author' => 3, 'post_status' => 'draft' ) ); $their_pg = t_add_post( array( 'post_type' => 'page', 'post_author' => 2 ) );
 check( 'edit_post on both, as the route: another user\'s canvas or page is refused; one\'s own pair works (no unfiltered_html needed: meta only)', 'FORBIDDEN' === call( 'divi-link-canvas', array( 'post_id' => $mine, 'canvas_id' => $their_cv ) ) && 'not_found' === code( handler( 'divi-link-canvas', array( 'post_id' => $mine, 'canvas_id' => $their_cv ) ) ) && 'FORBIDDEN' === call( 'divi-link-canvas', array( 'post_id' => $their_pg, 'canvas_id' => $my_cv ) ) && is_array( call( 'divi-link-canvas', array( 'post_id' => $mine, 'canvas_id' => $my_cv ) ) ) );
 
+// 2.4.2: Divi's per-post canvas cache goes on every link and on every save of Divi content; page_id 0 makes a canvas global.
+echo "2.4.2 canvas cache + global canvas\n";
+site();
+$pA = t_add_post( array( 'post_type' => 'page' ) ); $pB = t_add_post( array( 'post_type' => 'page' ) ); $cx = t_add_post( array( 'post_type' => 'et_pb_canvas' ) );
+t_add_meta( $pA, '_divi_dynamic_assets_canvases_used', array( 'all_canvas_metadata' => array() ) ); t_add_meta( $pB, '_divi_dynamic_assets_canvases_used', array( 'all_canvas_metadata' => array() ) );
+$r1 = d5b_link_canvas( $pA, $cx );
+check( 'linking drops the new parent\'s canvas cache, the other page keeps its own', is_array( $r1 ) && true === $r1['ok'] && array() === rows_of( $pA, '_divi_dynamic_assets_canvases_used' ) && 1 === count( rows_of( $pB, '_divi_dynamic_assets_canvases_used' ) ), $r1 );
+t_add_meta( $pA, '_divi_dynamic_assets_canvases_used', array( 'all_canvas_metadata' => array() ) );
+$r2 = d5b_link_canvas( $pB, $cx );
+check( 'relinking drops the cache of the new parent AND of the previous one', array() === rows_of( $pA, '_divi_dynamic_assets_canvases_used' ) && array() === rows_of( $pB, '_divi_dynamic_assets_canvases_used' ) && array( (string) $pB ) === rows_of( $cx, '_divi_canvas_parent_post_id' ), $r2 );
+t_add_meta( $pB, '_divi_dynamic_assets_canvases_used', array( 'all_canvas_metadata' => array() ) ); t_add_meta( $cx, '_divi_canvas_parent_context', 'x' );
+$r3 = d5b_link_canvas( 0, $cx );
+check( 'page_id 0 makes the canvas global: no parent meta and no parent context left, the id kept, the previous parent\'s cache dropped', is_array( $r3 ) && true === $r3['global'] && 0 === $r3['page_id'] && $r1['canvas_uuid'] === $r3['canvas_uuid'] && array() === rows_of( $cx, '_divi_canvas_parent_post_id' ) && array() === rows_of( $cx, '_divi_canvas_parent_context' ) && array( $r1['canvas_uuid'] ) === rows_of( $cx, '_divi_canvas_id' ) && array() === rows_of( $pB, '_divi_dynamic_assets_canvases_used' ), $r3 );
+check( 'a global canvas still needs a real canvas: a page as canvas_id is bad_canvas', 'bad_canvas' === code( d5b_link_canvas( 0, $pA ) ) );
+$pD = t_add_post( array( 'post_type' => 'post', 'post_content' => '<!-- wp:divi/placeholder --><!-- wp:divi/section {} --><!-- /wp:divi/section --><!-- /wp:divi/placeholder -->' ) ); $pN = t_add_post( array( 'post_type' => 'post', 'post_content' => '<p>plain</p>' ) );
+t_add_meta( $pD, '_divi_dynamic_assets_canvases_used', array( 'x' ) ); t_add_meta( $pN, '_divi_dynamic_assets_canvases_used', array( 'x' ) );
+d5b_forget_divi_canvas_cache_on_save( $pD, get_post( $pD ) ); d5b_forget_divi_canvas_cache_on_save( $pN, get_post( $pN ) );
+check( 'save_post: a post with Divi blocks loses the cache, a plain post keeps it', array() === rows_of( $pD, '_divi_dynamic_assets_canvases_used' ) && array( array( 'x' ) ) === rows_of( $pN, '_divi_dynamic_assets_canvases_used' ) );
+$pP = t_add_post( array( 'post_type' => 'page' ) ); $cS = t_add_post( array( 'post_type' => 'et_pb_canvas', 'post_content' => '<!-- wp:divi/section {} --><!-- /wp:divi/section -->' ) );
+t_add_meta( $cS, '_divi_canvas_parent_post_id', (string) $pP ); t_add_meta( $pP, '_divi_dynamic_assets_canvases_used', array( 'x' ) );
+d5b_forget_divi_canvas_cache_on_save( $cS, get_post( $cS ) );
+check( 'save_post of a canvas drops its parent\'s cache too', array() === rows_of( $pP, '_divi_dynamic_assets_canvases_used' ) );
+
 // =====================================================================================================
 echo "design system writes\n";
 function ds_seed() {

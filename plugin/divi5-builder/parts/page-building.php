@@ -1026,6 +1026,7 @@ if ( ! function_exists( 'd5b_tb_write' ) ) {
 			ET_Core_PageResource::remove_static_resources( 'all', 'all' );
 			$cleared = true;
 		}
+		if ( function_exists( 'd5b_forget_divi_canvas_cache' ) ) { d5b_forget_divi_canvas_cache( $id ); }
 		// new_hash is the hash of what is STORED: that is what the next expect_hash has to match.
 		return array( 'ok' => true, 'id' => $id, 'old_hash' => md5( $old ), 'new_hash' => md5( $back ),
 			'old_bytes' => strlen( $old ), 'new_bytes' => strlen( $back ), 'sent_bytes' => strlen( $content ),
@@ -1125,24 +1126,58 @@ if ( ! function_exists( 'd5b_tb_write' ) ) {
 		if ( ! $c || $c->post_type !== 'et_pb_canvas' ) {
 			return new WP_Error( 'bad_canvas', 'canvas_id is not an et_pb_canvas', array( 'status' => 400 ) );
 		}
-		if ( ! get_post( $page_id ) ) {
+		if ( $page_id && ! get_post( $page_id ) ) {
 			return new WP_Error( 'bad_page', 'page_id not found', array( 'status' => 400 ) );
 		}
+		$previous = (int) get_post_meta( $canvas_id, '_divi_canvas_parent_post_id', true );
 		// Reuse an existing canvas UUID if this canvas already has one.
 		$uuid = get_post_meta( $canvas_id, '_divi_canvas_id', true );
 		if ( ! $uuid ) { $uuid = wp_generate_uuid4(); }
 		// Canvas-side meta (identity + which page it belongs to).
 		update_post_meta( $canvas_id, '_divi_canvas_id', $uuid );
-		update_post_meta( $canvas_id, '_divi_canvas_parent_post_id', (string) $page_id );
 		if ( ! get_post_meta( $canvas_id, '_divi_canvas_created_at', true ) ) {
 			update_post_meta( $canvas_id, '_divi_canvas_created_at', gmdate( 'Y-m-d\TH:i:s' ) . '.000Z' );
 		}
+		if ( 0 === $page_id ) {
+			// 2.4.2: page_id 0 makes the canvas GLOBAL, the way Divi's own "make global" does it (no parent meta at all).
+			// Divi appends a global canvas on any page where an interaction targets something inside it, whichever
+			// document (page, post, Theme Builder layout) holds the trigger.
+			delete_post_meta( $canvas_id, '_divi_canvas_parent_post_id' );
+			delete_post_meta( $canvas_id, '_divi_canvas_parent_context' );
+			d5b_forget_divi_canvas_cache( $previous );
+			return array( 'ok' => true, 'canvas_id' => $canvas_id, 'page_id' => 0, 'global' => true, 'canvas_uuid' => $uuid );
+		}
+		update_post_meta( $canvas_id, '_divi_canvas_parent_post_id', (string) $page_id );
 		// Page-side pointer (builder state) + Divi 5 engine flags.
 		$name = $canvas_name ? sanitize_text_field( $canvas_name ) : 'Main Canvas';
 		update_post_meta( $page_id, '_divi_off_canvas_data', array( 'activeCanvasId' => $uuid, 'mainCanvasName' => $name ) );
 		update_post_meta( $page_id, '_et_pb_use_divi_5', 'on' );
 		update_post_meta( $page_id, '_et_pb_use_builder', 'on' );
+		// Divi keeps "which canvases does this post have" in a post meta cache that only its own builder save clears
+		// (2.4.2, seen 2026-11-03: a canvas linked over REST stayed out of the page until that cache went).
+		d5b_forget_divi_canvas_cache( $page_id );
+		if ( $previous && $previous !== $page_id ) { d5b_forget_divi_canvas_cache( $previous ); }
 		return array( 'ok' => true, 'canvas_id' => $canvas_id, 'page_id' => $page_id, 'canvas_uuid' => $uuid );
+	}
+}
+
+if ( ! function_exists( 'd5b_forget_divi_canvas_cache' ) ) {
+	/**
+	 * Drop Divi 5's per-post canvas cache (`_divi_dynamic_assets_canvases_used`, written on the first front-end render
+	 * and read blindly after that) so the next render looks at the canvases again. Divi's own builder save does the
+	 * same; a save over REST, a Theme Builder write or a link made here did not, and a new popup never appeared.
+	 */
+	function d5b_forget_divi_canvas_cache( $post_id ): void {
+		$post_id = (int) $post_id;
+		if ( $post_id > 0 ) { delete_post_meta( $post_id, '_divi_dynamic_assets_canvases_used' ); }
+	}
+	/** save_post: any post that holds Divi 5 blocks (pages, posts, layouts, canvases) loses the cache on every save. */
+	function d5b_forget_divi_canvas_cache_on_save( $post_id, $post = null ): void {
+		$post = $post ?: get_post( $post_id );
+		if ( ! $post || 'revision' === $post->post_type || false === strpos( (string) $post->post_content, 'wp:divi/' ) ) { return; }
+		d5b_forget_divi_canvas_cache( $post_id );
+		// A canvas saved: its parent renders it, so the parent's cache goes too.
+		if ( 'et_pb_canvas' === $post->post_type ) { d5b_forget_divi_canvas_cache( (int) get_post_meta( $post_id, '_divi_canvas_parent_post_id', true ) ); }
 	}
 }
 
@@ -1283,9 +1318,10 @@ function d5b_routes_page_building(): void {
 		'permission_callback' => function ( $req ) {
 			$canvas_id = (int) $req->get_param( 'canvas_id' );
 			$page_id   = (int) $req->get_param( 'page_id' );
-			return $canvas_id && $page_id
-				&& current_user_can( 'edit_post', $canvas_id )
-				&& current_user_can( 'edit_post', $page_id );
+			if ( ! $canvas_id || ! current_user_can( 'edit_post', $canvas_id ) ) { return false; }
+			// 2.4.2: page_id 0 = make the canvas global (site-wide), the Theme Builder level of trust.
+			if ( 0 === $page_id ) { return null !== $req->get_param( 'page_id' ) && current_user_can( 'edit_theme_options' ); }
+			return current_user_can( 'edit_post', $page_id );
 		},
 		'callback'            => function ( $req ) {
 			return d5b_link_canvas( (int) $req->get_param( 'page_id' ), (int) $req->get_param( 'canvas_id' ), $req->get_param( 'canvas_name' ) );

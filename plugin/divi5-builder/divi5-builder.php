@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Divi 5 Builder
  * Description: Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.
- * Version: 2.4.1
+ * Version: 2.4.2
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: divi5-builder skill
@@ -26,7 +26,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 // Loaded twice (a must-use copy and a normal copy, or two folders): the first copy wins, the second does nothing.
 if ( defined( 'D5B_VERSION' ) ) { return; }
 
-define( 'D5B_VERSION', '2.4.1' );
+define( 'D5B_VERSION', '2.4.2' );
 define( 'D5B_FILE', __FILE__ );
 
 // An explicit list, not a directory scan: a file left behind by an older copy (copying over the folder by FTP does not
@@ -85,6 +85,12 @@ add_action( 'init', function () {
 
 // Late, so an old copy's routes are already there to see.
 add_action( 'rest_api_init', 'd5b_gate', 99 );
+
+// 2.4.2: every save of a post that holds Divi 5 blocks drops Divi's per-post canvas cache, which only the builder's own
+// save cleared before (a popup canvas linked or edited over REST stayed out of the page until then).
+add_action( 'save_post', function ( $post_id, $post = null ) {
+	if ( function_exists( 'd5b_forget_divi_canvas_cache_on_save' ) ) { d5b_forget_divi_canvas_cache_on_save( $post_id, $post ); }
+}, 20, 2 );
 
 // AI abilities (WordPress 6.9+ Abilities API). Both callbacks do nothing without the API, while the master switch is
 // off, or for a category whose switch is off.
