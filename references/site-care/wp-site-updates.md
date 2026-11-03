@@ -91,6 +91,10 @@ risky actions" under each (Settings > Divi 5 Builder). The Updates switch is not
 1. `plugins-status` (plugins and themes with the version on offer and why one is blocked, plus `kept_copies`),
    `themes-status`, `core-status`. They read the stored list; `updates-check` asks wordpress.org again (once per 5 minutes).
    Show the user what is out of date and get their go, as with the script.
+   Premium plugins with their own updater (Divi Plugins' FilterGrid, 2026-11-03) only add their offer to the update list
+   while someone is inside wp-admin, so neither `updates-check` nor the status reads see them from outside. Before an
+   abilities update on a site with such plugins, ask the user to open Plugins in wp-admin once, then read the status again;
+   the update then runs through `plugins-update` with its kept copy like any other.
 2. `plugins-update` / `themes-update` with the plugin file or theme folder: a copy is kept first (refused with
    `copy_too_big`, `store_full` or `copy_failed` when it cannot be, and `linked` for a folder that is a link), then the
    update, with the pages checked before and after. `problems` lists a page that got worse; by default the new version
