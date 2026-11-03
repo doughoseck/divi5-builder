@@ -1246,6 +1246,10 @@ function is_super_admin( $user_id = false ) {
 }
 // The direct file system (class-wp-filesystem-direct.php), reduced to what the plugin uses: copy( from, to, overwrite, mode ).
 class T_Filesystem {
+	// As WP_Filesystem_Direct: ABSPATH (made here when the stand-in's temp ABSPATH does not exist yet), file_exists, a write.
+	function abspath() { if ( ! is_dir( ABSPATH ) ) { @mkdir( ABSPATH, 0777, true ); } return ABSPATH; }
+	function exists( $file ) { return @file_exists( $file ); }
+	function put_contents( $file, $contents, $mode = false ) { return false !== @file_put_contents( $file, $contents ); }
 	function copy( $from, $to, $overwrite = false, $mode = false ) {
 		$GLOBALS['T_copy_calls'][] = array( 'wp_filesystem->copy', $from, $to );
 		if ( ! empty( $GLOBALS['T_fs_copy_fail'] ) || ( ! $overwrite && file_exists( $to ) ) ) { return false; }
@@ -1299,6 +1303,8 @@ function copy_dir( $from, $to, $skip_list = array() ) {
 			// T_copy_fail_to_re: a copy whose destination matches fails the same way, after its first file (one copy of several).
 			if ( '' !== ( $GLOBALS['T_copy_fail_to_re'] ?? '' ) && 1 === preg_match( $GLOBALS['T_copy_fail_to_re'], str_replace( '\\', '/', $to . $f ) ) && ( $GLOBALS['T_copy_re_done'] = ( $GLOBALS['T_copy_re_done'] ?? 0 ) + 1 ) > 1 ) { return new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.', $to . $f ); }
 			if ( ! @copy( $from . $f, $to . $f ) ) { return new WP_Error( 'copy_failed_copy_dir', 'Could not copy file.', $to . $f ); }
+			// T_copy_each: callable( source file, copied file ) run after each file: another process writing meanwhile.
+			if ( is_callable( $GLOBALS['T_copy_each'] ?? null ) ) { $cb = $GLOBALS['T_copy_each']; $cb( $from . $f, $to . $f ); }
 		}
 	}
 	return true;
@@ -2175,6 +2181,7 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		$GLOBALS['T_plugins_disk'] = false; $GLOBALS['T_plugins_cache'] = null; $GLOBALS['T_upgrade_result'] = array(); $GLOBALS['T_upgrade_calls'] = array();
 		$GLOBALS['T_copies_at_upgrade'] = null; $GLOBALS['T_uninstalls'] = array(); $GLOBALS['T_delete_calls'] = array(); $GLOBALS['T_fs_deletes'] = array();
 		$GLOBALS['T_maintenance'] = array(); $GLOBALS['T_in_maintenance'] = false; $GLOBALS['T_opcache'] = array();
+		@unlink( ABSPATH . '.maintenance' ); unset( $GLOBALS['d5b_maint_mm_created'] ); // no site starts in maintenance mode
 		$GLOBALS['T_wp_version'] = '6.9'; $GLOBALS['T_core_upgrade_calls'] = array(); $GLOBALS['T_core_upgrade_result'] = null; $GLOBALS['T_lang_upgrade_calls'] = array(); $GLOBALS['T_lang_upgrade_result'] = null;
 		t_themes_reset();
 	}
@@ -2391,7 +2398,11 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 			function maintenance_mode( $enable = false ) {
 				if ( ! is_object( $GLOBALS['wp_filesystem'] ?? null ) ) { throw new Error( 'Call to a member function abspath() on null' ); }
 				$GLOBALS['T_maintenance'][] = (bool) $enable; $GLOBALS['T_traps'][] = $enable ? 'maintenance_on' : 'maintenance_off';
-				$GLOBALS['T_in_maintenance'] = (bool) $enable;
+				// As core 6.4.1: on deletes and writes ABSPATH/.maintenance; off deletes it when it is there.
+				$fs = $GLOBALS['wp_filesystem']; $file = $fs->abspath() . '.maintenance';
+				if ( $enable ) { $fs->delete( $file ); $fs->put_contents( $file, '<?php $upgrading = ' . time() . '; ?>' ); }
+				elseif ( $fs->exists( $file ) ) { $fs->delete( $file ); }
+				$GLOBALS['T_in_maintenance'] = $fs->exists( $file );
 			}
 		}
 	}

@@ -286,7 +286,10 @@ site(); $GLOBALS['T_activate_fail'] = array( HELLO => 'fatal' ); $level = ob_get
 $r = call( 'plugins-activate', array( 'plugin' => HELLO ) );
 check( 'activate: fatal plugin -> activation_failed, not in the active list, no page round after', 'activation_failed' === code( $r ) && ! in_array( HELLO, active(), true ) && 1 === count( $GLOBALS['T_http_calls'] ), array( code( $r ), active(), count( $GLOBALS['T_http_calls'] ) ) );
 check( '... the output buffer core left open is closed again', $level === ob_get_level(), array( $level, ob_get_level() ) );
-check( '... the error carries human_check, pages null, reverted false, never the plugin\'s output', d5b_human_check() === ( edata( $r )['human_check'] ?? null ) && array_key_exists( 'pages', (array) edata( $r ) ) && null === edata( $r )['pages'] && false === edata( $r )['reverted'] && false === strpos( json_encode( array( $r->get_error_message(), edata( $r ) ) ), 'Fatal output' ), edata( $r ) );
+$pg = edata( $r )['pages'] ?? null;
+check( '... the error carries human_check, reverted false, never the plugin\'s output', d5b_human_check() === ( edata( $r )['human_check'] ?? null ) && false === edata( $r )['reverted'] && false === strpos( json_encode( array( $r->get_error_message(), edata( $r ) ) ), 'Fatal output' ), edata( $r ) );
+check( '2.4.1 ... and the before round in pages.before (after empty, problems empty, unavailable false)', is_array( $pg ) && 1 === count( $pg['before'] ) && 200 === $pg['before'][0]['status'] && array() === $pg['after'] && array() === $pg['problems'] && false === $pg['unavailable'] && array() === $pg['skipped'], $pg );
+check( '... the row keeps that before round too', 1 === count( hlast()['after']['pages']['before'] ?? array() ), hlast()['after'] );
 check( '... the row: failed, the active list unchanged', 'activate' === hlast()['action'] && ! in_array( HELLO, hlast()['after']['active'], true ) && '' !== (string) ( hlast()['after']['failed'] ?? '' ), hlast() );
 
 site(); $GLOBALS['T_activate_fail'] = array( HELLO => 'output' );
@@ -695,8 +698,22 @@ $u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id']
 $GLOBALS['T_mrenames'] = array(); $GLOBALS['T_maintenance'] = array(); $GLOBALS['T_opcache'] = array(); $GLOBALS['T_copy_calls'] = array();
 $r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
 $mr = $GLOBALS['T_mrenames'];
-check( 'the staging copy is made first (.d5b-new-akismet-<time>), then two renames, both in maintenance mode: live -> .d5b-old-akismet-<time>, staging -> akismet', is_array( $r ) && count( $mr ) >= 2 && 1 === preg_match( '/^\.d5b-old-akismet-\d+$/', $mr[0][1] ) && 'akismet' === $mr[0][0] && 1 === preg_match( '/^\.d5b-new-akismet-\d+$/', $mr[1][0] ) && 'akismet' === $mr[1][1] && true === $mr[0][2] && true === $mr[1][2] && $mr[0][3] >= 1 && 1 === preg_match( '#/\.d5b-new-akismet-\d+$#', (string) ( $GLOBALS['T_copy_calls'][0][2] ?? '' ) ), array( $mr, $GLOBALS['T_copy_calls'] ) );
-check( '... maintenance mode on then off once; the opcode cache of the folder invalidated', array( true, false ) === $GLOBALS['T_maintenance'] && false === $GLOBALS['T_in_maintenance'] && in_array( WP_PLUGIN_DIR . '/akismet', $GLOBALS['T_opcache'], true ), array( $GLOBALS['T_maintenance'], $GLOBALS['T_opcache'] ) );
+check( 'the staging copy is made first (.d5b-new-akismet-<6 hex>), then two renames, both in maintenance mode: live -> .d5b-old-akismet-<6 hex>, staging -> akismet', is_array( $r ) && count( $mr ) >= 2 && 1 === preg_match( '/^\.d5b-old-akismet-[0-9a-f]{6}$/', $mr[0][1] ) && 'akismet' === $mr[0][0] && 1 === preg_match( '/^\.d5b-new-akismet-[0-9a-f]{6}$/', $mr[1][0] ) && 'akismet' === $mr[1][1] && true === $mr[0][2] && true === $mr[1][2] && $mr[0][3] >= 1 && 1 === preg_match( '#/\.d5b-new-akismet-[0-9a-f]{6}$#', (string) ( $GLOBALS['T_copy_calls'][0][2] ?? '' ) ), array( $mr, $GLOBALS['T_copy_calls'] ) );
+check( '... maintenance mode on then off once; the opcode cache of the folder invalidated', array( true, false ) === $GLOBALS['T_maintenance'] && false === $GLOBALS['T_in_maintenance'] && ! file_exists( ABSPATH . '.maintenance' ) && in_array( WP_PLUGIN_DIR . '/akismet', $GLOBALS['T_opcache'], true ), array( $GLOBALS['T_maintenance'], $GLOBALS['T_opcache'] ) );
+// 2.4.1: the site was already in maintenance mode (another update running): the swap never removes that .maintenance file.
+disk_site();
+$u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
+@mkdir( ABSPATH, 0777, true ); file_put_contents( ABSPATH . '.maintenance', '<?php $upgrading = 1700000000; ?>' );
+$GLOBALS['T_maintenance'] = array(); $GLOBALS['T_mrenames'] = array();
+$r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
+check( 'a .maintenance file that was there before the swap is left as it was (not rewritten, not removed); the swap still ran', is_array( $r ) && '<?php $upgrading = 1700000000; ?>' === @file_get_contents( ABSPATH . '.maintenance' ) && ! in_array( false, $GLOBALS['T_maintenance'], true ) && 2 <= count( $GLOBALS['T_mrenames'] ), array( $GLOBALS['T_maintenance'], is_wp_error( $r ) ? $r->get_error_message() : 'ok' ) );
+@unlink( ABSPATH . '.maintenance' );
+d5b_maint_filesystem();
+check( 'd5b_maint_maintenance: on writes .maintenance, off removes the one it wrote', true === d5b_maint_maintenance( true ) && file_exists( ABSPATH . '.maintenance' ) && true === d5b_maint_maintenance( false ) && ! file_exists( ABSPATH . '.maintenance' ) );
+file_put_contents( ABSPATH . '.maintenance', 'theirs' );
+check( '... a file that was there first: on leaves it, off leaves it', true === d5b_maint_maintenance( true ) && 'theirs' === @file_get_contents( ABSPATH . '.maintenance' ) && true === d5b_maint_maintenance( false ) && 'theirs' === @file_get_contents( ABSPATH . '.maintenance' ) );
+@unlink( ABSPATH . '.maintenance' );
+check( '... an off without an on of this request removes nothing', ( function () { file_put_contents( ABSPATH . '.maintenance', 'x' ); unset( $GLOBALS['d5b_maint_mm_created'] ); d5b_maint_maintenance( false ); $ok = file_exists( ABSPATH . '.maintenance' ); @unlink( ABSPATH . '.maintenance' ); return $ok; } )() );
 
 disk_site();
 $u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
@@ -713,7 +730,7 @@ disk_site();
 $v50 = tree( WP_PLUGIN_DIR . '/akismet' );
 $u1 = (int) call( 'plugins-update', array( 'plugin' => AKISMET ) )['history_id'];
 $v51 = tree( WP_PLUGIN_DIR . '/akismet' );
-$GLOBALS['T_rename_refuse_re'] = '#/\.d5b-old-#'; $GLOBALS['T_fs_delete_fail_re'] = '#/\.d5b-old-akismet-\d+/changelog\.txt$#';
+$GLOBALS['T_rename_refuse_re'] = '#/\.d5b-old-#'; $GLOBALS['T_fs_delete_fail_re'] = '#/\.d5b-old-akismet-[0-9a-f]{6}/changelog\.txt$#';
 $r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
 $left = array_values( preg_grep( '/^\.d5b-old-akismet-/', scandir( WP_PLUGIN_DIR ) ) );
 check( 'swap: the move into the store is refused (rename) and the leftover cannot be removed whole: the store holds a whole copy (kept), the warning names the leftover, live is 5.0', is_array( $r ) && $v50 === tree( WP_PLUGIN_DIR . '/akismet' ) && is_array( row( $r['history_id'] )['after']['kept'] ) && $v51 === tree( row( $r['history_id'] )['after']['kept']['path'] ) && 1 === count( $left ) && 1 === count( preg_grep( '/' . preg_quote( $left[0], '/' ) . '.*by hand/', (array) ( $r['warnings'] ?? array() ) ) ) && 5 === count( get_plugins() ), array( $r, $left ) );
@@ -890,7 +907,7 @@ $r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 )
 $GLOBALS['T_rename_hook'] = null;
 check( 'M2 a second rollback and an update of the same plugin while the first rollback is between its renames: busy (409), nothing touched, no row', is_array( $inner ) && 'busy' === code( $inner[0] ) && 'busy' === code( $inner[1] ) && true === $inner[2] && 409 === d5b_ability_http_status( 'busy' ), array( code( $inner[0] ?? null ), code( $inner[1] ?? null ), $inner[2] ?? null ) );
 check( 'M2 ... the first rollback finished normally (5.0 back, no dot folder), and the lock is gone', is_array( $r ) && '5.0' === version_of( AKISMET ) && array() === preg_grep( '/\.d5b-/', scandir( WP_PLUGIN_DIR ) ) && '' === d5b_maint_lock_fresh( d5b_maint_item_lock( 'plugin', 'akismet' ) ), $r );
-check( 'M2 the rollback row written before the renames names both folders (staging, aside), names only', is_array( $mid ) && 'rollback' === $mid['action'] && true === ( $mid['after']['running'] ?? null ) && 1 === preg_match( '/^\.d5b-new-akismet-\d+$/', (string) ( $mid['after']['staging'] ?? '' ) ) && 1 === preg_match( '/^\.d5b-old-akismet-\d+$/', (string) ( $mid['after']['aside'] ?? '' ) ), $mid['after'] ?? null );
+check( 'M2 the rollback row written before the renames names both folders (staging, aside), names only', is_array( $mid ) && 'rollback' === $mid['action'] && true === ( $mid['after']['running'] ?? null ) && 1 === preg_match( '/^\.d5b-new-akismet-[0-9a-f]{6}$/', (string) ( $mid['after']['staging'] ?? '' ) ) && 1 === preg_match( '/^\.d5b-old-akismet-[0-9a-f]{6}$/', (string) ( $mid['after']['aside'] ?? '' ) ), $mid['after'] ?? null );
 check( 'M2 another plugin is not held up by that lock', d5b_maint_item_lock( 'plugin', 'akismet' ) !== d5b_maint_item_lock( 'plugin', 'acme-pro-folder' ) );
 // The item lock holds 600 s (the engine's own time limit): read while the rollback swaps.
 disk_site();

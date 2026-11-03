@@ -151,6 +151,17 @@ site();
 $GLOBALS['T_mail_fail'] = 'SMTP Error: The following recipients failed: ED@example.org: mailbox full';
 $r = send( array( 'to' => 'user:3' ) );
 check( 'a mailer error naming the recipient: the address is replaced in the answer and the row', 'SMTP Error: The following recipients failed: [recipient]: mailbox full' === ( $r['mailer_error'] ?? '' ) && false === stripos( json_encode( array( hrows(), arows(), $r ) ), 'ed@example.org' ), $r );
+// 2.4.1: an address with an international domain (a site whose is_email filter allows one): PHPMailer sends to, and names
+// in its errors, the punycode form (idn_to_ascii). Both forms are scrubbed; core's is_email (and this stand-in) refuses such
+// an address, so the scrub is checked directly.
+if ( function_exists( 'idn_to_ascii' ) ) {
+	$uni = "ed@b\u{00FC}cher.example"; $puny = 'ed@' . idn_to_ascii( "b\u{00FC}cher.example", IDNA_DEFAULT, INTL_IDNA_VARIANT_UTS46 );
+	$s = d5b_wem_scrub_address( "SMTP Error: The following recipients failed: $puny: no such user; also $uni; and " . strtoupper( $puny ), $uni );
+	check( '2.4.1 the recipient is scrubbed in its given form and its idn_to_ascii (punycode) form, any case', 'ed@xn--bcher-kva.example' === $puny && false === stripos( $s, 'xn--bcher' ) && false === strpos( $s, "b\u{00FC}cher" ) && 3 === substr_count( $s, '[recipient]' ), $s );
+} else {
+	check( '2.4.1 (idn_to_ascii is not in this PHP: the punycode form is not checked here)', true );
+}
+check( '... an ASCII address: only its own form, any case', 'x [recipient] y [recipient]' === d5b_wem_scrub_address( 'x ed@example.org y ED@Example.ORG', 'ed@example.org' ) );
 // 2.4.1: a mailer (an API mailer plugin) that echoes its key in the error; split literals, no whole key in the source.
 site();
 $sgk = 'xo' . 'xb-' . '1234567890-abcdEF'; $awk = 'AS' . 'IA' . str_repeat( 'Z3', 8 );

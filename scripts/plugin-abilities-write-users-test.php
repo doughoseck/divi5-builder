@@ -221,6 +221,15 @@ site();
 check( 'an email change of another user does not block this one', is_array( call( 'users-update', array( 'id' => 3, 'email' => 'ed2@example.org' ) ) ) && array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 4 ) ) );
 site(); call( 'users-update', array( 'id' => 4, 'email' => 'sub.h@example.org' ) ); $GLOBALS['wpdb']->tables = array_diff_key( $GLOBALS['wpdb']->tables, array( d5b_history_table() => 1 ) );
 check( 'no history dependency: with the history table gone the marker still blocks (4) and its absence lets through (3)', 'recently_changed' === code( d5b_wu_reset( array( 'id' => 4 ) ) ) && true === ( d5b_wu_reset( array( 'id' => 3 ) )['sent'] ?? null ) && 1 === count( calls( 'retrieve_password' ) ) );
+// 2.4.1: a marker that is not a number (written by something else, or broken) counts as recent: fail closed.
+$bad = array();
+foreach ( array( 'garbage', '', '17e8', '1700000000 ', '-5', 'x1700000000' ) as $v ) {
+	site(); update_user_meta( 4, '_d5b_identity_changed_at', $v );
+	if ( 'recently_changed' !== code( call( 'users-password-reset', array( 'id' => 4 ) ) ) || array() !== calls( 'retrieve_password' ) ) { $bad[] = $v; }
+}
+check( '2.4.1 a non-numeric marker counts as a recent change (recently_changed, nothing sent)', array() === $bad, $bad );
+site(); update_user_meta( 4, '_d5b_identity_changed_at', (string) ( (int) $GLOBALS['T_clock'] - 90000 ) );
+check( '... a numeric marker older than 24 hours still lets the reset through', array( 'sent' => true ) === call( 'users-password-reset', array( 'id' => 4 ) ) );
 check( 'update: nothing to change -> invalid_input', 'invalid_input' === code( call( 'users-update', array( 'id' => 3 ) ) ) );
 check( 'update: an unknown user -> not_found', 'not_found' === code( call( 'users-update', array( 'id' => 777, 'display_name' => 'x' ) ) ) );
 
@@ -410,9 +419,12 @@ check( 'delete: a code for another reassign_to -> confirmation_invalid', 'confir
 $pv = call( 'users-delete-preview', array( 'id' => 3, 'reassign_to' => 4 ) );
 t_add_post( array( 'post_author' => 3 ) ); // one more item since the preview
 check( 'delete: the item count changed since the preview -> confirmation_invalid', 'confirmation_invalid' === code( call( 'users-delete', array( 'id' => 3, 'reassign_to' => 4, 'confirmation' => $pv['confirmation'] ) ) ) && false !== get_userdata( 3 ) );
+update_user_meta( 3, '_wpseo_profile_flag', 'PROTECTED-VALUE' ); update_user_meta( 3, 'smtp_password', 'S3CR3T-PW' ); update_user_meta( 3, 'favourite_colour', 'teal' );
 $pv = call( 'users-delete-preview', array( 'id' => 3, 'reassign_to' => 4 ) );
 $ids = t_author_ids( 3 );
 $r = call( 'users-delete', array( 'id' => 3, 'reassign_to' => 4, 'confirmation' => $pv['confirmation'] ) );
+$hw = d5b_history_get( (int) ( $r['history_id'] ?? 0 ) );
+check( '2.4.1 delete: the row names the protected and secret-named meta keys it could not keep (names only, sorted), never their values', is_array( $hw ) && array( '_wpseo_profile_flag', 'session_tokens', 'smtp_password' ) === ( $hw['before']['withheld_meta_keys'] ?? null ) && false === strpos( json_encode( hrows() ), 'S3CR3T-PW' ) && false === strpos( json_encode( hrows() ), 'PROTECTED-VALUE' ) && array( 'teal' ) === ( $hw['before']['meta']['favourite_colour'] ?? null ), $hw['before'] ?? null );
 check( 'delete: done: wp_delete_user( 3, 4 ), the user gone, every item now by user 4', is_array( $r ) && true === $r['deleted'] && array( array( 'wp_delete_user', 3, 4 ) ) === calls( 'wp_delete_user' ) && false === get_userdata( 3 ) && array() === t_author_ids( 3 ) && 4 === count( $ids ) && 4 === $r['posts_reassigned'] && 4 === $r['reassigned_to'], $r );
 $h = hlast();
 check( '... one row, written before: before = the record + reassigned_post_ids (read before the delete), after { reassigned_to, posts }', 1 === count( hrows() ) && 'delete' === $h['action'] && 'ed' === $h['before']['login'] && $ids === $h['before']['reassigned_post_ids'] && array( 'posts' => 4, 'reassigned_to' => 4 ) === ( function ( $a ) { ksort( $a ); return $a; } )( $h['after'] ) && (int) $r['history_id'] === (int) $h['id'], $h );

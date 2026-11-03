@@ -102,7 +102,11 @@ if ( ! function_exists( 'd5b_wcore_h_status' ) ) {
 			$kept = $drop();
 			return new WP_Error( 'invalid_input', d5b_maint_err_text( $res ) . ( null === $kept ? '' : ' ' . $kept ), array( 'status' => 409 ) + ( null === $kept ? array() : array( 'history_id' => $hid ) ) );
 		}
-		if ( is_array( $res ) && ! $done && '' === (string) ( $res['error'] ?? '' ) && 'already up to date' === ( $res['note'] ?? '' ) ) {
+		// Nothing on offer any more: read from the engine's fields, not its note text. wpsu_update answers that case with done
+		// false, no error key (every run that tried has one, '' on success) and to equal to from (it sets to = from then).
+		$nothing = is_array( $res ) && false === ( $res['done'] ?? null ) && empty( $res['dry_run'] ) && ! array_key_exists( 'error', $res )
+			&& (string) ( $res['to'] ?? '' ) === (string) ( $res['from'] ?? '' );
+		if ( $nothing ) {
 			$kept = $drop();
 			return array( 'updated' => false, 'already_up_to_date' => true, 'version' => $from ) + ( null === $kept ? array() : array( 'history_id' => $hid, 'warnings' => array( $kept ) ) );
 		}

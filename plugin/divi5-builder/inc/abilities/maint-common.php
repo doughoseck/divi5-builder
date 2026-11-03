@@ -71,9 +71,9 @@ if ( ! function_exists( 'd5b_maint_page_health' ) ) {
 
 if ( ! function_exists( 'd5b_pages_round' ) ) {
 	/**
-	 * One round of page checks: each url fetched with wp_remote_get (timeout 15 s, a fresh cache-buster, the loopback's own
-	 * sslverify as Site Health has it), read as pageHealth does. Once $budget_s seconds have gone by, the pages left are not
-	 * fetched and come back skipped. A page that does not answer has status 0. The url in the result is the url given.
+	 * One round of page checks: each url fetched with wp_remote_get (timeout 15 s or the budget left, whichever is less, so
+	 * the round never runs past $budget_s; a fresh cache-buster; the loopback's own sslverify as Site Health has it), read as
+	 * pageHealth does. Once less than a second of $budget_s is left, the pages left are not fetched and come back skipped. A page that does not answer has status 0. The url in the result is the url given.
 	 * $retry (the after round): a page that answers nothing or 5xx is asked again, up to twice, 6 s apart, as the script does
 	 * (right after an update a site can fail once while it leaves maintenance mode); a retry is made only while it fits in the
 	 * budget. The before round does not retry.
@@ -82,9 +82,11 @@ if ( ! function_exists( 'd5b_pages_round' ) ) {
 	function d5b_pages_round( array $urls, int $budget_s = 60, bool $retry = false ): array {
 		$start = d5b_maint_now();
 		$out   = array();
-		$fetch = function ( string $url ): array {
+		$fetch = function ( string $url ) use ( $start, $budget_s ): array {
+			// at most 15 s, and never past the round's budget: a page that never answers cannot stretch the round
+			$left = (float) $budget_s - ( d5b_maint_now() - $start ); // at least 1 s: the loop below never starts a fetch with less
 			$r = wp_remote_get( d5b_maint_bust( $url ), array(
-				'timeout'   => 15,
+				'timeout'   => min( 15.0, $left ),
 				'sslverify' => (bool) apply_filters( 'https_local_ssl_verify', false ),
 				'headers'   => array( 'Cache-Control' => 'no-cache' ),
 			) );
@@ -93,13 +95,13 @@ if ( ! function_exists( 'd5b_pages_round' ) ) {
 		};
 		foreach ( $urls as $url ) {
 			$url = (string) $url;
-			if ( d5b_maint_now() - $start >= $budget_s ) {
+			if ( d5b_maint_now() - $start > $budget_s - 1 ) { // less than a second left: not fetched
 				$out[] = array( 'url' => $url, 'status' => 0, 'bytes' => 0, 'closed' => false, 'fatal' => '', 'title' => '', 'skipped' => true );
 				continue;
 			}
 			$h = $fetch( $url );
 			for ( $tries = 1; $retry && $tries < 3 && ( 0 === $h['status'] || $h['status'] >= 500 ); $tries++ ) {
-				if ( d5b_maint_now() - $start + 6 >= $budget_s ) { break; }
+				if ( d5b_maint_now() - $start + 6 > $budget_s - 1 ) { break; } // the wait and at least a second to fetch
 				d5b_maint_sleep( 6 );
 				$h = $fetch( $url );
 			}
@@ -152,7 +154,7 @@ if ( ! function_exists( 'd5b_pages_compare' ) ) {
 			if ( 200 !== $st ) { $problems[] = $url . ': answered ' . ( 0 === $st ? 'nothing' : (string) $st ) . ' (was 200)'; }
 			elseif ( '' !== (string) ( $a['fatal'] ?? '' ) ) { $problems[] = $url . ': shows "' . $a['fatal'] . '"'; }
 			elseif ( empty( $a['closed'] ) ) { $problems[] = $url . ': the page is cut off (no closing </html>)'; }
-			elseif ( (int) $p['bytes'] > 2000 && (int) $a['bytes'] < (int) $p['bytes'] * 0.5 ) { $problems[] = $url . ': the page shrank from ' . (int) $p['bytes'] . ' to ' . (int) $a['bytes'] . ' characters'; }
+			elseif ( (int) $p['bytes'] > 2000 && (int) $a['bytes'] < (int) $p['bytes'] * 0.5 ) { $problems[] = $url . ': the page shrank from ' . (int) $p['bytes'] . ' to ' . (int) $a['bytes'] . ' bytes'; }
 		}
 		return $problems;
 	}
@@ -164,21 +166,29 @@ if ( ! function_exists( 'd5b_pages_check' ) ) {
 	 * work), the result is unavailable: $change() still runs, there is no after round and the human check is the whole check.
 	 * $change's own return value is not kept here: a caller that needs it captures it by reference. skipped: the urls a round
 	 * ran out of time for (before or after), which were therefore not compared (d5b_pages_warnings says so).
+	 * $only_before: set to the before-only result (after empty, problems empty) as soon as the before round is done, before
+	 * $change() runs, so a caller whose change stops the check with an exception still has the round to report.
 	 * @return array{before:array,after:array,problems:string[],unavailable:bool,skipped:string[]}
 	 */
-	function d5b_pages_check( callable $change ): array {
+	function d5b_pages_check( callable $change, ?array &$only_before = null ): array {
 		$urls   = d5b_pages_watched();
 		$before = d5b_pages_round( $urls );
 		$unavailable = true;
 		foreach ( $before as $p ) { if ( 0 !== (int) $p['status'] ) { $unavailable = false; break; } }
+		$only_before = array( 'before' => $before, 'after' => array(), 'problems' => array(), 'unavailable' => $unavailable, 'skipped' => d5b_pages_skipped( $before ) );
 		$change();
 		if ( $unavailable ) { return array( 'before' => $before, 'after' => array(), 'problems' => array(), 'unavailable' => true, 'skipped' => array() ); }
-		$after   = d5b_pages_round( $urls, 60, true );
+		$after = d5b_pages_round( $urls, 60, true );
+		return array( 'before' => $before, 'after' => $after, 'problems' => d5b_pages_compare( $before, $after ), 'unavailable' => false, 'skipped' => d5b_pages_skipped( array_merge( $before, $after ) ) );
+	}
+
+	/** The urls (without the cache-buster) of the pages a round ran out of time for. @return string[] */
+	function d5b_pages_skipped( array $rounds ): array {
 		$skipped = array();
-		foreach ( array_merge( $before, $after ) as $p ) {
+		foreach ( $rounds as $p ) {
 			if ( is_array( $p ) && ! empty( $p['skipped'] ) ) { $skipped[ (string) preg_replace( '/[?&]d5b=[0-9]*$/', '', (string) $p['url'] ) ] = true; }
 		}
-		return array( 'before' => $before, 'after' => $after, 'problems' => d5b_pages_compare( $before, $after ), 'unavailable' => false, 'skipped' => array_keys( $skipped ) );
+		return array_keys( $skipped );
 	}
 }
 
@@ -291,16 +301,29 @@ if ( ! function_exists( 'd5b_keep_copy' ) ) {
 		$name   = $row_id . '-' . bin2hex( random_bytes( 16 ) );
 		$folder = d5b_history_files_root() . '/' . $name;
 		$dest   = $folder . '/' . $kind . '/' . $dir_name;
-		$done   = false;
-		if ( @mkdir( $folder . '/' . $kind, 0755, true ) ) {
-			if ( $single ) {
-				$done = (bool) $wp_filesystem->copy( $src, $dest, false, defined( 'FS_CHMOD_FILE' ) ? FS_CHMOD_FILE : 0644 );
-			} else {
-				$done = true === copy_dir( $src, $dest );
+		$copy   = function () use ( $folder, $kind, $single, $src, $dest, $wp_filesystem ): bool {
+			if ( ! is_dir( $folder . '/' . $kind ) && ! @mkdir( $folder . '/' . $kind, 0755, true ) ) { return false; }
+			if ( $single ) { return (bool) $wp_filesystem->copy( $src, $dest, false, defined( 'FS_CHMOD_FILE' ) ? FS_CHMOD_FILE : 0644 ); }
+			return true === copy_dir( $src, $dest );
+		};
+		// A copy is only kept when it is the whole of the original. When it differs because the original itself changed
+		// while it was copied (a plugin writing its own cache or log files), it is made once more from the original as it is
+		// now; a second change refuses.
+		$done = $copy();
+		$got  = $done ? d5b_maint_tree_size( $dest ) : null;
+		if ( $done && $got !== $size ) {
+			$now = d5b_maint_tree_size( $src );
+			if ( $now !== $size && 0 === $now['links'] && $now['bytes'] <= d5b_maint_copy_cap() && $store + $now['bytes'] <= d5b_maint_store_cap() ) {
+				d5b_maint_remove_tree( $dest ); clearstatcache();
+				$size = $now;
+				$done = ! file_exists( $dest ) && $copy();
+				$got  = $done ? d5b_maint_tree_size( $dest ) : null;
+				if ( $done && ( $got !== $size || d5b_maint_tree_size( $src ) !== $size ) ) {
+					d5b_history_files_remove( $row_id, $name );
+					return $fail( 'the ' . $kind . ' changed its own files while they were being copied; try again when it is idle' );
+				}
 			}
 		}
-		// A copy is only kept when it is the whole of the original.
-		$got = $done ? d5b_maint_tree_size( $dest ) : null;
 		if ( ! $done || $got !== $size ) {
 			d5b_history_files_remove( $row_id, $name );
 			return $fail( $done ? 'the copy is not complete' : 'copying the files failed' );
@@ -429,9 +452,11 @@ if ( ! function_exists( 'd5b_maint_move' ) ) {
 	 * Moves a folder or a file: a rename, or (another disk, a host that refuses the rename) a whole copy, then the original
 	 * removed. Once the copy at $to is whole it is KEPT whatever happens to $from: when $from cannot be removed after that,
 	 * the answer is moved with a leftover. A part-made copy is removed again and $from is left as it was (not moved).
+	 * Something already at $to (a folder, a file or a link) refuses the move: not moved, and nothing removed on either side.
 	 * @return array{moved:bool,leftover:bool}
 	 */
 	function d5b_maint_move( string $from, string $to ): array {
+		if ( file_exists( $to ) || is_link( $to ) ) { return array( 'moved' => false, 'leftover' => false ); }
 		if ( d5b_maint_rename( $from, $to ) ) { return array( 'moved' => true, 'leftover' => false ); }
 		if ( ! d5b_maint_copy_in( $from, $to ) ) {
 			d5b_maint_remove_tree( $to );
@@ -446,13 +471,26 @@ if ( ! function_exists( 'd5b_maint_maintenance' ) ) {
 	 * WordPress's maintenance mode on or off, as core's upgraders switch it around a swap (WP_Upgrader::maintenance_mode
 	 * writes or removes ABSPATH/.maintenance): visitors get "Briefly unavailable" for the moment the files change. false when
 	 * the upgrader class or the file system cannot be had (the swap still runs: it is two renames).
+	 * Off removes .maintenance only when this request's on wrote it: a file that was there first (another update running,
+	 * core's or a person's) is neither rewritten nor removed.
 	 */
 	function d5b_maint_maintenance( bool $on ): bool {
 		if ( ! class_exists( 'WP_Upgrader' ) && function_exists( 'wpsu_load_admin' ) ) { wpsu_load_admin(); }
 		if ( ! class_exists( 'WP_Upgrader' ) || ! class_exists( 'Automatic_Upgrader_Skin' ) || ! d5b_maint_filesystem() ) { return false; }
+		global $wp_filesystem;
 		try {
+			if ( $on ) {
+				$GLOBALS['d5b_maint_mm_created'] = false;
+				if ( $wp_filesystem->exists( $wp_filesystem->abspath() . '.maintenance' ) ) { return true; } // on already, not ours
+				$u = new WP_Upgrader( new Automatic_Upgrader_Skin() );
+				$u->maintenance_mode( true );
+				$GLOBALS['d5b_maint_mm_created'] = true;
+				return true;
+			}
+			if ( empty( $GLOBALS['d5b_maint_mm_created'] ) ) { return true; } // not written by this request: left as it is
+			$GLOBALS['d5b_maint_mm_created'] = false;
 			$u = new WP_Upgrader( new Automatic_Upgrader_Skin() );
-			$u->maintenance_mode( $on );
+			$u->maintenance_mode( false );
 			return true;
 		} catch ( Throwable $e ) {
 			return false;
@@ -492,9 +530,9 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 	 *  1. the checks: the copy (copy_missing), the files being replaced against the 512 MB per-copy cap (copy_too_big) and the
 	 *     2 GB store cap (store_full);
 	 *  2. a new rollback row FIRST (before: the version being replaced);
-	 *  3. the kept copy is copied into a staging folder beside the live one, .d5b-new-<dir>-<time>, and compared file by file
-	 *     with the kept copy: a copy that is not whole never touches the live folder (copy_failed; the row removed);
-	 *  4. maintenance mode on; the live folder renamed to .d5b-old-<dir>-<time>, the staging one renamed to <dir>;
+	 *  3. the kept copy is copied into a staging folder beside the live one, .d5b-new-<dir>-<6 random hex>, and compared file
+	 *     by file with the kept copy: a copy that is not whole never touches the live folder (copy_failed; the row removed);
+	 *  4. maintenance mode on; the live folder renamed to .d5b-old-<dir>-<6 random hex>, the staging one renamed to <dir>;
 	 *     maintenance mode off; the PHP opcode cache of the folder invalidated. Both names start with a dot, so WordPress
 	 *     never lists a leftover as a plugin;
 	 *  5. the replaced files moved into the new row's store folder: the rollback row's kept (a rollback is undoable). Once a
@@ -577,10 +615,9 @@ if ( ! function_exists( 'd5b_maint_restore' ) ) {
 
 		// Two names beside the live folder (a rename there does not cross a disk), both starting with a dot: WordPress skips
 		// those when it lists plugins, so a leftover never shows up as a second plugin.
-		$free = function ( string $base ): string { $p = $base; for ( $i = 2; file_exists( $p ) && $i < 100; $i++ ) { $p = $base . '-' . $i; } return $p; };
-		$t       = (string) (int) d5b_maint_now();
-		$staging = $free( $parent . '/.d5b-new-' . $dir . '-' . $t );
-		$aside   = null === $cur ? '' : $free( $parent . '/.d5b-old-' . $dir . '-' . $t );
+		// 6 random hex characters each: a name taken anyway is refused below (copy_failed, nothing changed).
+		$staging = $parent . '/.d5b-new-' . $dir . '-' . bin2hex( random_bytes( 3 ) );
+		$aside   = null === $cur ? '' : $parent . '/.d5b-old-' . $dir . '-' . bin2hex( random_bytes( 3 ) );
 		$where   = 'the ' . $kind . 's folder';
 
 		// The row first, naming both folders (names only, in the plugins or themes folder): a request that dies between the

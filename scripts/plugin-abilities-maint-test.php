@@ -122,8 +122,20 @@ check( '... a page that does not answer: status 0, not skipped', 0 === $by['e'][
 check( '... a skipped page past the budget (fake clock, 12 s a page, 60 s): the sixth page is not fetched', true === $by['f']['skipped'] && 0 === $by['f']['status'] && 5 === count( $GLOBALS['T_http_calls'] ), array( $by['f'], count( $GLOBALS['T_http_calls'] ) ) );
 check( '... the url in the result is the url given', 'https://x.example/a?d5b=1' === $r[0]['url'] );
 $c0 = $GLOBALS['T_http_calls'][0];
-check( '... each fetch: timeout 15, a fresh cache-buster (the clock at that moment, not the one given)', 15 === $c0[1]['timeout'] && 'https://x.example/a?d5b=1700000000500' === $c0[0] && 'https://x.example/b?d5b=1700000012500' === $GLOBALS['T_http_calls'][1][0], $GLOBALS['T_http_calls'][1][0] );
+check( '... each fetch: timeout 15, a fresh cache-buster (the clock at that moment, not the one given)', 15.0 === (float) $c0[1]['timeout'] && 'https://x.example/a?d5b=1700000000500' === $c0[0] && 'https://x.example/b?d5b=1700000012500' === $GLOBALS['T_http_calls'][1][0], $GLOBALS['T_http_calls'][1][0] );
 check( '... sslverify as the loopback allows (https_local_ssl_verify, false by default)', false === $c0[1]['sslverify'] );
+check( '2.4.1 ... a fetch\'s timeout is min( 15, the budget left ): the fifth page, 48 s in, gets 12 s', array( 15, 15, 15, 15, 12 ) === array_map( function ( $c ) { return (int) round( $c[1]['timeout'] ); }, $GLOBALS['T_http_calls'] ), array_map( function ( $c ) { return $c[1]['timeout']; }, $GLOBALS['T_http_calls'] ) );
+// Every fetch takes its whole timeout (a page that never answers): the round still ends within its 60 s.
+fresh();
+$t0 = $GLOBALS['T_clock'];
+$GLOBALS['T_http_fn'] = function ( $url, $args ) { $GLOBALS['T_clock'] += (float) $args['timeout']; return null; };
+$r = d5b_pages_round( array( 'https://x.example/a', 'https://x.example/b', 'https://x.example/c', 'https://x.example/d', 'https://x.example/e' ), 60, true );
+check( '... pages that each take their whole timeout: the round (retries included) never runs past 60 s', $GLOBALS['T_clock'] - $t0 <= 60.0 && true === end( $r )['skipped'], array( $GLOBALS['T_clock'] - $t0, array_column( $r, 'skipped' ), array_map( function ( $c ) { return $c[1]['timeout']; }, $GLOBALS['T_http_calls'] ) ) );
+$GLOBALS['T_http_fn'] = null;
+// Less than a second of the budget left: the page is skipped, never fetched with a timeout of a fraction of a second.
+fresh(); serve( array( 'https://x.example/a' => array( 200, page() ), 'https://x.example/b' => array( 200, page() ), 'https://x.example/c' => array( 200, page() ), 'https://x.example/d' => array( 200, page() ), 'https://x.example/e' => array( 200, page() ) ), 14.9 );
+$r = d5b_pages_round( array( 'https://x.example/a', 'https://x.example/b', 'https://x.example/c', 'https://x.example/d', 'https://x.example/e' ), 60 );
+check( '... with less than a second left (59.6 s gone) the page is skipped, not fetched', 4 === count( $GLOBALS['T_http_calls'] ) && true === $r[4]['skipped'], array( count( $GLOBALS['T_http_calls'] ), array_column( $r, 'skipped' ) ) );
 fresh(); serve( array( 'https://x.example/a' => array( 200, page() ) ), 0.0 );
 check( 'a round inside its budget skips nothing', array( false ) === array_column( d5b_pages_round( array( 'https://x.example/a' ), 60 ), 'skipped' ) );
 $h = d5b_maint_page_health( '/x', 200, '<html><p>How to fix a fatal error in PHP</p></html>' );
@@ -142,7 +154,7 @@ check( 'a page that shows a fatal error with status 200', array( '/a: shows "Fat
 $p = d5b_pages_compare( array( ok( '/a' ) ), array( array_merge( ok( '/a' ), array( 'closed' => false ) ) ) );
 check( 'a page that is cut off', array( '/a: the page is cut off (no closing </html>)' ) === $p, $p );
 $p = d5b_pages_compare( array( ok( '/a', 50000 ) ), array( ok( '/a', 20000 ) ) );
-check( 'a page that lost more than half its content', array( '/a: the page shrank from 50000 to 20000 characters' ) === $p, $p );
+check( 'a page that lost more than half its content (2.4.1: counted in bytes, and the sentence says bytes)', array( '/a: the page shrank from 50000 to 20000 bytes' ) === $p, $p );
 check( '... but a small change in size is fine', array() === d5b_pages_compare( array( ok( '/a', 50000 ) ), array( ok( '/a', 30000 ) ) ) );
 check( 'shrink below half only over 2000 bytes: 2000 -> 100 is not blamed, 2001 -> 1000 is', array() === d5b_pages_compare( array( ok( '/a', 2000 ) ), array( ok( '/a', 100 ) ) ) && 1 === count( d5b_pages_compare( array( ok( '/a', 2001 ) ), array( ok( '/a', 1000 ) ) ) ) );
 check( 'a page that was already broken before is not blamed (bad-before not blamed)',
@@ -280,6 +292,21 @@ t_put( WP_PLUGIN_DIR . '/two/a.php', 'a' ); t_put( WP_PLUGIN_DIR . '/two/b.php',
 $GLOBALS['T_copy_fail'] = true;
 $k = d5b_keep_copy( 'plugin', 'two', 47 );
 check( 'copy failure -> copy_failed, the half-made copy removed', 'copy_failed' === code( $k ) && array() === row_dirs( 47 ), array( code( $k ), row_dirs( 47 ) ) );
+// 2.4.1: the plugin writes its own files while they are copied (a cache file, a log). Once: the copy is made again.
+fresh();
+t_put( WP_PLUGIN_DIR . '/busy/a.php', 'a' ); t_put( WP_PLUGIN_DIR . '/busy/b.log', 'log' );
+$writes = 0;
+$GLOBALS['T_copy_each'] = function ( $src, $dst ) use ( &$writes ) { if ( 'a.php' === basename( $src ) && $writes < 1 ) { $writes++; file_put_contents( dirname( $src ) . '/b.log', 'log line 2', FILE_APPEND ); } };
+$k = d5b_keep_copy( 'plugin', 'busy', 60 );
+check( 'a source that changed during the copy (once): the copy is made again and kept whole, as the source is now', is_array( $k ) && 'loglog line 2' === @file_get_contents( $k['path'] . '/b.log' ) && 1 + 13 === $k['bytes'] && 2 === count( array_filter( $GLOBALS['T_copy_calls'], function ( $c ) { return 'copy_dir' === $c[0] && 'busy' === basename( $c[1] ); } ) ) && 1 === count( row_dirs( 60 ) ), is_wp_error( $k ) ? $k->get_error_message() : $k );
+// Every time: refused, nothing kept.
+fresh();
+t_put( WP_PLUGIN_DIR . '/busy/a.php', 'a' ); t_put( WP_PLUGIN_DIR . '/busy/b.log', 'log' );
+$GLOBALS['T_copy_each'] = function ( $src, $dst ) { if ( 'a.php' === basename( $src ) ) { file_put_contents( dirname( $src ) . '/b.log', '+', FILE_APPEND ); } };
+$k = d5b_keep_copy( 'plugin', 'busy', 61 );
+check( '... changing during the second copy too: copy_failed "the plugin changed its own files while they were being copied; try again when it is idle", nothing kept', 'copy_failed' === code( $k ) && false !== strpos( $k->get_error_message(), 'the plugin changed its own files while they were being copied; try again when it is idle' ) && array() === row_dirs( 61 ) && 2 === count( array_filter( $GLOBALS['T_copy_calls'], function ( $c ) { return 'copy_dir' === $c[0] && 'busy' === basename( $c[1] ); } ) ), is_wp_error( $k ) ? $k->get_error_message() : $k );
+$GLOBALS['T_copy_each'] = null;
+fresh(); t_put( WP_PLUGIN_DIR . '/two/a.php', 'a' ); t_put( WP_PLUGIN_DIR . '/two/b.php', 'b' ); // the section above goes on with these
 $GLOBALS['T_copy_fail'] = false; $GLOBALS['T_fs_fail'] = true; unset( $GLOBALS['wp_filesystem'] );
 $k = d5b_keep_copy( 'plugin', 'two', 48 );
 check( 'no file system access (WP_Filesystem fails) -> copy_failed', 'copy_failed' === code( $k ) && array() === row_dirs( 48 ), code( $k ) );
@@ -405,6 +432,17 @@ check( '... released by its holder: the main site\'s row is gone', true === d5b_
 t_set_multisite( false );
 check( 'no lock code uses a transient any more', 0 === preg_match( '/_transient\(\s*\$name/', (string) file_get_contents( $dir . '/inc/abilities/maint-common.php' ) ) );
 check( 'lock: one name per plugin or theme folder (kind + md5 of the folder, any case)', d5b_maint_item_lock( 'plugin', 'Akismet' ) === 'd5b_maint_lock_plugin_' . md5( 'akismet' ) && d5b_maint_item_lock( 'theme', 'akismet' ) !== d5b_maint_item_lock( 'plugin', 'akismet' ) );
+
+echo "2.4.1: a move never replaces or removes what is already at the destination\n";
+fresh();
+t_put( WP_PLUGIN_DIR . '/mv-src/a.php', 'source' ); t_put( WP_PLUGIN_DIR . '/mv-dst/keep.php', 'already here' );
+$mv = d5b_maint_move( WP_PLUGIN_DIR . '/mv-src', WP_PLUGIN_DIR . '/mv-dst' );
+check( 'd5b_maint_move to a folder that exists: refused (moved false), the destination and the source both left as they were', array( 'moved' => false, 'leftover' => false ) === $mv && 'already here' === @file_get_contents( WP_PLUGIN_DIR . '/mv-dst/keep.php' ) && 'source' === @file_get_contents( WP_PLUGIN_DIR . '/mv-src/a.php' ) && ! file_exists( WP_PLUGIN_DIR . '/mv-dst/a.php' ), $mv );
+t_put( WP_PLUGIN_DIR . '/mv-file.php', 'x' );
+check( '... to a file that exists: refused too', array( 'moved' => false, 'leftover' => false ) === d5b_maint_move( WP_PLUGIN_DIR . '/mv-src', WP_PLUGIN_DIR . '/mv-file.php' ) && 'x' === @file_get_contents( WP_PLUGIN_DIR . '/mv-file.php' ) && is_dir( WP_PLUGIN_DIR . '/mv-src' ) );
+check( '... to a free name: moved', array( 'moved' => true, 'leftover' => false ) === d5b_maint_move( WP_PLUGIN_DIR . '/mv-src', WP_PLUGIN_DIR . '/mv-new' ) && 'source' === @file_get_contents( WP_PLUGIN_DIR . '/mv-new/a.php' ) );
+$mc = (string) file_get_contents( $dir . '/inc/abilities/maint-common.php' );
+check( 'the staging and aside names: a dot, the folder, 6 random hex characters (no time, no numbered slots)', false !== strpos( $mc, "'/.d5b-new-' . \$dir . '-' . bin2hex( random_bytes( 3 ) )" ) && false !== strpos( $mc, "'/.d5b-old-' . \$dir . '-' . bin2hex( random_bytes( 3 ) )" ) && false === strpos( $mc, '$i < 100' ) );
 
 echo "the is_super_admin stand-in (as core)\n";
 fresh();

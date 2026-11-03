@@ -196,6 +196,11 @@ site(); $first = true; $base = $GLOBALS['T_http_fn'];
 $GLOBALS['T_http_fn'] = function ( $url, $args ) use ( &$first, $base ) { if ( $first ) { $first = false; offer( array() ); } return $base( $url, $args ); };
 $r = call( 'core-update', array( 'version' => '6.9.1' ) );
 check( 'update: the offer vanished between the dry run and the run -> already_up_to_date, row deleted, nothing upgraded', is_array( $r ) && true === ( $r['already_up_to_date'] ?? null ) && array() === hrows() && array() === $GLOBALS['T_core_upgrade_calls'], $r );
+// 2.4.1: the audit row of that call names no history row (the audit log stores no history_id; the answer has none either).
+$aud = array_values( $GLOBALS['wpdb']->tables[ d5b_audit_table() ] ?? array() );
+check( '2.4.1 ... the deleted row is named nowhere: no history_id in the answer or in the audit row', ! array_key_exists( 'history_id', $r ) && array() !== $aud && false === strpos( json_encode( $aud ), 'history_id' ) && 'ok' === end( $aud )['status'], $aud );
+$wc = (string) file_get_contents( $dir . '/inc/abilities/write-core.php' );
+check( '2.4.1 the run\'s "nothing on offer" is read from the engine\'s fields (done false, no error key, to equal to from), never from its note text', false === strpos( $wc, 'already up to date\'' ) && false !== strpos( $wc, "! array_key_exists( 'error', \$res )" ) );
 // Fix wave (Task 5 minor): the row cannot be deleted on that path -> it is completed (never left "running") and the answer says so.
 site(); $first = true; $base = $GLOBALS['T_http_fn'];
 $GLOBALS['T_http_fn'] = function ( $url, $args ) use ( &$first, $base ) { if ( $first ) { $first = false; offer( array( '6.9.2' ) ); } return $base( $url, $args ); };
