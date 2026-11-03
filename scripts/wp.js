@@ -109,6 +109,19 @@ function parseCreds(site) {
 
 function die(msg) { process.stderr.write('ERROR: ' + msg + '\n'); process.exit(1); }
 
+// The last line of an HTTP error: "ERROR-JSON: " and the error's code, its HTTP status and the history row its data names,
+// as JSON (null when the body is not a WordPress error). The scripts read these from here, never from the cut body text.
+function errJson(json) {
+  let o = null;
+  if (json && typeof json === 'object' && typeof json.code === 'string') {
+    const d = json.data && typeof json.data === 'object' ? json.data : {};
+    o = { code: json.code };
+    if (Number.isInteger(d.status)) o.status = d.status;
+    if (Number.isInteger(d.history_id) && d.history_id > 0) o.history_id = d.history_id;
+  }
+  return '\nERROR-JSON: ' + JSON.stringify(o);
+}
+
 // Build auth header in memory; never returned to caller as a string that gets logged.
 function authHeader(c) {
   return 'Basic ' + Buffer.from(c.user + ':' + c.pass.replace(/\s+/g, '')).toString('base64');
@@ -138,7 +151,7 @@ async function jreq(method, url, c, payload) {
   const text = r.body.toString('utf8');
   let json = null;
   try { json = JSON.parse(text); } catch (e) { /* leave null */ }
-  if (r.status >= 400) die(`HTTP ${r.status} ${method} ${url.replace(c.url, '')}\n${text.slice(0, 500)}`);
+  if (r.status >= 400) die(`HTTP ${r.status} ${method} ${url.replace(c.url, '')}\n${text.slice(0, 500)}${errJson(json)}`);
   return json !== null ? json : text;
 }
 
@@ -163,7 +176,7 @@ async function dsWrite(url, c, payload) {
   if (json && json.code === 'bad_references') {
     die(`HTTP ${r.status} bad_references: nothing was written.\n${(d.references || []).map((x) => `  ${x.id}: ${x.problem}: ${x.message}`).join('\n')}`);
   }
-  die(`HTTP ${r.status} POST ${url.replace(c.url, '')}\n${text.slice(0, 500)}`);
+  die(`HTTP ${r.status} POST ${url.replace(c.url, '')}\n${text.slice(0, 500)}${errJson(json)}`);
 }
 
 // ---- Stale-write guard for pages, posts and canvases (issue #14) ------------------------------------

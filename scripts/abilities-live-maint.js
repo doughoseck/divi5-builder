@@ -132,6 +132,14 @@ function guardPlugin(file) {
   if (typeof file !== 'string' || !file.startsWith(TEST_SLUG + '/')) throw new Usage(`the plugin step only changes the ${TEST_SLUG} plugin, and the site reported ${tok(file)}: nothing more was changed`);
 }
 function isSelf(file) { return /^divi5-builder(\/|\.php$)/.test(String(file)); }
+/** The plugins-install input, checked BEFORE the call: exactly { slug: hello-dolly }, so nothing else can ever be installed. */
+function guardInstallInput(input) {
+  const keys = input && typeof input === 'object' ? Object.keys(input) : [];
+  if (keys.length !== 1 || keys[0] !== 'slug' || input.slug !== TEST_SLUG || isSelf(input.slug + '/')) {
+    throw new Usage(`the plugin step only installs the ${TEST_SLUG} plugin, and was about to send ${tok(JSON.stringify(input))}: nothing was installed`);
+  }
+  return input;
+}
 
 /** The site's own host name, from the REST index (wp.js rest-get --index). */
 function siteHost(ctx) {
@@ -151,7 +159,7 @@ function stepPlugin(ctx) {
     return 'confirm';
   }
   let file = null, wasActive = false;
-  const ins = postAbility(ctx, 'plugins-install', { slug: TEST_SLUG });
+  const ins = postAbility(ctx, 'plugins-install', guardInstallInput({ slug: TEST_SLUG }));
   line(ctx, 'plugins-install', ins, []);
   if (ins.ok && ins.json && typeof ins.json === 'object') {
     file = ins.json.plugin;
@@ -463,4 +471,4 @@ if (require.main === module) {
   console.log(r.lines.join('\n'));
   process.exit(r.code);
 }
-module.exports = { run, parseArgs };
+module.exports = { run, parseArgs, guardInstallInput };
