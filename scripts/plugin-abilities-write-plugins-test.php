@@ -129,6 +129,30 @@ $r = call( 'plugins-status' );
 $row1 = d5b_history_get( $k1 );
 check( 'kept_copies: only plugin rows with kept not null, as { plugin, version, history_id, kept_at }', array( array( 'plugin' => AKISMET, 'version' => '4.9', 'history_id' => $k1, 'kept_at' => d5b_wc_iso( (string) $row1['created_at'] ) ) ) === $r['kept_copies'] && '' !== $r['kept_copies'][0]['kept_at'], $r['kept_copies'] );
 check( 'kept_copies never shows the path of the copy', false === strpos( json_encode( $r ), '/x/akismet' ) );
+// 2.4.1: the lookup lists only the update, rollback and delete rows of the kind (one query, newest 100) and reads only those.
+function raw_hrow( $ability, $type, $action, $before = array(), $after = array() ) {
+	global $wpdb;
+	$wpdb->insert( d5b_history_table(), array( 'created_at' => '2026-11-01 10:00:00', 'user_id' => 3, 'ability' => $ability, 'audit_id' => 0, 'object_type' => $type, 'object_id' => 0, 'action' => $action, 'revision_id' => null, 'summary' => 's', 'before' => json_encode( $before ), 'after' => json_encode( $after ) ) );
+	return (int) $wpdb->insert_id;
+}
+function kept_lookup_case( int $unrelated ) {
+	global $wpdb;
+	site();
+	$kept = array();
+	foreach ( array( 'update', 'rollback', 'delete' ) as $i => $act ) { $kept[] = raw_hrow( 'divi5-builder/plugins-' . $act, 'plugin', $act, array( 'plugin' => AKISMET, 'version' => '4.' . $i ), array( 'kept' => array( 'path' => '/x/k' . $i, 'bytes' => 1, 'files' => 1 ) ) ); }
+	$abil = array( array( 'divi5-builder/plugins-activate', 'plugin', 'activate' ), array( 'divi5-builder/plugins-deactivate', 'plugin', 'deactivate' ), array( 'divi5-builder/plugins-install', 'plugin', 'install' ), array( 'divi5-builder/posts-update', 'post', 'update' ) );
+	for ( $i = 0; $i < $unrelated; $i++ ) { $a = $abil[ $i % 4 ]; raw_hrow( $a[0], $a[1], $a[2], array( 'plugin' => HELLO ), array( 'x' => $i ) ); }
+	$wpdb->queries = array();
+	$out = d5b_maint_kept_copies( 'plugin' );
+	$lists = array_values( preg_grep( '/^SELECT id, created_at/', $wpdb->queries ) ); $gets = array_values( preg_grep( '/^SELECT \* FROM \S+ WHERE id = \d+$/', $wpdb->queries ) );
+	return array( $out, $lists, $gets, array_reverse( $kept ) );
+}
+list( $out, $lists, $gets, $kept ) = kept_lookup_case( 400 );
+check( 'kept_copies: 400 unrelated rows and 3 kept rows -> 1 list query + 3 gets', 1 === count( $lists ) && 3 === count( $gets ) && $kept === array_column( $out, 'history_id' ), array( count( $lists ), count( $gets ), array_column( $out, 'history_id' ), $kept ) );
+check( '... the list asks for the three abilities of the kind (an IN list, prepared), newest 100', 1 === preg_match( "/ability IN \\('divi5-builder\\/plugins-update', 'divi5-builder\\/plugins-rollback', 'divi5-builder\\/plugins-delete'\\)/", $lists[0] ?? '' ) && 1 === preg_match( '/ LIMIT 100 OFFSET 0$/', $lists[0] ?? '' ) && array() === $GLOBALS['wpdb']->unprepared, $lists );
+list( $out, $lists, $gets, $kept ) = kept_lookup_case( 700 );
+check( '... 700 newer unrelated rows do not push the 3 kept rows out of the lookup', $kept === array_column( $out, 'history_id' ) && 3 === count( $gets ), array_column( $out, 'history_id' ) );
+check( 'history list: an empty abilities filter matches nothing (no query)', array() === d5b_history_list( array( 'abilities' => array() ) ) );
 // A premium plugin's offer: the package url carries a licence key (the literal split so no whole key-shaped string is in the source).
 function keyed_offers( $file, $ver ) {
 	$t = offers( array( $file => $ver ) );

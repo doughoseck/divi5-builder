@@ -1026,12 +1026,15 @@ if ( ! function_exists( 'd5b_maint_kept_copies' ) ) {
 	 * type whose kept is recorded (not null), newest first: the plugin file or stylesheet and the version kept (the row's
 	 * before), the row id and when it was kept. Never the copy's path. Rows of a rollback undone because the copy did not
 	 * hold the plugin or theme (after.restore_mismatch) are left out: they are not a copy anyone should go back to.
+	 * One list query for only the update, rollback and delete abilities of the kind (newest 100), then one read per row
+	 * listed, so other history (activations, posts ...) never costs a read or pushes a kept row out of the list.
 	 */
 	function d5b_maint_kept_copies( string $kind ): array {
 		$out = array();
 		if ( ( 'plugin' !== $kind && 'theme' !== $kind ) || ! function_exists( 'd5b_history_list' ) ) { return $out; }
-		$key = d5b_maint_item_key( $kind );
-		foreach ( d5b_history_list( array( 'object_type' => $kind ), 500 ) as $r ) {
+		$key  = d5b_maint_item_key( $kind );
+		$abil = array( 'divi5-builder/' . $kind . 's-update', 'divi5-builder/' . $kind . 's-rollback', 'divi5-builder/' . $kind . 's-delete' );
+		foreach ( d5b_history_list( array( 'object_type' => $kind, 'abilities' => $abil ), 100 ) as $r ) {
 			if ( ! in_array( (string) ( $r['action'] ?? '' ), array( 'update', 'rollback', 'delete' ), true ) ) { continue; } // only these keep a copy
 			$row = d5b_history_get( (int) $r['id'] );
 			if ( null === $row || ! empty( $row['after']['restore_mismatch'] ) ) { continue; }

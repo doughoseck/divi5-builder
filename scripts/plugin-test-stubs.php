@@ -447,6 +447,10 @@ class T_Wpdb {
 		$w = $m[2] ?? '';
 		$q = "'((?:[^'\\\\]|\\\\.)*)'";
 		if ( preg_match( "/ability = $q/", $w, $x ) ) { $v = stripslashes( $x[1] ); $rows = array_filter( $rows, function ( $r ) use ( $v ) { return $r['ability'] === $v; } ); }
+		if ( preg_match( "/ability IN \\(($q(?:, $q)*)\\)/", $w, $x ) ) {
+			preg_match_all( "/$q/", $x[1], $vs ); $in = array_map( 'stripslashes', $vs[1] );
+			$rows = array_filter( $rows, function ( $r ) use ( $in ) { return in_array( $r['ability'], $in, true ); } );
+		}
 		if ( preg_match( "/status = $q/", $w, $x ) ) { $v = stripslashes( $x[1] ); $rows = array_filter( $rows, function ( $r ) use ( $v ) { return $r['status'] === $v; } ); }
 		if ( preg_match( "/object_type = $q/", $w, $x ) ) { $v = stripslashes( $x[1] ); $rows = array_filter( $rows, function ( $r ) use ( $v ) { return $r['object_type'] === $v; } ); }
 		if ( preg_match( '/object_id = (\d+)/', $w, $x ) ) { $v = (int) $x[1]; $rows = array_filter( $rows, function ( $r ) use ( $v ) { return (int) $r['object_id'] === $v; } ); }
