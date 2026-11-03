@@ -60,7 +60,8 @@
  *   --- Any other REST route, read only ---
  *   node wp.js <site> rest-get <path> [--out f]    # GET /wp-json/<path>, e.g. wp-media-audit/v1/info (used by media-audit.js)
  *   node wp.js <site> rest-post wp/v2/<route> --data-file body.json [--out f]   # POST to a core content route (custom post types, ACF fields, terms)
- *   node wp.js <site> rest-post wp-abilities/v1/abilities/<vendor>/<name>/run --data-file body.json   # run ONE write ability (divi5-builder, rank-math, core ...): body is {"input":{...}}
+ *   node wp.js <site> rest-post wp-abilities/v1/abilities/divi5-builder/<name>/run --data-file body.json   # run a divi5-builder write ability: body is {"input":{...}}
+ *   node wp.js <site> rest-post wp-abilities/v1/abilities/rank-math/<name>/run --vendor rank-math --data-file body.json   # another vendor's ability, named exactly (no divi5-builder history for its writes)
  *   node wp.js <site> quarantine move|restore --data-file f.json   # used by media-quarantine.js; moves files, never deletes
  *
  * Output is compact JSON or plain lines on stdout; errors to stderr, exit 1.
@@ -720,11 +721,14 @@ function flags(argv) {
       //   rest-post wp/v2/book/123 --data-file body.json
       const p = String(f._[0] || '').replace(/^\/+/, '');
       // Also the run route of one ability (issue #32, plugin 2.2.0): core takes a POST for an ability that changes things, with the
-      // body {"input":{...}}. Only that exact shape: the run route of ONE ability, never another wp-abilities route. Since
-      // 2026-11-03 any vendor's ability (divi5-builder, rank-math, core ...): another vendor's write has no divi5-builder
-      // change-history row, so read that vendor's own undo story before using one.
+      // body {"input":{...}}. Only that exact shape: the run route of ONE ability, never another wp-abilities route, and only
+      // the divi5-builder/ namespace unless `--vendor <name>` names ONE other vendor exactly (rank-math, core ...; 2026-11-03).
+      // Another vendor's write has no divi5-builder change-history row: read that vendor's own undo story first.
       //   rest-post wp-abilities/v1/abilities/divi5-builder/posts-update/run --data-file body.json
-      if (!/^wp\/v2\/[a-z0-9_\-\/]+$/i.test(p) && !/^wp-abilities\/v1\/abilities\/[a-z0-9_\-]+\/[a-z0-9_\-]+\/run$/.test(p)) die('rest-post needs a wp/v2/... path, e.g. wp/v2/book/123, or wp-abilities/v1/abilities/<vendor>/<name>/run');
+      //   rest-post wp-abilities/v1/abilities/rank-math/set-homepage-seo/run --vendor rank-math --data-file body.json
+      const vendor = typeof f.vendor === 'string' && /^[a-z0-9_\-]+$/.test(f.vendor) ? f.vendor : 'divi5-builder';
+      const runRoute = new RegExp('^wp-abilities\\/v1\\/abilities\\/' + vendor.replace(/[-]/g, '\\-') + '\\/[a-z0-9_\\-]+\\/run$');
+      if (!/^wp\/v2\/[a-z0-9_\-\/]+$/i.test(p) && !runRoute.test(p)) die('rest-post needs a wp/v2/... path, e.g. wp/v2/book/123, or wp-abilities/v1/abilities/' + vendor + '/<name>/run (another vendor only with --vendor <name>)');
       if (!f['data-file']) die('rest-post needs --data-file <json file>');
       const body = JSON.parse(fs.readFileSync(f['data-file'], 'utf8'));
       const r = await jreq('POST', `${c.url.replace(/\/$/, '')}/wp-json/${p}`, c, body);

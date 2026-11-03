@@ -615,6 +615,14 @@ console.log('--- rest-post: the run route of a write ability');
     r = wp('rest-post', bad, '--data-file', body);
     check('rest-post refuses the path ' + bad, r.code !== 0 && /rest-post needs/.test(r.err) && (st().abilityPosts || []).length === before, r.err);
   }
+  // 2026-11-03: --vendor <name> opens ONE other vendor's run route, named exactly; everything else stays refused.
+  const n0 = (st().abilityPosts || []).length;
+  r = wp('rest-post', 'wp-abilities/v1/abilities/rank-math/set-homepage-seo/run', '--vendor', 'rank-math', '--data-file', body);
+  check('--vendor rank-math lets the rank-math run route through', (st().abilityPosts || []).length === n0 + 1 && (st().abilityPosts || []).slice(-1)[0].name === 'rank-math/set-homepage-seo', r.err);
+  for (const [v, bad] of [['rank-math', 'wp-abilities/v1/abilities/core/run-cron/run'], ['Rank-Math', 'wp-abilities/v1/abilities/Rank-Math/set-homepage-seo/run'], ['rank-math', 'wp-abilities/v1/abilities/rank-math/set-homepage-seo/run/extra'], ['rank-math/..', 'wp-abilities/v1/abilities/rank-math/../x/run']]) {
+    r = wp('rest-post', bad, '--vendor', v, '--data-file', body);
+    check('--vendor ' + v + ' still refuses ' + bad, r.code !== 0 && /rest-post needs/.test(r.err) && (st().abilityPosts || []).length === n0 + 1, r.err);
+  }
   r = wp('rest-post', 'wp/v2/posts', '--data-file', file('p.json', '{"title":"T"}'));
   check('a wp/v2 route still works', r.code === 0, r.err);
 }
