@@ -201,6 +201,11 @@ $aud = array_values( $GLOBALS['wpdb']->tables[ d5b_audit_table() ] ?? array() );
 check( '2.4.1 ... the deleted row is named nowhere: no history_id in the answer or in the audit row', ! array_key_exists( 'history_id', $r ) && array() !== $aud && false === strpos( json_encode( $aud ), 'history_id' ) && 'ok' === end( $aud )['status'], $aud );
 $wc = (string) file_get_contents( $dir . '/inc/abilities/write-core.php' );
 check( '2.4.1 the run\'s "nothing on offer" is read from the engine\'s fields (done false, no error key, to equal to from), never from its note text', false === strpos( $wc, 'already up to date\'' ) && false !== strpos( $wc, "! array_key_exists( 'error', \$res )" ) );
+// Fix round 1 N2: each field of that shape counts (the engine's own answer, then one field changed at a time).
+$nothing = array( 'ok' => true, 'done' => false, 'type' => 'core', 'item' => '', 'name' => 'WordPress', 'from' => '6.9', 'to' => '6.9', 'note' => 'any text' );
+check( 'N2 d5b_wcore_nothing_offered: the engine\'s "nothing on offer" answer is it (whatever the note says); with to != from, done true, an error key or dry_run it is not', true === d5b_wcore_nothing_offered( $nothing )
+	&& false === d5b_wcore_nothing_offered( array( 'to' => '6.9.1' ) + $nothing ) && false === d5b_wcore_nothing_offered( array( 'done' => true ) + $nothing )
+	&& false === d5b_wcore_nothing_offered( $nothing + array( 'error' => '' ) ) && false === d5b_wcore_nothing_offered( $nothing + array( 'dry_run' => true ) ) && false === d5b_wcore_nothing_offered( null ) );
 // Fix wave (Task 5 minor): the row cannot be deleted on that path -> it is completed (never left "running") and the answer says so.
 site(); $first = true; $base = $GLOBALS['T_http_fn'];
 $GLOBALS['T_http_fn'] = function ( $url, $args ) use ( &$first, $base ) { if ( $first ) { $first = false; offer( array( '6.9.2' ) ); } return $base( $url, $args ); };

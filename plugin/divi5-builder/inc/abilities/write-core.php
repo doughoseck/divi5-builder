@@ -31,6 +31,15 @@ if ( ! function_exists( 'd5b_wcore_h_status' ) ) {
 		return 1 === preg_match( '/\$wp_version\s*=\s*[\'"]([^\'"]+)[\'"]/', $c, $m ) ? $m[1] : '';
 	}
 
+	/**
+	 * True for wpsu_update's "nothing on offer" answer, read from its fields, not its note text: done false, no dry_run, no
+	 * error key (every run that tried has one, '' on success) and to equal to from (the engine sets to = from then).
+	 */
+	function d5b_wcore_nothing_offered( $res ): bool {
+		return is_array( $res ) && false === ( $res['done'] ?? null ) && empty( $res['dry_run'] ) && ! array_key_exists( 'error', $res )
+			&& (string) ( $res['to'] ?? '' ) === (string) ( $res['from'] ?? '' );
+	}
+
 	// ---- core-status (read)
 
 	function d5b_wcore_h_status( array $in ) {
@@ -102,11 +111,7 @@ if ( ! function_exists( 'd5b_wcore_h_status' ) ) {
 			$kept = $drop();
 			return new WP_Error( 'invalid_input', d5b_maint_err_text( $res ) . ( null === $kept ? '' : ' ' . $kept ), array( 'status' => 409 ) + ( null === $kept ? array() : array( 'history_id' => $hid ) ) );
 		}
-		// Nothing on offer any more: read from the engine's fields, not its note text. wpsu_update answers that case with done
-		// false, no error key (every run that tried has one, '' on success) and to equal to from (it sets to = from then).
-		$nothing = is_array( $res ) && false === ( $res['done'] ?? null ) && empty( $res['dry_run'] ) && ! array_key_exists( 'error', $res )
-			&& (string) ( $res['to'] ?? '' ) === (string) ( $res['from'] ?? '' );
-		if ( $nothing ) {
+		if ( d5b_wcore_nothing_offered( $res ) ) { // nothing on offer any more (read from the engine's fields)
 			$kept = $drop();
 			return array( 'updated' => false, 'already_up_to_date' => true, 'version' => $from ) + ( null === $kept ? array() : array( 'history_id' => $hid, 'warnings' => array( $kept ) ) );
 		}

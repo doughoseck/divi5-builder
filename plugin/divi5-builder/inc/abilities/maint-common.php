@@ -940,7 +940,8 @@ if ( ! function_exists( 'd5b_maint_lock_fresh' ) ) {
 	 * (not autoloaded) added with one INSERT IGNORE, so of two requests in the same instant exactly one adds it; the other is
 	 * busy (409). The value is "<random token>|<expires at>". A row whose time has passed (a request that died) is taken over
 	 * with one conditional UPDATE ... WHERE option_value = <the stale value read>, so of two requests taking over the same
-	 * stale lock exactly one changes the row. A lock this request already holds is taken again at once (a nested call: an
+	 * stale lock exactly one changes the row. A row without "|" or with an expiry that is not a number reads as expired
+	 * (expires at 0) and is taken over the same way. A lock this request already holds is taken again at once (a nested call: an
 	 * update that puts its copy back holds that item's lock). Released with d5b_maint_lock_release, in finally. $what names
 	 * the work in the busy message. $network: the main site's table on a multisite network (d5b_maint_lock_table).
 	 * @return string|WP_Error the value written (the caller's token for the release), or busy

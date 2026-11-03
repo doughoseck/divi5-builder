@@ -495,7 +495,28 @@ if ( ! function_exists( 'd5b_audit_prune' ) ) {
 		$n      = $wpdb->query( $wpdb->prepare( 'DELETE FROM ' . d5b_audit_table() . ' WHERE created_at < %s', $cutoff ) );
 		if ( null !== $quiet ) { $wpdb->suppress_errors( $quiet ); }
 		if ( function_exists( 'd5b_history_prune' ) ) { d5b_history_prune(); }
+		d5b_audit_prune_rate_rows();
 		return is_int( $n ) ? $n : 0;
+	}
+
+	/**
+	 * This site's rate-limit rows (d5b_rate_<key>_<window start>, see d5b_maint_rate) whose window started more than a day
+	 * ago: a key that never opens a new window (a per-user limit) would otherwise keep its row for ever. The rows live in each
+	 * site's own options table (the network-wide rows in the main site's table are locks and consent rows, never rate rows).
+	 * @return int rows removed
+	 */
+	function d5b_audit_prune_rate_rows(): int {
+		global $wpdb;
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'get_col' ) ) { return 0; }
+		$table = (string) $wpdb->options;
+		if ( 1 !== preg_match( '/^\w+$/', $table ) ) { return 0; }
+		$cut  = time() - 86400;
+		$gone = 0;
+		foreach ( (array) $wpdb->get_col( $wpdb->prepare( "SELECT option_name FROM `{$table}` WHERE option_name LIKE %s", $wpdb->esc_like( 'd5b_rate_' ) . '%' ) ) as $name ) {
+			if ( 1 !== preg_match( '/_([0-9]{9,11})$/D', (string) $name, $m ) || (int) $m[1] >= $cut ) { continue; }
+			if ( 1 === $wpdb->query( $wpdb->prepare( "DELETE FROM `{$table}` WHERE option_name = %s", (string) $name ) ) ) { $gone++; }
+		}
+		return $gone;
 	}
 }
 
