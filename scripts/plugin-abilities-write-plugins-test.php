@@ -195,6 +195,20 @@ check( 'updates-check clears once and is rate-limited: a second check within 5 m
 check( '... too_soon answers 429', 429 === d5b_ability_http_status( 'too_soon' ) );
 $GLOBALS['T_clock'] = 1700000100.0;
 check( 'in the next 5-minute window it runs again', is_array( call( 'updates-check' ) ) && 2 === traps( 'wp_clean_update_cache' ) && 2 === count( hrows() ) );
+// 2.4.3: vendors that only hook their updater in wp-admin (Elegant Themes on admin_init) are hooked before the refresh,
+// otherwise wp_update_themes() from REST rewrites the list WITHOUT Divi and hides a pending Divi update.
+if ( ! function_exists( 'et_core_enable_automatic_updates' ) ) { function et_core_enable_automatic_updates( $url, $version ) { $GLOBALS['T_update_checks'][] = 'et:' . $version . ':' . $url; $GLOBALS['et_core_updates'] = (object) array( 'v' => $version ); } }
+if ( ! function_exists( 'get_template_directory_uri' ) ) { function get_template_directory_uri() { return 'https://example.test/wp-content/themes/Divi'; } }
+if ( ! defined( 'ET_CORE_VERSION' ) ) { define( 'ET_CORE_VERSION', '4.27.4' ); }
+unset( $GLOBALS['et_core_updates'] ); $GLOBALS['T_update_checks'] = array(); $GLOBALS['T_clock'] = 1700000400.0;
+call( 'updates-check' );
+check( 'updates-check hooks the Elegant Themes updater once, BEFORE the three checks, with the parent theme URI and ET_CORE_VERSION', array( 'et:4.27.4:https://example.test/wp-content/themes/Divi', 'wp_version_check', 'wp_update_plugins', 'wp_update_themes' ) === $GLOBALS['T_update_checks'], $GLOBALS['T_update_checks'] );
+$GLOBALS['T_update_checks'] = array(); $GLOBALS['T_clock'] = 1700000700.0;
+call( 'updates-check' );
+check( 'an updater already hooked ($GLOBALS[et_core_updates] set, as Divi does on admin_init) is not hooked twice', array( 'wp_version_check', 'wp_update_plugins', 'wp_update_themes' ) === $GLOBALS['T_update_checks'], $GLOBALS['T_update_checks'] );
+unset( $GLOBALS['et_core_updates'] ); $GLOBALS['T_update_checks'] = array();
+call( 'plugins-status' );
+check( 'a status read hooks nothing and asks nothing (it only reads the stored list)', array() === $GLOBALS['T_update_checks'], $GLOBALS['T_update_checks'] );
 site(); $GLOBALS['T_fresh']['update_plugins'] = keyed_offers( AKISMET, '5.3' );
 $r = call( 'updates-check' );
 check( 'updates-check: a fresh package url with a licence key reaches neither the result nor the row', is_array( $r ) && no_key( $r ) && no_key( hrows() ) && '5.3' === $r['plugins'][0]['new_version'], $r );
