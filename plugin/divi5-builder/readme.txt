@@ -3,7 +3,7 @@ Contributors: doughoseck
 Tags: divi, rest api
 Requires at least: 6.0
 Requires PHP: 7.4
-Stable tag: 2.4.2
+Stable tag: 2.4.3
 License: MIT
 
 Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.
@@ -26,6 +26,10 @@ Use at your own risk. With the AI abilities switched on, this plugin lets connec
 2. as a must-use plugin: copy the folder divi5-builder/ into wp-content/mu-plugins/ and the one file divi5-builder-loader.php next to it (it is published next to divi5-builder.zip in each release).
 
 == Changelog ==
+
+= 2.4.3 =
+* A refresh of the update list from outside wp-admin no longer hides a pending Divi update. Divi only connects its own updater inside wp-admin, so a refresh from the Updates tool or the updates-check ability used to rebuild WordPress's list without Divi, and a Divi update that wp-admin showed was gone until the next wp-admin visit. The plugin now connects the Elegant Themes updater itself before every refresh (for a user who may manage options), so the list matches what wp-admin shows.
+* Updating from 2.4.2 asks nothing again: no switch changes.
 
 = 2.4.2 =
 * Popups made over REST now appear. Divi keeps a per-post note of which canvases a page, post or layout has, and only its own builder save refreshed it, so a popup canvas linked or edited over REST stayed out of the page. The plugin now drops that note on every save of Divi content and on every link-canvas call (for the new parent and the previous one).

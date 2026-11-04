@@ -101,8 +101,26 @@ if ( ! function_exists( 'wpsu_kind' ) ) :
 	// $refresh: ask the update servers. $force: first forget what WordPress remembers, because on its own WordPress
 	// asks again only every 12 hours and would answer from memory (1.0.0 did that: a "refreshed" status that was
 	// 90 minutes old on its first real run).
+	/**
+	 * 2.4.3: hook the updaters that only wire themselves up in wp-admin, so a refresh from here sees what wp-admin sees.
+	 * Divi enables ET_Core_Updates on admin_init (for manage_options), and that object is what adds Divi and the other
+	 * Elegant Themes products to WordPress's update list while it is being rebuilt. Outside wp-admin (REST, cron) the
+	 * filter is absent, so wp_update_themes() wrote a list WITHOUT Divi and a refresh from this plugin HID a pending
+	 * Divi update until the next wp-admin visit (seen 2026-11-04). Returns the vendors hooked, for the answer.
+	 */
+	function wpsu_hook_vendor_updaters() {
+		$hooked = array();
+		if ( function_exists( 'et_core_enable_automatic_updates' ) && empty( $GLOBALS['et_core_updates'] ) && defined( 'ET_CORE_VERSION' )
+			&& function_exists( 'get_template_directory_uri' ) && current_user_can( 'manage_options' ) ) {
+			et_core_enable_automatic_updates( get_template_directory_uri(), ET_CORE_VERSION );
+			$hooked[] = 'elegant-themes';
+		}
+		return $hooked;
+	}
+
 	function wpsu_status( $refresh, $force = false ) {
 		wpsu_load_admin();
+		if ( $refresh ) { wpsu_hook_vendor_updaters(); }
 		if ( $refresh && $force && function_exists( 'wp_clean_update_cache' ) ) { wp_clean_update_cache(); }
 		if ( $refresh ) { wp_version_check(); wp_update_plugins(); wp_update_themes(); }
 		$php = PHP_VERSION; $wp = get_bloginfo( 'version' );
