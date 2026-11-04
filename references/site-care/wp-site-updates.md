@@ -91,10 +91,13 @@ risky actions" under each (Settings > Divi 5 Builder). The Updates switch is not
 1. `plugins-status` (plugins and themes with the version on offer and why one is blocked, plus `kept_copies`),
    `themes-status`, `core-status`. They read the stored list; `updates-check` asks wordpress.org again (once per 5 minutes).
    Show the user what is out of date and get their go, as with the script.
-   Premium plugins with their own updater (Divi Plugins' FilterGrid, 2026-11-03) only add their offer to the update list
-   while someone is inside wp-admin, so neither `updates-check` nor the status reads see them from outside. Before an
-   abilities update on a site with such plugins, ask the user to open Plugins in wp-admin once, then read the status again;
-   the update then runs through `plugins-update` with its kept copy like any other.
+   Products whose updater only hooks itself inside wp-admin: Divi itself, and licence-key plugins such as Divi Plugins'
+   FilterGrid. Up to plugin 2.4.2 a refresh from outside wp-admin (`updates-check`, the Updates route) rebuilt the list
+   WITHOUT them and even hid a pending Divi update from wp-admin until the next visit; "no update offered" was NOT a licence
+   problem. Since 2.4.3 the plugin hooks the Elegant Themes updater before every refresh, so Divi's offer survives a
+   refresh and `themes-update` runs it with a kept copy (confirmed 2026-11-04). FilterGrid-type plugins still need the user
+   to open Plugins in wp-admin once; then read the status again and update through `plugins-update` like any other. When
+   a read disagrees with what the user sees in wp-admin, suspect the read first: reproduce (refresh, read again).
    A big theme (Divi, 135 MB kept copy, 2026-11-03) can take longer than the host keeps a connection open: the client
    sees `ECONNRESET` or a timeout while PHP carries on and finishes. That is not a failure. Read the newest
    `history-changes-list` row: `after.running: true` means it is still going, a `version` and `kept` block means it
