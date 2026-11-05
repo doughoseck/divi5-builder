@@ -143,6 +143,11 @@ the release and is never edited by hand: the build writes it.
 Between the merge and the release a site that checks sees the new version but gets a 404 on "Update now";
 it simply tries again later. Keep that gap to minutes.
 
+**Any commit that touches `plugin/`**, release or not, runs `node scripts/build-plugin-zips.js` first
+(no `--tag`) and commits the `plugin/update.json` it writes: the sha256 in it is the sha256 of the zip
+built from that commit, so any change to a file in the zip changes it. `build-plugin-zips-test.js` fails
+on a commit where they disagree. `.gitattributes` keeps the json at LF line ends on every checkout.
+
 ## Security
 
 Report vulnerabilities privately, never in a public issue: see [SECURITY.md](SECURITY.md)

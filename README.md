@@ -92,9 +92,19 @@ Install it either way (not both at once):
 
 - **From the WordPress admin (no FTP):** download `divi5-builder.zip` from the
   [latest release](https://github.com/doughoseck/divi5-builder/releases/latest), then
-  **Plugins → Add New → Upload Plugin**, and **Activate**. There is no update checker:
-  to update, upload the newer zip and choose **Replace current with uploaded**. Any admin
-  can deactivate a normal plugin, and the tool stops working until it is active again.
+  **Plugins → Add New → Upload Plugin**, and **Activate** (or push the zip to the site
+  with MainWP). That first install is always an upload: the plugin cannot install itself
+  on a site where it is not there yet. From then on (plugin 2.5.0 and newer) updates come
+  from GitHub Releases like any other plugin update: a new release shows in **Dashboard →
+  Updates** with **Update now**, and the abilities' `plugins-status` lists it after
+  `updates-check`. (`plugins-update` refuses it with `self`: by the 2.4.0 self rule the
+  plugin never replaces itself through an ability; the Updates tool, `site-updates.js`,
+  can.) The zip is checked
+  against the checksum published with the release before WordPress unpacks it (see
+  SECURITY.md, "Where updates come from"). **Settings > Divi 5 Builder** says at the top
+  where updates come from, the installed and newest version and when it last checked,
+  with a **Check now** link. Any admin can deactivate a normal plugin, and the tool stops
+  working until it is active again.
 - **As a must-use plugin (FTP):** unzip `divi5-builder.zip` and copy its `divi5-builder/`
   folder into `wp-content/mu-plugins/` (create the folder if needed), and put
   `divi5-builder-loader.php` next to it in the same folder. Both are in the
@@ -102,7 +112,10 @@ Install it either way (not both at once):
   is a file of its own next to the zip (in the repository it is
   `plugin/mu-loader/divi5-builder-loader.php`). The folder must be named `divi5-builder`;
   under any other name the loader does nothing. Must-use plugins are always on and cannot
-  be switched off from the admin, which is why this is the sturdier option.
+  be switched off from the admin, which is why this is the sturdier option. WordPress
+  never updates must-use plugins, so this copy gets no update offer (its Settings page
+  says so): update it by replacing the `divi5-builder/` folder with the one from the
+  newer release.
 
 Page building is always on. The three site-maintenance parts, **Media audit**, **Media
 clean-up** and **Updates**, each have a switch in **Settings > Divi 5 Builder** (on
@@ -135,8 +148,8 @@ tb-restore`). A header or footer is on every page, so the write route is deliber
 fussy: it needs `edit_theme_options` + `unfiltered_html`, the md5 of the content you
 last read (an edit made in the Visual Builder meanwhile is never overwritten), balanced
 blocks, and it reads the save back and reverts automatically if the block tree changed.
-`node scripts/wp.js <site> plugin-version` tells you what a site is running; upgrading
-is uploading the newer zip (there is no update checker).
+`node scripts/wp.js <site> plugin-version` tells you what a site is running; from 2.5.0
+a newer release arrives in Dashboard → Updates (a must-use copy: replace the folder).
 
 ## Quickstart
 
@@ -362,7 +375,7 @@ node scripts/ds-live-test.js <site> all   # the same writes on a real site; puts
 ## Security
 
 - **Found a vulnerability? Report it privately** - see [SECURITY.md](SECURITY.md).
-  Run the latest plugin (**divi5-builder 2.4.3**; the old single-file 1.8.3 and newer already fixed a Contributor-level option read).
+  Run the latest plugin (**divi5-builder 2.5.0**; the old single-file 1.8.3 and newer already fixed a Contributor-level option read).
 - Use the lowest role that works: page building needs an **Editor** Application Password.
 - Never commit `~/.web-creds.txt` or any Application Password.
 - The plugin exposes existing Divi meta keys, the global colour palette and (1.5+)

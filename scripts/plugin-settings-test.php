@@ -369,6 +369,30 @@ check( 'no good answer ever: says so, with the error', false !== strpos( $out, '
 upd_keep( array( 'json' => null, 'checked' => time() - 120, 'ok' => false, 'error' => 'could not read the update file: <script>x</script>' ) );
 $out = html( 'd5b_settings_render' );
 check( 'the error is printed escaped', false !== strpos( $out, 'Could not read the update file (&lt;script&gt;x&lt;/script&gt;)' ) && false === strpos( $out, '<script>' ), $out );
+// A failed request with a kept json but no good_at (an entry written before good_at existed): the kept answer is still named.
+upd_keep( array( 'json' => upd_json(), 'checked' => time() - 120, 'ok' => false, 'error' => 'could not read the update file (HTTP 503)' ) );
+$out = html( 'd5b_settings_render' );
+check( 'failed, kept json, no good_at: "the last good answer is kept."', false !== strpos( $out, '<p>Updates: from GitHub Releases. Installed 2.0.0. Could not read the update file (HTTP 503); the last good answer is kept. <a ' . CHECK_HREF . '>Check now</a></p>' ), $out );
+check( 'failed, kept json, no good_at: no version and no age shown', false === strpos( $out, 'newest' ) && false === strpos( $out, ' ago' ), $out );
+
+echo "the Updates line: a very long error is capped\n";
+fresh(); t_set_caps( array( 'manage_options' ) );
+$GLOBALS['T_http']['https://raw.githubusercontent.com/doughoseck/divi5-builder/main/plugin/update.json'] = new WP_Error( 'http_request_failed', str_repeat( 'x', 1024 * 1024 ) );
+d5b_updater_fetch( true );
+$k = get_site_transient( 'd5b_update_json' );
+check( 'a 1 MB transport error is stored as its first 200 characters', is_array( $k ) && is_string( $k['error'] ?? null ) && 200 === strlen( $k['error'] ) && 0 === strpos( $k['error'], 'could not read the update file: xxx' ), is_array( $k ) ? strlen( (string) ( $k['error'] ?? '' ) ) : $k );
+$GLOBALS['T_http_calls'] = array();
+// Measured without the Check now link's markup (its href is the admin URL plus a nonce, about 120 characters on its own).
+function line_len( string $line ): int { return strlen( str_replace( '<a ' . CHECK_HREF . '>Check now</a>', '', $line ) ); }
+$line = d5b_updater_status_line();
+check( '... and the rendered line is under 400 characters', line_len( $line ) < 400 && strlen( strip_tags( $line ) ) < 400 && false !== strpos( $line, 'Could not read the update file (xxx' ), array( line_len( $line ), strlen( $line ) ) );
+// An entry holding a longer string than the fetch would write (an older plugin, a foreign write) is capped at display too.
+upd_keep( array( 'json' => null, 'checked' => time() - 60, 'ok' => false, 'error' => str_repeat( 'y', 1024 * 1024 ) ) );
+$line = d5b_updater_status_line();
+check( 'a 1 MB stored error renders under 400 characters', line_len( $line ) < 400 && strlen( strip_tags( $line ) ) < 400 && false !== strpos( $line, '(' . str_repeat( 'y', 200 ) . ')' ) && false === strpos( $line, str_repeat( 'y', 201 ) ), strlen( $line ) );
+upd_keep( array( 'json' => null, 'checked' => time() - 60, 'ok' => false, 'error' => str_repeat( "\u{00e9}", 300 ) ) );
+$line = d5b_updater_status_line();
+check( 'the display cap counts characters, not bytes (no broken UTF-8)', 1 === preg_match( '//u', $line ) && false !== strpos( $line, '(' . str_repeat( "\u{00e9}", 200 ) . ')' ), $line );
 
 echo "the Updates line on a network\n";
 fresh(); t_set_multisite( true ); t_set_caps( array( 'manage_network_options' ) ); $GLOBALS['T_network_admin'] = true;

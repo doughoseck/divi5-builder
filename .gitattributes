@@ -2,3 +2,5 @@
 # so git must never convert its line endings, whatever core.autocrlf says on the machine that checks it out.
 scripts/fixtures/vb-resave-*/** -text
 scripts/fixtures/vb-5.18.0-variables.html -text
+# The build writes plugin/update.json with LF line ends and every site reads it from main as committed: keep it LF.
+plugin/update.json text eol=lf

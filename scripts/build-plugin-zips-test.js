@@ -146,7 +146,7 @@ try {
   }
   check('no function name is declared in two abilities files (the loader guard trap)', Object.keys(declared).length > 400 && twice.length === 0, twice);
   check('holds inc/blocks.php and inc/blocks-text-fields.php (2.2.0)', ['blocks', 'blocks-text-fields'].every(f => names.includes('divi5-builder/inc/' + f + '.php')), names.filter(x => x.startsWith('divi5-builder/inc/')));
-  check('the zip header says version 2.4.3, as the constant and the readme do', /Version: 2\.4\.3\b/.test(main0(files)) && /D5B_VERSION', '2\.4\.3'/.test(main0(files)) && /Stable tag: 2\.4\.3\b/.test(files.find(e => e.name === 'divi5-builder/readme.txt').data.toString()));
+  check('the zip header says version 2.5.0, as the constant and the readme do', /Version: 2\.5\.0\b/.test(main0(files)) && /D5B_VERSION', '2\.5\.0'/.test(main0(files)) && /Stable tag: 2\.5\.0\b/.test(files.find(e => e.name === 'divi5-builder/readme.txt').data.toString()));
   check('every name sits under divi5-builder/', names.every(x => x.startsWith('divi5-builder/')), names);
   check('no old plugin, no assets/, no must-use loader in the zip', !names.some(x => /legacy|assets|mu-loader|divi5-builder-rest|wp-media|wp-site-updates|divi5-builder-loader/.test(x)), names);
   const body = names.filter(x => x !== 'divi5-builder/LICENSE');

@@ -1,9 +1,9 @@
 {
   "slug": "divi5-builder",
-  "version": "2.4.3",
+  "version": "2.5.0",
   "tag": "v2026.11.05",
   "download_url": "https://github.com/doughoseck/divi5-builder/releases/download/v2026.11.05/divi5-builder.zip",
-  "sha256": "f277ed65528b1f6706b22bd8d09bd7b9a61f95df67e0a3f6caf50430c931f722",
+  "sha256": "d15d6d9d99bed78d71a034a68041fc7315cdc21ea0b233f5e5d624a9a4b93ea4",
   "requires": "6.0",
   "requires_php": "7.4",
   "tested": "7.1",

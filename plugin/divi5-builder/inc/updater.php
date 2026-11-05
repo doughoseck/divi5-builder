@@ -72,6 +72,14 @@ if ( ! function_exists( 'd5b_updater_kept' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_updater_cap' ) ) {
+	/** The first $max characters of $s (multibyte-safe when mbstring is there, else bytes). */
+	function d5b_updater_cap( string $s, int $max ): string {
+		if ( function_exists( 'mb_substr' ) ) { return mb_substr( $s, 0, $max, 'UTF-8' ); }
+		return substr( $s, 0, $max );
+	}
+}
+
 if ( ! function_exists( 'd5b_updater_fetch' ) ) {
 	/**
 	 * The update.json, from the cache while it is fresh (12 hours after a good request, 1 hour after a failed one) or else
@@ -117,6 +125,8 @@ if ( ! function_exists( 'd5b_updater_fetch' ) ) {
 				$json = $decoded;
 			}
 		}
+		// A transport error message can be any length (a proxy page, a long cURL text): only the first 200 characters are kept.
+		$error = d5b_updater_cap( $error, 200 );
 		$ok    = null !== $json;
 		$entry = array( 'json' => $ok ? $json : $last_good, 'checked' => time(), 'ok' => $ok, 'error' => $error );
 		// When the json was got, for the Settings line ("last good answer 2 days ago"); a failure keeps the earlier time.
@@ -235,7 +245,8 @@ if ( ! function_exists( 'd5b_updater_status_line' ) ) {
 				$text .= ', newest ' . $json['version'] . ' (checked ' . human_time_diff( $c['checked'], time() ) . ' ago).';
 			} else {
 				// d5b_updater_fetch's errors start with "could not read the update file" when the request failed: said once.
-				$error = is_string( $c['error'] ?? null ) ? $c['error'] : '';
+				// Capped again here: the kept answer is read back, and an older or foreign entry may hold a longer string.
+				$error = is_string( $c['error'] ?? null ) ? d5b_updater_cap( $c['error'], 200 ) : '';
 				$lead  = 'could not read the update file';
 				if ( 0 === strpos( $error, $lead ) ) {
 					$rest  = substr( $error, strlen( $lead ) );

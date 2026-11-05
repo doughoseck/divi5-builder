@@ -3,7 +3,7 @@ Contributors: doughoseck
 Tags: divi, rest api
 Requires at least: 6.0
 Requires PHP: 7.4
-Stable tag: 2.4.3
+Stable tag: 2.5.0
 License: MIT
 
 Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.
@@ -25,7 +25,14 @@ Use at your own risk. With the AI abilities switched on, this plugin lets connec
 1. Upload divi5-builder.zip in Plugins > Add New and activate it, or
 2. as a must-use plugin: copy the folder divi5-builder/ into wp-content/mu-plugins/ and the one file divi5-builder-loader.php next to it (it is published next to divi5-builder.zip in each release).
 
+From then on, a plugin installed the first way gets its updates in Dashboard > Updates, from GitHub Releases. A must-use copy is updated by replacing the folder.
+
 == Changelog ==
+
+= 2.5.0 =
+* Updates now come from GitHub Releases. A new release shows in Dashboard > Updates like any other plugin update, and the plugins-status ability lists it (plugins-update still never replaces this plugin itself; use Update now). Settings > Divi 5 Builder says where updates come from, the newest version and when it was checked, with a Check now link.
+* The downloaded zip is checked against the checksum published with the release before WordPress unpacks it; a zip that does not match is deleted and not installed. A must-use copy is not updated by WordPress (it never updates must-use plugins), and the Settings page says so: replace the folder as before.
+* The first install is still an upload of divi5-builder.zip (or a MainWP push). Updating from 2.4.3 asks nothing again: no switch changes.
 
 = 2.4.3 =
 * A refresh of the update list from outside wp-admin no longer hides a pending Divi update. Divi only connects its own updater inside wp-admin, so a refresh from the Updates tool or the updates-check ability used to rebuild WordPress's list without Divi, and a Divi update that wp-admin showed was gone until the next wp-admin visit. The plugin now connects the Elegant Themes updater itself before every refresh (for a user who may manage options), so the list matches what wp-admin shows.
