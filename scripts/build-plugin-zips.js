@@ -3,7 +3,7 @@
  * build-plugin-zips.js: package the divi5-builder plugin (plugin/divi5-builder/) as a normal WordPress
  * plugin zip, so it can be installed from the admin (Plugins > Add New > Upload Plugin).
  *
- *   node scripts/build-plugin-zips.js [--out dist]
+ *   node scripts/build-plugin-zips.js [--out dist] [--tag vYYYY.MM.DD[.N]]
  *
  * The zip holds every file of plugin/divi5-builder/ under divi5-builder/ (so divi5-builder/divi5-builder.php,
  * inc/, parts/, readme.txt) plus LICENSE: the layout WordPress expects. Reproducible: sorted names, fixed
@@ -11,11 +11,16 @@
  * The single-file plugins in assets/legacy/ are no longer packaged.
  * Next to the zip it writes divi5-builder-loader.php (from plugin/mu-loader/, LF endings): the second release
  * file, for a must-use install.
- * Prints the zip with the plugin version read from its header, then the loader.
+ * Then update.json (slug, version, tag, download_url, sha256, requires, requires_php, tested, last_updated,
+ * changelog_url), written next to the zip AND into plugin/update.json: the GitHub updater reads the committed
+ * copy from main. --tag names the release about to be created; without it the tag in plugin/update.json is kept;
+ * with neither, or a tag of the wrong form, the build STOPs (exit 1) before writing anything.
+ * Prints the zip with the plugin version read from its header, then the loader, then the json.
  */
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const crypto = require('crypto');
 
 const ROOT = process.env.D5B_REPO_ROOT || path.join(__dirname, '..'); // the override is for the mutation test
 const outArg = process.argv.indexOf('--out');
@@ -75,8 +80,33 @@ const MAIN = path.join(PLUGIN_DIR, `${SLUG}.php`);
 if (!fs.existsSync(MAIN)) { console.error(`STOP: ${path.relative(ROOT, MAIN)} not found`); process.exit(1); }
 const mainHead = fs.readFileSync(MAIN, 'utf8').slice(0, 8192);
 if (!/Plugin Name:/.test(mainHead)) { console.error(`STOP: ${SLUG}.php has no Plugin Name: header`); process.exit(1); }
-const version = (mainHead.match(/^\s*\*\s*Version:\s*(\S+)/m) || [])[1];
+const header = key => (mainHead.match(new RegExp(`^\\s*\\*\\s*${key}:\\s*(\\S+)`, 'm')) || [])[1];
+const version = header('Version');
 if (!version) { console.error(`STOP: ${SLUG}.php has no Version: header`); process.exit(1); }
+const requires = header('Requires at least'), requiresPhp = header('Requires PHP');
+if (!requires || !requiresPhp) { console.error(`STOP: ${SLUG}.php needs both a Requires at least: and a Requires PHP: header (update.json carries them)`); process.exit(1); }
+const readmeFile = path.join(PLUGIN_DIR, 'readme.txt');
+const tested = (fs.existsSync(readmeFile) && (fs.readFileSync(readmeFile, 'utf8').match(/^Tested up to:\s*(\S+)/m) || [])[1]) || '7.1';
+
+// --- the release tag, for update.json ------------------------------------------------------------
+// --tag vYYYY.MM.DD[.N] names the release; without it the tag already in plugin/update.json is kept.
+// Everything is checked here, before anything is written: a STOP leaves no zip and no json behind.
+const TAG_FORM = /^v\d{4}\.\d{2}\.\d{2}(\.\d+)?$/;
+const JSON_FILE = path.join(ROOT, 'plugin', 'update.json');
+let prev = null;
+if (fs.existsSync(JSON_FILE)) {
+  try { prev = JSON.parse(fs.readFileSync(JSON_FILE, 'utf8')); } catch (e) { console.error(`STOP: plugin/update.json is not valid JSON (${e.message}); fix or delete it and build with --tag`); process.exit(1); }
+}
+const tagArg = process.argv.indexOf('--tag');
+let tag;
+if (tagArg > -1) {
+  tag = process.argv[tagArg + 1];
+  if (typeof tag !== 'string' || !TAG_FORM.test(tag)) { console.error(`STOP: --tag must look like v2026.11.05 or v2026.11.05.2 (got ${JSON.stringify(tag === undefined ? null : tag)}); nothing written`); process.exit(1); }
+} else {
+  tag = prev && prev.tag;
+  if (!tag) { console.error('STOP: no --tag given and no tag in plugin/update.json; build with --tag vYYYY.MM.DD (the release you are about to create); nothing written'); process.exit(1); }
+  if (typeof tag !== 'string' || !TAG_FORM.test(tag)) { console.error(`STOP: the tag in plugin/update.json (${JSON.stringify(tag)}) is not of the form v2026.11.05; build with --tag; nothing written`); process.exit(1); }
+}
 
 function walk(dir, rel) { // every file under dir, as forward-slash paths relative to the plugin folder
   let out = [];
@@ -96,15 +126,40 @@ const files = names.map(rel => {
   return { name: `${SLUG}/${rel}`, data };
 });
 if (license) files.push({ name: `${SLUG}/LICENSE`, data: license });
-fs.mkdirSync(OUT, { recursive: true });
-const out = path.join(OUT, `${SLUG}.zip`);
-fs.writeFileSync(out, zip(files));
-console.log(`${path.relative(ROOT, out).replace(/\\/g, '/')}  ${SLUG} ${version}  (${fs.statSync(out).size} bytes, ${files.length} files)`);
-
 // The second release file: the must-use loader, published next to the zip so a must-use install needs no repository.
 // Copied as it is (LF line endings), so it is the same byte for byte on every build.
 const LOADER = path.join(ROOT, 'plugin', 'mu-loader', `${SLUG}-loader.php`);
 if (!fs.existsSync(LOADER)) { console.error(`STOP: ${path.relative(ROOT, LOADER)} not found`); process.exit(1); }
+
+const zipBytes = zip(files);
+// update.json: what the GitHub updater (2.5.0+) reads from main. Written from the zip just built, next to it
+// and into plugin/update.json (committed with the version bump). NOT inside the zip: it describes the zip.
+// last_updated changes only when version or tag change, so a rebuild from the same commit is byte-identical.
+const keepDate = prev && prev.version === version && prev.tag === tag && typeof prev.last_updated === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(prev.last_updated);
+const manifest = {
+  slug: SLUG,
+  version,
+  tag,
+  download_url: `https://github.com/doughoseck/divi5-builder/releases/download/${tag}/${SLUG}.zip`,
+  sha256: crypto.createHash('sha256').update(zipBytes).digest('hex'),
+  requires,
+  requires_php: requiresPhp,
+  tested,
+  last_updated: keepDate ? prev.last_updated : new Date().toISOString().slice(0, 10),
+  changelog_url: `https://github.com/doughoseck/divi5-builder/releases/tag/${tag}`,
+};
+const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 2) + '\n', 'utf8');
+
+fs.mkdirSync(OUT, { recursive: true });
+const out = path.join(OUT, `${SLUG}.zip`);
+fs.writeFileSync(out, zipBytes);
+console.log(`${path.relative(ROOT, out).replace(/\\/g, '/')}  ${SLUG} ${version}  (${fs.statSync(out).size} bytes, ${files.length} files)`);
+
 const loaderOut = path.join(OUT, `${SLUG}-loader.php`);
 fs.writeFileSync(loaderOut, Buffer.from(fs.readFileSync(LOADER, 'utf8').replace(/\r\n/g, '\n'), 'utf8'));
 console.log(`${path.relative(ROOT, loaderOut).replace(/\\/g, '/')}  the must-use loader  (${fs.statSync(loaderOut).size} bytes)`);
+
+const jsonOut = path.join(OUT, 'update.json');
+fs.writeFileSync(jsonOut, manifestBytes);
+fs.writeFileSync(JSON_FILE, manifestBytes);
+console.log(`${path.relative(ROOT, jsonOut).replace(/\\/g, '/')} and plugin/update.json  ${version} ${tag}  sha256 ${manifest.sha256}${keepDate ? '' : '  (last_updated ' + manifest.last_updated + ')'}`);

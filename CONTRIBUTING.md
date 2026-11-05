@@ -116,6 +116,32 @@ Plugin code lives in `plugin/divi5-builder/`. Put a new REST route in the matchi
 `updates.php`). A route in one of the three switch parts must not exist while its switch is off;
 `scripts/plugin-switches-test.php` covers that.
 
+## Releasing the plugin
+
+Sites running the plugin (2.5.0 and later) learn about a new version from `plugin/update.json` on `main`
+and download the zip from the GitHub release it names, checking its sha256 first. So the json is part of
+the release and is never edited by hand: the build writes it.
+
+1. **Bump the version** in the three places that must agree: the `Version:` header and `D5B_VERSION` in
+   `plugin/divi5-builder/divi5-builder.php`, and `Stable tag:` in `plugin/divi5-builder/readme.txt`
+   (plus its changelog entry).
+2. **Build with the tag** of the release you are about to create (the date, `.2` for a second one that day):
+   ```bash
+   node scripts/build-plugin-zips.js --tag v2026.11.05 --out <a folder outside the repo>
+   ```
+   This writes `plugin/update.json` (version, tag, asset URL, sha256 of the zip). The json must point at
+   the tag you are about to create. Without `--tag` the build keeps the tag already in the json, which is
+   right for a rebuild and wrong for a new release.
+3. **Commit `plugin/update.json` with the bump**, in the same PR. `node scripts/build-plugin-zips-test.js`
+   fails if the committed json is not what a build of the commit writes.
+4. **Merge**, then build again from `main` into the release folder (no `--tag` needed now). The zip is
+   reproducible, so its bytes and its sha256 are the ones in the json; `git status` stays clean.
+5. **Publish**: `gh release create v2026.11.05 <folder>/divi5-builder.zip <folder>/divi5-builder-loader.php`
+   with the changelog as notes. Only those two files are release assets; `update.json` is not one.
+
+Between the merge and the release a site that checks sees the new version but gets a 404 on "Update now";
+it simply tries again later. Keep that gap to minutes.
+
 ## Security
 
 Report vulnerabilities privately, never in a public issue: see [SECURITY.md](SECURITY.md)
