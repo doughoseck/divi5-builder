@@ -87,13 +87,33 @@ try {
   check('update.json: a rebuild with the same version and tag keeps last_updated (byte-identical rule)', J1.last_updated === '2000-01-01' && J1.tag === J.tag, J1);
   const c2 = build('c2', ['--tag', J.tag || 'v2026.11.05'], R2); const J2 = fs.existsSync(jpath(c2)) ? JSON.parse(fs.readFileSync(jpath(c2), 'utf8')) : {};
   check('update.json: --tag equal to the committed tag also keeps last_updated', J2.last_updated === '2000-01-01', J2);
-  const c3 = build('c3', ['--tag', 'v2099.01.02.3'], R2); const J3 = fs.existsSync(jpath(c3)) ? JSON.parse(fs.readFileSync(jpath(c3), 'utf8')) : {};
-  check('update.json: a new --tag sets tag, both URLs and last_updated = today (UTC)', J3.tag === 'v2099.01.02.3' && J3.download_url === 'https://github.com/doughoseck/divi5-builder/releases/download/v2099.01.02.3/divi5-builder.zip' && J3.changelog_url === 'https://github.com/doughoseck/divi5-builder/releases/tag/v2099.01.02.3' && J3.last_updated === today() && fs.readFileSync(j2, 'utf8') === fs.readFileSync(jpath(c3), 'utf8'), J3);
+  const t3a = today(); const c3 = build('c3', ['--tag', 'v2099.01.02.3'], R2); const t3b = today(); const J3 = fs.existsSync(jpath(c3)) ? JSON.parse(fs.readFileSync(jpath(c3), 'utf8')) : {};
+  check('update.json: a new --tag sets tag, both URLs and last_updated = today (UTC)', J3.tag === 'v2099.01.02.3' && J3.download_url === 'https://github.com/doughoseck/divi5-builder/releases/download/v2099.01.02.3/divi5-builder.zip' && J3.changelog_url === 'https://github.com/doughoseck/divi5-builder/releases/tag/v2099.01.02.3' && [t3a, t3b].includes(J3.last_updated) && fs.readFileSync(j2, 'utf8') === fs.readFileSync(jpath(c3), 'utf8'), J3);
   const c4 = build('c4', [], R2); const J4 = fs.existsSync(jpath(c4)) ? JSON.parse(fs.readFileSync(jpath(c4), 'utf8')) : {};
   check('update.json: the next build without --tag reuses the tag now in plugin/update.json', J4.tag === 'v2099.01.02.3', J4.tag);
   if (fs.existsSync(j2)) { const o = JSON.parse(fs.readFileSync(j2, 'utf8')); o.version = '0.0.1'; o.last_updated = '2000-01-01'; fs.writeFileSync(j2, JSON.stringify(o, null, 2) + '\n'); }
-  const c5 = build('c5', [], R2); const J5 = fs.existsSync(jpath(c5)) ? JSON.parse(fs.readFileSync(jpath(c5), 'utf8')) : {};
-  check('update.json: a version change sets version from the header and last_updated = today', J5.version === J.version && J5.last_updated === today(), J5);
+  const t5a = today(); const c5 = build('c5', [], R2); const t5b = today(); const J5 = fs.existsSync(jpath(c5)) ? JSON.parse(fs.readFileSync(jpath(c5), 'utf8')) : {};
+  check('update.json: a version change sets version from the header and last_updated = today', J5.version === J.version && [t5a, t5b].includes(J5.last_updated), J5);
+
+  // tested comes from the readme's Tested up to when there is one (the 7.1 fallback is checked above).
+  { const R = repoCopy('tested'); const rf = path.join(R, 'plugin', 'divi5-builder', 'readme.txt');
+    fs.writeFileSync(rf, fs.readFileSync(rf, 'utf8').replace(/^(Requires PHP:[^\n]*\n)/m, '$1Tested up to: 6.9\n'));
+    const o = build('tested-out', [], R); const JT = fs.existsSync(jpath(o)) ? JSON.parse(fs.readFileSync(jpath(o), 'utf8')) : {};
+    check('update.json: a readme with Tested up to: 6.9 gives tested 6.9', /^Tested up to: 6\.9\r?$/m.test(fs.readFileSync(rf, 'utf8')) && JT.tested === '6.9', JT.tested); }
+
+  // A broken committed json or a missing Requires header STOPs before anything is written.
+  const stopCase = (label, edit, args = [], says = /STOP/) => {
+    const R = repoCopy('stop-' + n); edit(R); const jf = path.join(R, 'plugin', 'update.json'); const before = fs.existsSync(jf) ? fs.readFileSync(jf) : null;
+    const o = path.join(tmp, 'stopout-' + n); const r = run(R, ['--out', o, ...args]);
+    check(label + ' STOPs (exit 1), plugin/update.json unchanged, no out folder', r.status === 1 && /STOP/.test(r.stderr) && says.test(r.stderr) && !fs.existsSync(o) && before !== null && fs.readFileSync(jf).equals(before), { status: r.status, stderr: r.stderr, out: fs.existsSync(o) });
+  };
+  const mainOf = R => path.join(R, 'plugin', 'divi5-builder', 'divi5-builder.php');
+  const dropLine = key => R => { const s = fs.readFileSync(mainOf(R), 'utf8'); const t = s.replace(new RegExp('^[^\\n]*' + key + ':[^\\n]*\\n', 'm'), ''); if (t === s) throw new Error('no ' + key + ' line to remove'); fs.writeFileSync(mainOf(R), t); };
+  stopCase('a committed plugin/update.json that is not JSON ("{")', R => fs.writeFileSync(path.join(R, 'plugin', 'update.json'), '{'), [], /not valid JSON/);
+  stopCase('a committed plugin/update.json that is not JSON ("{"), even with a good --tag,', R => fs.writeFileSync(path.join(R, 'plugin', 'update.json'), '{'), ['--tag', 'v2026.11.05'], /not valid JSON/);
+  stopCase('a committed plugin/update.json with a tag of the wrong form ({"tag":"bad"}) and no --tag', R => fs.writeFileSync(path.join(R, 'plugin', 'update.json'), '{"tag":"bad"}'));
+  stopCase('a main file without its Requires at least: line', dropLine('Requires at least'));
+  stopCase('a main file without its Requires PHP: line', dropLine('Requires PHP'));
 
   // STOPs: a bad --tag, or no --tag and no committed json, writes nothing and exits 1.
   for (const bad of ['v2026.11.5', '2026.11.05', 'v2026.11.05.', 'v2026.11.05x', 'v2026-11-05', 'v2026.11.05.1.2', '']) {
