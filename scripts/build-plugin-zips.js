@@ -124,11 +124,12 @@ function walk(dir, rel) { // every file under dir, as forward-slash paths relati
 // --- which files: what git tracks, when ROOT is a git checkout ------------------------------------
 // A release zip must hold the commit and nothing else: in a checkout the plugin files are git ls-files, and anything
 // untracked, ignored or changed under plugin/divi5-builder (or LICENSE) STOPs the build before anything is written.
-// Not a git repository (git exits 128, as in the test's temp copies): every file found on disk (walk).
+// Not a git repository (git exits 128 saying "not a git repository", as in the test's temp copies): every file found on
+// disk (walk). Any other git failure (a corrupt index, "dubious ownership", git missing) STOPs with git's own message.
 const PLUGIN_REL = `plugin/${SLUG}`;
 function gitOut(args) {
   try { return execFileSync('git', args, { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 }); } catch (e) {
-    if (e.status === 128) return null; // not a git repository
+    if (e.status === 128 && /not a git repository/i.test(String(e.stderr || ''))) return null;
     console.error(`STOP: git ${args.join(' ')} failed (${e.code === 'ENOENT' ? 'git is not on PATH' : String(e.stderr || e.message).trim()}); nothing written`); process.exit(1);
   }
 }
@@ -138,6 +139,10 @@ if (fs.existsSync(path.join(ROOT, '.git'))) {
   if (status !== null) {
     const dirty = status.toString('utf8').split('\n').filter(l => l.trim() !== '');
     if (dirty.length) { console.error(`STOP: the release zip holds only what git tracks, and these are untracked, ignored or not committed:\n${dirty.map(l => '  ' + l).join('\n')}\ncommit or remove them (nothing written)`); process.exit(1); }
+    // assume-unchanged (a lower-case tag) or skip-worktree ('S') hides an edit from git status: such a file is refused too.
+    const flagged = gitOut(['ls-files', '-v', '-z', '--', PLUGIN_REL, 'LICENSE']);
+    const hidden = flagged === null ? [] : flagged.toString('utf8').split('\0').filter(Boolean).filter(l => /^[a-z]/.test(l) || l[0] === 'S');
+    if (hidden.length) { console.error(`STOP: these tracked files are marked assume-unchanged or skip-worktree, so git status cannot show an edit in them:\n${hidden.map(l => '  ' + l).join('\n')}\nclear the flag (git update-index --no-assume-unchanged / --no-skip-worktree) and commit (nothing written)`); process.exit(1); }
     const listed = gitOut(['ls-files', '-z', '--', PLUGIN_REL, 'LICENSE']);
     if (listed !== null) {
       const all = listed.toString('utf8').split('\0').filter(Boolean);

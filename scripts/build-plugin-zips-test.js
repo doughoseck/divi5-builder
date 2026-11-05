@@ -250,8 +250,18 @@ try {
     const rf = path.join(G, 'plugin', 'divi5-builder', 'readme.txt'); const rbefore = fs.readFileSync(rf);
     gitStop('a tracked file changed and not committed', () => fs.appendFileSync(rf, '\nx\n'), /plugin\/divi5-builder\/readme\.txt/);
     fs.writeFileSync(rf, rbefore);
+    // assume-unchanged / skip-worktree hide an edit from git status: STOP naming the file
+    for (const flag of ['--assume-unchanged', '--skip-worktree']) {
+      gitStop('readme.txt edited, then marked ' + flag + ' (git status shows nothing)', () => { fs.appendFileSync(rf, '\nhidden edit\n'); git('update-index', flag, 'plugin/divi5-builder/readme.txt'); }, /plugin\/divi5-builder\/readme\.txt/);
+      git('update-index', '--no' + flag.slice(1), 'plugin/divi5-builder/readme.txt'); fs.writeFileSync(rf, rbefore);
+    }
     const r = run(G, ['--out', path.join(tmp, 'git-clean-again')]);
     check('premise: the git copy is clean again and builds', r.status === 0, r.stderr);
+    { // a corrupt index: git exits 128 but the folder IS a repository: STOP with git's message, never the walk build
+      const idx = path.join(G, '.git', 'index'); const keep = fs.readFileSync(idx); fs.writeFileSync(idx, 'garbage, not an index');
+      const o = path.join(tmp, 'git-corrupt-out'); const rc = run(G, ['--out', o]);
+      check('a corrupt .git/index (git exits 128, not "not a git repository"): STOP (exit 1) with git\'s message, no zip', rc.status === 1 && /STOP: git /.test(rc.stderr) && /index/i.test(rc.stderr) && !fs.existsSync(o), { status: rc.status, stderr: rc.stderr });
+      fs.writeFileSync(idx, keep); }
     const NG = repoCopy('notgit'); fs.mkdirSync(path.join(NG, '.git'));
     const no = path.join(tmp, 'notgit-out'); const rn = run(NG, ['--out', no]); const zf = path.join(no, 'divi5-builder.zip');
     check('a .git folder that is not a repository (git exits 128): the walk build, same bytes', rn.status === 0 && fs.existsSync(zf) && fs.readFileSync(zf).equals(za), { status: rn.status, stderr: rn.stderr }); }

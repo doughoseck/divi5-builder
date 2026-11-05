@@ -36,11 +36,16 @@ define( 'WP_PLUGIN_DIR', str_replace( '\\', '/', sys_get_temp_dir() ) . '/d5b-wp
 define( 'WPMU_PLUGIN_DIR', dirname( WP_PLUGIN_DIR ) . '/mu-plugins' );
 // --mu (the child process): this copy runs as a must-use plugin; only the must-use section runs.
 $T_MU = in_array( '--mu', array_slice( (array) ( $argv ?? array() ), 1 ), true );
+// --no-updater (the second child process): a normal copy, but inc/updater.php is NOT loaded (d5b_updater_is_mu missing).
+$T_NO_UPDATER = in_array( '--no-updater', array_slice( (array) ( $argv ?? array() ), 1 ), true );
 define( 'D5B_FILE', ( $T_MU ? WPMU_PLUGIN_DIR : WP_PLUGIN_DIR ) . '/divi5-builder/divi5-builder.php' );
 require __DIR__ . '/plugin-test-stubs.php';
 function wp_json_encode( $v ) { return json_encode( $v ); }
 
-foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/history', 'inc/abilities/read-content', 'inc/abilities/read-site', 'inc/abilities/read-history', 'inc/abilities/write-common', 'inc/abilities/confirm', 'inc/abilities/maint-common', 'inc/abilities/write-plugins', 'inc/updater', 'parts/updates' ) as $f ) { require $dir . '/' . $f . '.php'; }
+foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/history', 'inc/abilities/read-content', 'inc/abilities/read-site', 'inc/abilities/read-history', 'inc/abilities/write-common', 'inc/abilities/confirm', 'inc/abilities/maint-common', 'inc/abilities/write-plugins', 'inc/updater', 'parts/updates' ) as $f ) {
+	if ( $T_NO_UPDATER && 'inc/updater' === $f ) { continue; }
+	require $dir . '/' . $f . '.php';
+}
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . substr( is_string( $detail ) ? $detail : json_encode( $detail ), 0, 800 ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
@@ -105,7 +110,7 @@ function active() { return (array) get_option( 'active_plugins', array() ); }
 function offers( array $o ) { $t = new stdClass(); $t->last_checked = 1700000000; $t->response = array(); foreach ( $o as $f => $v ) { $t->response[ $f ] = (object) array( 'new_version' => $v, 'package' => 'https://downloads.wordpress.org/plugin/x.' . $v . '.zip' ); } return $t; }
 function traps( $name ) { return count( array_filter( $GLOBALS['T_traps'], function ( $t ) use ( $name ) { return $t === $name; } ) ); }
 
-if ( $T_MU ) { goto mu_only; } // the child process runs only the must-use section (after the disk helpers)
+if ( $T_MU || $T_NO_UPDATER ) { goto mu_only; } // a child process runs only its own section (after the disk helpers)
 
 // ---- registration
 echo "registration\n";
@@ -489,6 +494,17 @@ if ( $T_MU ) {
 	check( 'mu: plugins-update of this plugin: self, the message says must-use; no row, no copy, no upgrade, the files unchanged', 'self' === code( $r ) && 1 === preg_match( '/must-use/', $r->get_error_message() ) && array() === hrows() && array() === $GLOBALS['T_copy_calls'] && array() === $GLOBALS['T_upgrade_calls'] && $self0 === tree( WP_PLUGIN_DIR . '/divi5-builder' ), is_wp_error( $r ) ? $r->get_error_message() : $r );
 	$r = call( 'plugins-rollback', array( 'plugin' => SELF_FILE, 'history_id' => 1 ) );
 	check( 'mu: plugins-rollback of this plugin: self, must-use', 'self' === code( $r ) && 1 === preg_match( '/must-use/', $r->get_error_message() ), is_wp_error( $r ) ? $r->get_error_message() : $r );
+	echo "\n" . ( $failed ? "$failed of $n FAILED\n" : "all $n passed\n" );
+	exit( $failed ? 1 : 0 );
+}
+if ( $T_NO_UPDATER ) {
+	echo "no updater (child process): a normal copy whose inc/updater.php is not loaded; the self-update check fails closed\n";
+	disk_site();
+	$GLOBALS['T_fresh']['update_plugins'] = offers( array( SELF_FILE => '2.5.0' ) );
+	check( 'no-updater: premise, d5b_updater_is_mu is not defined and this copy is a normal one', ! function_exists( 'd5b_updater_is_mu' ) && SELF_FILE === plugin_basename( D5B_FILE ) && 0 === strpos( D5B_FILE, WP_PLUGIN_DIR . '/' ), D5B_FILE );
+	$self0 = tree( WP_PLUGIN_DIR . '/divi5-builder' );
+	$r = call( 'plugins-update', array( 'plugin' => SELF_FILE ) );
+	check( 'no-updater: plugins-update of this plugin: self; no row, no copy, no upgrade, the files unchanged', 'self' === code( $r ) && array() === hrows() && array() === $GLOBALS['T_copy_calls'] && array() === $GLOBALS['T_upgrade_calls'] && $self0 === tree( WP_PLUGIN_DIR . '/divi5-builder' ), is_wp_error( $r ) ? $r->get_error_message() : $r );
 	echo "\n" . ( $failed ? "$failed of $n FAILED\n" : "all $n passed\n" );
 	exit( $failed ? 1 : 0 );
 }
@@ -1100,6 +1116,13 @@ $out = is_resource( $p ) ? stream_get_contents( $pipes[1] ) . stream_get_content
 $rc = is_resource( $p ) ? proc_close( $p ) : -1;
 echo preg_replace( '/^/m', '    ', rtrim( $out ) ) . "\n";
 check( 'the must-use child process passed (self update and rollback refused as must-use)', 0 === $rc && 1 === preg_match( '/^all [1-9][0-9]* passed$/m', $out ), $rc );
+
+echo "no updater loaded (child process --no-updater)\n";
+$p = proc_open( array( PHP_BINARY, '-d', 'max_execution_time=60', __FILE__, '--no-updater' ), array( 1 => array( 'pipe', 'w' ), 2 => array( 'pipe', 'w' ) ), $pipes );
+$out = is_resource( $p ) ? stream_get_contents( $pipes[1] ) . stream_get_contents( $pipes[2] ) : '';
+$rc = is_resource( $p ) ? proc_close( $p ) : -1;
+echo preg_replace( '/^/m', '    ', rtrim( $out ) ) . "\n";
+check( 'the no-updater child process passed (self update refused when inc/updater.php is not loaded: fails closed)', 0 === $rc && 1 === preg_match( '/^all [1-9][0-9]* passed$/m', $out ), $rc );
 
 echo "\n" . ( $failed ? "$failed of $n FAILED\n" : "all $n passed\n" );
 exit( $failed ? 1 : 0 );
