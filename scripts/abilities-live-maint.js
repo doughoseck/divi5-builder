@@ -24,7 +24,7 @@
  *   update        --item <plugin file>: when plugins-status offers an update for it that can run, plugins-update (checked, with
  *                 a kept copy), then plugins-rollback to that kept copy, then plugins-status: the version and the active state
  *                 must be the ones before. Nothing waiting (or blocked): a skip note, nothing changed (updates-check refreshes
- *                 the list; it is not called here). This plugin itself is refused. Needs the Plugins risky switch.
+ *                 the list; it is not called here). This plugin itself is skipped here. Needs the Plugins risky switch.
  *   user          --confirm go: users-create d5b-live-user (subscriber, d5b-live-user@<the site's own domain>; no inbox is read,
  *                 only results), users-password-reset, users-update role author, users-password-reset again (must be refused
  *                 recently_changed: the 24 h block after an identity change), then users-delete-preview and users-delete
@@ -250,7 +250,7 @@ function stepThemeSwitch(ctx) {
 
 function stepUpdate(ctx) {
   if (!ctx.item) throw new Usage('the update step needs --item <plugin file> (as plugins-status lists it, for example akismet/akismet.php)');
-  if (isSelf(ctx.item)) throw new Usage('the update step does not update this plugin itself (the abilities refuse it: self)');
+  if (isSelf(ctx.item)) throw new Usage('the update step does not update this plugin itself (it would update and roll back the code answering the test; run plugins-update for it by hand)');
   const s = must(ctx, 'GET', 'plugins-status', {});
   const row = (Array.isArray(s.json.plugins) ? s.json.plugins : []).find(p => p && p.item === ctx.item);
   if (!row) throw new Usage(`the plugin ${tok(ctx.item)} is not installed: nothing was changed`);

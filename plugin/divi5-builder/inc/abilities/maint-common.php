@@ -836,7 +836,8 @@ if ( ! function_exists( 'd5b_maint_update_sequence' ) ) {
 if ( ! function_exists( 'd5b_maint_self' ) ) {
 	/**
 	 * True for this plugin's own file (divi5-builder/divi5-builder.php, or wherever this copy is installed) and the old
-	 * plugins it replaces (each part's legacy file, in a folder or on its own). The maintenance abilities refuse to act on them.
+	 * plugins it replaces (each part's legacy file, in a folder or on its own). The plugin abilities refuse to act on them,
+	 * except plugins-update and plugins-rollback on its own file (d5b_wplug_name_error).
 	 */
 	function d5b_maint_self( string $plugin_file ): bool {
 		$f = strtolower( ltrim( str_replace( '\\', '/', trim( $plugin_file ) ), '/' ) );

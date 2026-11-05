@@ -15,7 +15,10 @@
  * The promises under test: the status read never clears or refreshes anything; updates-check clears once and is limited to
  * one per 5 minutes; install takes only a downloads.wordpress.org link as plugins_api returned it, refused BEFORE the
  * upgrader runs, never over an installed folder; an activation that makes the pages worse is undone; a fatal activation is
- * activation_failed with no after round; this plugin never acts on itself; a network activation needs a network admin.
+ * activation_failed with no after round; this plugin never activates, deactivates or deletes itself (self), and since 2.5.0
+ * (the maintainer's call) plugins-update and plugins-rollback may act on its own file, with the kept copy and the page check
+ * as for any plugin, but never on a must-use copy (self; checked in a child process, --mu, as D5B_FILE is a constant), the
+ * old plugins it replaces or a link to its folder; a network activation needs a network admin.
  *
  * Task 3 (plugins-update, plugins-rollback, plugins-delete-preview / plugins-delete) runs on a real plugins folder and a
  * real uploads store under the system temp folder (T_plugins_disk: get_plugins() reads the files as core does, cached until
@@ -30,11 +33,14 @@ define( 'D5B_VERSION', '2.4.0' );
 define( 'T_PLUGIN_STANDINS', true );
 // Made only by the update, rollback and delete sections (disk_site()); before them the table is get_plugins().
 define( 'WP_PLUGIN_DIR', str_replace( '\\', '/', sys_get_temp_dir() ) . '/d5b-wplug-' . getmypid() . '/plugins' );
-define( 'D5B_FILE', WP_PLUGIN_DIR . '/divi5-builder/divi5-builder.php' );
+define( 'WPMU_PLUGIN_DIR', dirname( WP_PLUGIN_DIR ) . '/mu-plugins' );
+// --mu (the child process): this copy runs as a must-use plugin; only the must-use section runs.
+$T_MU = in_array( '--mu', array_slice( (array) ( $argv ?? array() ), 1 ), true );
+define( 'D5B_FILE', ( $T_MU ? WPMU_PLUGIN_DIR : WP_PLUGIN_DIR ) . '/divi5-builder/divi5-builder.php' );
 require __DIR__ . '/plugin-test-stubs.php';
 function wp_json_encode( $v ) { return json_encode( $v ); }
 
-foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/history', 'inc/abilities/read-content', 'inc/abilities/read-site', 'inc/abilities/read-history', 'inc/abilities/write-common', 'inc/abilities/confirm', 'inc/abilities/maint-common', 'inc/abilities/write-plugins', 'parts/updates' ) as $f ) { require $dir . '/' . $f . '.php'; }
+foreach ( array( 'inc/parts', 'inc/switches', 'inc/abilities/categories', 'inc/abilities/register', 'inc/abilities/secrets', 'inc/abilities/audit', 'inc/abilities/scrub', 'inc/abilities/history', 'inc/abilities/read-content', 'inc/abilities/read-site', 'inc/abilities/read-history', 'inc/abilities/write-common', 'inc/abilities/confirm', 'inc/abilities/maint-common', 'inc/abilities/write-plugins', 'inc/updater', 'parts/updates' ) as $f ) { require $dir . '/' . $f . '.php'; }
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . substr( is_string( $detail ) ? $detail : json_encode( $detail ), 0, 800 ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
@@ -98,6 +104,8 @@ function hlast() { $r = hrows(); return $r ? d5b_history_get( (int) end( $r )['i
 function active() { return (array) get_option( 'active_plugins', array() ); }
 function offers( array $o ) { $t = new stdClass(); $t->last_checked = 1700000000; $t->response = array(); foreach ( $o as $f => $v ) { $t->response[ $f ] = (object) array( 'new_version' => $v, 'package' => 'https://downloads.wordpress.org/plugin/x.' . $v . '.zip' ); } return $t; }
 function traps( $name ) { return count( array_filter( $GLOBALS['T_traps'], function ( $t ) use ( $name ) { return $t === $name; } ) ); }
+
+if ( $T_MU ) { goto mu_only; } // the child process runs only the must-use section (after the disk helpers)
 
 // ---- registration
 echo "registration\n";
@@ -407,6 +415,7 @@ site( ADMIN, false, false );
 check( 'deactivate: the Plugins risky switch off: refused', 'FORBIDDEN' === call( 'plugins-deactivate', array( 'plugin' => AKISMET ) ) );
 
 // ======== Task 3: update, rollback, delete (a real plugins folder and a real store)
+mu_only:
 $T_BASE = dirname( WP_PLUGIN_DIR );
 function t_rm( $d ) {
 	if ( is_link( $d ) || is_file( $d ) ) { @unlink( $d ); return; }
@@ -470,6 +479,20 @@ function kept_path( $id ) { return (string) ( row( $id )['after']['kept']['path'
 // that was MADE without the main file, not changed afterwards).
 function reseal( $id ) { $a = row( $id )['after']; $a['kept']['manifest_sha1'] = d5b_maint_manifest_keep( $a['kept']['path'] ); d5b_history_set_after( (int) $id, $a ); }
 
+if ( $T_MU ) {
+	echo "must-use copy (child process): this copy is wp-content/mu-plugins/divi5-builder, a normal copy of the same name is installed\n";
+	disk_site();
+	$GLOBALS['T_fresh']['update_plugins'] = offers( array( SELF_FILE => '2.5.0' ) );
+	check( 'mu: this copy is must-use and WordPress names it ' . SELF_FILE, true === d5b_updater_is_mu() && SELF_FILE === plugin_basename( D5B_FILE ), D5B_FILE );
+	$self0 = tree( WP_PLUGIN_DIR . '/divi5-builder' );
+	$r = call( 'plugins-update', array( 'plugin' => SELF_FILE ) );
+	check( 'mu: plugins-update of this plugin: self, the message says must-use; no row, no copy, no upgrade, the files unchanged', 'self' === code( $r ) && 1 === preg_match( '/must-use/', $r->get_error_message() ) && array() === hrows() && array() === $GLOBALS['T_copy_calls'] && array() === $GLOBALS['T_upgrade_calls'] && $self0 === tree( WP_PLUGIN_DIR . '/divi5-builder' ), is_wp_error( $r ) ? $r->get_error_message() : $r );
+	$r = call( 'plugins-rollback', array( 'plugin' => SELF_FILE, 'history_id' => 1 ) );
+	check( 'mu: plugins-rollback of this plugin: self, must-use', 'self' === code( $r ) && 1 === preg_match( '/must-use/', $r->get_error_message() ), is_wp_error( $r ) ? $r->get_error_message() : $r );
+	echo "\n" . ( $failed ? "$failed of $n FAILED\n" : "all $n passed\n" );
+	exit( $failed ? 1 : 0 );
+}
+
 echo "update, rollback, delete: registration\n";
 site();
 $defs = d5b_ability_defs();
@@ -526,8 +549,37 @@ check( 'update: the upgrader fails -> update_failed with the reason; the row say
 disk_site();
 $r = call( 'plugins-update', array( 'plugin' => HELLO ) );
 check( 'update: nothing offered -> already_up_to_date, no row, no copy, no upgrade', is_array( $r ) && true === ( $r['already_up_to_date'] ?? null ) && false === $r['updated'] && array() === hrows() && array() === $GLOBALS['T_copy_calls'] && array() === $GLOBALS['T_upgrade_calls'], $r );
+foreach ( array( '/' . SELF_FILE, '/Divi5-Builder/divi5-builder.php' ) as $other ) {
+	$r = call( 'plugins-update', array( 'plugin' => $other ) );
+	check( 'update: this plugin written another way (' . $other . '): still self (only its own file as WordPress names it), no row, no copy, no upgrade', 'self' === code( $r ) && array() === hrows() && array() === $GLOBALS['T_copy_calls'] && array() === $GLOBALS['T_upgrade_calls'], code( $r ) );
+}
+
+echo "plugins-update / plugins-rollback of this plugin itself (2.5.0, allowed; deactivate and delete stay self)\n";
+disk_site(); $GLOBALS['T_fresh']['update_plugins'] = offers( array( SELF_FILE => '2.5.0' ) );
+check( 'self: a normal copy, not must-use', false === d5b_updater_is_mu() );
+$self0 = tree( WP_PLUGIN_DIR . '/divi5-builder' );
 $r = call( 'plugins-update', array( 'plugin' => SELF_FILE ) );
-check( 'update: self refused (no row, no copy, no upgrade)', 'self' === code( $r ) && array() === hrows() && array() === $GLOBALS['T_copy_calls'] && array() === $GLOBALS['T_upgrade_calls'], code( $r ) );
+$sh = (int) ( $r['history_id'] ?? 0 );
+check( 'self update: allowed, 2.4.0 -> 2.5.0, the version read from the folder, still active', is_array( $r ) && true === $r['updated'] && '2.4.0' === $r['from'] && '2.5.0' === $r['to'] && '2.5.0' === version_of( SELF_FILE ) && in_array( SELF_FILE, active(), true ), is_wp_error( $r ) ? $r->get_error_message() : $r );
+check( '... the copy of its own folder was kept BEFORE the upgrader ran and holds the old files byte for byte', null !== $GLOBALS['T_copies_at_upgrade'] && $GLOBALS['T_copies_at_upgrade'] >= 1 && $self0 === tree( kept_path( $sh ) ) && 1 === preg_match( '#/d5b-history/' . $sh . '-[^/]+/plugin/divi5-builder$#', kept_path( $sh ) ), array( $GLOBALS['T_copies_at_upgrade'], kept_path( $sh ) ) );
+check( '... the page check ran (before and after rounds), human_check', isset( $r['pages']['before'][0], $r['pages']['after'][0] ) && d5b_human_check() === $r['human_check'] && array() === $r['problems'], $r['pages'] ?? null );
+$h = row( $sh );
+check( '... one history row: plugins-update, before { plugin, version 2.4.0 }, after { version 2.5.0, kept, pages }', 1 === count( hrows() ) && 'divi5-builder/plugins-update' === $h['ability'] && 'update' === $h['action'] && array( 'plugin' => SELF_FILE, 'version' => '2.4.0' ) === $h['before'] && '2.5.0' === $h['after']['version'] && is_array( $h['after']['kept'] ) && isset( $h['after']['pages']['after'] ), $h );
+$self1 = tree( WP_PLUGIN_DIR . '/divi5-builder' );
+$r = call( 'plugins-rollback', array( 'plugin' => SELF_FILE, 'history_id' => $sh ) );
+check( 'self rollback: allowed, the 2.4.0 files back byte for byte, still active, the 2.5.0 files kept in the rollback row', is_array( $r ) && $self0 === tree( WP_PLUGIN_DIR . '/divi5-builder' ) && '2.4.0' === version_of( SELF_FILE ) && '2.5.0' === $r['replaced_version'] && true === $r['active'] && $self1 === tree( (string) ( row( $r['history_id'] )['after']['kept']['path'] ?? '' ) ) && array() === preg_grep( '/\.d5b-/', scandir( WP_PLUGIN_DIR ) ), is_wp_error( $r ) ? $r->get_error_message() : $r );
+disk_site(); $GLOBALS['T_fresh']['update_plugins'] = offers( array( SELF_FILE => '2.5.0' ) ); $GLOBALS['T_breaks_at'] = array( SELF_FILE => '2.5.0' );
+$r = call( 'plugins-update', array( 'plugin' => SELF_FILE, 'rollback_on_failure' => true ) );
+check( 'self update with rollback_on_failure, the new version breaks the pages: its own folder is put back at once (2.4.0, byte for byte)', is_array( $r ) && true === $r['rolled_back'] && '2.4.0' === version_of( SELF_FILE ) && $self0 === tree( WP_PLUGIN_DIR . '/divi5-builder' ) && 1 === count( $r['problems'] ) && array() === ( $r['pages_after_restore']['problems'] ?? null ), is_wp_error( $r ) ? $r->get_error_message() : $r );
+disk_site();
+$r = call( 'plugins-deactivate', array( 'plugin' => SELF_FILE ) );
+check( 'self deactivate: still self (nothing called, no row, still active)', 'self' === code( $r ) && array() === $GLOBALS['T_deactivate_calls'] && array() === hrows() && in_array( SELF_FILE, active(), true ), code( $r ) );
+update_option( 'active_plugins', array( AKISMET ) ); // inactive, so only the self rule can refuse the delete
+$p = call( 'plugins-delete-preview', array( 'plugin' => SELF_FILE ) );
+$d = call( 'plugins-delete', array( 'plugin' => SELF_FILE, 'confirmation' => 'ABCDEFGHJKLM' ) );
+check( 'self delete (inactive): still self for the preview and the delete, no code, no row, the folder there', 'self' === code( $p ) && 'self' === code( $d ) && array() === hrows() && is_file( WP_PLUGIN_DIR . '/' . SELF_FILE ), array( code( $p ), code( $d ) ) );
+
+disk_site();
 check( 'update: not installed -> not_found', 'not_found' === code( call( 'plugins-update', array( 'plugin' => 'nope/nope.php' ) ) ) && array() === hrows() );
 disk_site( ADMIN_ALL, false, false );
 check( 'update: the Plugins risky switch off: refused', 'FORBIDDEN' === call( 'plugins-update', array( 'plugin' => AKISMET ) ) && array() === $GLOBALS['T_upgrade_calls'] );
@@ -547,7 +599,8 @@ $rows_before = count( hrows() );
 $r = call( 'plugins-rollback', array( 'plugin' => HELLO, 'history_id' => $u1 ) );
 check( 'rollback: wrong plugin -> not_found, nothing changed, no row', 'not_found' === code( $r ) && $v51 === tree( WP_PLUGIN_DIR . '/akismet' ) && $rows_before === count( hrows() ), code( $r ) );
 check( 'rollback: a row that is not an update/rollback/delete -> not_found', 'not_found' === code( call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => d5b_wc_history_row( 'divi5-builder/plugins-activate', 'plugin', 0, 'activate', array( 'plugin' => AKISMET ), array( 'kept' => array( 'path' => kept_path( $u1 ) ) ), 'x' ) ) ) ) );
-check( 'rollback: self refused', 'self' === code( call( 'plugins-rollback', array( 'plugin' => SELF_FILE, 'history_id' => $u1 ) ) ) );
+check( 'rollback: this plugin is past the name check (2.5.0) but a row of another plugin is not_found, nothing changed', 'not_found' === code( call( 'plugins-rollback', array( 'plugin' => SELF_FILE, 'history_id' => $u1 ) ) ) && $v51 === tree( WP_PLUGIN_DIR . '/akismet' ) && $rows_before + 1 === count( hrows() ) );
+check( 'rollback: this plugin written another way (leading slash): still self', 'self' === code( call( 'plugins-rollback', array( 'plugin' => '/' . SELF_FILE, 'history_id' => $u1 ) ) ) );
 $r = call( 'plugins-rollback', array( 'plugin' => AKISMET, 'history_id' => $u1 ) );
 check( 'rollback: restores byte-identical files (5.0 back), the result names the new row', is_array( $r ) && $v50 === tree( WP_PLUGIN_DIR . '/akismet' ) && '5.0' === version_of( AKISMET ) && '5.0' === $r['version'] && '5.1' === $r['replaced_version'] && $u1 === $r['restored_from'], $r );
 $rh = row( $r['history_id'] ?? 0 );
@@ -1023,7 +1076,7 @@ $p = call( 'plugins-delete-preview', array( 'plugin' => 'd5b-alias/divi5-builder
 check( 'M10 plugins-delete-preview of an alias folder of this plugin: self, no code issued', $linked && $listed && 'self' === code( $p ), array( $linked, $listed, code( $p ) ) );
 $a = call( 'plugins-activate', array( 'plugin' => 'd5b-alias/divi5-builder.php' ) );
 check( 'M10 plugins-activate of it: self, not activated', 'self' === code( $a ) && ! in_array( 'd5b-alias/divi5-builder.php', active(), true ), code( $a ) );
-check( 'M10 plugins-update and plugins-deactivate of it: self', 'self' === code( call( 'plugins-update', array( 'plugin' => 'd5b-alias/divi5-builder.php' ) ) ) && 'self' === code( call( 'plugins-deactivate', array( 'plugin' => 'd5b-alias/divi5-builder.php' ) ) ) );
+check( 'M10 plugins-update and plugins-deactivate of it: self (2.5.0 allows the update of its own file only, not of another name for its folder)','self' === code( call( 'plugins-update', array( 'plugin' => 'd5b-alias/divi5-builder.php' ) ) ) && 'self' === code( call( 'plugins-deactivate', array( 'plugin' => 'd5b-alias/divi5-builder.php' ) ) ) );
 t_rm( WP_PLUGIN_DIR . '/d5b-alias' );
 
 echo "history reads: a kept copy shows as its size\n";
@@ -1039,6 +1092,14 @@ echo "no secrets\n";
 site(); cf7();
 $all = json_encode( array( call( 'plugins-install', array( 'slug' => 'contact-form-7' ) ), call( 'plugins-activate', array( 'plugin' => 'contact-form-7/wp-contact-form-7.php' ) ), hrows() ) );
 check( 'no password, key or token in the results or the rows', 1 !== preg_match( '/password|api_key|token|secret/i', $all ), $all );
+
+echo "must-use copy (child process --mu)\n";
+// D5B_FILE is a constant, so the must-use case runs this file again (D5B_PLUGIN_DIR is inherited, for mutation testing).
+$p = proc_open( array( PHP_BINARY, '-d', 'max_execution_time=60', __FILE__, '--mu' ), array( 1 => array( 'pipe', 'w' ), 2 => array( 'pipe', 'w' ) ), $pipes );
+$out = is_resource( $p ) ? stream_get_contents( $pipes[1] ) . stream_get_contents( $pipes[2] ) : '';
+$rc = is_resource( $p ) ? proc_close( $p ) : -1;
+echo preg_replace( '/^/m', '    ', rtrim( $out ) ) . "\n";
+check( 'the must-use child process passed (self update and rollback refused as must-use)', 0 === $rc && 1 === preg_match( '/^all [1-9][0-9]* passed$/m', $out ), $rc );
 
 echo "\n" . ( $failed ? "$failed of $n FAILED\n" : "all $n passed\n" );
 exit( $failed ? 1 : 0 );

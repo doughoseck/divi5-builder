@@ -30,7 +30,7 @@ From then on, a plugin installed the first way gets its updates in Dashboard > U
 == Changelog ==
 
 = 2.5.0 =
-* Updates now come from GitHub Releases. A new release shows in Dashboard > Updates like any other plugin update, and the plugins-status ability lists it (plugins-update still never replaces this plugin itself; use Update now). Settings > Divi 5 Builder says where updates come from, the newest version and when it was checked, with a Check now link.
+* Updates now come from GitHub Releases. A new release shows in Dashboard > Updates like any other plugin update, and the plugins-status ability lists it. plugins-update installs it with a kept copy and the page check; plugins-rollback puts the previous version back; deactivating or deleting the plugin itself stays refused. Settings > Divi 5 Builder says where updates come from, the newest version and when it was checked, with a Check now link.
 * The downloaded zip is checked against the checksum published with the release before WordPress unpacks it; a zip that does not match is deleted and not installed. A must-use copy is not updated by WordPress (it never updates must-use plugins), and the Settings page says so: replace the folder as before.
 * The first install is still an upload of divi5-builder.zip (or a MainWP push). Updating from 2.4.3 asks nothing again: no switch changes.
 

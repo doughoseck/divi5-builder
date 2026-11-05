@@ -97,9 +97,11 @@ Install it either way (not both at once):
   on a site where it is not there yet. From then on (plugin 2.5.0 and newer) updates come
   from GitHub Releases like any other plugin update: a new release shows in **Dashboard →
   Updates** with **Update now**, and the abilities' `plugins-status` lists it after
-  `updates-check`. (`plugins-update` refuses it with `self`: by the 2.4.0 self rule the
-  plugin never replaces itself through an ability; the Updates tool, `site-updates.js`,
-  can.) The zip is checked
+  `updates-check`. `plugins-update` installs it with a kept copy and the page check;
+  `plugins-rollback` puts the previous version back; deactivating or deleting the plugin
+  itself stays refused (`self`). The Updates tool, `site-updates.js`, can update it too
+  (no kept copy there). A must-use copy is never updated this way (`self`): replace the
+  folder. The zip is checked
   against the checksum published with the release before WordPress unpacks it (see
   SECURITY.md, "Where updates come from"). **Settings > Divi 5 Builder** says at the top
   where updates come from, the installed and newest version and when it last checked,
