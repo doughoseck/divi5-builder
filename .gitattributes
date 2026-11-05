@@ -2,3 +2,9 @@
 # so git must never convert its line endings, whatever core.autocrlf says on the machine that checks it out.
 scripts/fixtures/vb-resave-*/** -text
 scripts/fixtures/vb-5.18.0-variables.html -text
+# The build writes plugin/update.json with LF line ends and every site reads it from main as committed: keep it LF.
+plugin/update.json text eol=lf
+# The release zip is built from these files (the build also turns CRLF into LF in every file without a NUL byte):
+# checked out with LF everywhere, so a zip built on any machine has the bytes of the release asset.
+LICENSE text eol=lf
+plugin/** text eol=lf

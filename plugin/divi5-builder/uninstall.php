@@ -7,7 +7,8 @@
  * the network options and each site's own options (sites read in batches of 100). Also removes the
  * d5b_abilities_upgrade_notice, d5b_abilities_consent_220, d5b_abilities_consent_230 and d5b_abilities_consent_240 options and, per site, the WHOLE folder wp-content/uploads/d5b-history (the files of permanently
  * deleted media and the kept plugin and theme copies, every file and folder at any depth), and the rate-limit and lock rows
- * (d5b_rate_*, d5b_maint_lock_*, d5b_users_admin_lock) of every site's options table. Only deletes, never writes, so a later reinstall starts with every
+ * (d5b_rate_*, d5b_maint_lock_*, d5b_users_admin_lock) of every site's options table, and the d5b_update_json site transient
+ * (the cached update.json, 2.5.0). Only deletes, never writes, so a later reinstall starts with every
  * switch off, as on a new site. Nothing else is touched: the old plugins' files and the media clean-up quarantine folder
  * stay where they are.
  */
@@ -113,6 +114,9 @@ if ( isset( $wpdb ) && is_object( $wpdb ) ) {
 		delete_transient( 'd5b_anon' );
 	}
 }
+// The cached update.json (2.5.0). A site transient: on a network it is ONE row in the network's own table, not one per site,
+// so one delete covers every site of the network (switching sites would not change which row it is).
+delete_site_transient( 'd5b_update_json' );
 // The kept media files of a single site (a network's are removed above, site by site, when its tables are).
 if ( ! is_multisite() || ! isset( $wpdb ) || ! is_object( $wpdb ) ) { $d5b_rm_history_files(); }
 unset( $d5b_names, $d5b_name, $d5b_offset, $d5b_ids, $d5b_id, $d5b_rm_history_files, $d5b_rm_rows );

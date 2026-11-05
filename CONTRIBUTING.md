@@ -83,6 +83,7 @@ Before opening a PR:
    php scripts/plugin-uninstall-test.php   # deleting the plugin removes its options (every site of a network too)
    php scripts/plugin-abilities-switches-test.php && php scripts/plugin-abilities-gate-test.php && php scripts/plugin-abilities-audit-test.php && php scripts/plugin-abilities-content-test.php && php scripts/plugin-abilities-site-test.php && php scripts/plugin-abilities-divi-test.php && php scripts/plugin-abilities-history-test.php && php scripts/plugin-abilities-confirm-test.php && php scripts/plugin-abilities-blocks-test.php && php scripts/plugin-abilities-write-posts-test.php && php scripts/plugin-abilities-write-comments-test.php && php scripts/plugin-abilities-write-media-test.php && php scripts/plugin-abilities-write-terms-test.php && php scripts/plugin-abilities-write-menus-test.php && php scripts/plugin-abilities-write-divi-test.php && php scripts/plugin-abilities-risky-test.php && php scripts/plugin-abilities-write-settings-test.php && php scripts/plugin-abilities-write-appearance-test.php && php scripts/plugin-abilities-write-widgets-test.php && php scripts/plugin-abilities-write-site-test.php && php scripts/plugin-abilities-write-templates-test.php && php scripts/plugin-abilities-registry-test.php   # the AI abilities: reads, then the change history, confirmation codes, block edits and every write
    php scripts/plugin-abilities-maint-test.php && php scripts/plugin-abilities-write-plugins-test.php && php scripts/plugin-abilities-write-themes-test.php && php scripts/plugin-abilities-write-core-test.php && php scripts/plugin-abilities-write-users-test.php && php scripts/plugin-abilities-write-email-test.php   # the 2.4.0 maintenance abilities: page checks, kept copies and store caps, plugins, themes, core, users, email
+   php -d max_execution_time=60 scripts/plugin-updater-test.php   # 2.5.0: updates from GitHub Releases (the update_plugins_github.com answer, validation, the 12 h cache, must-use copies)
    ```
    Two more need arguments (a WordPress `wp-includes` folder, a Divi 5 theme folder) and are optional:
    `php scripts/tree-guard-test.php <wp-includes> <sent.html> <stored.html>` and `php scripts/ds-write-test.php "<Divi theme folder>"`.
@@ -115,6 +116,42 @@ Plugin code lives in `plugin/divi5-builder/`. Put a new REST route in the matchi
 `plugin/divi5-builder/parts/` (`page-building.php`, `media-audit.php`, `media-clean-up.php` or
 `updates.php`). A route in one of the three switch parts must not exist while its switch is off;
 `scripts/plugin-switches-test.php` covers that.
+
+## Releasing the plugin
+
+Sites running the plugin (2.5.0 and later) learn about a new version from `plugin/update.json` on `main`
+and download the zip from the GitHub release it names, checking its sha256 first. So the json is part of
+the release and is never edited by hand: the build writes it.
+
+1. **Bump the version** in the three places that must agree: the `Version:` header and `D5B_VERSION` in
+   `plugin/divi5-builder/divi5-builder.php`, and `Stable tag:` in `plugin/divi5-builder/readme.txt`
+   (plus its changelog entry). **Commit** the bump and every other change under `plugin/divi5-builder/`:
+   in a git checkout the build zips only what git tracks, and STOPs (writing nothing) while anything
+   there, or `LICENSE`, is untracked, ignored or not committed. It names those files.
+2. **Build with the tag** of the release you are about to create (the date, `.2` for a second one that day):
+   ```bash
+   node scripts/build-plugin-zips.js --tag v2026.11.05 --out <a folder outside the repo>
+   ```
+   Only a `--tag` build writes `plugin/update.json` (version, tag, asset URL, sha256 of the zip). The json
+   must point at the tag you are about to create. Without `--tag` the build writes the zip, the loader and
+   an `update.json` into `--out` only, for a look, and never touches the repository's copy.
+3. **Commit `plugin/update.json`** in the same PR as the bump. `node scripts/build-plugin-zips-test.js`
+   holds the committed json to the release rule: when its `version` equals the plugin header's, its
+   `sha256` must be that of a build of the commit; when they differ, the header must be the newer one.
+4. **Merge**, then build again from `main` into the release folder (no `--tag` needed now). The zip is
+   reproducible, so its bytes and its sha256 are the ones in the json; `git status` stays clean.
+5. **Publish**: `gh release create v2026.11.05 <folder>/divi5-builder.zip <folder>/divi5-builder-loader.php`
+   with the changelog as notes. Only those two files are release assets; `update.json` is not one.
+
+Between the merge and the release a site that checks sees the new version but gets a 404 on "Update now";
+it simply tries again later. Keep that gap to minutes.
+
+**A change under `plugin/` reaches `main` only together with a version bump and a `--tag` build** (the
+release rule above: a plugin change without a bump fails `build-plugin-zips-test.js`, on purpose). Every
+site reads `plugin/update.json` from `main`, so its sha256 must stay that of the released asset until the
+next release. Between releases, work on `plugin/` stays on branches. `.gitattributes` keeps `LICENSE`,
+`plugin/` and the json at LF line ends on every checkout, and the build also turns CRLF into LF in every
+file without a NUL byte, so a zip built on any machine has the release asset's bytes.
 
 ## Security
 

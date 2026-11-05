@@ -6,6 +6,8 @@
  *   admin_post_d5b_save_switches,
  *   network_admin_edit_d5b_save_switches                    -> d5b_settings_save()
  *   admin_notices, network_admin_notices                    -> d5b_admin_notice()
+ * The Settings tab starts with the "Updates:" line and its Check now link (inc/updater.php: d5b_updater_status_line,
+ * d5b_updater_check_now on admin_post_d5b_update_check).
  *
  * Who may flip a switch: a person in wp-admin, through the form below, with a valid nonce (action
  * d5b_switches) and manage_options (manage_network_options on multisite, where every switch is network-wide
@@ -56,6 +58,8 @@ if ( ! function_exists( 'd5b_settings_render' ) ) {
 			echo '</div>';
 			return;
 		}
+		// Where updates come from (2.5.0): escaped HTML from the kept answer, never a request.
+		if ( function_exists( 'd5b_updater_status_line' ) ) { echo d5b_updater_status_line(); }
 		echo '<p>Version ' . esc_html( D5B_VERSION ) . '. ';
 		echo defined( 'ET_BUILDER_5_DIR' ) ? 'Divi 5 detected.' : 'Divi 5 not detected: routes that need Divi will answer with an error.';
 		echo '</p>';
@@ -126,6 +130,7 @@ if ( ! function_exists( 'd5b_settings_render_notices' ) ) {
 	/** The notices that show on every tab: saved, the change-history warning, the upgrade consent, the broken audit table. */
 	function d5b_settings_render_notices( string $action, string $tab ): void {
 		if ( isset( $_GET['updated'] ) ) { echo '<div class="notice notice-success"><p>Settings saved.</p></div>'; }
+		if ( isset( $_GET['d5b_checked'] ) ) { echo '<div class="notice notice-success"><p>Update check done.</p></div>'; }
 		if ( isset( $_GET['d5b_stale'] ) ) {
 			echo '<div class="notice notice-error"><p>' . esc_html( 'The switches changed since this page was loaded (by another admin or an update). Reload and try again.' ) . '</p></div>';
 		}

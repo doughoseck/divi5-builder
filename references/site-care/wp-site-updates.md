@@ -98,6 +98,13 @@ risky actions" under each (Settings > Divi 5 Builder). The Updates switch is not
    refresh and `themes-update` runs it with a kept copy (confirmed 2026-11-04). FilterGrid-type plugins still need the user
    to open Plugins in wp-admin once; then read the status again and update through `plugins-update` like any other. When
    a read disagrees with what the user sees in wp-admin, suspect the read first: reproduce (refresh, read again).
+   Since plugin 2.5.0 divi5-builder updates itself from GitHub Releases: `plugins-status` lists it like any other
+   plugin once WordPress has checked (`updates-check`), and the zip's sha256 is verified against the release manifest
+   (`plugin/update.json`) before WordPress unpacks it. `plugins-update` installs it with a kept copy and the page check;
+   `plugins-rollback` puts the previous version back; deactivating or deleting the plugin itself stays refused (`self`).
+   Update now in Dashboard > Updates and the Updates route (`site-updates.js`) work too (no kept copy); all get the
+   checksum check. First install stays an upload (or MainWP). A must-use copy gets no offer and `plugins-update`
+   refuses it (`self`): replace the folder.
    A big theme (Divi, 135 MB kept copy, 2026-11-03) can take longer than the host keeps a connection open: the client
    sees `ECONNRESET` or a timeout while PHP carries on and finishes. That is not a failure. Read the newest
    `history-changes-list` row: `after.running: true` means it is still going, a `version` and `kept` block means it

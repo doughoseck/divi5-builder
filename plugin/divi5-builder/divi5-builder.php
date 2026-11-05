@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Divi 5 Builder
  * Description: Build and edit Divi 5 pages over the REST API, plus optional media audit, media clean-up and updates, each behind a switch that is off by default.
- * Version: 2.4.3
+ * Version: 2.5.0
  * Requires at least: 6.0
  * Requires PHP: 7.4
  * Author: divi5-builder skill
@@ -26,7 +26,7 @@ if ( ! defined( 'ABSPATH' ) ) { exit; }
 // Loaded twice (a must-use copy and a normal copy, or two folders): the first copy wins, the second does nothing.
 if ( defined( 'D5B_VERSION' ) ) { return; }
 
-define( 'D5B_VERSION', '2.4.3' );
+define( 'D5B_VERSION', '2.5.0' );
 define( 'D5B_FILE', __FILE__ );
 
 // An explicit list, not a directory scan: a file left behind by an older copy (copying over the folder by FTP does not
@@ -69,6 +69,7 @@ foreach ( array(
 	'inc/abilities/write-users.php',
 	'inc/abilities/write-email.php',
 	'inc/settings.php',
+	'inc/updater.php',
 	'parts/page-building.php',
 	'parts/media-audit.php',
 	'parts/media-clean-up.php',
@@ -110,6 +111,17 @@ register_activation_hook( D5B_FILE, 'd5b_takeover_on_activation' );
 add_action( 'admin_init', 'd5b_takeover_mu_admin_init' );
 // An old plugin activated again over REST would bring a switched-off feature back; refuse that (wp-admin is not touched).
 add_filter( 'rest_pre_dispatch', 'd5b_refuse_legacy_rest_activation', 10, 3 );
+
+// Updates from GitHub Releases (2.5.0): WordPress asks this filter for our plugin because the Update URI header names
+// github.com. The answer comes from plugin/update.json on main, checked strictly, at most once per 11 hours; a must-use copy
+// never gets an offer (replace its folder instead).
+add_filter( 'update_plugins_github.com', 'd5b_updater_filter', 10, 4 );
+// Before WordPress unpacks our release asset, its sha256 is checked against the json's (a mismatch aborts the update).
+add_filter( 'upgrader_pre_download', 'd5b_updater_pre_download', 10, 4 );
+// "View details" for our plugin answered from the json and readme.txt (wordpress.org does not know it).
+add_filter( 'plugins_api', 'd5b_updater_plugins_api', 10, 3 );
+// The Settings page's Check now (wp-admin only, nonce d5b_update_check; no admin_post_nopriv_* hook, on purpose).
+add_action( 'admin_post_d5b_update_check', 'd5b_updater_check_now' );
 
 // The settings page. Only people in wp-admin: no admin_post_nopriv_* hook, on purpose.
 add_action( 'admin_menu', 'd5b_settings_menu' );

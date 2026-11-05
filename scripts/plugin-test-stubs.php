@@ -26,7 +26,7 @@ if ( ! defined( 'ABSPATH' ) ) { define( 'ABSPATH', sys_get_temp_dir() . '/d5b-st
 function t_reset() {
 	$GLOBALS['T_routes'] = array(); $GLOBALS['T_writes'] = array(); $GLOBALS['T_settings'] = array();
 	$GLOBALS['T_deactivated'] = array(); $GLOBALS['T_deactivate_calls'] = array(); $GLOBALS['T_actions'] = array();
-	$GLOBALS['T_autoload'] = array(); $GLOBALS['T_priorities'] = array(); $GLOBALS['T_activation'] = array(); $GLOBALS['T_post_meta'] = array(); $GLOBALS['T_filters'] = array(); $GLOBALS['T_server_calls'] = 0;
+	$GLOBALS['T_autoload'] = array(); $GLOBALS['T_priorities'] = array(); $GLOBALS['T_activation'] = array(); $GLOBALS['T_post_meta'] = array(); $GLOBALS['T_filters'] = array(); $GLOBALS['T_filter_args'] = array(); $GLOBALS['T_server_calls'] = 0;
 	$GLOBALS['T_options'] = array(); $GLOBALS['T_site_options'] = array(); $GLOBALS['T_server_routes'] = array();
 	unset( $GLOBALS['d5b_stood_aside'], $GLOBALS['d5b_gate_ran'], $GLOBALS['T_server'] );
 	if ( function_exists( 't_blogs_reset' ) ) { t_blogs_reset(); }
@@ -83,7 +83,8 @@ function is_multisite() { return $GLOBALS['T_multisite']; }
 // current_user_can: defined in the content stand-ins at the end of this file (it understands read_post and edit_post).
 function add_action( $h, $cb = null, $p = 10, $a = 1 ) { $GLOBALS['T_actions'][ $h ][] = $cb; $GLOBALS['T_priorities'][ $h ][] = $p; }
 function register_activation_hook( $file, $cb ) { $GLOBALS['T_activation'][] = array( $file, $cb ); }
-function add_filter( $h, $cb = null, $p = 10, $a = 1 ) { $GLOBALS['T_filters'][ $h ][] = $cb; }
+// T_filter_args: hook => list of array( priority, accepted args ), parallel to T_filters.
+function add_filter( $h, $cb = null, $p = 10, $a = 1 ) { $GLOBALS['T_filters'][ $h ][] = $cb; $GLOBALS['T_filter_args'][ $h ][] = array( $p, $a ); }
 function register_post_meta( $type = '', $key = '', $args = array() ) { $GLOBALS['T_post_meta'][] = array( $type, $key ); }
 function register_meta() {}
 function rest_get_server() { $GLOBALS['T_server_calls']++; if ( empty( $GLOBALS['T_server'] ) ) { $GLOBALS['T_server'] = new T_Server(); } return $GLOBALS['T_server']; }
@@ -199,7 +200,30 @@ function add_options_page( $title, $menu, $cap, $slug, $cb = '' ) { $GLOBALS['T_
 function add_submenu_page( $parent, $title, $menu, $cap, $slug, $cb = '' ) { $GLOBALS['T_menus'][] = array( 'add_submenu_page', $parent, $title, $menu, $cap, $slug, $cb ); return $parent . '_page_' . $slug; }
 function esc_html( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
 function esc_attr( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
-function esc_url( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
+// An entity already in the URL (the &amp; wp_nonce_url gives) is kept, not encoded again: core's esc_url normalises entities.
+function esc_url( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8', false ); }
+// As core 6.4.1 functions.php: &amp; back to &, the nonce added as a query argument, the whole URL through esc_html.
+// The nonce is 'nonce-for-' . $action, as wp_nonce_field above gives it.
+function wp_nonce_url( $actionurl, $action = -1, $name = '_wpnonce' ) {
+	$actionurl = str_replace( '&amp;', '&', (string) $actionurl );
+	return esc_html( $actionurl . ( false === strpos( $actionurl, '?' ) ? '?' : '&' ) . $name . '=nonce-for-' . $action );
+}
+if ( ! defined( 'MINUTE_IN_SECONDS' ) ) { define( 'MINUTE_IN_SECONDS', 60 ); }
+if ( ! defined( 'WEEK_IN_SECONDS' ) ) { define( 'WEEK_IN_SECONDS', 7 * 86400 ); }
+if ( ! defined( 'MONTH_IN_SECONDS' ) ) { define( 'MONTH_IN_SECONDS', 30 * 86400 ); }
+if ( ! defined( 'YEAR_IN_SECONDS' ) ) { define( 'YEAR_IN_SECONDS', 365 * 86400 ); }
+// As core 6.4.1 formatting.php (English, no human_time_diff filter): seconds, mins, hours, days, weeks, months, years, rounded,
+// at least 1.
+function human_time_diff( $from, $to = 0 ) {
+	if ( empty( $to ) ) { $to = time(); }
+	$diff  = (int) abs( $to - $from );
+	$units = array( array( YEAR_IN_SECONDS, 'year', 'years' ), array( MONTH_IN_SECONDS, 'month', 'months' ), array( WEEK_IN_SECONDS, 'week', 'weeks' ), array( 86400, 'day', 'days' ), array( 3600, 'hour', 'hours' ), array( MINUTE_IN_SECONDS, 'min', 'mins' ) );
+	foreach ( $units as $u ) {
+		if ( $diff >= $u[0] ) { $k = max( 1, (int) round( $diff / $u[0] ) ); return $k . ' ' . ( 1 === $k ? $u[1] : $u[2] ); }
+	}
+	$k = max( 1, $diff );
+	return $k . ' ' . ( 1 === $k ? 'second' : 'seconds' );
+}
 // As core: strings only (map_deep with stripslashes_from_strings_only); numbers and booleans stay what they are.
 function wp_unslash( $v ) { return is_array( $v ) ? array_map( 'wp_unslash', $v ) : ( is_string( $v ) ? stripslashes( $v ) : $v ); }
 function wp_slash( $v ) { if ( is_array( $v ) ) { return array_map( 'wp_slash', $v ); } return is_string( $v ) ? addslashes( $v ) : $v; }
@@ -1153,7 +1177,7 @@ function t_media_reset() {
 	if ( isset( $GLOBALS['T_actions']['http_api_curl'] ) ) { unset( $GLOBALS['T_actions']['http_api_curl'], $GLOBALS['T_priorities']['http_api_curl'] ); }
 	$GLOBALS['T_mimes'] = array( 'jpg|jpeg|jpe' => 'image/jpeg', 'gif' => 'image/gif', 'png' => 'image/png', 'pdf' => 'application/pdf', 'txt|asc|c|cc|h|srt' => 'text/plain' );
 	foreach ( $GLOBALS['T_tempfiles'] ?? array() as $f ) { if ( file_exists( $f ) ) { @unlink( $f ); } }
-	$GLOBALS['T_tempfiles'] = array();
+	$GLOBALS['T_tempfiles'] = array(); $GLOBALS['T_download_calls'] = array();
 	$GLOBALS['T_files_unlinked'] = array(); $GLOBALS['T_rename_fail'] = array(); $GLOBALS['T_rename_fail_re'] = ''; $GLOBALS['T_renames'] = array();
 	unset( $GLOBALS['T_http_fn'], $GLOBALS['T_theme_root'], $GLOBALS['wp_filesystem'], $GLOBALS['T_copy_done'] );
 	$GLOBALS['T_user_caps'] = array(); $GLOBALS['T_fs_fail'] = false; $GLOBALS['T_copy_fail'] = false; $GLOBALS['T_fs_copy_fail'] = false; $GLOBALS['T_copy_calls'] = array();
@@ -1223,6 +1247,52 @@ function wp_remote_retrieve_header( $r, $h ) { $all = wp_remote_retrieve_headers
 function wp_remote_retrieve_body( $r ) { return ( is_wp_error( $r ) || ! isset( $r['body'] ) ) ? '' : $r['body']; }
 // As core's home_url( $path ): the site address, and '/' . $path when a path is given.
 function home_url( $path = '', $scheme = null ) { $u = 'https://x.example'; return ( is_string( $path ) && '' !== $path ) ? $u . '/' . ltrim( $path, '/' ) : $u; }
+// As core 6.4.1 http.php: wp_safe_remote_get is wp_remote_get with reject_unsafe_urls forced on (the args record shows it).
+if ( ! function_exists( 'wp_safe_remote_get' ) ) { function wp_safe_remote_get( $url, $args = array() ) { $args['reject_unsafe_urls'] = true; return wp_remote_get( $url, $args ); } }
+// As core 6.4.1 wp-admin/includes/file.php download_url( $url, $timeout ): a temporary file from wp_tempnam (so it is in
+// T_tempfiles), the body streamed into it by wp_safe_remote_get (answered from T_http); a WP_Error answer removes the file and
+// is returned as it is; any status but 200 removes the file and returns WP_Error http_404 (core's code for every non-200);
+// a Content-Disposition filename renames the file next to itself (the new path is returned and recorded). That rename is a
+// SIMPLER reading than core's: core lowercases the header, needs the exact prefix 'attachment; filename=' and runs
+// sanitize_file_name + validate_file; this one takes filename="..." anywhere in the header and keeps [A-Za-z0-9._-] only.
+// No Content-MD5 or signature check: core runs those only when the response carries the header / for wordpress.org hosts.
+//   T_download_calls  every array( url, timeout ) given to download_url
+if ( ! function_exists( 'download_url' ) ) {
+	function download_url( $url, $timeout = 300, $signature_verification = false ) {
+		$GLOBALS['T_download_calls'][] = array( $url, $timeout );
+		if ( ! $url ) { return new WP_Error( 'http_no_url', 'Invalid URL Provided.' ); }
+		$tmpfname = wp_tempnam( (string) basename( (string) parse_url( $url, PHP_URL_PATH ) ) );
+		if ( ! $tmpfname ) { return new WP_Error( 'http_no_file', 'Could not create temporary file.' ); }
+		$response = wp_safe_remote_get( $url, array( 'timeout' => $timeout, 'stream' => true, 'filename' => $tmpfname ) );
+		if ( is_wp_error( $response ) ) { unlink( $tmpfname ); return $response; }
+		$code = wp_remote_retrieve_response_code( $response );
+		if ( 200 !== $code ) { unlink( $tmpfname ); return new WP_Error( 'http_404', 'Not Found', array( 'code' => $code ) ); }
+		$cd = (string) wp_remote_retrieve_header( $response, 'content-disposition' );
+		if ( '' !== $cd && preg_match( '/filename="?([^"]+)"?/', $cd, $m ) ) {
+			$name = preg_replace( '/[^A-Za-z0-9._-]/', '', basename( $m[1] ) );
+			if ( '' !== $name && '.' !== $name[0] ) {
+				$to = dirname( $tmpfname ) . '/' . $name;
+				if ( rename( $tmpfname, $to ) ) { $tmpfname = $to; $GLOBALS['T_tempfiles'][] = $to; }
+			}
+		}
+		return $tmpfname;
+	}
+}
+// As core's wp_parse_url (http.php) for the absolute URLs the plugin parses: PHP's parse_url, false for a broken URL.
+if ( ! function_exists( 'wp_parse_url' ) ) { function wp_parse_url( $url, $component = -1 ) { return parse_url( (string) $url, $component ); } }
+// As core 6.4.1 functions.php: backslashes to '/', runs of slashes to one (a leading '//' network share kept), drive letter upper case.
+if ( ! function_exists( 'wp_normalize_path' ) ) {
+	function wp_normalize_path( $path ) {
+		$wrapper = '';
+		if ( preg_match( '|^[a-zA-Z][a-zA-Z0-9+.-]*://|', (string) $path ) ) { list( $wrapper, $path ) = explode( '://', $path, 2 ); $wrapper .= '://'; }
+		$path = str_replace( '\\', '/', (string) $path );
+		$path = preg_replace( '|(?<=.)/+|', '/', $path );
+		if ( ':' === substr( $path, 1, 1 ) ) { $path = ucfirst( $path ); }
+		return $wrapper . $path;
+	}
+}
+if ( ! defined( 'HOUR_IN_SECONDS' ) ) { define( 'HOUR_IN_SECONDS', 3600 ); }
+if ( ! defined( 'DAY_IN_SECONDS' ) ) { define( 'DAY_IN_SECONDS', 86400 ); }
 
 // ---- the maintenance stand-ins (#32, 2.4.0). t_media_reset() clears them.
 //   T_theme_root     what get_theme_root returns (a real folder in a test; default ABSPATH/wp-content/themes)
@@ -2182,6 +2252,7 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		$GLOBALS['T_plugins_api'] = array(); $GLOBALS['T_plugins_api_calls'] = array(); $GLOBALS['T_install_adds'] = array(); $GLOBALS['T_install_calls'] = array();
 		unset( $GLOBALS['T_install_result'] );
 		$GLOBALS['T_plugins_cache_cleans'] = 0; $GLOBALS['T_site_transients'] = array(); $GLOBALS['T_site_transient_deletes'] = array();
+		$GLOBALS['T_site_transient_ttls'] = array(); $GLOBALS['T_site_transient_expires'] = array();
 		$GLOBALS['T_update_checks'] = array(); $GLOBALS['T_fresh'] = array(); $GLOBALS['T_file_mods_off'] = false;
 		$GLOBALS['T_plugin_hooks'] = array(); $GLOBALS['T_hook_log'] = array();
 		$GLOBALS['T_plugins_disk'] = false; $GLOBALS['T_plugins_cache'] = null; $GLOBALS['T_upgrade_result'] = array(); $GLOBALS['T_upgrade_calls'] = array();
@@ -2287,12 +2358,21 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		if ( $do_blog ) { update_option( 'active_plugins', array_values( $cur ) ); }
 		if ( $do_network ) { update_site_option( 'active_sitewide_plugins', $net ); }
 	}
+	// As core 6.4.1 plugin-install.php: array args become an object, then the plugins_api filter runs FIRST (the callbacks
+	// added with add_filter, each given ( $res, $action, $args )); a result that is not false is the answer, after the
+	// plugins_api_result filter. Only a false result goes on to wordpress.org (here: T_plugins_api).
 	function plugins_api( $action, $args = array() ) {
 		$GLOBALS['T_traps'][] = 'plugins_api';
 		$GLOBALS['T_plugins_api_calls'][] = array( $action, $args );
 		if ( is_array( $args ) ) { $args = (object) $args; }
-		$slug = (string) ( $args->slug ?? '' );
-		return $GLOBALS['T_plugins_api'][ $slug ] ?? new WP_Error( 'plugins_api_failed', 'Plugin not found.' );
+		$res = false;
+		foreach ( $GLOBALS['T_filters']['plugins_api'] ?? array() as $cb ) { $res = call_user_func( $cb, $res, $action, $args ); }
+		if ( false === $res ) {
+			$slug = (string) ( $args->slug ?? '' );
+			$res  = $GLOBALS['T_plugins_api'][ $slug ] ?? new WP_Error( 'plugins_api_failed', 'Plugin not found.' );
+		}
+		foreach ( $GLOBALS['T_filters']['plugins_api_result'] ?? array() as $cb ) { $res = call_user_func( $cb, $res, $action, $args ); }
+		return $res;
 	}
 	function wp_clean_plugins_cache( $clear_update_cache = true ) { $GLOBALS['T_plugins_cache_cleans']++; $GLOBALS['T_plugins_cache'] = null; if ( $clear_update_cache ) { delete_site_transient( 'update_plugins' ); } }
 	// As core (plugin.php): a plugin with uninstall.php in its folder (for a single-file plugin, the plugins folder itself:
@@ -2367,9 +2447,16 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 	}
 	// As core's wp_clean_update_cache (update.php): the three update transients.
 	function wp_clean_update_cache() { $GLOBALS['T_traps'][] = 'wp_clean_update_cache'; wp_clean_plugins_cache(); wp_clean_themes_cache(); delete_site_transient( 'update_core' ); }
-	function get_site_transient( $n ) { return $GLOBALS['T_site_transients'][ $n ] ?? false; }
-	function set_site_transient( $n, $v, $ttl = 0 ) { $GLOBALS['T_site_transients'][ $n ] = $v; unset( $GLOBALS['T_db_site_transients'][ $n ] ); if ( isset( $GLOBALS['T_on_set_site'][ $n ] ) ) { $cb = $GLOBALS['T_on_set_site'][ $n ]; unset( $GLOBALS['T_on_set_site'][ $n ] ); $cb(); } return true; }
-	function delete_site_transient( $n ) { $GLOBALS['T_site_transient_deletes'][] = $n; $had = isset( $GLOBALS['T_site_transients'][ $n ] ); unset( $GLOBALS['T_site_transients'][ $n ], $GLOBALS['T_db_site_transients'][ $n ] ); return $had; }
+	// As core 6.4.1 option.php: an expiration (seconds) stores a timeout once it is > 0 (a later set with 0 keeps the old timeout,
+	// as core's update path does); a read after the timeout deletes the transient and answers false.
+	//   T_site_transient_ttls  name => the last expiration given;  T_site_transient_expires  name => unix time it runs out
+	// A test makes one run out by lowering its T_site_transient_expires entry.
+	function get_site_transient( $n ) {
+		if ( isset( $GLOBALS['T_site_transient_expires'][ $n ] ) && $GLOBALS['T_site_transient_expires'][ $n ] < time() ) { unset( $GLOBALS['T_site_transients'][ $n ], $GLOBALS['T_site_transient_expires'][ $n ] ); return false; }
+		return $GLOBALS['T_site_transients'][ $n ] ?? false;
+	}
+	function set_site_transient( $n, $v, $ttl = 0 ) { $GLOBALS['T_site_transient_ttls'][ $n ] = (int) $ttl; if ( (int) $ttl > 0 ) { $GLOBALS['T_site_transient_expires'][ $n ] = time() + (int) $ttl; } $GLOBALS['T_site_transients'][ $n ] = $v; unset( $GLOBALS['T_db_site_transients'][ $n ] ); if ( isset( $GLOBALS['T_on_set_site'][ $n ] ) ) { $cb = $GLOBALS['T_on_set_site'][ $n ]; unset( $GLOBALS['T_on_set_site'][ $n ] ); $cb(); } return true; }
+	function delete_site_transient( $n ) { $GLOBALS['T_site_transient_deletes'][] = $n; $had = isset( $GLOBALS['T_site_transients'][ $n ] ); unset( $GLOBALS['T_site_transients'][ $n ], $GLOBALS['T_db_site_transients'][ $n ], $GLOBALS['T_site_transient_expires'][ $n ] ); return $had; }
 	// The update checks store what wordpress.org would answer (T_fresh), as core stores the transient after asking.
 	function wp_version_check() { $GLOBALS['T_update_checks'][] = 'wp_version_check'; if ( isset( $GLOBALS['T_fresh']['update_core'] ) ) { set_site_transient( 'update_core', $GLOBALS['T_fresh']['update_core'] ); } }
 	function wp_update_plugins() { $GLOBALS['T_update_checks'][] = 'wp_update_plugins'; if ( isset( $GLOBALS['T_fresh']['update_plugins'] ) ) { set_site_transient( 'update_plugins', $GLOBALS['T_fresh']['update_plugins'] ); } }
