@@ -12,7 +12,9 @@
  * which the build writes with the version bump. Nothing in it is trusted until d5b_updater_valid() says so: the package can
  * only ever be our own repository's release asset for the json's own tag, on github.com, over https.
  *
- * One request per site per 12 hours (1 hour after a failure), kept in the site transient d5b_update_json:
+ * One request per site per 11 hours (1 hour after a failure), kept in the site transient d5b_update_json. 11, not 12: core's own
+ * update check runs every 12 hours, and a cache that is always just fresh when it runs would hide a release for a second
+ * round; with 11 hours a site sees a release within a day.
  *   array( 'json' => the last VALID json or null, 'checked' => unix time of the last request, 'ok' => bool, 'error' => string,
  *          'good_at' => unix time of the request that got that json (absent while there is none) )
  * The freshness is counted from 'checked'; the transient itself is kept longer so that, when the next request fails (a GitHub
@@ -82,7 +84,7 @@ if ( ! function_exists( 'd5b_updater_cap' ) ) {
 
 if ( ! function_exists( 'd5b_updater_fetch' ) ) {
 	/**
-	 * The update.json, from the cache while it is fresh (12 hours after a good request, 1 hour after a failed one) or else
+	 * The update.json, from the cache while it is fresh (11 hours after a good request, 1 hour after a failed one) or else
 	 * from GitHub. $force asks GitHub whatever the cache says.
 	 * @return array array( 'ok' => bool, 'json' => array|null, 'error' => string, 'checked' => int, 'from_cache' => bool )
 	 */
@@ -90,7 +92,7 @@ if ( ! function_exists( 'd5b_updater_fetch' ) ) {
 		$cached = d5b_updater_kept();
 		if ( ! $force && null !== $cached ) {
 			$age = time() - $cached['checked'];
-			$ttl = ! empty( $cached['ok'] ) ? 12 * HOUR_IN_SECONDS : HOUR_IN_SECONDS;
+			$ttl = ! empty( $cached['ok'] ) ? 11 * HOUR_IN_SECONDS : HOUR_IN_SECONDS;
 			if ( $age >= 0 && $age < $ttl ) {
 				return array(
 					'ok'         => ! empty( $cached['ok'] ),
@@ -135,7 +137,7 @@ if ( ! function_exists( 'd5b_updater_fetch' ) ) {
 		} elseif ( null !== $last_good && isset( $cached['good_at'] ) && is_int( $cached['good_at'] ) ) {
 			$entry['good_at'] = $cached['good_at'];
 		}
-		// Kept well past the 12 hours so a failed request still finds the last good answer; freshness comes from 'checked'.
+		// Kept well past the 11 hours so a failed request still finds the last good answer; freshness comes from 'checked'.
 		set_site_transient( 'd5b_update_json', $entry, 30 * DAY_IN_SECONDS );
 		return array( 'ok' => $ok, 'json' => $entry['json'], 'error' => $error, 'checked' => $entry['checked'], 'from_cache' => false );
 	}
@@ -183,24 +185,43 @@ if ( ! function_exists( 'd5b_updater_is_our_asset' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_updater_hook_is_us' ) ) {
+	/**
+	 * Does the upgrader's $hook_extra say it is updating divi5-builder? Core 6.4.1 names the plugin in 'plugin'
+	 * (Plugin_Upgrader::upgrade and bulk_upgrade); 'plugins' (a list) is read too, its first entry.
+	 */
+	function d5b_updater_hook_is_us( $hook_extra ): bool {
+		if ( ! is_array( $hook_extra ) ) { return false; }
+		$ours = d5b_updater_our_file();
+		if ( isset( $hook_extra['plugin'] ) && $ours === $hook_extra['plugin'] ) { return true; }
+		return isset( $hook_extra['plugins'] ) && is_array( $hook_extra['plugins'] ) && $ours === ( array_values( $hook_extra['plugins'] )[0] ?? null );
+	}
+}
+
 if ( ! function_exists( 'd5b_updater_pre_download' ) ) {
 	/**
 	 * For upgrader_pre_download (WP_Upgrader::download_package uses a non-false answer as the downloaded file; a WP_Error
 	 * aborts the update before anything is unpacked). Our verified release asset is downloaded here and its sha256 compared
-	 * with the json's; on a mismatch the file is deleted and the update refused. Any other package passes through untouched.
+	 * with the json's; on a mismatch the file is deleted and the update refused. Any other package passes through untouched,
+	 * except when the upgrader says it is updating divi5-builder ($hook_extra): then only the verified asset is accepted,
+	 * whatever the package URL looks like (defence in depth against a swapped package).
 	 */
 	function d5b_updater_pre_download( $reply, $package, $upgrader = null, $hook_extra = array() ) {
 		// An earlier filter already refused the download: its refusal stands, nothing is downloaded.
 		if ( is_wp_error( $reply ) ) { return $reply; }
 		if ( ! is_string( $package ) || '' === $package ) { return $reply; }
-		$ours = d5b_updater_is_our_asset( $package );
-		// A package that is not ours costs nothing: no request, not even for the json.
+		$ours   = d5b_updater_is_our_asset( $package );
+		$for_us = d5b_updater_hook_is_us( $hook_extra );
+		// A package that is not ours, for another plugin, costs nothing: no request, not even for the json.
 		$json = null;
-		if ( $ours ) {
+		if ( $ours || $for_us ) {
 			$r    = d5b_updater_fetch( false );
 			$json = d5b_updater_valid( $r['json'] ) ? $r['json'] : null;
 		}
 		if ( null === $json || $package !== $json['download_url'] ) {
+			if ( $for_us && ! $ours ) {
+				return new WP_Error( 'd5b_checksum', 'the update for divi5-builder named a download that is not the release asset' );
+			}
 			if ( ! $ours ) { return $reply; }
 			// Never install an unverified copy of ourselves: no checksum is known for this package.
 			// (The package URL is not repeated: core's upgrader skin prints this message as it is.)
@@ -271,9 +292,9 @@ if ( ! function_exists( 'd5b_updater_status_line' ) ) {
 if ( ! function_exists( 'd5b_updater_check_now' ) ) {
 	/**
 	 * admin_post_d5b_update_check: the Settings page's Check now. Nonce and capability first (the Settings page's own, and
-	 * update_plugins), as d5b_settings_save checks them; then the kept answer is dropped, core's update cache cleared (so
-	 * wp_update_plugins does not stop at its own 12 hour timeout) and the plugin update check run, which asks our filter and so
-	 * GitHub. Back to the Settings page with d5b_checked=1.
+	 * update_plugins), as d5b_settings_save checks them; then GitHub is asked (d5b_updater_fetch( true )), core's update cache
+	 * cleared (so wp_update_plugins does not stop at its own 12 hour timeout) and the plugin update check run, which asks our
+	 * filter (answered from the answer just fetched). Back to the Settings page with d5b_checked=1.
 	 */
 	function d5b_updater_check_now(): void {
 		if ( ! check_admin_referer( 'd5b_update_check' ) ) { return; }
@@ -282,7 +303,10 @@ if ( ! function_exists( 'd5b_updater_check_now' ) ) {
 			return;
 		}
 		if ( ! function_exists( 'wp_update_plugins' ) ) { require_once ABSPATH . WPINC . '/update.php'; }
-		delete_site_transient( 'd5b_update_json' );
+		// GitHub is asked here, before core's check: wp_update_plugins returns early when api.wordpress.org cannot be reached
+		// (and then never calls our filter), and the Settings line must still get a fresh answer. A forced fetch replaces the
+		// kept answer (a failure keeps the last good json), and core's check then reads it from the fresh cache.
+		d5b_updater_fetch( true );
 		if ( function_exists( 'wp_clean_update_cache' ) ) { wp_clean_update_cache(); }
 		wp_update_plugins();
 		wp_safe_redirect( d5b_settings_base_url() . '?page=divi5-builder&d5b_checked=1' );
@@ -348,6 +372,13 @@ if ( ! function_exists( 'd5b_updater_plugins_api' ) ) {
 		$file = dirname( __DIR__ ) . '/readme.txt';
 		$text = is_readable( $file ) ? (string) file_get_contents( $file ) : '';
 		$date = ( null !== $json && 1 === preg_match( '/^v(\d{4})\.(\d{2})\.(\d{2})/', $json['tag'], $m ) ) ? $m[1] . '-' . $m[2] . '-' . $m[3] : '';
+		$sections = d5b_updater_readme_sections( $text, null !== $json ? $json['tag'] : '' );
+		// The readme is this installed copy's: when another version is offered, say whose changelog it is and where the notes
+		// of the offered one are (version and tag are validated by now; escaped all the same).
+		if ( null !== $json && D5B_VERSION !== $json['version'] ) {
+			$release = 'https://github.com/doughoseck/divi5-builder/releases/tag/' . $json['tag'];
+			$sections['changelog'] = '<p>' . esc_html( 'Changelog of the installed version ' . D5B_VERSION . '; the notes for ' . $json['version'] . ' are on the' ) . ' <a href="' . esc_url( $release ) . '">release page</a>.</p>' . $sections['changelog'];
+		}
 		return (object) array(
 			'name'          => 'Divi 5 Builder',
 			'slug'          => 'divi5-builder',
@@ -360,7 +391,7 @@ if ( ! function_exists( 'd5b_updater_plugins_api' ) ) {
 			'tested'        => null !== $json ? $json['tested'] : '',
 			// From the validated tag (vYYYY.MM.DD): the json's own last_updated is never shown.
 			'last_updated'  => $date,
-			'sections'      => d5b_updater_readme_sections( $text, null !== $json ? $json['tag'] : '' ),
+			'sections'      => $sections,
 		);
 	}
 }

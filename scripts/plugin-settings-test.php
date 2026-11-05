@@ -433,15 +433,25 @@ fresh(); t_set_caps( array( 'manage_options', 'update_plugins' ) ); upd_keep( $k
 $GLOBALS['T_site_transients']['update_plugins'] = (object) array( 'last_checked' => time() );
 $e = run_check();
 check( 'no exception, no wp_die', null === $e && array() === $GLOBALS['T_dies'], array( $e ? $e->getMessage() : '', $GLOBALS['T_dies'] ) );
-check( 'd5b_update_json is deleted (the next filter run asks GitHub)', false === get_site_transient( 'd5b_update_json' ) && in_array( 'd5b_update_json', $GLOBALS['T_site_transient_deletes'], true ), $GLOBALS['T_site_transient_deletes'] );
-check( 'wp_clean_update_cache ran once, so core\'s update_plugins is gone and wp_update_plugins does not stop at its 12 hour timeout', array( 'wp_clean_update_cache' ) === $GLOBALS['T_traps'] && false === get_site_transient( 'update_plugins' ), $GLOBALS['T_traps'] );
+// No T_http entry here: the forced request fails, and the answer kept before it survives as the last good one.
+$k = get_site_transient( 'd5b_update_json' );
+check( 'd5b_update_json holds the answer of a request made by Check now itself (a failure here keeps the last good json)', is_array( $k ) && false === $k['ok'] && upd_json() === $k['json'] && abs( time() - $k['checked'] ) < 5, $k );
+check( 'the request to GitHub first, then wp_clean_update_cache once, so core\'s update_plugins is gone and wp_update_plugins does not stop at its 12 hour timeout', array( 'wp_remote_get', 'wp_clean_update_cache' ) === $GLOBALS['T_traps'] && false === get_site_transient( 'update_plugins' ), $GLOBALS['T_traps'] );
 check( 'wp_update_plugins ran once (and nothing else of the update checks)', array( 'wp_update_plugins' ) === $GLOBALS['T_update_checks'], $GLOBALS['T_update_checks'] );
 check( 'redirected back to the Settings page with d5b_checked=1, and exited', array( 'https://x.example/wp-admin/options-general.php?page=divi5-builder&d5b_checked=1' ) === $GLOBALS['T_redirects'] && 1 === $GLOBALS['T_exits'], array( $GLOBALS['T_redirects'], $GLOBALS['T_exits'] ) );
-check( 'the handler itself makes no request', array() === $GLOBALS['T_http_calls'] );
+check( 'the handler makes exactly one request, to the update.json on main', array( 'https://raw.githubusercontent.com/doughoseck/divi5-builder/main/plugin/update.json' ) === array_map( function ( $c ) { return $c[0]; }, $GLOBALS['T_http_calls'] ), $GLOBALS['T_http_calls'] );
 fresh(); t_set_multisite( true ); t_set_caps( array( 'manage_network_options', 'update_plugins' ) ); upd_keep( $kept );
 run_check();
-check( 'network admin: the same, redirected to the Network Admin page', array( 'https://x.example/wp-admin/network/settings.php?page=divi5-builder&d5b_checked=1' ) === $GLOBALS['T_redirects'] && array( 'wp_update_plugins' ) === $GLOBALS['T_update_checks'] && false === get_site_transient( 'd5b_update_json' ), $GLOBALS['T_redirects'] );
+check( 'network admin: the same, redirected to the Network Admin page', array( 'https://x.example/wp-admin/network/settings.php?page=divi5-builder&d5b_checked=1' ) === $GLOBALS['T_redirects'] && array( 'wp_update_plugins' ) === $GLOBALS['T_update_checks'] && 1 === count( $GLOBALS['T_http_calls'] ), $GLOBALS['T_redirects'] );
 
+echo "Check now without wordpress.org: the Settings line has a fresh answer even when core's check does nothing\n";
+// wp_update_plugins (the stand-in) never calls our filter, as core's returns early when api.wordpress.org cannot be reached.
+fresh(); t_set_caps( array( 'manage_options', 'update_plugins' ) ); upd_keep( $kept );
+$GLOBALS['T_http']['https://raw.githubusercontent.com/doughoseck/divi5-builder/main/plugin/update.json'] = array( 'code' => 200, 'headers' => array( 'content-type' => 'text/plain' ), 'body' => json_encode( upd_json( '2.6.0' ) ) );
+run_check();
+check( 'premise: wp_update_plugins ran and asked nothing itself', array( 'wp_update_plugins' ) === $GLOBALS['T_update_checks'] && 1 === count( $GLOBALS['T_http_calls'] ), $GLOBALS['T_http_calls'] );
+$out = html( 'd5b_settings_render' );
+check( 'after Check now the line shows the newest version from GitHub, 2.6.0, checked just now', 1 === preg_match( '#Installed 2\.0\.0, newest 2\.6\.0 \(checked [^)]*\)\.#', $out ), $out );
 echo "\n" . ( $failed ? "$failed FAILED of $n" : "all $n passed" ) . "\n";
 foreach ( glob( $mu . '/*' ) ?: array() as $f ) { @unlink( $f ); }
 @rmdir( $mu );

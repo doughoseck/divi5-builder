@@ -6,21 +6,25 @@
  *   node scripts/build-plugin-zips.js [--out dist] [--tag vYYYY.MM.DD[.N]]
  *
  * The zip holds every file of plugin/divi5-builder/ under divi5-builder/ (so divi5-builder/divi5-builder.php,
- * inc/, parts/, readme.txt) plus LICENSE: the layout WordPress expects. Reproducible: sorted names, fixed
- * timestamps, LF line endings. Node built-ins only (zlib + a small zip writer below).
+ * inc/, parts/, readme.txt) plus LICENSE: the layout WordPress expects. In a git checkout "every file" is what git
+ * tracks (git ls-files), and an untracked, ignored or uncommitted file under plugin/divi5-builder (or LICENSE) STOPs
+ * the build; outside one (git exits 128) every file on disk. Reproducible: sorted names, fixed timestamps, LF line
+ * endings in every file without a NUL byte. Node built-ins and git only (zlib + a small zip writer below).
  * The single-file plugins in assets/legacy/ are no longer packaged.
  * Next to the zip it writes divi5-builder-loader.php (from plugin/mu-loader/, LF endings): the second release
  * file, for a must-use install.
  * Then update.json (slug, version, tag, download_url, sha256, requires, requires_php, tested, last_updated,
- * changelog_url), written next to the zip AND into plugin/update.json: the GitHub updater reads the committed
- * copy from main. --tag names the release about to be created; without it the tag in plugin/update.json is kept;
- * with neither, or a tag of the wrong form, the build STOPs (exit 1) before writing anything.
+ * changelog_url), written next to the zip; a release build (--tag) also writes it into plugin/update.json, the copy
+ * the GitHub updater reads from main. Without --tag the repository's copy is never touched (the json in --out keeps
+ * the tag already in plugin/update.json, for inspection); with no tag at all, or a tag of the wrong form, the build
+ * STOPs (exit 1) before writing anything.
  * Prints the zip with the plugin version read from its header, then the loader, then the json.
  */
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
+const { execFileSync } = require('child_process');
 
 const ROOT = process.env.D5B_REPO_ROOT || path.join(__dirname, '..'); // the override is for the mutation test
 const outArg = process.argv.indexOf('--out');
@@ -89,7 +93,7 @@ const readmeFile = path.join(PLUGIN_DIR, 'readme.txt');
 const tested = (fs.existsSync(readmeFile) && (fs.readFileSync(readmeFile, 'utf8').match(/^Tested up to:\s*(\S+)/m) || [])[1]) || '7.1';
 
 // --- the release tag, for update.json ------------------------------------------------------------
-// --tag vYYYY.MM.DD[.N] names the release; without it the tag already in plugin/update.json is kept.
+// --tag vYYYY.MM.DD[.N] names the release; without it the tag already in plugin/update.json goes into --out's json.
 // Everything is checked here, before anything is written: a STOP leaves no zip and no json behind.
 const TAG_FORM = /^v\d{4}\.\d{2}\.\d{2}(\.\d+)?$/;
 const JSON_FILE = path.join(ROOT, 'plugin', 'update.json');
@@ -117,15 +121,38 @@ function walk(dir, rel) { // every file under dir, as forward-slash paths relati
   }
   return out;
 }
-const TEXT = /\.(php|txt|md|json|js|css|html)$/i;
-const names = walk(PLUGIN_DIR, '').sort();
-const files = names.map(rel => {
-  let data = fs.readFileSync(path.join(PLUGIN_DIR, rel));
-  // Normalise line endings to LF in text files so the zip is the same whatever the checkout's core.autocrlf.
-  if (TEXT.test(rel)) data = Buffer.from(data.toString('utf8').replace(/\r\n/g, '\n'), 'utf8');
-  return { name: `${SLUG}/${rel}`, data };
-});
-if (license) files.push({ name: `${SLUG}/LICENSE`, data: license });
+// --- which files: what git tracks, when ROOT is a git checkout ------------------------------------
+// A release zip must hold the commit and nothing else: in a checkout the plugin files are git ls-files, and anything
+// untracked, ignored or changed under plugin/divi5-builder (or LICENSE) STOPs the build before anything is written.
+// Not a git repository (git exits 128, as in the test's temp copies): every file found on disk (walk).
+const PLUGIN_REL = `plugin/${SLUG}`;
+function gitOut(args) {
+  try { return execFileSync('git', args, { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 }); } catch (e) {
+    if (e.status === 128) return null; // not a git repository
+    console.error(`STOP: git ${args.join(' ')} failed (${e.code === 'ENOENT' ? 'git is not on PATH' : String(e.stderr || e.message).trim()}); nothing written`); process.exit(1);
+  }
+}
+let names = null, licenseTracked = true;
+if (fs.existsSync(path.join(ROOT, '.git'))) {
+  const status = gitOut(['status', '--porcelain', '--ignored', '--untracked-files=all', '--', PLUGIN_REL, 'LICENSE']);
+  if (status !== null) {
+    const dirty = status.toString('utf8').split('\n').filter(l => l.trim() !== '');
+    if (dirty.length) { console.error(`STOP: the release zip holds only what git tracks, and these are untracked, ignored or not committed:\n${dirty.map(l => '  ' + l).join('\n')}\ncommit or remove them (nothing written)`); process.exit(1); }
+    const listed = gitOut(['ls-files', '-z', '--', PLUGIN_REL, 'LICENSE']);
+    if (listed !== null) {
+      const all = listed.toString('utf8').split('\0').filter(Boolean);
+      names = all.filter(f => f.startsWith(PLUGIN_REL + '/')).map(f => f.slice(PLUGIN_REL.length + 1)).sort();
+      licenseTracked = all.includes('LICENSE');
+    }
+  }
+}
+if (names === null) names = walk(PLUGIN_DIR, '').sort();
+// Line endings by content: a file with no NUL byte is text and gets LF (bytes, not a re-encoding: a latin-1 file keeps its
+// bytes), whatever its name (LICENSE, .htaccess); a file holding a NUL is binary and stays as it is. So the zip is the same
+// whatever the checkout's core.autocrlf.
+const lf = data => (data.includes(0) ? data : Buffer.from(data.toString('latin1').replace(/\r\n/g, '\n'), 'latin1'));
+const files = names.map(rel => ({ name: `${SLUG}/${rel}`, data: lf(fs.readFileSync(path.join(PLUGIN_DIR, rel))) }));
+if (license && licenseTracked) files.push({ name: `${SLUG}/LICENSE`, data: lf(license) });
 // The second release file: the must-use loader, published next to the zip so a must-use install needs no repository.
 // Copied as it is (LF line endings), so it is the same byte for byte on every build.
 const LOADER = path.join(ROOT, 'plugin', 'mu-loader', `${SLUG}-loader.php`);
@@ -133,7 +160,7 @@ if (!fs.existsSync(LOADER)) { console.error(`STOP: ${path.relative(ROOT, LOADER)
 
 const zipBytes = zip(files);
 // update.json: what the GitHub updater (2.5.0+) reads from main. Written from the zip just built, next to it
-// and into plugin/update.json (committed with the version bump). NOT inside the zip: it describes the zip.
+// and, on a --tag build, into plugin/update.json (committed with the version bump). NOT inside the zip: it describes the zip.
 // last_updated changes only when version or tag change, so a rebuild from the same commit is byte-identical.
 const keepDate = prev && prev.version === version && prev.tag === tag && typeof prev.last_updated === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(prev.last_updated);
 const manifest = {
@@ -161,5 +188,7 @@ console.log(`${path.relative(ROOT, loaderOut).replace(/\\/g, '/')}  the must-use
 
 const jsonOut = path.join(OUT, 'update.json');
 fs.writeFileSync(jsonOut, manifestBytes);
-fs.writeFileSync(JSON_FILE, manifestBytes);
-console.log(`${path.relative(ROOT, jsonOut).replace(/\\/g, '/')} and plugin/update.json  ${version} ${tag}  sha256 ${manifest.sha256}${keepDate ? '' : '  (last_updated ' + manifest.last_updated + ')'}`);
+// Only a release build (--tag) writes the repository's copy: every site reads it from main, so its sha256 must stay the
+// released asset's until the next release, however many zips are built in between to look at.
+if (tagArg > -1) fs.writeFileSync(JSON_FILE, manifestBytes);
+console.log(`${path.relative(ROOT, jsonOut).replace(/\\/g, '/')}${tagArg > -1 ? ' and plugin/update.json' : ' (plugin/update.json untouched: only a --tag build writes it)'}  ${version} ${tag}  sha256 ${manifest.sha256}${keepDate ? '' : '  (last_updated ' + manifest.last_updated + ')'}`);

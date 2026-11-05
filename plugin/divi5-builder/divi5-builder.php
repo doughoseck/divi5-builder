@@ -113,7 +113,7 @@ add_action( 'admin_init', 'd5b_takeover_mu_admin_init' );
 add_filter( 'rest_pre_dispatch', 'd5b_refuse_legacy_rest_activation', 10, 3 );
 
 // Updates from GitHub Releases (2.5.0): WordPress asks this filter for our plugin because the Update URI header names
-// github.com. The answer comes from plugin/update.json on main, checked strictly, at most once per 12 hours; a must-use copy
+// github.com. The answer comes from plugin/update.json on main, checked strictly, at most once per 11 hours; a must-use copy
 // never gets an offer (replace its folder instead).
 add_filter( 'update_plugins_github.com', 'd5b_updater_filter', 10, 4 );
 // Before WordPress unpacks our release asset, its sha256 is checked against the json's (a mismatch aborts the update).

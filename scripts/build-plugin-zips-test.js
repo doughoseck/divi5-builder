@@ -2,7 +2,9 @@
 //   node scripts/build-plugin-zips-test.js
 // Set BUILD_ZIPS_SCRIPT to test another copy of build-plugin-zips.js (used for mutation testing).
 // The builds run against a copy of plugin/ and LICENSE in a temp folder (D5B_REPO_ROOT), so the test never
-// rewrites the repository's own plugin/update.json; it compares the copy's rebuilt json with the committed one.
+// rewrites the repository's own plugin/update.json; it holds the committed json to the release rule (the same version
+// as the header: the sha256 of a build of this commit; another version: older than the header). The git cases run
+// git init / add / commit in a temp copy; the other copies have no .git and use the walk build.
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -24,7 +26,22 @@ const repoCopy = (sub, withJson = true) => { // plugin/ and LICENSE, as checked 
 };
 const run = (root, args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8', env: { ...process.env, D5B_REPO_ROOT: root } });
 const REPO = repoCopy('repo');
-const build = (sub, extra = [], root = REPO) => {
+const REPO_JSON_BEFORE = fs.existsSync(path.join(REPO, 'plugin', 'update.json')) ? fs.readFileSync(path.join(REPO, 'plugin', 'update.json')) : Buffer.alloc(0);
+// The Version: header of a copy's main file, read as the build reads it.
+const hdrOf = root => (fs.readFileSync(path.join(root, 'plugin', 'divi5-builder', 'divi5-builder.php'), 'utf8').slice(0, 8192).match(/^\s*\*\s*Version:\s*(\S+)/m) || [])[1];
+// PHP's version_compare for the dotted numeric versions the plugin uses (1.2.10 > 1.2.9; 1.2 < 1.2.0): -1, 0 or 1.
+function versionCompare(a, b) {
+  const pa = String(a).split('.'), pb = String(b).split('.');
+  if (![...pa, ...pb].every(x => /^\d+$/.test(x))) return NaN; // not a plain version: never "newer"
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    if (i >= pa.length) return -1;
+    if (i >= pb.length) return 1;
+    const x = Number(pa[i]), y = Number(pb[i]);
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+const build =(sub, extra = [], root = REPO) => {
   const out = path.join(tmp, sub);
   execFileSync(process.execPath, [SCRIPT, '--out', out, ...extra], { stdio: 'pipe', env: { ...process.env, D5B_REPO_ROOT: root } });
   return out;
@@ -58,9 +75,43 @@ try {
   const ja = fs.existsSync(jpath(a)) ? fs.readFileSync(jpath(a)) : Buffer.alloc(0), jb = fs.existsSync(jpath(b)) ? fs.readFileSync(jpath(b)) : Buffer.alloc(1);
   check('update.json: two builds in a row give byte-identical json', ja.equals(jb));
   const repoJsonFile = path.join(REPO, 'plugin', 'update.json');
-  check('update.json: the json in --out equals plugin/update.json written by the same build', fs.existsSync(repoJsonFile) && ja.equals(fs.readFileSync(repoJsonFile)));
+  // 2.5.0 final review: only a release build (--tag) writes the repository's plugin/update.json, so main's sha256 never
+  // drifts away from the released asset when someone builds a zip to look at it.
+  check('update.json: a build without --tag leaves plugin/update.json byte-identical (it writes the json into --out only)', fs.existsSync(repoJsonFile) && fs.readFileSync(repoJsonFile).equals(REPO_JSON_BEFORE), { before: REPO_JSON_BEFORE.toString(), after: fs.existsSync(repoJsonFile) ? fs.readFileSync(repoJsonFile, 'utf8') : null });
+  { const R = repoCopy('tagged'); const o = build('tagged-out', ['--tag', 'v2099.03.04'], R); const rj = path.join(R, 'plugin', 'update.json');
+    check('update.json: a --tag build writes the same json to --out and to plugin/update.json', fs.existsSync(rj) && fs.existsSync(jpath(o)) && fs.readFileSync(jpath(o)).equals(fs.readFileSync(rj)) && /"tag": "v2099\.03\.04"/.test(fs.readFileSync(rj, 'utf8')), fs.existsSync(rj) ? fs.readFileSync(rj, 'utf8') : null); }
+  // The release rule, applied to the committed json: the same version as the header means the sha256 of a build of this
+  // commit (a plugin change without a version bump fails here, on purpose); another version must be OLDER than the header
+  // (the bump is made, the release build not yet run), and then the sha256 is not compared.
   const committed = path.join(ROOT, 'plugin', 'update.json');
-  check('update.json: the committed plugin/update.json is what a build of this commit writes (rebuild before committing)', fs.existsSync(committed) && ja.toString('utf8') === fs.readFileSync(committed, 'utf8').replace(/\r\n/g, '\n'));
+  const ruleOn = (jsonText, headerVersion, builtSha) => {
+    let c; try { c = JSON.parse(jsonText); } catch (e) { return 'the committed json is not JSON'; }
+    if (!c || typeof c.version !== 'string') return 'the committed json has no version';
+    if (c.version === headerVersion) return c.sha256 === builtSha ? '' : 'same version ' + c.version + ' as the header but sha256 ' + c.sha256 + ' is not that of a build of this commit (' + builtSha + '): bump the version and build with --tag';
+    return versionCompare(headerVersion, c.version) > 0 ? '' : 'the header version ' + headerVersion + ' is not newer than the committed json\'s ' + c.version;
+  };
+  const shaOf = d => crypto.createHash('sha256').update(fs.readFileSync(path.join(d, 'divi5-builder.zip'))).digest('hex');
+  { const why = fs.existsSync(committed) ? ruleOn(fs.readFileSync(committed, 'utf8'), hdrOf(ROOT), crypto.createHash('sha256').update(za).digest('hex')) : 'no plugin/update.json';
+    check('update.json: the committed plugin/update.json follows the release rule (same version: the sha256 of a build of this commit; else the header is newer)', why === '', why); }
+  { // the same version, a plugin file changed without a bump: the rule fails
+    const R = repoCopy('rule-same'); build('rule-same-tag', ['--tag', 'v2099.05.06'], R);
+    const jt = fs.readFileSync(path.join(R, 'plugin', 'update.json'), 'utf8');
+    check('release rule: a copy just built with --tag passes (same version, same sha256)', ruleOn(jt, hdrOf(R), shaOf(build('rule-same-1', [], R))) === '');
+    fs.appendFileSync(path.join(R, 'plugin', 'divi5-builder', 'readme.txt'), '\nchanged without a version bump\n');
+    const why = ruleOn(jt, hdrOf(R), shaOf(build('rule-same-2', [], R)));
+    check('release rule: a plugin change without a version bump fails (same version, another sha256)', /same version/.test(why), why); }
+  { // a newer header (the bump is made): the sha256 is not compared
+    const R = repoCopy('rule-newer'); const jt = fs.readFileSync(path.join(R, 'plugin', 'update.json'), 'utf8'); const cv = JSON.parse(jt).version;
+    const bumped = cv.split('.').map((x, i, a) => i === a.length - 1 ? String(Number(x) + 1) : x).join('.');
+    const mf = path.join(R, 'plugin', 'divi5-builder', 'divi5-builder.php'); fs.writeFileSync(mf, fs.readFileSync(mf, 'utf8').replace(/^(\s*\*\s*Version:\s*)\S+/m, '$1' + bumped));
+    const why = ruleOn(jt, hdrOf(R), shaOf(build('rule-newer-out', [], R)));
+    check('release rule: a header newer than the committed json passes, the sha256 not compared (' + cv + ' -> ' + bumped + ')', hdrOf(R) === bumped && why === '', why);
+    check('release rule: version_compare semantics, 2.5.10 is newer than 2.5.9 (not string order)', ruleOn(JSON.stringify({ version: '2.5.9', sha256: 'x' }), '2.5.10', 'y') === '' && ruleOn(JSON.stringify({ version: '2.5.10', sha256: 'x' }), '2.5.9', 'y') !== ''); }
+  { // an older header than the committed json: fails
+    const R = repoCopy('rule-older'); const jt = fs.readFileSync(path.join(R, 'plugin', 'update.json'), 'utf8');
+    const mf = path.join(R, 'plugin', 'divi5-builder', 'divi5-builder.php'); fs.writeFileSync(mf, fs.readFileSync(mf, 'utf8').replace(/^(\s*\*\s*Version:\s*)\S+/m, '$10.0.1'));
+    const why = ruleOn(jt, hdrOf(R), shaOf(build('rule-older-out', [], R)));
+    check('release rule: a header OLDER than the committed json fails', /not newer/.test(why), why); }
   let J = {}; try { J = JSON.parse(ja.toString('utf8')); } catch (e) { /* checks below fail */ }
   const KEYS = ['slug', 'version', 'tag', 'download_url', 'sha256', 'requires', 'requires_php', 'tested', 'last_updated', 'changelog_url'];
   check('update.json: exactly the ten keys, in order, every value a string', JSON.stringify(Object.keys(J)) === JSON.stringify(KEYS) && KEYS.every(k => typeof J[k] === 'string'), J);
@@ -156,6 +207,54 @@ try {
   check('the main file in the zip is the loader, with LF endings', main && /Plugin Name: Divi 5 Builder/.test(main.data.toString()) && !main.data.includes('\r'));
   const same = files.filter(e => e.name !== 'divi5-builder/LICENSE').every(e => fs.existsSync(path.join(ROOT, 'plugin', e.name)) && e.data.toString('utf8') === fs.readFileSync(path.join(ROOT, 'plugin', e.name), 'utf8').replace(/\r\n/g, '\n'));
   check('each file in the zip equals its source (LF-normalised)', same);
+  const lic = files.find(e => e.name === 'divi5-builder/LICENSE');
+  check('LICENSE in the zip has LF endings (whatever the checkout has)', !!lic && !lic.data.includes('\r') && lic.data.toString('utf8') === fs.readFileSync(path.join(ROOT, 'LICENSE'), 'utf8').replace(/\r\n/g, '\n'));
+
+  // --- line endings by content (2.5.0 final review): every file without a NUL byte is text and gets LF, whatever its name ---
+  { const toLF = b => Buffer.from(b.toString('latin1').replace(/\r\n/g, '\n'), 'latin1'), toCRLF = b => Buffer.from(toLF(b).toString('latin1').replace(/\n/g, '\r\n'), 'latin1');
+    const BIN = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x0d, 0x0a, 0xff]); // a PNG-like head: CRLF and NUL bytes
+    const L = repoCopy('eol-lf'), C = repoCopy('eol-crlf');
+    for (const [R, conv] of [[L, toLF], [C, toCRLF]]) {
+      fs.writeFileSync(path.join(R, 'LICENSE'), conv(fs.readFileSync(path.join(ROOT, 'LICENSE'))));
+      fs.writeFileSync(path.join(R, 'plugin', 'divi5-builder', '.htaccess'), conv(Buffer.from('# no extension, not in any list\nDeny from all\n')));
+      fs.writeFileSync(path.join(R, 'plugin', 'divi5-builder', 'notes'), conv(Buffer.from('caf\xe9 in latin-1\nline two\n', 'latin1')));
+      fs.writeFileSync(path.join(R, 'plugin', 'divi5-builder', 'pixel.png'), BIN);
+      for (const rel of walk(path.join(R, 'plugin', 'divi5-builder'), '')) { const f = path.join(R, 'plugin', 'divi5-builder', rel); if (!fs.readFileSync(f).includes(0)) fs.writeFileSync(f, conv(fs.readFileSync(f))); }
+    }
+    check('premise: the CRLF copy holds CRLF in LICENSE and .htaccess, the LF copy none', fs.readFileSync(path.join(C, 'LICENSE')).includes('\r\n') && fs.readFileSync(path.join(C, 'plugin', 'divi5-builder', '.htaccess')).includes('\r\n') && !fs.readFileSync(path.join(L, 'LICENSE')).includes('\r'));
+    const zl = fs.readFileSync(path.join(build('eol-lf-out', [], L), 'divi5-builder.zip')), zc = fs.readFileSync(path.join(build('eol-crlf-out', [], C), 'divi5-builder.zip'));
+    check('a copy with LICENSE, .htaccess and every text file in CRLF builds the same zip bytes as the LF copy', zl.equals(zc));
+    const ec = entries(zc); const got = n => (ec.find(e => e.name === 'divi5-builder/' + n) || {}).data;
+    check('a file holding a NUL byte is binary: its CR LF bytes are kept as they are', !!got('pixel.png') && got('pixel.png').equals(BIN), got('pixel.png'));
+    check('a text file that is not UTF-8 (latin-1) keeps its bytes apart from the line ends', !!got('notes') && got('notes').equals(Buffer.from('caf\xe9 in latin-1\nline two\n', 'latin1')), got('notes')); }
+
+  // --- only what git tracks (2.5.0 final review): a checkout with .git zips git ls-files, and STOPs on anything else ---
+  { const G = repoCopy('git'); const git = (...a) => execFileSync('git', a, { cwd: G, stdio: 'pipe' });
+    git('init', '-q'); git('config', 'core.autocrlf', 'false'); git('config', 'user.name', 'test'); git('config', 'user.email', 'test@example.invalid'); git('config', 'commit.gpgsign', 'false');
+    git('add', '-A'); git('commit', '-q', '-m', 'copy');
+    const zg = fs.readFileSync(path.join(build('git-out', [], G), 'divi5-builder.zip'));
+    check('a git checkout with a clean, tracked tree builds the same bytes as the walk build', zg.equals(za));
+    const gitStop = (label, edit, says) => {
+      edit(); const jf = path.join(G, 'plugin', 'update.json'); const before = fs.readFileSync(jf);
+      const o = path.join(tmp, 'gitstop-' + n); const r = run(G, ['--out', o, '--tag', 'v2099.07.08']);
+      check(label + ': STOP (exit 1) naming it, nothing written (no out folder, plugin/update.json unchanged)', r.status === 1 && /STOP/.test(r.stderr) && says.test(r.stderr) && !fs.existsSync(o) && fs.readFileSync(jf).equals(before), { status: r.status, stderr: r.stderr, out: fs.existsSync(o) });
+    };
+    const thumbs = path.join(G, 'plugin', 'divi5-builder', 'Thumbs.db');
+    gitStop('an untracked plugin/divi5-builder/Thumbs.db', () => fs.writeFileSync(thumbs, 'x'), /plugin\/divi5-builder\/Thumbs\.db/);
+    fs.unlinkSync(thumbs);
+    const deep = path.join(G, 'plugin', 'divi5-builder', 'inc', 'new', 'stray.php');
+    gitStop('an untracked file in an untracked folder', () => { fs.mkdirSync(path.dirname(deep), { recursive: true }); fs.writeFileSync(deep, '<?php'); }, /plugin\/divi5-builder\/inc\/new\/stray\.php/);
+    fs.rmSync(path.dirname(deep), { recursive: true, force: true });
+    gitStop('an ignored file (.gitignore *.log, debug.log)', () => { fs.writeFileSync(path.join(G, '.gitignore'), '*.log\n'); git('add', '.gitignore'); git('commit', '-q', '-m', 'ignore'); fs.writeFileSync(path.join(G, 'plugin', 'divi5-builder', 'debug.log'), 'x'); }, /plugin\/divi5-builder\/debug\.log/);
+    fs.unlinkSync(path.join(G, 'plugin', 'divi5-builder', 'debug.log'));
+    const rf = path.join(G, 'plugin', 'divi5-builder', 'readme.txt'); const rbefore = fs.readFileSync(rf);
+    gitStop('a tracked file changed and not committed', () => fs.appendFileSync(rf, '\nx\n'), /plugin\/divi5-builder\/readme\.txt/);
+    fs.writeFileSync(rf, rbefore);
+    const r = run(G, ['--out', path.join(tmp, 'git-clean-again')]);
+    check('premise: the git copy is clean again and builds', r.status === 0, r.stderr);
+    const NG = repoCopy('notgit'); fs.mkdirSync(path.join(NG, '.git'));
+    const no = path.join(tmp, 'notgit-out'); const rn = run(NG, ['--out', no]); const zf = path.join(no, 'divi5-builder.zip');
+    check('a .git folder that is not a repository (git exits 128): the walk build, same bytes', rn.status === 0 && fs.existsSync(zf) && fs.readFileSync(zf).equals(za), { status: rn.status, stderr: rn.stderr }); }
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }
