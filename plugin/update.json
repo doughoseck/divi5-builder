@@ -3,7 +3,7 @@
   "version": "2.4.3",
   "tag": "v2026.11.05",
   "download_url": "https://github.com/doughoseck/divi5-builder/releases/download/v2026.11.05/divi5-builder.zip",
-  "sha256": "41c0df90c91668dfe45a3398e873e15fa65028959a584285627766d1d9b297be",
+  "sha256": "52fbca3a07df0fdeb8ad576c0542d27c80a571d6cb184547bbc9641a1d1d1550",
   "requires": "6.0",
   "requires_php": "7.4",
   "tested": "7.1",

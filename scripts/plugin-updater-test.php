@@ -36,6 +36,9 @@ if ( '--mu' === $MODE ) {
 	define( 'WP_PLUGIN_DIR', $base . '/plugins' ); define( 'WPMU_PLUGIN_DIR', $base . '/mu-plugins' );
 	define( 'D5B_FILE', WP_PLUGIN_DIR . '/divi5-builder/divi5-builder.php' );
 }
+// Every PHP notice or warning is recorded: a refusal that only works by tripping over a missing key is not a check.
+$PHP_WARNINGS = array();
+set_error_handler( function ( $no, $str, $file = '', $line = 0 ) { if ( ! ( error_reporting() & $no ) ) { return true; } /* silenced with @ (the stand-ins' own clean-up) */ $GLOBALS['PHP_WARNINGS'][] = $str . ' (' . basename( $file ) . ':' . $line . ')'; return true; } );
 require __DIR__ . '/plugin-test-stubs.php';
 require $dir . '/inc/updater.php';
 
@@ -114,8 +117,8 @@ check( 'slug is divi5-builder', 'divi5-builder' === ( $r['slug'] ?? null ), $r )
 check( 'id is the Update URI', 'https://github.com/doughoseck/divi5-builder' === ( $r['id'] ?? null ), $r );
 check( 'requires and requires_php come from the json', '6.0' === ( $r['requires'] ?? null ) && '7.4' === ( $r['requires_php'] ?? null ), $r );
 check( 'tested comes from the json, url is the release page, icons empty', '7.1' === ( $r['tested'] ?? null ) && good()['changelog_url'] === ( $r['url'] ?? null ) && array() === ( $r['icons'] ?? null ), $r );
-site(); serve( good( array( 'changelog_url' => 'https://evil.example/x' ) ) ); $r2 = ask();
-check( 'a changelog_url outside our repository is not passed on as the details link', 'https://github.com/doughoseck/divi5-builder' === ( $r2['url'] ?? null ), $r2 );
+site(); serve( good( array( 'changelog_url' => 'https://github.com/doughoseck/divi5-builder/../../evil/repo' ) ) ); $r2 = ask();
+check( 'refused/ignored: .. in changelog_url (the offer\'s url is built from the tag, the field is never used)', 'https://github.com/doughoseck/divi5-builder/releases/tag/v2026.11.05' === ( $r2['url'] ?? null ), $r2 );
 site(); serve( good() );
 $u = core_handles( OURS );
 check( "WordPress's contract: core puts the answer in response with new_version and package", isset( $u->response[ OURS ] ) && '2.5.0' === $u->response[ OURS ]->new_version && ASSET === $u->response[ OURS ]->package && OURS === $u->response[ OURS ]->plugin, $u );
@@ -158,6 +161,8 @@ $bad = array(
 	'version not a string'             => good( array( 'version' => 250 ) ),
 	'requires not a version'           => good( array( 'requires' => 'six' ) ),
 	'requires_php not a version'       => good( array( 'requires_php' => '7.4; x' ) ),
+	'tested as markup <img src=x onerror=alert(1)>' => good( array( 'tested' => '<img src=x onerror=alert(1)>' ) ),
+	'tested missing'                   => array_diff_key( good(), array( 'tested' => 1 ) ),
 	'not an array'                     => 'divi5-builder',
 );
 foreach ( $bad as $why => $json ) {
@@ -241,6 +246,9 @@ site(); serve( '<html>rate limited</html>' );
 $f = d5b_updater_fetch();
 check( 'invalid JSON body: ok false with an error', false === $f['ok'] && '' !== $f['error'] && null === $f['json'], $f );
 check( 'and no offer', false === ask() );
+
+echo "warnings\n";
+check( 'no PHP notice or warning in the whole run (every refusal is a deliberate check)', array() === $PHP_WARNINGS, array_slice( array_unique( $PHP_WARNINGS ), 0, 5 ) );
 
 echo "\n" . ( $failed ? "$failed of $n FAILED" : "all $n passed" ) . "\n";
 exit( $failed ? 1 : 0 );

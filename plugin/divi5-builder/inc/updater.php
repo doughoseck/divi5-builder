@@ -35,7 +35,7 @@ if ( ! function_exists( 'd5b_updater_valid' ) ) {
 	/** Is this decoded update.json exactly the shape the build writes, pointing at our own release asset? */
 	function d5b_updater_valid( $json ): bool {
 		if ( ! is_array( $json ) ) { return false; }
-		foreach ( array( 'slug', 'version', 'tag', 'download_url', 'sha256', 'requires', 'requires_php' ) as $k ) {
+		foreach ( array( 'slug', 'version', 'tag', 'download_url', 'sha256', 'requires', 'requires_php', 'tested' ) as $k ) {
 			if ( ! isset( $json[ $k ] ) || ! is_string( $json[ $k ] ) ) { return false; }
 		}
 		if ( 'divi5-builder' !== $json['slug'] ) { return false; }
@@ -45,6 +45,8 @@ if ( ! function_exists( 'd5b_updater_valid' ) ) {
 		if ( 1 !== preg_match( '/^[0-9a-f]{64}\z/', $json['sha256'] ) ) { return false; }
 		if ( 1 !== preg_match( '/^\d+(\.\d+)*\z/', $json['requires'] ) ) { return false; }
 		if ( 1 !== preg_match( '/^\d+(\.\d+)*\z/', $json['requires_php'] ) ) { return false; }
+		// tested reaches wp-admin through plugins_api, where core prints it unescaped: a version string or nothing.
+		if ( 1 !== preg_match( '/^\d+(\.\d+)*\z/', $json['tested'] ) ) { return false; }
 		$u = wp_parse_url( $json['download_url'] );
 		if ( ! is_array( $u ) ) { return false; }
 		if ( 'https' !== ( $u['scheme'] ?? '' ) ) { return false; }
@@ -123,16 +125,16 @@ if ( ! function_exists( 'd5b_updater_filter' ) ) {
 		// A failed request still answers from the last good json it kept (validated again here, as everything read back is).
 		if ( ! d5b_updater_valid( $json ) || ! version_compare( $json['version'], D5B_VERSION, '>' ) ) { return false; }
 		$repo = 'https://github.com/doughoseck/divi5-builder';
-		$url  = ( isset( $json['changelog_url'] ) && is_string( $json['changelog_url'] ) && 0 === strpos( $json['changelog_url'], $repo . '/' ) ) ? $json['changelog_url'] : $repo;
 		return array(
 			'id'           => $repo,
 			'slug'         => 'divi5-builder',
 			'version'      => $json['version'],
-			'url'          => $url,
+			// Built from the validated tag; the json's changelog_url is never used (a prefix check would let '..' through).
+			'url'          => $repo . '/releases/tag/' . $json['tag'],
 			'package'      => $json['download_url'],
 			'requires'     => $json['requires'],
 			'requires_php' => $json['requires_php'],
-			'tested'       => ( isset( $json['tested'] ) && is_string( $json['tested'] ) ) ? $json['tested'] : '',
+			'tested'       => $json['tested'],
 			'icons'        => array(),
 		);
 	}
