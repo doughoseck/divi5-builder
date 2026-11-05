@@ -15,8 +15,15 @@
  * writer, the risk notes are printed as d5b_risk_note() gives them, and nothing stored is printed unescaped.
  *
  * Constants are permanent in a PHP process: WPSU_VERSION is defined near the end, for the red-notice scenario.
+ *
+ * 2.5.0 (#61, Task 4): the "Updates:" line at the top of the Settings tab (d5b_updater_status_line, read from the kept
+ * d5b_update_json, never a request) and the Check now handler (d5b_updater_check_now). The must-use copy needs another
+ * D5B_FILE (a constant), so the suite runs itself again with --mu in a child process and counts the child's checks.
+ * Loaded with T_PLUGIN_STANDINS: the site transients, wp_update_plugins (T_update_checks) and wp_clean_update_cache (T_traps).
  */
+$MODE = $argv[1] ?? 'main';
 define( 'D5B_VERSION', '2.0.0' );
+define( 'T_PLUGIN_STANDINS', true );
 require __DIR__ . '/plugin-test-stubs.php';
 $GLOBALS['T_exits'] = 0;
 function d5b_settings_exit() { $GLOBALS['T_exits']++; }
@@ -27,13 +34,18 @@ require $dir . '/inc/gate.php';
 require $dir . '/inc/takeover.php';
 require $dir . '/inc/abilities/categories.php'; // as the loader does: the page then shows the AI abilities categories it ships with
 require $dir . '/inc/settings.php';
+require $dir . '/inc/updater.php';
 foreach ( array( 'page-building', 'media-audit', 'media-clean-up', 'updates' ) as $f ) { require $dir . '/parts/' . $f . '.php'; }
 
 $mu = sys_get_temp_dir() . '/d5b-set-mu-' . getmypid();
 if ( ! is_dir( $mu ) ) { mkdir( $mu ); }
 define( 'WPMU_PLUGIN_DIR', $mu );
 define( 'WP_PLUGIN_DIR', sys_get_temp_dir() . '/d5b-set-plugins-' . getmypid() );
-define( 'D5B_FILE', WP_PLUGIN_DIR . '/divi5-builder/divi5-builder.php' ); // installed as a normal plugin
+if ( '--mu' === $MODE ) {
+	define( 'D5B_FILE', WPMU_PLUGIN_DIR . '/divi5-builder/divi5-builder.php' ); // a must-use copy
+} else {
+	define( 'D5B_FILE', WP_PLUGIN_DIR . '/divi5-builder/divi5-builder.php' ); // installed as a normal plugin
+}
 
 $failed = 0; $n = 0;
 function check( $name, $ok, $detail = '' ) { global $failed, $n; $n++; echo ( $ok ? '  PASS  ' : '  FAIL  ' ) . $name . ( ! $ok && '' !== $detail ? "\n          " . ( is_string( $detail ) ? $detail : json_encode( $detail ) ) : '' ) . "\n"; if ( ! $ok ) { $failed++; } }
@@ -45,6 +57,26 @@ function run_save() { if ( ! array_key_exists( 'd5b_switch_rev', $_POST ) ) { $_
 function html( $fn ) { ob_start(); $fn(); return ob_get_clean(); }
 function writes_of( $name ) { return count( array_filter( $GLOBALS['T_writes'], function ( $w ) use ( $name ) { return $w[1] === $name; } ) ); }
 function stored() { return is_multisite() ? get_site_option( 'd5b_switches', null ) : get_option( 'd5b_switches', null ); }
+// The update.json the build writes (a fake sha256: a hex digest, not a key), and a kept answer in d5b_update_json.
+function upd_json( string $version = '2.5.0' ) {
+	return array( 'slug' => 'divi5-builder', 'version' => $version, 'tag' => 'v2026.11.05', 'download_url' => 'https://github.com/doughoseck/divi5-builder/releases/download/v2026.11.05/divi5-builder.zip',
+		'sha256' => str_repeat( '0123456789abcdef', 4 ), 'requires' => '6.0', 'requires_php' => '7.4', 'tested' => '6.9' );
+}
+function upd_keep( array $entry ) { $GLOBALS['T_site_transients']['d5b_update_json'] = $entry; }
+const CHECK_HREF = 'href="https://x.example/wp-admin/admin-post.php?action=d5b_update_check&amp;_wpnonce=nonce-for-d5b_update_check"';
+function run_check() { try { d5b_updater_check_now(); return null; } catch ( Throwable $e ) { return $e; } }
+
+// ---------------------------------------------------------------- the must-use run (child process)
+if ( '--mu' === $MODE ) {
+	fresh(); t_set_caps( array( 'manage_options' ) );
+	upd_keep( array( 'json' => upd_json(), 'checked' => time() - 60, 'ok' => true, 'error' => '', 'good_at' => time() - 60 ) );
+	$out = html( 'd5b_settings_render' );
+	check( 'mu: the page says it is a must-use copy, updated by replacing the folder', false !== strpos( $out, '<p>Updates: this is a must-use copy; WordPress does not update must-use plugins. Update it by replacing the folder.</p>' ), $out );
+	check( 'mu: no "from GitHub Releases", no newest version, no Check now link', false === strpos( $out, 'from GitHub Releases' ) && false === strpos( $out, 'newest' ) && false === strpos( $out, 'Check now' ) && false === strpos( $out, 'd5b_update_check' ), $out );
+	check( 'mu: nothing fetched', array() === $GLOBALS['T_http_calls'] );
+	echo "\n" . ( $failed ? "$failed FAILED of $n" : "all $n passed" ) . "\n";
+	exit( $failed ? 1 : 0 );
+}
 
 // ---- save
 echo "save refuses without a valid nonce\n";
@@ -302,6 +334,89 @@ fresh(); t_set_caps( array( 'activate_plugins' ) );
 update_option( 'd5b_legacy_seen', array( 'updates' ) ); // a stale record from when it was serving
 $out = html( 'd5b_admin_notice' );
 check( 'the refresh clears the stale record; plain "installed but inactive", no red line', false !== strpos( $out, '<div class="notice notice-warning"><p>An old copy of Updates is installed but inactive. Delete it to finish the move.</p></div>' ) && false === strpos( $out, 'notice-error' ) && array() === get_option( 'd5b_legacy_seen' ), $out );
+
+// ---- 2.5.0: where updates come from, and Check now
+echo "the Updates line: not checked yet\n";
+fresh(); t_set_caps( array( 'manage_options' ) );
+$out = html( 'd5b_settings_render' );
+check( 'no kept answer: "Installed 2.0.0. Not checked yet." with a Check now link', false !== strpos( $out, '<p>Updates: from GitHub Releases. Installed 2.0.0. Not checked yet. <a ' . CHECK_HREF . '>Check now</a></p>' ), $out );
+check( 'the line sits above the switches form', false !== strpos( $out, 'Updates: from GitHub Releases' ) && strpos( $out, 'Updates: from GitHub Releases' ) < strpos( $out, '<form' ), $out );
+check( 'rendering the page fetches nothing (the line reads the kept answer only)', array() === $GLOBALS['T_http_calls'] && false === get_site_transient( 'd5b_update_json' ), $GLOBALS['T_http_calls'] );
+check( 'the Check now link carries the nonce for d5b_update_check, once', 1 === substr_count( $out, CHECK_HREF ) && 1 === substr_count( $out, 'Check now' ), $out );
+$_GET = array( 'tab' => 'audit' );
+check( 'not on the Audit log tab', false === strpos( html( 'd5b_settings_render' ), 'Updates: ' ) );
+$_GET = array();
+
+echo "the Updates line: a good answer kept\n";
+fresh(); t_set_caps( array( 'manage_options' ) );
+upd_keep( array( 'json' => upd_json(), 'checked' => time() - 3 * 3600, 'ok' => true, 'error' => '', 'good_at' => time() - 3 * 3600 ) );
+$out = html( 'd5b_settings_render' );
+check( 'installed, newest and "checked 3 hours ago"', false !== strpos( $out, '<p>Updates: from GitHub Releases. Installed 2.0.0, newest 2.5.0 (checked 3 hours ago). <a ' . CHECK_HREF . '>Check now</a></p>' ), $out );
+check( 'still no request', array() === $GLOBALS['T_http_calls'] );
+$old = upd_json(); $old['version'] = '2.<b>5'; // a kept json that no longer validates is never printed
+upd_keep( array( 'json' => $old, 'checked' => time() - 60, 'ok' => true, 'error' => '', 'good_at' => time() - 60 ) );
+$out = html( 'd5b_settings_render' );
+check( 'a kept json that does not validate: no version shown from it, said as no good answer', false === strpos( $out, '2.<b>5' ) && false === strpos( $out, '2.&lt;b&gt;5' ) && false !== strpos( $out, 'no good answer yet' ), $out );
+
+echo "the Updates line: the last request failed\n";
+fresh(); t_set_caps( array( 'manage_options' ) );
+upd_keep( array( 'json' => upd_json(), 'checked' => time() - 120, 'ok' => false, 'error' => 'could not read the update file (HTTP 404)', 'good_at' => time() - 2 * 86400 ) );
+$out = html( 'd5b_settings_render' );
+check( 'the error and the age of the last good answer', false !== strpos( $out, '<p>Updates: from GitHub Releases. Installed 2.0.0. Could not read the update file (HTTP 404); last good answer 2 days ago. <a ' . CHECK_HREF . '>Check now</a></p>' ), $out );
+upd_keep( array( 'json' => null, 'checked' => time() - 120, 'ok' => false, 'error' => 'the update file is not valid JSON' ) );
+$out = html( 'd5b_settings_render' );
+check( 'no good answer ever: says so, with the error', false !== strpos( $out, 'Installed 2.0.0. Could not read the update file (the update file is not valid JSON); no good answer yet.' ), $out );
+upd_keep( array( 'json' => null, 'checked' => time() - 120, 'ok' => false, 'error' => 'could not read the update file: <script>x</script>' ) );
+$out = html( 'd5b_settings_render' );
+check( 'the error is printed escaped', false !== strpos( $out, 'Could not read the update file (&lt;script&gt;x&lt;/script&gt;)' ) && false === strpos( $out, '<script>' ), $out );
+
+echo "the Updates line on a network\n";
+fresh(); t_set_multisite( true ); t_set_caps( array( 'manage_network_options' ) ); $GLOBALS['T_network_admin'] = true;
+upd_keep( array( 'json' => upd_json(), 'checked' => time() - 3 * 3600, 'ok' => true, 'error' => '', 'good_at' => time() - 3 * 3600 ) );
+check( 'the Network Admin page shows it too', false !== strpos( html( 'd5b_settings_render' ), 'Installed 2.0.0, newest 2.5.0 (checked 3 hours ago).' ) );
+
+echo "the Updates line: a must-use copy (child run)\n";
+$p = proc_open( array( PHP_BINARY, '-d', 'max_execution_time=60', __FILE__, '--mu' ), array( 1 => array( 'pipe', 'w' ), 2 => array( 'pipe', 'w' ) ), $pipes );
+$cout = stream_get_contents( $pipes[1] ) . stream_get_contents( $pipes[2] ); fclose( $pipes[1] ); fclose( $pipes[2] ); $code = proc_close( $p );
+preg_match_all( '/^  (PASS|FAIL)  (.+)$/m', $cout, $mm, PREG_SET_ORDER );
+foreach ( $mm as $x ) { check( '--mu: ' . $x[2], 'PASS' === $x[1] ); }
+check( '--mu: the child ran its checks and exited 0', 0 === $code && count( $mm ) >= 3, $cout );
+
+echo "after Check now the page says so\n";
+fresh(); t_set_caps( array( 'manage_options' ) );
+$_GET = array( 'd5b_checked' => '1' );
+check( '?d5b_checked=1: "Update check done."', 1 === substr_count( html( 'd5b_settings_render' ), '<div class="notice notice-success"><p>Update check done.</p></div>' ) );
+$_GET = array();
+check( 'without it: no such notice', false === strpos( html( 'd5b_settings_render' ), 'Update check done.' ) );
+
+echo "Check now: refused without a nonce or the capability\n";
+$kept = array( 'json' => upd_json(), 'checked' => time() - 60, 'ok' => true, 'error' => '', 'good_at' => time() - 60 );
+fresh(); t_set_caps( array( 'manage_options', 'update_plugins' ) ); $GLOBALS['T_referer_ok'] = false; upd_keep( $kept );
+$e = run_check();
+check( 'the nonce was checked, for action d5b_update_check', array( 'd5b_update_check' ) === $GLOBALS['T_referer_calls'], $GLOBALS['T_referer_calls'] );
+check( 'bad nonce: the kept answer stays, no check ran, no redirect', null === $e && $kept === get_site_transient( 'd5b_update_json' ) && array() === $GLOBALS['T_update_checks'] && array() === $GLOBALS['T_traps'] && array() === $GLOBALS['T_redirects'], array( $GLOBALS['T_update_checks'], $GLOBALS['T_traps'], $GLOBALS['T_redirects'] ) );
+foreach ( array( 'an editor' => array( 'edit_posts' ), 'manage_options without update_plugins' => array( 'manage_options' ), 'update_plugins without manage_options' => array( 'update_plugins' ) ) as $who => $caps ) {
+	fresh(); t_set_caps( $caps ); upd_keep( $kept );
+	$e = run_check();
+	check( "$who: refused through wp_die, nothing changed, no redirect", null === $e && 1 === count( $GLOBALS['T_dies'] ) && $kept === get_site_transient( 'd5b_update_json' ) && array() === $GLOBALS['T_update_checks'] && array() === $GLOBALS['T_traps'] && array() === $GLOBALS['T_redirects'], array( $GLOBALS['T_dies'], $GLOBALS['T_update_checks'], $GLOBALS['T_redirects'] ) );
+}
+fresh(); t_set_multisite( true ); t_set_caps( array( 'manage_options', 'update_plugins' ) ); upd_keep( $kept );
+run_check();
+check( 'multisite: a site administrator (no manage_network_options) is refused', 1 === count( $GLOBALS['T_dies'] ) && array() === $GLOBALS['T_update_checks'] && $kept === get_site_transient( 'd5b_update_json' ) );
+
+echo "Check now: with the nonce and the capability\n";
+fresh(); t_set_caps( array( 'manage_options', 'update_plugins' ) ); upd_keep( $kept );
+$GLOBALS['T_site_transients']['update_plugins'] = (object) array( 'last_checked' => time() );
+$e = run_check();
+check( 'no exception, no wp_die', null === $e && array() === $GLOBALS['T_dies'], array( $e ? $e->getMessage() : '', $GLOBALS['T_dies'] ) );
+check( 'd5b_update_json is deleted (the next filter run asks GitHub)', false === get_site_transient( 'd5b_update_json' ) && in_array( 'd5b_update_json', $GLOBALS['T_site_transient_deletes'], true ), $GLOBALS['T_site_transient_deletes'] );
+check( 'wp_clean_update_cache ran once, so core\'s update_plugins is gone and wp_update_plugins does not stop at its 12 hour timeout', array( 'wp_clean_update_cache' ) === $GLOBALS['T_traps'] && false === get_site_transient( 'update_plugins' ), $GLOBALS['T_traps'] );
+check( 'wp_update_plugins ran once (and nothing else of the update checks)', array( 'wp_update_plugins' ) === $GLOBALS['T_update_checks'], $GLOBALS['T_update_checks'] );
+check( 'redirected back to the Settings page with d5b_checked=1, and exited', array( 'https://x.example/wp-admin/options-general.php?page=divi5-builder&d5b_checked=1' ) === $GLOBALS['T_redirects'] && 1 === $GLOBALS['T_exits'], array( $GLOBALS['T_redirects'], $GLOBALS['T_exits'] ) );
+check( 'the handler itself makes no request', array() === $GLOBALS['T_http_calls'] );
+fresh(); t_set_multisite( true ); t_set_caps( array( 'manage_network_options', 'update_plugins' ) ); upd_keep( $kept );
+run_check();
+check( 'network admin: the same, redirected to the Network Admin page', array( 'https://x.example/wp-admin/network/settings.php?page=divi5-builder&d5b_checked=1' ) === $GLOBALS['T_redirects'] && array( 'wp_update_plugins' ) === $GLOBALS['T_update_checks'] && false === get_site_transient( 'd5b_update_json' ), $GLOBALS['T_redirects'] );
 
 echo "\n" . ( $failed ? "$failed FAILED of $n" : "all $n passed" ) . "\n";
 foreach ( glob( $mu . '/*' ) ?: array() as $f ) { @unlink( $f ); }

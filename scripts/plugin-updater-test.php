@@ -44,6 +44,9 @@ if ( '--mu' === $MODE ) {
 $PHP_WARNINGS = array();
 set_error_handler( function ( $no, $str, $file = '', $line = 0 ) { if ( ! ( error_reporting() & $no ) ) { return true; } /* silenced with @ (the stand-ins' own clean-up) */ $GLOBALS['PHP_WARNINGS'][] = $str . ' (' . basename( $file ) . ':' . $line . ')'; return true; } );
 require __DIR__ . '/plugin-test-stubs.php';
+// d5b_updater_sha256 as inc/updater.php has it (that copy is then skipped: function_exists), except that T_hash_fail makes
+// hash_file fail as it does on a file the web server cannot read; read access cannot be taken away portably in a test.
+function d5b_updater_sha256( string $file ): string { $h = empty( $GLOBALS['T_hash_fail'] ) ? @hash_file( 'sha256', $file ) : false; return is_string( $h ) ? $h : ''; }
 require $dir . '/inc/updater.php';
 
 $failed = 0; $n = 0;
@@ -220,6 +223,17 @@ $GLOBALS['T_http'][ JSON_URL ] = new WP_Error( 'http_request_failed', 'cURL erro
 $f = d5b_updater_fetch();
 check( 'WP_Error: ok false with its message, last good json kept', false === $f['ok'] && false !== strpos( $f['error'], 'Operation timed out' ) && good() === $f['json'], $f );
 
+// good_at (Task 4, for the Settings line): the time of the request that got the kept json.
+site(); serve( good() ); d5b_updater_fetch();
+$k = get_site_transient( 'd5b_update_json' );
+check( 'good_at: a good request stores it, equal to checked', is_int( $k['good_at'] ?? null ) && $k['good_at'] === $k['checked'], $k );
+$GLOBALS['T_site_transients']['d5b_update_json']['good_at'] -= 2 * DAY_IN_SECONDS; $was = $GLOBALS['T_site_transients']['d5b_update_json']['good_at'];
+serve( 'down', 503 ); d5b_updater_fetch( true );
+$k = get_site_transient( 'd5b_update_json' );
+check( 'good_at: a failed request keeps the earlier time with the kept json', false === $k['ok'] && $was === ( $k['good_at'] ?? null ) && good() === $k['json'], $k );
+site(); serve( 'down', 503 ); d5b_updater_fetch();
+check( 'good_at: no good answer ever, no good_at', ! array_key_exists( 'good_at', get_site_transient( 'd5b_update_json' ) ) );
+
 site(); serve( good() ); ask(); age( 12 * HOUR_IN_SECONDS + 1 );
 serve( good( array( 'version' => '2.6.0', 'sha256' => 'nope' ) ) );
 $f = d5b_updater_fetch();
@@ -288,6 +302,15 @@ $r = pre( ASSET );
 check( '(b) mismatch after a Content-Disposition rename: d5b_checksum and the renamed file is gone too', $r instanceof WP_Error && 'd5b_checksum' === $r->get_error_code() && temps_gone(), array( $r, $GLOBALS['T_tempfiles'] ) );
 cached(); asset( substr( $ZIP, 0, -1 ) );
 check( '(b) a truncated asset: d5b_checksum', 'd5b_checksum' === ( ( $r = pre( ASSET ) ) instanceof WP_Error ? $r->get_error_code() : null ) && temps_gone(), $r );
+cached(); asset( $ZIP ); $GLOBALS['T_hash_fail'] = true;
+$r = pre( ASSET ); unset( $GLOBALS['T_hash_fail'] );
+$msg = $r instanceof WP_Error ? $r->get_error_message() : '';
+check( '(b) a downloaded file that cannot be read: d5b_checksum, "got (unreadable)", not an empty hash', $r instanceof WP_Error && 'd5b_checksum' === $r->get_error_code() && false !== strpos( $msg, ', got (unreadable)), so it was not installed.' ) && false === strpos( $msg, 'got  ...' ), $msg );
+check( '(b) ... and that file is deleted too', temps_gone(), $GLOBALS['T_tempfiles'] );
+$earlier = new WP_Error( 'http_request_not_executed', 'An earlier filter refused the download.' );
+cached(); asset( $ZIP );
+check( '(b) $reply already a WP_Error (an earlier filter refused the download): returned unchanged', $earlier === pre( ASSET, $earlier ) );
+check( '(b) ... with no download and no request', array() === $GLOBALS['T_download_calls'] && array() === $GLOBALS['T_http_calls'], array( $GLOBALS['T_download_calls'], urls() ) );
 
 cached(); asset( $ZIP );
 $other = 'https://downloads.wordpress.org/plugin/akismet.5.3.zip';

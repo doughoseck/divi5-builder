@@ -4,6 +4,8 @@
  *   update_plugins_github.com (filter, 10, 4)               -> d5b_updater_filter()
  *   upgrader_pre_download (filter, 10, 4)                   -> d5b_updater_pre_download() (sha256 before unpacking)
  *   plugins_api (filter, 10, 3)                             -> d5b_updater_plugins_api()  (the View details modal)
+ *   admin_post_d5b_update_check                             -> d5b_updater_check_now()    (the Settings page's Check now)
+ * The Settings page prints d5b_updater_status_line() (settings.php).
  *
  * WordPress 5.8+ asks the update_plugins_{host} filter for every plugin whose Update URI header names that host; ours names
  * https://github.com/doughoseck/divi5-builder. The answer comes from plugin/update.json on the repository's main branch,
@@ -11,7 +13,8 @@
  * only ever be our own repository's release asset for the json's own tag, on github.com, over https.
  *
  * One request per site per 12 hours (1 hour after a failure), kept in the site transient d5b_update_json:
- *   array( 'json' => the last VALID json or null, 'checked' => unix time of the last request, 'ok' => bool, 'error' => string )
+ *   array( 'json' => the last VALID json or null, 'checked' => unix time of the last request, 'ok' => bool, 'error' => string,
+ *          'good_at' => unix time of the request that got that json (absent while there is none) )
  * The freshness is counted from 'checked'; the transient itself is kept longer so that, when the next request fails (a GitHub
  * hiccup), the last good answer is still there to offer.
  *
@@ -61,6 +64,14 @@ if ( ! function_exists( 'd5b_updater_valid' ) ) {
 	}
 }
 
+if ( ! function_exists( 'd5b_updater_kept' ) ) {
+	/** The kept answer as stored in d5b_update_json, or null when there is none (or it is not the stored shape). Never a request. */
+	function d5b_updater_kept(): ?array {
+		$c = get_site_transient( 'd5b_update_json' );
+		return ( is_array( $c ) && isset( $c['checked'] ) && is_int( $c['checked'] ) ) ? $c : null;
+	}
+}
+
 if ( ! function_exists( 'd5b_updater_fetch' ) ) {
 	/**
 	 * The update.json, from the cache while it is fresh (12 hours after a good request, 1 hour after a failed one) or else
@@ -68,8 +79,7 @@ if ( ! function_exists( 'd5b_updater_fetch' ) ) {
 	 * @return array array( 'ok' => bool, 'json' => array|null, 'error' => string, 'checked' => int, 'from_cache' => bool )
 	 */
 	function d5b_updater_fetch( bool $force = false ): array {
-		$cached = get_site_transient( 'd5b_update_json' );
-		$cached = ( is_array( $cached ) && isset( $cached['checked'] ) && is_int( $cached['checked'] ) ) ? $cached : null;
+		$cached = d5b_updater_kept();
 		if ( ! $force && null !== $cached ) {
 			$age = time() - $cached['checked'];
 			$ttl = ! empty( $cached['ok'] ) ? 12 * HOUR_IN_SECONDS : HOUR_IN_SECONDS;
@@ -109,6 +119,12 @@ if ( ! function_exists( 'd5b_updater_fetch' ) ) {
 		}
 		$ok    = null !== $json;
 		$entry = array( 'json' => $ok ? $json : $last_good, 'checked' => time(), 'ok' => $ok, 'error' => $error );
+		// When the json was got, for the Settings line ("last good answer 2 days ago"); a failure keeps the earlier time.
+		if ( $ok ) {
+			$entry['good_at'] = $entry['checked'];
+		} elseif ( null !== $last_good && isset( $cached['good_at'] ) && is_int( $cached['good_at'] ) ) {
+			$entry['good_at'] = $cached['good_at'];
+		}
 		// Kept well past the 12 hours so a failed request still finds the last good answer; freshness comes from 'checked'.
 		set_site_transient( 'd5b_update_json', $entry, 30 * DAY_IN_SECONDS );
 		return array( 'ok' => $ok, 'json' => $entry['json'], 'error' => $error, 'checked' => $entry['checked'], 'from_cache' => false );
@@ -164,6 +180,8 @@ if ( ! function_exists( 'd5b_updater_pre_download' ) ) {
 	 * with the json's; on a mismatch the file is deleted and the update refused. Any other package passes through untouched.
 	 */
 	function d5b_updater_pre_download( $reply, $package, $upgrader = null, $hook_extra = array() ) {
+		// An earlier filter already refused the download: its refusal stands, nothing is downloaded.
+		if ( is_wp_error( $reply ) ) { return $reply; }
 		if ( ! is_string( $package ) || '' === $package ) { return $reply; }
 		$ours = d5b_updater_is_our_asset( $package );
 		// A package that is not ours costs nothing: no request, not even for the json.
@@ -181,10 +199,83 @@ if ( ! function_exists( 'd5b_updater_pre_download' ) ) {
 		if ( ! function_exists( 'download_url' ) ) { require_once ABSPATH . 'wp-admin/includes/file.php'; }
 		$file = download_url( $package, 300 );
 		if ( is_wp_error( $file ) ) { return $file; }
-		$hash = (string) @hash_file( 'sha256', $file );
-		if ( hash_equals( $json['sha256'], $hash ) ) { return $file; }
+		$hash = d5b_updater_sha256( $file );
+		if ( '' !== $hash && hash_equals( $json['sha256'], $hash ) ) { return $file; }
 		@unlink( $file );
-		return new WP_Error( 'd5b_checksum', 'The downloaded divi5-builder.zip does not match the checksum published with the release (expected ' . substr( $json['sha256'], 0, 12 ) . ' ..., got ' . substr( $hash, 0, 12 ) . ' ...), so it was not installed.' );
+		return new WP_Error( 'd5b_checksum', 'The downloaded divi5-builder.zip does not match the checksum published with the release (expected ' . substr( $json['sha256'], 0, 12 ) . ' ..., got ' . ( '' === $hash ? '(unreadable)' : substr( $hash, 0, 12 ) . ' ...' ) . '), so it was not installed.' );
+	}
+}
+
+if ( ! function_exists( 'd5b_updater_sha256' ) ) {
+	/** The sha256 of a file as 64 hex characters, or '' when the file cannot be read. */
+	function d5b_updater_sha256( string $file ): string {
+		$h = @hash_file( 'sha256', $file );
+		return is_string( $h ) ? $h : '';
+	}
+}
+
+if ( ! function_exists( 'd5b_updater_status_line' ) ) {
+	/**
+	 * The "Updates:" paragraph at the top of the Settings page, as escaped HTML: where updates come from, the installed and
+	 * the newest version and when it was asked, from the kept answer only (d5b_updater_kept: this never makes a request).
+	 * A Check now link (d5b_updater_check_now, nonce d5b_update_check) follows, except for a must-use copy.
+	 */
+	function d5b_updater_status_line(): string {
+		if ( d5b_updater_is_mu() ) {
+			return '<p>' . esc_html( 'Updates: this is a must-use copy; WordPress does not update must-use plugins. Update it by replacing the folder.' ) . '</p>';
+		}
+		$text = 'Updates: from GitHub Releases. Installed ' . D5B_VERSION;
+		$c    = d5b_updater_kept();
+		if ( null === $c ) {
+			$text .= '. Not checked yet.';
+		} else {
+			// Every value read back is validated again: a kept json that no longer validates is no answer at all.
+			$json = d5b_updater_valid( $c['json'] ?? null ) ? $c['json'] : null;
+			if ( ! empty( $c['ok'] ) && null !== $json ) {
+				$text .= ', newest ' . $json['version'] . ' (checked ' . human_time_diff( $c['checked'], time() ) . ' ago).';
+			} else {
+				// d5b_updater_fetch's errors start with "could not read the update file" when the request failed: said once.
+				$error = is_string( $c['error'] ?? null ) ? $c['error'] : '';
+				$lead  = 'could not read the update file';
+				if ( 0 === strpos( $error, $lead ) ) {
+					$rest  = substr( $error, strlen( $lead ) );
+					$error = 1 === preg_match( '/^ \((.*)\)\z/s', $rest, $m ) ? $m[1] : ltrim( $rest, ' :' );
+				}
+				if ( '' === $error ) { $error = 'no usable answer was kept'; }
+				$text .= '. Could not read the update file (' . $error . '); ';
+				if ( null === $json ) {
+					$text .= 'no good answer yet.';
+				} elseif ( isset( $c['good_at'] ) && is_int( $c['good_at'] ) ) {
+					$text .= 'last good answer ' . human_time_diff( $c['good_at'], time() ) . ' ago.';
+				} else {
+					$text .= 'the last good answer is kept.';
+				}
+			}
+		}
+		$url = wp_nonce_url( admin_url( 'admin-post.php?action=d5b_update_check' ), 'd5b_update_check' );
+		return '<p>' . esc_html( $text ) . ' <a href="' . esc_url( $url ) . '">' . esc_html( 'Check now' ) . '</a></p>';
+	}
+}
+
+if ( ! function_exists( 'd5b_updater_check_now' ) ) {
+	/**
+	 * admin_post_d5b_update_check: the Settings page's Check now. Nonce and capability first (the Settings page's own, and
+	 * update_plugins), as d5b_settings_save checks them; then the kept answer is dropped, core's update cache cleared (so
+	 * wp_update_plugins does not stop at its own 12 hour timeout) and the plugin update check run, which asks our filter and so
+	 * GitHub. Back to the Settings page with d5b_checked=1.
+	 */
+	function d5b_updater_check_now(): void {
+		if ( ! check_admin_referer( 'd5b_update_check' ) ) { return; }
+		if ( ! current_user_can( d5b_settings_cap() ) || ! current_user_can( 'update_plugins' ) ) {
+			wp_die( 'You are not allowed to check for updates.', '', array( 'response' => 403 ) );
+			return;
+		}
+		if ( ! function_exists( 'wp_update_plugins' ) ) { require_once ABSPATH . WPINC . '/update.php'; }
+		delete_site_transient( 'd5b_update_json' );
+		if ( function_exists( 'wp_clean_update_cache' ) ) { wp_clean_update_cache(); }
+		wp_update_plugins();
+		wp_safe_redirect( d5b_settings_base_url() . '?page=divi5-builder&d5b_checked=1' );
+		d5b_settings_exit();
 	}
 }
 

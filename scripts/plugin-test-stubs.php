@@ -200,7 +200,30 @@ function add_options_page( $title, $menu, $cap, $slug, $cb = '' ) { $GLOBALS['T_
 function add_submenu_page( $parent, $title, $menu, $cap, $slug, $cb = '' ) { $GLOBALS['T_menus'][] = array( 'add_submenu_page', $parent, $title, $menu, $cap, $slug, $cb ); return $parent . '_page_' . $slug; }
 function esc_html( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
 function esc_attr( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
-function esc_url( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8' ); }
+// An entity already in the URL (the &amp; wp_nonce_url gives) is kept, not encoded again: core's esc_url normalises entities.
+function esc_url( $s ) { return htmlspecialchars( (string) $s, ENT_QUOTES, 'UTF-8', false ); }
+// As core 6.4.1 functions.php: &amp; back to &, the nonce added as a query argument, the whole URL through esc_html.
+// The nonce is 'nonce-for-' . $action, as wp_nonce_field above gives it.
+function wp_nonce_url( $actionurl, $action = -1, $name = '_wpnonce' ) {
+	$actionurl = str_replace( '&amp;', '&', (string) $actionurl );
+	return esc_html( $actionurl . ( false === strpos( $actionurl, '?' ) ? '?' : '&' ) . $name . '=nonce-for-' . $action );
+}
+if ( ! defined( 'MINUTE_IN_SECONDS' ) ) { define( 'MINUTE_IN_SECONDS', 60 ); }
+if ( ! defined( 'WEEK_IN_SECONDS' ) ) { define( 'WEEK_IN_SECONDS', 7 * 86400 ); }
+if ( ! defined( 'MONTH_IN_SECONDS' ) ) { define( 'MONTH_IN_SECONDS', 30 * 86400 ); }
+if ( ! defined( 'YEAR_IN_SECONDS' ) ) { define( 'YEAR_IN_SECONDS', 365 * 86400 ); }
+// As core 6.4.1 formatting.php (English, no human_time_diff filter): seconds, mins, hours, days, weeks, months, years, rounded,
+// at least 1.
+function human_time_diff( $from, $to = 0 ) {
+	if ( empty( $to ) ) { $to = time(); }
+	$diff  = (int) abs( $to - $from );
+	$units = array( array( YEAR_IN_SECONDS, 'year', 'years' ), array( MONTH_IN_SECONDS, 'month', 'months' ), array( WEEK_IN_SECONDS, 'week', 'weeks' ), array( 86400, 'day', 'days' ), array( 3600, 'hour', 'hours' ), array( MINUTE_IN_SECONDS, 'min', 'mins' ) );
+	foreach ( $units as $u ) {
+		if ( $diff >= $u[0] ) { $k = max( 1, (int) round( $diff / $u[0] ) ); return $k . ' ' . ( 1 === $k ? $u[1] : $u[2] ); }
+	}
+	$k = max( 1, $diff );
+	return $k . ' ' . ( 1 === $k ? 'second' : 'seconds' );
+}
 // As core: strings only (map_deep with stripslashes_from_strings_only); numbers and booleans stay what they are.
 function wp_unslash( $v ) { return is_array( $v ) ? array_map( 'wp_unslash', $v ) : ( is_string( $v ) ? stripslashes( $v ) : $v ); }
 function wp_slash( $v ) { if ( is_array( $v ) ) { return array_map( 'wp_slash', $v ); } return is_string( $v ) ? addslashes( $v ) : $v; }
@@ -1229,7 +1252,9 @@ if ( ! function_exists( 'wp_safe_remote_get' ) ) { function wp_safe_remote_get( 
 // As core 6.4.1 wp-admin/includes/file.php download_url( $url, $timeout ): a temporary file from wp_tempnam (so it is in
 // T_tempfiles), the body streamed into it by wp_safe_remote_get (answered from T_http); a WP_Error answer removes the file and
 // is returned as it is; any status but 200 removes the file and returns WP_Error http_404 (core's code for every non-200);
-// a Content-Disposition filename renames the file next to itself as core does (the new path is returned and recorded).
+// a Content-Disposition filename renames the file next to itself (the new path is returned and recorded). That rename is a
+// SIMPLER reading than core's: core lowercases the header, needs the exact prefix 'attachment; filename=' and runs
+// sanitize_file_name + validate_file; this one takes filename="..." anywhere in the header and keeps [A-Za-z0-9._-] only.
 // No Content-MD5 or signature check: core runs those only when the response carries the header / for wordpress.org hosts.
 //   T_download_calls  every array( url, timeout ) given to download_url
 if ( ! function_exists( 'download_url' ) ) {

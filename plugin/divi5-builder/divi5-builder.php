@@ -120,6 +120,8 @@ add_filter( 'update_plugins_github.com', 'd5b_updater_filter', 10, 4 );
 add_filter( 'upgrader_pre_download', 'd5b_updater_pre_download', 10, 4 );
 // "View details" for our plugin answered from the json and readme.txt (wordpress.org does not know it).
 add_filter( 'plugins_api', 'd5b_updater_plugins_api', 10, 3 );
+// The Settings page's Check now (wp-admin only, nonce d5b_update_check; no admin_post_nopriv_* hook, on purpose).
+add_action( 'admin_post_d5b_update_check', 'd5b_updater_check_now' );
 
 // The settings page. Only people in wp-admin: no admin_post_nopriv_* hook, on purpose.
 add_action( 'admin_menu', 'd5b_settings_menu' );
