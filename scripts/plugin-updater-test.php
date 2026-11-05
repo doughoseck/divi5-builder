@@ -15,6 +15,10 @@
  * otherwise); the answer is what core 6.4.1's update.php needs (version, package) and only for a NEWER version; the json
  * is refused unless every field is exactly the expected shape (host github.com, our repository's release-asset path for its
  * own tag, a 64-hex sha256); one request per 12 hours (1 hour after a failure), and a failure keeps the last good answer.
+ * Task 3: upgrader_pre_download downloads our verified asset itself (download_url, answered from T_http) and refuses it with
+ * d5b_checksum unless its sha256 matches the json's (the temp file deleted); a package of ours with no verified checksum is
+ * refused without a download; any other package passes through with no HTTP. plugins_api answers View details for our slug
+ * only (plugin_information), from the validated json and readme.txt, every piece of readme text escaped.
  */
 $MODE = $argv[1] ?? 'main';
 $dir  = getenv( 'D5B_PLUGIN_DIR' ) ?: __DIR__ . '/../plugin/divi5-builder';
@@ -246,6 +250,128 @@ site(); serve( '<html>rate limited</html>' );
 $f = d5b_updater_fetch();
 check( 'invalid JSON body: ok false with an error', false === $f['ok'] && '' !== $f['error'] && null === $f['json'], $f );
 check( 'and no offer', false === ask() );
+
+// ---------------------------------------------------------------- Task 3: the checksum before WordPress unpacks
+$ZIP = "PK\x03\x04 a stand-in release asset " . str_repeat( 'divi5-builder ', 40 );
+// A site whose cache holds the build's json for $ZIP (fetched once, then the request log cleared). The sha256 is computed
+// here at run time from the stand-in body: a digest, never a stored key-shaped string.
+function cached( array $over = array() ) { site(); serve( good( array_merge( array( 'sha256' => hash( 'sha256', $GLOBALS['ZIP'] ) ), $over ) ) ); d5b_updater_fetch(); $GLOBALS['T_http_calls'] = array(); }
+function asset( $body, int $code = 200, array $headers = array( 'content-type' => 'application/octet-stream' ) ) { $GLOBALS['T_http'][ ASSET ] = array( 'code' => $code, 'headers' => $headers, 'body' => $body ); }
+function pre( $package, $reply = false ) { return d5b_updater_pre_download( $reply, $package, null, array( 'plugin' => OURS, 'type' => 'plugin', 'action' => 'update' ) ); }
+function urls() { return array_map( function ( $c ) { return $c[0]; }, $GLOBALS['T_http_calls'] ); }
+function temps_gone() { clearstatcache(); foreach ( $GLOBALS['T_tempfiles'] as $f ) { if ( file_exists( $f ) ) { return false; } } return array() !== $GLOBALS['T_tempfiles']; }
+
+echo "(i) upgrader_pre_download: our asset is checked against the json's sha256\n";
+cached(); asset( $ZIP );
+$r = pre( ASSET );
+check( '(a) match: the downloaded file path is returned', is_string( $r ) && is_file( $r ) && is_readable( $r ), $r );
+check( '(a) match: its bytes are the asset body', is_string( $r ) && $ZIP === @file_get_contents( $r ), $r );
+check( '(a) match: one download, of the asset, through download_url with a 300 second timeout (no new json request)', array( array( ASSET, 300 ) ) === $GLOBALS['T_download_calls'] && array( ASSET ) === urls(), array( $GLOBALS['T_download_calls'], urls() ) );
+cached(); asset( $ZIP, 200, array( 'content-disposition' => 'attachment; filename=divi5-builder.zip' ) );
+$r = pre( ASSET );
+check( '(a) match with a Content-Disposition rename (as GitHub sends): the renamed file is returned', is_string( $r ) && 'divi5-builder.zip' === basename( $r ) && $ZIP === @file_get_contents( $r ), $r );
+cached(); asset( $ZIP );
+add_filter( 'upgrader_pre_download', 'd5b_updater_pre_download', 10, 4 );
+$r = apply_filters( 'upgrader_pre_download', false, ASSET, null, array( 'plugin' => OURS ) );
+check( '(a) through the filter as WP_Upgrader::download_package applies it: the file path', is_string( $r ) && $ZIP === @file_get_contents( $r ), $r );
+
+$bad = $ZIP; $bad[10] = chr( ord( $bad[10] ) ^ 1 );
+cached(); asset( $bad );
+$r = pre( ASSET );
+check( '(b) one byte changed: WP_Error d5b_checksum', $r instanceof WP_Error && 'd5b_checksum' === $r->get_error_code(), $r );
+$msg = $r instanceof WP_Error ? $r->get_error_message() : '';
+check( '(b) the message names both hashes by their first 12 characters', false !== strpos( $msg, 'expected ' . substr( hash( 'sha256', $ZIP ), 0, 12 ) . ' ...' ) && false !== strpos( $msg, 'got ' . substr( hash( 'sha256', $bad ), 0, 12 ) . ' ...' ), $msg );
+check( '(b) the message says it was not installed', 'The downloaded divi5-builder.zip does not match the checksum published with the release (expected ' . substr( hash( 'sha256', $ZIP ), 0, 12 ) . ' ..., got ' . substr( hash( 'sha256', $bad ), 0, 12 ) . ' ...), so it was not installed.' === $msg, $msg );
+check( '(b) the downloaded temp file is gone', 1 === count( $GLOBALS['T_download_calls'] ) && temps_gone(), $GLOBALS['T_tempfiles'] );
+cached(); asset( $bad, 200, array( 'content-disposition' => 'attachment; filename=divi5-builder.zip' ) );
+$r = pre( ASSET );
+check( '(b) mismatch after a Content-Disposition rename: d5b_checksum and the renamed file is gone too', $r instanceof WP_Error && 'd5b_checksum' === $r->get_error_code() && temps_gone(), array( $r, $GLOBALS['T_tempfiles'] ) );
+cached(); asset( substr( $ZIP, 0, -1 ) );
+check( '(b) a truncated asset: d5b_checksum', 'd5b_checksum' === ( ( $r = pre( ASSET ) ) instanceof WP_Error ? $r->get_error_code() : null ) && temps_gone(), $r );
+
+cached(); asset( $ZIP );
+$other = 'https://downloads.wordpress.org/plugin/akismet.5.3.zip';
+check( '(c) another package: $reply (false) unchanged', false === pre( $other ) );
+check( "(c) another package: another filter's answer passes through untouched", '/tmp/theirs.zip' === pre( $other, '/tmp/theirs.zip' ) );
+check( '(c) a package that is not a string passes through', false === pre( array( ASSET ) ) && false === pre( null ) );
+check( '(c) another package: no HTTP and no download', array() === $GLOBALS['T_http_calls'] && array() === $GLOBALS['T_download_calls'], array( urls(), $GLOBALS['T_download_calls'] ) );
+check( '(c) a github.com asset of another repository passes through', false === pre( 'https://github.com/someone-else/divi5-builder/releases/download/v2026.11.05/divi5-builder.zip' ) && array() === $GLOBALS['T_download_calls'] );
+
+site(); $GLOBALS['T_http'][ JSON_URL ] = new WP_Error( 'http_request_failed', 'down' ); asset( $ZIP );
+$r = pre( ASSET );
+check( '(d) no json was ever cached and the request fails: our asset is refused with d5b_checksum', $r instanceof WP_Error && 'd5b_checksum' === $r->get_error_code(), $r );
+check( '(d) ... after one request for the json and no download', array( JSON_URL ) === urls() && array() === $GLOBALS['T_download_calls'], array( urls(), $GLOBALS['T_download_calls'] ) );
+foreach ( array(
+	'an older tag of ours'                => 'https://github.com/doughoseck/divi5-builder/releases/download/v2026.10.01/divi5-builder.zip',
+	'our repository in other letter case' => 'https://GitHub.com/DougHoseck/Divi5-Builder/releases/download/v2026.11.05/divi5-builder.zip',
+	'our asset over http'                 => 'http://github.com/doughoseck/divi5-builder/releases/download/v2026.11.05/divi5-builder.zip',
+	'our asset with a query'              => ASSET . '?x=1',
+) as $why => $pkg ) {
+	cached(); asset( $ZIP ); $GLOBALS['T_http'][ $pkg ] = array( 'code' => 200, 'headers' => array(), 'body' => $ZIP );
+	$r = pre( $pkg );
+	check( '(d) ours by URL form but not the verified download_url (' . $why . '): d5b_checksum, no download', $r instanceof WP_Error && 'd5b_checksum' === $r->get_error_code() && array() === $GLOBALS['T_download_calls'], $r );
+}
+cached(); asset( $ZIP ); $GLOBALS['T_site_transients']['d5b_update_json']['json']['sha256'] = 'nope';
+$r = pre( ASSET );
+check( '(d) a cached json that no longer validates counts as none: refused, no download', $r instanceof WP_Error && 'd5b_checksum' === $r->get_error_code() && array() === $GLOBALS['T_download_calls'], $r );
+site(); serve( good( array( 'sha256' => hash( 'sha256', $ZIP ) ) ) ); asset( $ZIP );
+$r = pre( ASSET );
+check( '(d) a fresh site fetches the json once, then downloads and verifies', is_string( $r ) && $ZIP === @file_get_contents( $r ) && array( JSON_URL, ASSET ) === urls(), array( $r, urls() ) );
+
+cached(); $GLOBALS['T_http'][ ASSET ] = new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out' );
+$r = pre( ASSET );
+check( "(e) download_url's WP_Error is returned as it is", $r instanceof WP_Error && 'http_request_failed' === $r->get_error_code() && false !== strpos( $r->get_error_message(), 'Operation timed out' ) && temps_gone(), $r );
+cached(); asset( 'Not Found', 404 );
+$r = pre( ASSET );
+check( "(e) a 404 for the asset: download_url's http_404 is returned, nothing kept", $r instanceof WP_Error && 'http_404' === $r->get_error_code() && temps_gone(), $r );
+
+echo "(j) plugins_api: the View details modal\n";
+$readme = str_replace( "\r\n", "\n", file_get_contents( $dir . '/readme.txt' ) );
+preg_match( '/^== Changelog ==\n+= (\d+\.\d+\.\d+) =\n(.*?)\n+= (\d+\.\d+\.\d+) =\n(.*?)(\n\n|\z)/ms', $readme, $cl );
+$newest = array_values( array_filter( array_map( function ( $l ) { return 0 === strpos( $l, '* ' ) ? substr( $l, 2 ) : null; }, explode( "\n", $cl[2] ?? '' ) ) ) );
+$older  = array_values( array_filter( array_map( function ( $l ) { return 0 === strpos( $l, '* ' ) ? substr( $l, 2 ) : null; }, explode( "\n", $cl[4] ?? '' ) ) ) );
+check( 'the readme has a newest changelog entry with bullets to compare with', array() !== $newest && array() !== $older, $cl );
+function info( $args = null, $action = 'plugin_information', $result = false ) { return d5b_updater_plugins_api( $result, $action, $args ?? (object) array( 'slug' => 'divi5-builder' ) ); }
+cached();
+$o = info();
+check( '(f) our slug: an object', is_object( $o ), $o );
+$o = (object) $o;
+check( '(f) name, slug, author, homepage', 'Divi 5 Builder' === ( $o->name ?? null ) && 'divi5-builder' === ( $o->slug ?? null ) && 'divi5-builder skill' === ( $o->author ?? null ) && 'https://github.com/doughoseck/divi5-builder' === ( $o->homepage ?? null ), $o );
+check( "(f) version and download_link are the json's", '2.5.0' === ( $o->version ?? null ) && ASSET === ( $o->download_link ?? null ), $o );
+check( "(f) requires, requires_php and tested are the validated json's", '6.0' === ( $o->requires ?? null ) && '7.4' === ( $o->requires_php ?? null ) && '7.1' === ( $o->tested ?? null ), $o );
+check( '(f) last_updated is the date of the validated tag (the json\'s own last_updated is not used)', '2026-11-05' === ( $o->last_updated ?? null ), $o );
+$cg = (string) ( $o->sections['changelog'] ?? '' );
+check( '(f) the changelog is a <ul> of the readme\'s newest entry, every bullet', false !== strpos( $cg, '<ul>' ) && array() === array_filter( $newest, function ( $b ) use ( $cg ) { return false === strpos( $cg, '<li>' . esc_html( $b ) . '</li>' ); } ), $cg );
+check( '(f) ... and only the newest entry', array() === array_filter( $older, function ( $b ) use ( $cg ) { return false !== strpos( $cg, esc_html( $b ) ); } ), $cg );
+check( '(f) the changelog links the release page of the json\'s tag', false !== strpos( $cg, 'href="https://github.com/doughoseck/divi5-builder/releases/tag/v2026.11.05"' ), $cg );
+check( '(f) the description is the readme\'s short description', 0 === strpos( (string) ( $o->sections['description'] ?? '' ), 'Build and edit Divi 5 pages over the REST API' ) && false === strpos( (string) ( $o->sections['description'] ?? '' ), "\n" ), $o->sections ?? null );
+check( '(f) the sections are exactly description and changelog', array( 'description', 'changelog' ) === array_keys( (array) ( $o->sections ?? array() ) ), $o->sections ?? null );
+check( '(f) args as an array work too', is_object( info( array( 'slug' => 'divi5-builder' ) ) ) && '2.5.0' === info( array( 'slug' => 'divi5-builder' ) )->version );
+check( '(f) no HTTP while the cache is fresh', array() === $GLOBALS['T_http_calls'] );
+cached( array( 'tested' => '<img src=x onerror=alert(1)>' ) );
+$GLOBALS['T_site_transients']['d5b_update_json']['json'] = good( array( 'tested' => '<img src=x onerror=alert(1)>' ) );
+$o = info();
+check( '(f) a cached json that no longer validates gives none of its values (tested, version, link)', is_object( $o ) && '' === $o->tested && D5B_VERSION === $o->version && '' === $o->download_link && '' === $o->requires_php, $o );
+site(); $GLOBALS['T_http'][ JSON_URL ] = new WP_Error( 'http_request_failed', 'down' );
+$o = info();
+check( '(f) no json at all: this copy\'s version, no download link, the releases page linked', is_object( $o ) && D5B_VERSION === $o->version && '' === $o->download_link && false !== strpos( $o->sections['changelog'], 'href="https://github.com/doughoseck/divi5-builder/releases"' ), $o );
+$s = d5b_updater_readme_sections( "=== Divi 5 Builder ===\nStable tag: 1.0.0\n\nShort <b>desc</b> & more\n\n== Description ==\n\nx\n\n== Changelog ==\n\n= 9.9.9 =\n* first <script>alert(1)</script>\n* second & \"quoted\"\n  continued line\n\n= 9.9.8 =\n* old\n", 'v2026.11.05' );
+check( '(f) every piece of readme text is escaped', 'Short &lt;b&gt;desc&lt;/b&gt; &amp; more' === $s['description'] && false !== strpos( $s['changelog'], '<li>first &lt;script&gt;alert(1)&lt;/script&gt;</li>' ) && false === strpos( $s['changelog'], '<script>' ), $s );
+check( '(f) a bullet\'s continuation line stays with it; an older entry is left out', false !== strpos( $s['changelog'], '<li>second &amp; &quot;quoted&quot; continued line</li>' ) && false === strpos( $s['changelog'], 'old' ), $s );
+check( '(f) CRLF line ends read the same', $s === d5b_updater_readme_sections( str_replace( "\n", "\r\n", "=== Divi 5 Builder ===\nStable tag: 1.0.0\n\nShort <b>desc</b> & more\n\n== Description ==\n\nx\n\n== Changelog ==\n\n= 9.9.9 =\n* first <script>alert(1)</script>\n* second & \"quoted\"\n  continued line\n\n= 9.9.8 =\n* old\n" ), 'v2026.11.05' ), $s );
+cached(); add_filter( 'plugins_api', 'd5b_updater_plugins_api', 10, 3 );
+$o = plugins_api( 'plugin_information', array( 'slug' => 'divi5-builder' ) );
+check( '(f) through core\'s plugins_api: our answer, wordpress.org never asked', is_object( $o ) && '2.5.0' === $o->version && ! isset( $GLOBALS['T_plugins_api']['divi5-builder'] ), $o );
+
+cached();
+check( '(g) another slug: $result unchanged (false)', false === info( (object) array( 'slug' => 'akismet' ) ) );
+$theirs = (object) array( 'name' => 'Theirs' );
+check( "(g) another slug: another filter's object passes through untouched", $theirs === info( (object) array( 'slug' => 'divi5-builder-pro' ), 'plugin_information', $theirs ) );
+check( '(g) args without a slug pass through', false === info( (object) array() ) && false === info( array() ) && false === info( 'divi5-builder' ) );
+check( '(g) through core\'s plugins_api another slug still reaches wordpress.org', ( function () { $GLOBALS['T_plugins_api']['akismet'] = (object) array( 'slug' => 'akismet' ); return 'akismet' === ( plugins_api( 'plugin_information', array( 'slug' => 'akismet' ) )->slug ?? null ); } )() );
+check( '(h) action query_plugins with our slug: untouched', false === info( (object) array( 'slug' => 'divi5-builder' ), 'query_plugins' ) );
+check( '(h) action hot_tags: untouched', $theirs === info( (object) array( 'slug' => 'divi5-builder' ), 'hot_tags', $theirs ) );
+check( '(g)(h) no HTTP for any of them', array() === $GLOBALS['T_http_calls'] );
 
 echo "warnings\n";
 check( 'no PHP notice or warning in the whole run (every refusal is a deliberate check)', array() === $PHP_WARNINGS, array_slice( array_unique( $PHP_WARNINGS ), 0, 5 ) );

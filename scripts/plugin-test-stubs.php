@@ -1154,7 +1154,7 @@ function t_media_reset() {
 	if ( isset( $GLOBALS['T_actions']['http_api_curl'] ) ) { unset( $GLOBALS['T_actions']['http_api_curl'], $GLOBALS['T_priorities']['http_api_curl'] ); }
 	$GLOBALS['T_mimes'] = array( 'jpg|jpeg|jpe' => 'image/jpeg', 'gif' => 'image/gif', 'png' => 'image/png', 'pdf' => 'application/pdf', 'txt|asc|c|cc|h|srt' => 'text/plain' );
 	foreach ( $GLOBALS['T_tempfiles'] ?? array() as $f ) { if ( file_exists( $f ) ) { @unlink( $f ); } }
-	$GLOBALS['T_tempfiles'] = array();
+	$GLOBALS['T_tempfiles'] = array(); $GLOBALS['T_download_calls'] = array();
 	$GLOBALS['T_files_unlinked'] = array(); $GLOBALS['T_rename_fail'] = array(); $GLOBALS['T_rename_fail_re'] = ''; $GLOBALS['T_renames'] = array();
 	unset( $GLOBALS['T_http_fn'], $GLOBALS['T_theme_root'], $GLOBALS['wp_filesystem'], $GLOBALS['T_copy_done'] );
 	$GLOBALS['T_user_caps'] = array(); $GLOBALS['T_fs_fail'] = false; $GLOBALS['T_copy_fail'] = false; $GLOBALS['T_fs_copy_fail'] = false; $GLOBALS['T_copy_calls'] = array();
@@ -1226,6 +1226,33 @@ function wp_remote_retrieve_body( $r ) { return ( is_wp_error( $r ) || ! isset( 
 function home_url( $path = '', $scheme = null ) { $u = 'https://x.example'; return ( is_string( $path ) && '' !== $path ) ? $u . '/' . ltrim( $path, '/' ) : $u; }
 // As core 6.4.1 http.php: wp_safe_remote_get is wp_remote_get with reject_unsafe_urls forced on (the args record shows it).
 if ( ! function_exists( 'wp_safe_remote_get' ) ) { function wp_safe_remote_get( $url, $args = array() ) { $args['reject_unsafe_urls'] = true; return wp_remote_get( $url, $args ); } }
+// As core 6.4.1 wp-admin/includes/file.php download_url( $url, $timeout ): a temporary file from wp_tempnam (so it is in
+// T_tempfiles), the body streamed into it by wp_safe_remote_get (answered from T_http); a WP_Error answer removes the file and
+// is returned as it is; any status but 200 removes the file and returns WP_Error http_404 (core's code for every non-200);
+// a Content-Disposition filename renames the file next to itself as core does (the new path is returned and recorded).
+// No Content-MD5 or signature check: core runs those only when the response carries the header / for wordpress.org hosts.
+//   T_download_calls  every array( url, timeout ) given to download_url
+if ( ! function_exists( 'download_url' ) ) {
+	function download_url( $url, $timeout = 300, $signature_verification = false ) {
+		$GLOBALS['T_download_calls'][] = array( $url, $timeout );
+		if ( ! $url ) { return new WP_Error( 'http_no_url', 'Invalid URL Provided.' ); }
+		$tmpfname = wp_tempnam( (string) basename( (string) parse_url( $url, PHP_URL_PATH ) ) );
+		if ( ! $tmpfname ) { return new WP_Error( 'http_no_file', 'Could not create temporary file.' ); }
+		$response = wp_safe_remote_get( $url, array( 'timeout' => $timeout, 'stream' => true, 'filename' => $tmpfname ) );
+		if ( is_wp_error( $response ) ) { unlink( $tmpfname ); return $response; }
+		$code = wp_remote_retrieve_response_code( $response );
+		if ( 200 !== $code ) { unlink( $tmpfname ); return new WP_Error( 'http_404', 'Not Found', array( 'code' => $code ) ); }
+		$cd = (string) wp_remote_retrieve_header( $response, 'content-disposition' );
+		if ( '' !== $cd && preg_match( '/filename="?([^"]+)"?/', $cd, $m ) ) {
+			$name = preg_replace( '/[^A-Za-z0-9._-]/', '', basename( $m[1] ) );
+			if ( '' !== $name && '.' !== $name[0] ) {
+				$to = dirname( $tmpfname ) . '/' . $name;
+				if ( rename( $tmpfname, $to ) ) { $tmpfname = $to; $GLOBALS['T_tempfiles'][] = $to; }
+			}
+		}
+		return $tmpfname;
+	}
+}
 // As core's wp_parse_url (http.php) for the absolute URLs the plugin parses: PHP's parse_url, false for a broken URL.
 if ( ! function_exists( 'wp_parse_url' ) ) { function wp_parse_url( $url, $component = -1 ) { return parse_url( (string) $url, $component ); } }
 // As core 6.4.1 functions.php: backslashes to '/', runs of slashes to one (a leading '//' network share kept), drive letter upper case.
@@ -2306,12 +2333,21 @@ if ( defined( 'T_PLUGIN_STANDINS' ) ) {
 		if ( $do_blog ) { update_option( 'active_plugins', array_values( $cur ) ); }
 		if ( $do_network ) { update_site_option( 'active_sitewide_plugins', $net ); }
 	}
+	// As core 6.4.1 plugin-install.php: array args become an object, then the plugins_api filter runs FIRST (the callbacks
+	// added with add_filter, each given ( $res, $action, $args )); a result that is not false is the answer, after the
+	// plugins_api_result filter. Only a false result goes on to wordpress.org (here: T_plugins_api).
 	function plugins_api( $action, $args = array() ) {
 		$GLOBALS['T_traps'][] = 'plugins_api';
 		$GLOBALS['T_plugins_api_calls'][] = array( $action, $args );
 		if ( is_array( $args ) ) { $args = (object) $args; }
-		$slug = (string) ( $args->slug ?? '' );
-		return $GLOBALS['T_plugins_api'][ $slug ] ?? new WP_Error( 'plugins_api_failed', 'Plugin not found.' );
+		$res = false;
+		foreach ( $GLOBALS['T_filters']['plugins_api'] ?? array() as $cb ) { $res = call_user_func( $cb, $res, $action, $args ); }
+		if ( false === $res ) {
+			$slug = (string) ( $args->slug ?? '' );
+			$res  = $GLOBALS['T_plugins_api'][ $slug ] ?? new WP_Error( 'plugins_api_failed', 'Plugin not found.' );
+		}
+		foreach ( $GLOBALS['T_filters']['plugins_api_result'] ?? array() as $cb ) { $res = call_user_func( $cb, $res, $action, $args ); }
+		return $res;
 	}
 	function wp_clean_plugins_cache( $clear_update_cache = true ) { $GLOBALS['T_plugins_cache_cleans']++; $GLOBALS['T_plugins_cache'] = null; if ( $clear_update_cache ) { delete_site_transient( 'update_plugins' ); } }
 	// As core (plugin.php): a plugin with uninstall.php in its folder (for a single-file plugin, the plugins folder itself:

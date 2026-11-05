@@ -116,6 +116,10 @@ add_filter( 'rest_pre_dispatch', 'd5b_refuse_legacy_rest_activation', 10, 3 );
 // github.com. The answer comes from plugin/update.json on main, checked strictly, at most once per 12 hours; a must-use copy
 // never gets an offer (replace its folder instead).
 add_filter( 'update_plugins_github.com', 'd5b_updater_filter', 10, 4 );
+// Before WordPress unpacks our release asset, its sha256 is checked against the json's (a mismatch aborts the update).
+add_filter( 'upgrader_pre_download', 'd5b_updater_pre_download', 10, 4 );
+// "View details" for our plugin answered from the json and readme.txt (wordpress.org does not know it).
+add_filter( 'plugins_api', 'd5b_updater_plugins_api', 10, 3 );
 
 // The settings page. Only people in wp-admin: no admin_post_nopriv_* hook, on purpose.
 add_action( 'admin_menu', 'd5b_settings_menu' );

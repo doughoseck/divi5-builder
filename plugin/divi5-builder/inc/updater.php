@@ -2,6 +2,8 @@
 /**
  * Updates from GitHub Releases (2.5.0, #61). This file only defines functions; the loader adds the hook:
  *   update_plugins_github.com (filter, 10, 4)               -> d5b_updater_filter()
+ *   upgrader_pre_download (filter, 10, 4)                   -> d5b_updater_pre_download() (sha256 before unpacking)
+ *   plugins_api (filter, 10, 3)                             -> d5b_updater_plugins_api()  (the View details modal)
  *
  * WordPress 5.8+ asks the update_plugins_{host} filter for every plugin whose Update URI header names that host; ours names
  * https://github.com/doughoseck/divi5-builder. The answer comes from plugin/update.json on the repository's main branch,
@@ -136,6 +138,127 @@ if ( ! function_exists( 'd5b_updater_filter' ) ) {
 			'requires_php' => $json['requires_php'],
 			'tested'       => $json['tested'],
 			'icons'        => array(),
+		);
+	}
+}
+
+if ( ! function_exists( 'd5b_updater_is_our_asset' ) ) {
+	/**
+	 * Is this URL, by its form, a release asset of our repository (any tag, any scheme, any letter case, with or without a
+	 * query)? Used only to REFUSE: such a package is installed only when it is exactly the verified download_url.
+	 */
+	function d5b_updater_is_our_asset( string $url ): bool {
+		$u = wp_parse_url( $url );
+		if ( ! is_array( $u ) ) { return false; }
+		$host = strtolower( rtrim( (string) ( $u['host'] ?? '' ), '.' ) );
+		if ( 'github.com' !== $host && 'www.github.com' !== $host ) { return false; }
+		$path = strtolower( (string) ( $u['path'] ?? '' ) );
+		return 0 === strpos( preg_replace( '#/+#', '/', $path ), '/doughoseck/divi5-builder/releases/' );
+	}
+}
+
+if ( ! function_exists( 'd5b_updater_pre_download' ) ) {
+	/**
+	 * For upgrader_pre_download (WP_Upgrader::download_package uses a non-false answer as the downloaded file; a WP_Error
+	 * aborts the update before anything is unpacked). Our verified release asset is downloaded here and its sha256 compared
+	 * with the json's; on a mismatch the file is deleted and the update refused. Any other package passes through untouched.
+	 */
+	function d5b_updater_pre_download( $reply, $package, $upgrader = null, $hook_extra = array() ) {
+		if ( ! is_string( $package ) || '' === $package ) { return $reply; }
+		$ours = d5b_updater_is_our_asset( $package );
+		// A package that is not ours costs nothing: no request, not even for the json.
+		$json = null;
+		if ( $ours ) {
+			$r    = d5b_updater_fetch( false );
+			$json = d5b_updater_valid( $r['json'] ) ? $r['json'] : null;
+		}
+		if ( null === $json || $package !== $json['download_url'] ) {
+			if ( ! $ours ) { return $reply; }
+			// Never install an unverified copy of ourselves: no checksum is known for this package.
+			// (The package URL is not repeated: core's upgrader skin prints this message as it is.)
+			return new WP_Error( 'd5b_checksum', 'This divi5-builder.zip was not installed: no checksum for it is known (the update file could not be read, or it names another release). Check for updates again and retry.' );
+		}
+		if ( ! function_exists( 'download_url' ) ) { require_once ABSPATH . 'wp-admin/includes/file.php'; }
+		$file = download_url( $package, 300 );
+		if ( is_wp_error( $file ) ) { return $file; }
+		$hash = (string) @hash_file( 'sha256', $file );
+		if ( hash_equals( $json['sha256'], $hash ) ) { return $file; }
+		@unlink( $file );
+		return new WP_Error( 'd5b_checksum', 'The downloaded divi5-builder.zip does not match the checksum published with the release (expected ' . substr( $json['sha256'], 0, 12 ) . ' ..., got ' . substr( $hash, 0, 12 ) . ' ...), so it was not installed.' );
+	}
+}
+
+if ( ! function_exists( 'd5b_updater_readme_sections' ) ) {
+	/**
+	 * The View details sections from readme.txt: description = the short description (the first line after the
+	 * === Name === header block), changelog = the newest "= x.y.z =" entry as a <ul> plus a link to the release page.
+	 * Every piece of readme text is escaped; $tag (already validated, or '') only picks the release page.
+	 */
+	function d5b_updater_readme_sections( string $readme, string $tag ): array {
+		$lines = explode( "\n", str_replace( array( "\r\n", "\r" ), "\n", $readme ) );
+		$n     = count( $lines );
+		$i     = 0;
+		$desc  = '';
+		if ( $n > 0 && 1 === preg_match( '/^===.*===\s*$/', $lines[0] ) ) {
+			for ( $i = 1; $i < $n && '' !== trim( $lines[ $i ] ); $i++ ) {} // the header fields
+			for ( ; $i < $n && '' === trim( $lines[ $i ] ); $i++ ) {}
+			if ( $i < $n && 0 !== strpos( ltrim( $lines[ $i ] ), '==' ) ) { $desc = trim( $lines[ $i ] ); }
+		}
+		$version = ''; $items = array(); $in_log = false; $in_entry = false;
+		foreach ( $lines as $line ) {
+			$t = trim( $line );
+			if ( ! $in_log ) { $in_log = ( 1 === preg_match( '/^==\s*Changelog\s*==$/i', $t ) ); continue; }
+			if ( $in_entry && ( 0 === strpos( $t, '=' ) ) ) { break; } // the next entry or section
+			if ( ! $in_entry ) {
+				if ( 1 === preg_match( '/^=\s*(\d+\.\d+\.\d+)\s*=$/', $t, $m ) ) { $version = $m[1]; $in_entry = true; }
+				elseif ( 0 === strpos( $t, '==' ) ) { break; }
+				continue;
+			}
+			if ( '' === $t ) { continue; }
+			if ( 0 === strpos( $t, '* ' ) ) { $items[] = trim( substr( $t, 2 ) ); }
+			elseif ( array() !== $items ) { $items[ count( $items ) - 1 ] .= ' ' . $t; }
+			else { $items[] = $t; }
+		}
+		$release = 'https://github.com/doughoseck/divi5-builder/releases' . ( '' !== $tag ? '/tag/' . $tag : '' );
+		$log = '';
+		if ( '' !== $version ) {
+			$log .= '<h4>' . esc_html( $version ) . '</h4><ul>';
+			foreach ( $items as $it ) { $log .= '<li>' . esc_html( $it ) . '</li>'; }
+			$log .= '</ul>';
+		}
+		$log .= '<p><a href="' . esc_url( $release ) . '">Release notes on GitHub</a></p>';
+		return array( 'description' => esc_html( $desc ), 'changelog' => $log );
+	}
+}
+
+if ( ! function_exists( 'd5b_updater_plugins_api' ) ) {
+	/**
+	 * For plugins_api: core asks wordpress.org for "View details" unless this filter answers. Only plugin_information for
+	 * the slug divi5-builder is answered; everything else passes through. Values from the json only once it validates
+	 * (requires, requires_php and tested are version strings by then); the rest comes from readme.txt, escaped.
+	 */
+	function d5b_updater_plugins_api( $result, $action, $args ) {
+		if ( 'plugin_information' !== $action ) { return $result; }
+		if ( is_array( $args ) ) { $args = (object) $args; }
+		if ( ! is_object( $args ) || ! isset( $args->slug ) || 'divi5-builder' !== $args->slug ) { return $result; }
+		$r    = d5b_updater_fetch( false );
+		$json = d5b_updater_valid( $r['json'] ) ? $r['json'] : null;
+		$file = dirname( __DIR__ ) . '/readme.txt';
+		$text = is_readable( $file ) ? (string) file_get_contents( $file ) : '';
+		$date = ( null !== $json && 1 === preg_match( '/^v(\d{4})\.(\d{2})\.(\d{2})/', $json['tag'], $m ) ) ? $m[1] . '-' . $m[2] . '-' . $m[3] : '';
+		return (object) array(
+			'name'          => 'Divi 5 Builder',
+			'slug'          => 'divi5-builder',
+			'version'       => null !== $json ? $json['version'] : D5B_VERSION,
+			'author'        => 'divi5-builder skill',
+			'homepage'      => 'https://github.com/doughoseck/divi5-builder',
+			'download_link' => null !== $json ? $json['download_url'] : '',
+			'requires'      => null !== $json ? $json['requires'] : '',
+			'requires_php'  => null !== $json ? $json['requires_php'] : '',
+			'tested'        => null !== $json ? $json['tested'] : '',
+			// From the validated tag (vYYYY.MM.DD): the json's own last_updated is never shown.
+			'last_updated'  => $date,
+			'sections'      => d5b_updater_readme_sections( $text, null !== $json ? $json['tag'] : '' ),
 		);
 	}
 }
